@@ -50,8 +50,44 @@ Before submission, reproduce once within scope, remove destructive steps,
 verify affected versions, check duplicate-policy rules, and edit the report for
 clarity. Never paste session cookies, private keys or personal customer data.
 
+## Worked example
+
+**Scenario:** you have permission to test a bug-bounty program and want to turn
+one reflected-input observation into a submittable report.
+
+**You have:**
+
+- Target: `http://localhost:8080/search?q=hello` (a local training app you run)
+- Program: `Acme Bug Bounty` · Scope type: `Web Application` · Severity: `Medium`
+- Finding: the `q` parameter is echoed into the page unencoded, so
+  `?q=<b>hello</b>` renders bold.
+
+**Do this:**
+
+1. In **Program radar**, filter for the program if you track it, or just type the
+   name into **Program** below. Radar never contacts the program's assets.
+2. Under **Target & Program**, enter the target, program, scope type and severity.
+   Remember the caption: scope is declared by you and is not enforced.
+3. Leave **Nmap Recon Scan** empty for this example; it runs on your machine
+   outside the guard and this finding needs no port scan.
+4. In **Findings**, paste the request and the reflected response, the exact
+   payload (`?q=<b>hello</b>`), and one sentence of observed impact. Remove any
+   real cookies or personal data.
+5. Leave the route on **Auto-route**, or pick a provider, then select **Analyse**.
+
+**You should see:** a result split into vulnerability, proof-of-concept draft,
+remediation and submission draft, with the **Severity**, **CVSS Score** and
+**Bounty Estimate** tiles filled in. CVSS and CWE are suggestions marked for your
+review. Bug Spray should describe only what your evidence shows — if it claims an
+impact you did not demonstrate, cut it before submitting.
+
+**Why it's safe / what it costs:** radar and typing are local and free. Only
+**Analyse** leaves the device — it sends your evidence to the selected model, and
+a cloud route costs money (watch the Inspector's cost line). Nothing scans the
+target unless you run Nmap yourself.
+
 ## Exercise
 
-Use an intentionally vulnerable local training application. Paste a harmless
-finding, generate a report, and identify which claims are observed facts versus
-model interpretation.
+Repeat the worked example against a different intentionally vulnerable local
+training application, then identify which claims in the report are observed facts
+and which are model interpretation.
