@@ -23,7 +23,7 @@ from ui.panels.bug_bounty import BugBountyPanel
 
 @pytest.fixture
 def panel(tmp_path, monkeypatch):
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     settings = config.Settings(enabled_platforms=["hackerone"], data_dir=str(tmp_path))
     monkeypatch.setattr(config, "load", lambda path=None: settings)
     db = Store(settings.db_path)
@@ -90,3 +90,97 @@ def test_selected_program_fills_sentinel_report_field(panel):
         assert report.target_input.text() == ""
     finally:
         report.deleteLater()
+
+
+@pytest.fixture
+def two_platform_panel(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    settings = config.Settings(enabled_platforms=["hackerone"], watchlist_keywords=["acme"],
+                               data_dir=str(tmp_path))
+    monkeypatch.setattr(config, "load", lambda path=None: settings)
+    db = Store(settings.db_path)
+    db.record(Program("hackerone", "acme", "Acme", "https://hackerone.com/acme", True,
+                      Scope(in_scope=["api.acme.test"]), [RewardTier("high", 100, 500, "USD")]))
+    db.record(Program("bugcrowd", "acme-bc", "Acme BC", "https://bugcrowd.com/acme", True,
+                      Scope(in_scope=["acme.example"]), [RewardTier("critical", None, 9000, "USD")]))
+    db.record(Program("immunefi", "other", "Other", "https://immunefi.com/bug-bounty/other/", True,
+                      Scope(in_scope=["0xabc"]), [RewardTier("critical", 1, 2, "USD")]))
+    db.close()
+    widget = BugSprayFeed()
+    widget.refresh()
+    yield widget
+    widget.deleteLater()
+
+
+def visible(tree):
+    return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())
+            if not tree.topLevelItem(i).isHidden()]
+
+
+def test_platform_filter_and_show_all(two_platform_panel):
+    panel = two_platform_panel
+    assert set(visible(panel.programs)) == {"Acme", "Acme BC"}  # watchlist hides "Other"
+    panel.platform.setCurrentIndex(panel.platform.findData("bugcrowd"))
+    assert visible(panel.programs) == ["Acme BC"]
+    panel.platform.setCurrentIndex(0)
+    panel.show_all.setChecked(True)
+    assert set(visible(panel.programs)) == {"Acme", "Acme BC", "Other"}
+    assert "watchlist off" in panel.status.text()
+
+
+def test_full_details_show_the_whole_saved_program():
+    program = Program("hackerone", "big", "Big <Co>", "https://hackerone.com/big", False,
+                      Scope(in_scope=[f"host{i}.test" for i in range(12)], out_of_scope=["legacy.test"]),
+                      [RewardTier("critical", 1000, 5000, "USD"), RewardTier("low", None, 100, "EUR")],
+                      tags=["wildcard"])
+    html = feed_module.program_html(program)
+    assert all(f"host{i}.test" in html for i in range(12)) and "legacy.test" in html
+    assert "$1,000 – $5,000" in html and "up to €100" in html and "wildcard" in html
+    assert "Big &lt;Co&gt;" in html and "paused" in html and "not authorization" in html
+    QApplication.instance() or QApplication([])
+    dialog = feed_module.ProgramDetailsDialog(program)
+    assert "host11.test" in dialog.body.toPlainText()
+    dialog.deleteLater()
+
+
+def test_details_button_follows_selection(panel):
+    assert not panel.details_button.isEnabled()
+    panel.programs.setCurrentItem(panel.programs.topLevelItem(0))
+    assert panel.details_button.isEnabled()
+
+
+def test_watchlist_dialog_saves_config(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    dialog = feed_module.WatchlistDialog(config.Settings(enabled_platforms=["hackerone"]))
+    dialog.platform_boxes["immunefi"].setChecked(True)
+    dialog.keywords.setText(" api, graphql ,, ")
+    dialog.tags.setText("wildcard")
+    dialog.min_reward.setValue(5000)
+    dialog.save()
+    assert dialog.result() == feed_module.QDialog.Accepted
+    saved = config.load(tmp_path / "config.json")
+    assert saved.enabled_platforms == ["hackerone", "immunefi"]
+    assert saved.watchlist_keywords == ["api", "graphql"] and saved.watchlist_tags == ["wildcard"]
+    assert saved.min_reward_usd == 5000
+    dialog.deleteLater()
+
+
+def test_watchlist_dialog_refuses_invalid_settings(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    dialog = feed_module.WatchlistDialog(config.Settings(poll_interval_minutes=0))
+    dialog.save()
+    assert not (tmp_path / "config.json").exists()
+    assert not dialog.error.isHidden() and "poll_interval_minutes" in dialog.error.text()
+    dialog.deleteLater()
+
+
+def test_full_rescan_passes_full_flag(panel, tmp_path, monkeypatch):
+    started = []
+    (tmp_path / "python").touch()
+    monkeypatch.setattr(feed_module, "PYTHON", tmp_path / "python")
+    monkeypatch.setattr(panel._scan, "start", lambda program, args: started.append(args))
+    panel.full_scan_action.trigger()
+    assert started and started[0][-1] == "--full"
+    assert "Full re-scan" in panel.status.text()
