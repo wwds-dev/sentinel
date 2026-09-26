@@ -15,7 +15,9 @@ change the firewall.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 from typing import Callable
 
@@ -78,6 +80,21 @@ def _quote(text: str) -> str:
     return "'" + str(text).replace("'", "'\\''") + "'"
 
 
+def wg_quick_command(verb: str, target: str) -> str:
+    """The shell line for ``wg-quick <verb> <target>``, runnable as root.
+
+    The macOS authorisation dialog (``do shell script``) and ``sudo``'s
+    secure_path both drop Homebrew's bin directory, so a bare ``wg-quick`` is not
+    found there — and wg-quick itself shells out to ``wg`` and ``wireguard-go``.
+    Use the absolute path and put its directory first on PATH for that one call.
+    """
+    exe = shutil.which("wg-quick")
+    if not exe:
+        return f"wg-quick {verb} {_quote(target)}"
+    bindir = os.path.dirname(exe)
+    return f'PATH={_quote(bindir)}:"$PATH" {_quote(exe)} {verb} {_quote(target)}'
+
+
 def _placeholder_result(action: str, profile: dict) -> dict:
     return {
         "success": False,
@@ -123,7 +140,7 @@ def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) -> 
         return {"success": False, "protocol": protocol, "output": "",
                 "error": "This WireGuard profile has no interface or config file."}
     ok, output = run_as_root(
-        f"wg-quick up {_quote(target)}",
+        wg_quick_command("up", target),
         "Sentinel needs administrator access to start the VPN.")
     return {"success": ok, "protocol": protocol, "output": output,
             "error": None if ok else (output or "wg-quick up failed.")}
@@ -145,7 +162,7 @@ def disconnect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) 
         return {"success": False, "protocol": protocol, "output": "",
                 "error": "This WireGuard profile has no interface or config file."}
     ok, output = run_as_root(
-        f"wg-quick down {_quote(target)}",
+        wg_quick_command("down", target),
         "Sentinel needs administrator access to stop the VPN.")
     return {"success": ok, "protocol": protocol, "output": output,
             "error": None if ok else (output or "wg-quick down failed.")}

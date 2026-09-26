@@ -2306,6 +2306,15 @@ def tunnel(qapp, monkeypatch):
     )
     FakeWorker.instances.clear()
     FakeVpnDiagnosticsWorker.instances.clear()
+    # The Connect/Disconnect review reads local state; keep it off this Mac.
+    from services import vpn_connection, vpn_execution
+    monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
+    monkeypatch.setattr(vpn_execution, "_killswitch_armed", lambda: False)
+    monkeypatch.setattr(vpn_execution, "_default_probe", lambda: {
+        "wireguard": lambda name: {"up": False, "device": None},
+        "openvpn_running": lambda: False,
+        "route_interface": lambda: None,
+    })
 
     host = FakeHost()
     host.agent_instances["vpn"] = FakeVpnAgent()
@@ -2316,11 +2325,12 @@ def tunnel(qapp, monkeypatch):
 
 class TestTunnelPanel:
 
-    def test_it_builds_hidden_with_five_result_tabs(self, tunnel):
+    def test_it_builds_hidden_with_six_result_tabs(self, tunnel):
         assert tunnel.isHidden() is True
-        assert tunnel.tabs.count() == 5
+        assert tunnel.tabs.count() == 6
         assert tunnel.tabs.tabText(0) == "Diagnostics"
         assert tunnel.tabs.tabText(3) == "Action Preview"
+        assert tunnel.tabs.tabText(5) == "Execution"
 
     def test_connecting_a_real_profile_starts_the_connection_worker(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
@@ -2334,6 +2344,66 @@ class TestTunnelPanel:
         assert len(FakeVpnConnectionWorker.instances) == 1
         assert FakeVpnConnectionWorker.instances[0].action == "connect"
         assert FakeVpnConnectionWorker.instances[0].profile["interface"] == "wg0"
+
+    def test_the_confirmation_shows_the_review_and_defaults_to_no(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        asked = []
+
+        def question(parent, title, text, buttons, default=None):
+            asked.append((title, text, default))
+            return QMessageBox.No
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        assert FakeVpnConnectionWorker.instances == []
+        (title, text, default), = asked
+        assert "Target: wg0" in text and "wg-quick" in text and "To undo" in text
+        assert default == QMessageBox.No
+        assert tunnel.tabs.currentWidget() is tunnel.execution_view
+
+    def test_a_blocked_review_refuses_without_asking(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available",
+                            lambda: False)
+        asked = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: asked.append(a) or QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        assert asked == []
+        assert FakeVpnConnectionWorker.instances == []
+        assert "Refused" in tunnel.connection_status_label.text()
+
+    def test_disconnect_now_needs_confirmation(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.disconnect_vpn()
+        assert FakeVpnConnectionWorker.instances == []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.disconnect_vpn()
+        assert [w.action for w in FakeVpnConnectionWorker.instances] == ["disconnect"]
+
+    def test_a_gated_result_shows_its_verdict_and_record(self, tunnel):
+        tunnel._on_connection_finished({
+            "success": True, "protocol": "WireGuard",
+            "status_line": "WireGuard connect: command completed but NOT verified — x",
+            "sections": [("Result", "The command completed.", False)],
+        })
+        assert "NOT verified" in tunnel.connection_status_label.text()
+        assert tunnel.tabs.currentWidget() is tunnel.execution_view
 
     def test_connecting_a_template_profile_does_nothing(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox

@@ -23,6 +23,15 @@ class Recorder:
         return self.ok, self.output
 
 
+@pytest.fixture(autouse=True)
+def bare_wg_quick_command(monkeypatch):
+    """Pin the command shape: without this the expected strings depend on
+    whether this Mac has wireguard-tools installed (see wg_quick_command)."""
+    real_which = vpn_connection.shutil.which
+    monkeypatch.setattr(vpn_connection.shutil, "which",
+                        lambda name, *a, **k: None if name == "wg-quick" else real_which(name, *a, **k))
+
+
 # ── Placeholder honesty (the owner's core fear applied to the new feature) ──
 
 def test_placeholder_profiles_are_detected():

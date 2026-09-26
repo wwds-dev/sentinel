@@ -113,10 +113,20 @@ and routing findings. Endpoint and port are checked for usable profile values,
 but the live peer endpoint is deliberately not queried or verified.
 
 Tunnel's **VPN Connection** brings a real tunnel up and down. Choosing a
-WireGuard or OpenVPN profile and clicking **Connect** runs `wg-quick`/`openvpn`
-through the macOS authorisation dialog after an explicit confirmation, and
-**Disconnect** requests shutdown; both run off the interface thread. Command
-success does not verify a handshake, routing, DNS, or traffic protection. OpenVPN
+WireGuard or OpenVPN profile and clicking **Connect** or **Disconnect** first
+builds a target review (`services/vpn_execution.py`): the exact target and
+command, the config's non-secret routing and DNS intent (keys discarded while
+reading), warnings, rollback steps, and any blocker — a template, a missing
+`wg-quick`/`openvpn` or config file, a config name `wg-quick` would reject, an
+interface that is already up. A blocked action runs nothing; otherwise the review
+is the confirmation dialog (default **No**), and `wg-quick`/`openvpn` then runs
+through the macOS authorisation dialog off the interface thread. Afterwards Tunnel
+re-reads local state — the `/var/run/wireguard` records, Sentinel's tracked
+OpenVPN process and, for a full tunnel, which interface the route to the internet
+uses — and reports **verified** or **not verified** in the **Execution** tab.
+Every attempt, refused ones included, and every kill-switch change is appended to
+the local audit log `data/logs/tunnel_audit.jsonl` (mode 600, no key material).
+The post-change check does not verify a handshake, DNS, or leak behaviour. OpenVPN
 shutdown refuses if Sentinel cannot identify its tracked process; it never stops
 all OpenVPN processes by name. **Import
 config…** loads a `.conf`/`.ovpn`, reads its real server endpoint out of the
@@ -222,7 +232,8 @@ priority and release gates. Sentinel's main test suite does not include the
 separate Bug Spray companion-repository suite. (The VPN Agent code is now merged
 in-tree; its connect/disconnect layer is covered by `tests/test_vpn_connection.py`.)
 Tunnel's diagnostics and connection boundaries are covered by
-`tests/test_vpn_diagnostics.py`, `tests/test_vpn_connection.py`, and the Tunnel
+`tests/test_vpn_diagnostics.py`, `tests/test_vpn_connection.py`,
+`tests/test_vpn_execution.py` (the Connect/Disconnect gate), and the Tunnel
 panel tests in `tests/test_ui_panels.py`.
 
 ## Further documentation

@@ -3,7 +3,8 @@
 Fifth vertical moved out of `main.py` (phase 4, `docs/refactor_plan.md`).
 
 The panel keeps its paths visibly separate: **VPN Connection** runs a real
-WireGuard/OpenVPN tunnel (with an administrator prompt and an explicit confirm),
+WireGuard/OpenVPN tunnel through ``vpn_execution``'s gate (target review, explicit
+confirm, administrator prompt, post-change check, local audit, rollback steps),
 **Connection Check** is read-only, **Action Preview** shows commands without
 running them, **Ask Advisor** is a paid request that goes through the guard, and
 **Build Config** renders WireGuard files locally.
@@ -28,7 +29,7 @@ from services.vpn_diagnostics import (
     inspect_wireguard_config,
     load_vpn_profile_catalog,
 )
-from services import vpn_connection
+from services import vpn_connection, vpn_execution
 from ui.panels.base import AgentPanel
 from ui.widgets import MenuComboBox, SectionView
 from ui.workers import VpnConnectionWorker, VpnDiagnosticsWorker
@@ -299,6 +300,9 @@ class VpnPanel(AgentPanel):
         self.config_inspection_view = SectionView()
         self.tabs.addTab(self.config_inspection_view, "Config Inspection")
 
+        self.execution_view = SectionView()
+        self.tabs.addTab(self.execution_view, "Execution")
+
         self.advisor_box.setPlaceholderText(
             "Troubleshooting advice will appear after you select Ask Advisor."
         )
@@ -488,14 +492,7 @@ class VpnPanel(AgentPanel):
                 "This is an example/template. Import a real WireGuard .conf or "
                 "OpenVPN .ovpn (or set a real endpoint) before connecting.")
             return
-        protocol = vpn_connection.resolve_protocol(profile)
-        confirm = QMessageBox.question(
-            self, "Connect VPN",
-            f"Start a real {protocol} tunnel for '{profile.get('name')}'?\n\n"
-            "Routing depends on the imported configuration. Starting the client does "
-            "not verify traffic protection. Administrator access may be requested.",
-            QMessageBox.Yes | QMessageBox.No)
-        if confirm != QMessageBox.Yes:
+        if not self._review_and_confirm("connect", profile, "Connect VPN"):
             return
         self._start_connection("connect", profile,
                                f"Connecting {profile.get('name')}…")
@@ -507,8 +504,29 @@ class VpnPanel(AgentPanel):
         if not profile:
             QMessageBox.information(self, "No profile", "Choose the profile to disconnect.")
             return
+        if not self._review_and_confirm("disconnect", profile, "Disconnect VPN"):
+            return
         self._start_connection("disconnect", profile,
                                f"Disconnecting {profile.get('name')}…")
+
+    def _review_and_confirm(self, action: str, profile: dict, title: str) -> bool:
+        """Show the target review; refuse on blockers, else ask (default No)."""
+        review = vpn_execution.review_execution(action, profile)
+        self.execution_view.show_sections(review.sections())
+        self.tabs.setCurrentWidget(self.execution_view)
+        if not review.allowed:
+            self.connection_status_label.setText(
+                ("Refused: " + "; ".join(review.blockers))[:300])
+            QMessageBox.warning(
+                self, title,
+                "Tunnel will not run this:\n\n"
+                + "\n".join(f"• {item}" for item in review.blockers)
+                + "\n\nNothing was executed.")
+            return False
+        confirm = QMessageBox.question(
+            self, title, review.confirmation_text(),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return confirm == QMessageBox.Yes
 
     def _connection_busy(self) -> bool:
         worker = getattr(self, "_connection_worker", None)
@@ -530,7 +548,12 @@ class VpnPanel(AgentPanel):
     def _on_connection_finished(self, result: dict) -> None:
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(True)
-        if result.get("success"):
+        if result.get("sections"):
+            self.execution_view.show_sections(result["sections"])
+            self.tabs.setCurrentWidget(self.execution_view)
+        if result.get("status_line"):
+            self.connection_status_label.setText(str(result["status_line"])[:300])
+        elif result.get("success"):
             self.connection_status_label.setText(
                 f"{result.get('protocol', 'VPN')}: command completed. "
                 "Connection state and traffic protection are not verified.")
@@ -742,6 +765,7 @@ class VpnPanel(AgentPanel):
         self.config_box.clear()
         self.action_view.clear()
         self.config_inspection_view.clear()
+        self.execution_view.clear()
         self.question_input.clear()
         self.status_label.setText("Idle")
         self._last_response = ""

@@ -312,7 +312,9 @@ class VpnConnectionWorker(QThread):
     """Bring a VPN tunnel up or down off the UI thread.
 
     The privileged step raises the macOS authorisation dialog inside
-    vpn_connection, so this must not run on the interface thread.
+    vpn_connection, so this must not run on the interface thread. Connect and
+    Disconnect go through vpn_execution's gate (re-review, post-change check,
+    local audit); kill-switch changes are audited too.
     """
 
     finished_signal = Signal(dict)
@@ -325,16 +327,15 @@ class VpnConnectionWorker(QThread):
 
     def run(self) -> None:
         try:
-            from services import vpn_connection
-            if self._action == "connect":
-                result = vpn_connection.connect(self._profile)
-            elif self._action == "disconnect":
-                result = vpn_connection.disconnect(self._profile)
+            from services import vpn_connection, vpn_execution
+            if self._action in ("connect", "disconnect"):
+                result = vpn_execution.execute(self._action, self._profile).as_result()
             elif self._action in ("arm", "disarm"):
                 if self._action == "arm":
                     ok, message = vpn_connection.arm_killswitch(self._profile)
                 else:
                     ok, message = vpn_connection.disarm_killswitch()
+                vpn_execution.record_killswitch(self._action, ok, message)
                 result = {"success": ok, "protocol": "Kill switch",
                           "output": message, "error": None if ok else message}
             else:
