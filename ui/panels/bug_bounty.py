@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.panels.base import AgentPanel
+from ui.panels.bug_spray_feed import BugSprayFeed
 from ui.widgets import MenuComboBox, SectionView
 
 SEVERITY_COLOURS = {
@@ -50,6 +51,9 @@ class BugBountyPanel(AgentPanel):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
+        self.program_feed = BugSprayFeed(self)
+        layout.addWidget(self.program_feed)
+
         # ── Target / program setup ───────────────────────────────────────
         setup_group = QGroupBox("Target && Program")
         setup_group.setObjectName("BBSetupBox")
@@ -65,6 +69,7 @@ class BugBountyPanel(AgentPanel):
         self.program_input = QLineEdit()
         self.program_input.setPlaceholderText("HackerOne — Acme Corp  /  Bugcrowd — Example")
         setup_layout.addWidget(self.program_input, 1, 1, 1, 3)
+        self.program_feed.program_selected.connect(self.program_input.setText)
 
         setup_layout.addWidget(QLabel("Scope Type:"), 2, 0)
         self.scope_box = MenuComboBox()

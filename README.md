@@ -14,7 +14,7 @@ Sentinel's built-in roster is intentionally limited to seven agents:
 | Trace | `osint` | Focused open-source research and source-led investigation planning |
 | Bloodhound | `osint_heavy` | Deep OSINT dossiers plus read-only file discovery in user-selected folders |
 | Beacon | `wifi` | Wi-Fi diagnostics and commands for networks the operator is authorised to test |
-| Bug Spray | `bug_bounty` | In-scope vulnerability analysis and submission-ready bug bounty reports |
+| Bug Spray | `bug_bounty` | Public program radar with background updates, plus in-scope vulnerability analysis and report drafts |
 | Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, and self-hosted VPN design |
 | Forge | `manager` | Creates and reviews specifications for new agents and tools |
 
@@ -167,8 +167,8 @@ The main runtime is organised around:
 - `agents/` — the Chat, Trace, Bloodhound, Beacon, and Forge package repos
   (`agents/chat_agent/`, `agents/osint_agent/`, `agents/osint_heavy_agent/`,
   `agents/wifi_agent/`, and `agents/manager_agent/`)
-- `bug_spray/` — Bug Spray's standalone companion repo and the in-app
-  `bug_bounty` message builder
+- `agents/bug_spray/` — Bug Spray's nested repo: public program scanner,
+  saved feed and the in-app `bug_bounty` message builder
 - `agents/vpn_agent/` — Tunnel's VPN library, merged in-tree (formerly a
   standalone submodule): the `vpn` agent (`sentinel_chat_agent.py`), the
   `services/` stack (WireGuard/OpenVPN control, `privileged`, `killswitch`,
