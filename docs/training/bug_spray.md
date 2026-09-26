@@ -7,6 +7,20 @@
 Use Bug Spray only for assets you own or that an authorised program lists as in
 scope. A public website is not automatically permission to scan it.
 
+## Program radar
+
+Open **Bug Spray** in Sentinel to see saved bounty programs and recent changes.
+Search by name or platform, select a program to review its saved scope and
+rewards, or open its live page. **Use in report** fills the program name in the
+form below; it does not choose a target for you. The first scan after opening
+starts in the background if the last scan is older than the interval set in
+Bug Spray's `config.json` (60 minutes by default). **Scan now** starts one
+immediately. Sentinel checks for another scan while it remains open. The
+public-directory scan does not contact any program's assets.
+
+The saved scope is a lead. Read the current live program page and its rules
+before testing. Automatic scans stop when Sentinel is closed.
+
 ## Inputs
 
 Enter the exact target, program name and scope type (for example Web, API or

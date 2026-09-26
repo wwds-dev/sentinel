@@ -1,15 +1,20 @@
 # BUG SPRAY — Bug bounty triage & reporting
 
-`key: bug_bounty` · class: `agents/bug_bounty_agent.py → BugBountyAgent` · panel: `ui/panels/bug_bounty.py → BugBountyPanel`
+`key: bug_bounty` · class: `agents/bug_spray/sentinel_chat_agent.py → BugBountyAgent` · panel: `ui/panels/bug_bounty.py → BugBountyPanel`
 
 > ⚠️ Only analyse assets explicitly in-scope for an authorised program.
 
 ## What it does
-Turns raw findings into a professional vulnerability report and a paste-ready HackerOne/Bugcrowd submission. Has a **built-in nmap runner** (real subprocess) so recon and reporting live in one place. Output is CWE-classified with a CVSS v3.1 score.
+Shows public bug bounty programs and recent changes from Bug Spray's saved database,
+with a background directory scan when due. The report panel turns raw findings
+into a vulnerability report and a paste-ready submission draft. It also has
+a manual **nmap runner** (real subprocess); that is separate from the public
+directory scan. Output is CWE-classified with a CVSS v3.1 score.
 
 ## Inputs (panel controls)
 | Control | Purpose |
 |---|---|
+| Program radar | Search saved programs and recent changes; open the live page or fill the Program field. **Scan now** refreshes public listings. |
 | Target | In-scope asset (endpoint/host/component). |
 | Program | Bug bounty program name. |
 | Scope type | Web / Mobile / API / Network, etc. |
@@ -25,17 +30,19 @@ remains available behind a collapsed raw-output disclosure. Side indicators
 show parsed severity, CVSS score and any stated bounty estimate.
 
 ## How it works
-`BugBountyAgent.build_messages(target, program, scope_type, findings, nmap_output)` composes only the evidence present (no fabrication) and requests the fixed report + submission format. Nmap runs via a dedicated `QProcess` (`bb_run_nmap` → `_bb_nmap_read` → `_bb_nmap_finished`), separate from the LLM `ChatWorker`.
+`BugBountyAgent.build_messages(target, program, scope_type, findings, nmap_output)` composes only the evidence present (no fabrication) and requests the fixed report + submission format. The program feed reads `agents/bug_spray/data/programs.sqlite3`; a separate `QProcess` runs its scanner through the nested repo's venv when the configured interval has elapsed while Sentinel is open. Nmap uses another `QProcess`, separate from the LLM `ChatWorker`.
 
 ## Under the hood — files & functions
 | Location | Role |
 |---|---|
-| `agents/bug_bounty_agent.py` | `BugBountyAgent` — report + submission spec. |
+| `agents/bug_spray/sentinel_chat_agent.py` | `BugBountyAgent` — report + submission spec. |
+| `agents/bug_spray/bug_spray/` | Public-program scanner, saved snapshots and change events. |
+| `ui/panels/bug_spray_feed.py` | Saved program feed and background scan lifecycle. |
 | `ui/panels/bug_bounty.py` | Panel, optional Nmap lifecycle, structured result cards, analysis, and indicators. |
-| `main.py: bb_save()/bb_clear()` | Export / reset. |
+| `ui/panels/bug_bounty.py` | Export / reset. |
 
 ## Extend it
-- **More recon tools**: mirror the nmap subprocess pattern for `nuclei`, `ffuf`, `subfinder` (add a box + `QProcess` runner, feed output into `bb_analyse()`).
+- **More recon tools**: require a scope-confirmation and rate-limit guard before adding any active target tool.
 - **Auto-severity**: post-process the report to set the sidebar from the parsed CVSS.
 - **Program templates**: branch the submission format on the Program field.
 
