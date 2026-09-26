@@ -6,11 +6,16 @@ parent and to read the handful of members it needs — and shows the dialog. The
 bodies are moved verbatim; only the receiver was renamed from `self` to `app`.
 """
 
-from PySide6.QtCore import QTimer
+import json
+import os
+
+from PySide6.QtCore import QPropertyAnimation, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from services.anthropic_client import AnthropicClientWrapper
@@ -20,7 +25,7 @@ from services.gemini_client import GeminiClientWrapper
 from services.kimi_client import KimiClientWrapper
 from services.openai_client import OpenAIClientWrapper
 from services.registry import Registry
-from services.runtime_paths import PortableRuntimeError, is_portable
+from services.runtime_paths import PortableRuntimeError, is_portable, user_data_base
 from services.validator import Validator
 from ui.style import polish_combo_box
 from ui.widgets import MenuComboBox
@@ -287,7 +292,7 @@ def show_run_log(app):
 def show_settings(app):
     dialog = QDialog(app)
     dialog.setWindowTitle("Settings")
-    dialog.resize(720, 560)
+    dialog.resize(940, 600)
 
     outer = QVBoxLayout(dialog)
     tabs = QTabWidget()
@@ -448,6 +453,283 @@ def show_settings(app):
     pl.addStretch()
     tabs.addTab(pricing_tab, "Pricing")
 
+    # ── Tab 5: OSINT Keys ─────────────────────────────────────────
+    env_path = user_data_base() / ".env"
+
+    def _read_env_values():
+        """Parse KEY=value pairs from the .env file (missing file -> {})."""
+        values = {}
+        try:
+            text = env_path.read_text(encoding="utf-8")
+        except OSError:
+            return values
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped[len("export "):].lstrip()
+            k, _, v = stripped.partition("=")
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            values[k.strip()] = v
+        return values
+
+    def _write_env_key(key, value):
+        """Set KEY=value in .env: replace the existing line or append one."""
+        value = value.replace("\r", "").replace("\n", "").strip()
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+            existed = True
+        except FileNotFoundError:
+            lines = []
+            existed = False
+        new_line = f"{key}={value}"
+        replaced = False
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("export "):
+                stripped = stripped[len("export "):].lstrip()
+            if stripped.partition("=")[0].strip() == key and "=" in stripped:
+                lines[idx] = new_line
+                replaced = True
+                break
+        if not replaced:
+            lines.append(new_line)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if not existed:
+            try:
+                os.chmod(env_path, 0o600)
+            except OSError:
+                pass
+        # Make the new key visible to the running app without a restart.
+        if value:
+            os.environ[key] = value
+        else:
+            os.environ.pop(key, None)
+
+    osint_tools = list(getattr(app, "OSINT_TOOLS", []))
+    env_values = _read_env_values()
+    try:
+        saved_regs = json.loads(get_setting("osint_registrations", "{}") or "{}")
+        if not isinstance(saved_regs, dict):
+            saved_regs = {}
+    except (TypeError, ValueError):
+        saved_regs = {}
+
+    osint_tab = QWidget()
+    ol = QVBoxLayout(osint_tab)
+    ol.setContentsMargins(12, 12, 12, 12)
+    ol.setSpacing(8)
+
+    # Ops email
+    email_row = QHBoxLayout()
+    email_row.addWidget(QLabel("Operational email"))
+    ops_email_input = QLineEdit(get_setting("ops_email", ""))
+    ops_email_input.setPlaceholderText("research@proton.me")
+    email_row.addWidget(ops_email_input, 1)
+    copy_email_btn = QPushButton("Copy")
+    copy_email_btn.setFixedWidth(64)
+    email_row.addWidget(copy_email_btn)
+    ol.addLayout(email_row)
+
+    email_hint = QLabel(
+        "Use a dedicated research address (e.g. Proton Mail). Never your personal email."
+    )
+    email_hint.setWordWrap(True)
+    email_hint.setStyleSheet("color: #888; font-size: 11px;")
+    ol.addWidget(email_hint)
+
+    def copy_ops_email():
+        email = ops_email_input.text().strip()
+        if email:
+            QApplication.clipboard().setText(email)
+
+    copy_email_btn.clicked.connect(copy_ops_email)
+
+    # Progress / summary
+    total_tools = len(osint_tools)
+    progress_row = QHBoxLayout()
+    reg_progress = QProgressBar()
+    reg_progress.setRange(0, max(total_tools, 1))
+    reg_progress.setTextVisible(False)
+    reg_progress.setFixedHeight(8)
+    reg_summary = QLabel("")
+    progress_row.addWidget(reg_progress, 1)
+    progress_row.addWidget(reg_summary)
+    ol.addLayout(progress_row)
+
+    # Filter chips
+    filter_row = QHBoxLayout()
+    filter_row.setSpacing(4)
+    filter_group = QButtonGroup(osint_tab)
+    filter_group.setExclusive(True)
+    chip_style = (
+        "QPushButton { padding: 3px 10px; border-radius: 10px; font-size: 11px; }"
+        "QPushButton:checked { background: #2d6cdf; color: white; }"
+    )
+    for name in ["All", "Free", "Paid", "Email", "Domain", "Network",
+                 "Breach", "Threat", "Dark Web"]:
+        chip = QPushButton(name)
+        chip.setCheckable(True)
+        chip.setStyleSheet(chip_style)
+        chip.setChecked(name == "All")
+        filter_group.addButton(chip)
+        filter_row.addWidget(chip)
+    filter_row.addStretch()
+    ol.addLayout(filter_row)
+
+    # Tool rows
+    category_colors = {
+        "Email": "#3b82f6", "Domain": "#8b5cf6", "Network": "#0ea5e9",
+        "Breach": "#ef4444", "Threat": "#f97316", "Dark Web": "#6b7280",
+    }
+    rows_host = QWidget()
+    rows_layout = QVBoxLayout(rows_host)
+    rows_layout.setContentsMargins(0, 0, 0, 0)
+    rows_layout.setSpacing(4)
+
+    osint_rows = []          # (frame, category, cost)
+    osint_checks = {}        # tool_id -> QCheckBox
+    fade_anims = []          # keep QPropertyAnimation objects alive
+
+    def update_reg_summary():
+        count = sum(1 for chk in osint_checks.values() if chk.isChecked())
+        reg_progress.setValue(count)
+        reg_summary.setText(f"{count} / {total_tools} tools registered")
+
+    for tool_id, display, category, cost, url, env_key in osint_tools:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.StyledPanel)
+        frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        rl = QHBoxLayout(frame)
+        rl.setContentsMargins(8, 4, 8, 4)
+        rl.setSpacing(6)
+
+        chk = QCheckBox()
+        chk.setChecked(bool(saved_regs.get(tool_id, False)))
+        chk.setToolTip("Registered")
+        chk.toggled.connect(update_reg_summary)
+        osint_checks[tool_id] = chk
+        rl.addWidget(chk)
+
+        name_lbl = QLabel(display)
+        name_lbl.setStyleSheet("font-weight: bold;")
+        name_lbl.setMinimumWidth(120)
+        rl.addWidget(name_lbl)
+
+        cat_lbl = QLabel(category)
+        cat_lbl.setStyleSheet(
+            f"background: {category_colors.get(category, '#555')}; color: white; "
+            "border-radius: 6px; padding: 1px 6px; font-size: 10px;"
+        )
+        rl.addWidget(cat_lbl)
+
+        is_free = cost.strip().lower() == "free"
+        cost_lbl = QLabel(cost)
+        cost_lbl.setMinimumWidth(60)
+        cost_lbl.setStyleSheet(
+            f"color: {'#3cff88' if is_free else '#ffaa00'}; font-size: 11px;"
+        )
+        rl.addWidget(cost_lbl)
+
+        rl.addStretch()
+
+        reg_btn = QPushButton("Register →")
+        if url:
+            def open_signup(_checked=False, u=url):
+                email = ops_email_input.text().strip()
+                if email:
+                    QApplication.clipboard().setText(email)
+                QDesktopServices.openUrl(QUrl(u))
+            reg_btn.clicked.connect(open_signup)
+            reg_btn.setToolTip(url)
+        else:
+            reg_btn.setEnabled(False)
+            reg_btn.setVisible(False)
+        rl.addWidget(reg_btn)
+
+        key_edit = QLineEdit(env_values.get(env_key, "") if env_key else "")
+        key_edit.setEchoMode(QLineEdit.Password)
+        key_edit.setPlaceholderText(env_key)
+        key_edit.setMinimumWidth(160)
+        eye_btn = QPushButton("👁")
+        eye_btn.setCheckable(True)
+        eye_btn.setFixedWidth(30)
+        eye_btn.setToolTip("Show / hide key")
+        save_key_btn = QPushButton("Save Key")
+        saved_lbl = QLabel("")
+        saved_lbl.setStyleSheet("color: #3cff88; font-size: 11px;")
+        saved_lbl.setFixedWidth(56)
+        saved_effect = QGraphicsOpacityEffect(saved_lbl)
+        saved_effect.setOpacity(1.0)
+        saved_lbl.setGraphicsEffect(saved_effect)
+
+        def toggle_echo(checked, edit=key_edit):
+            edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+
+        eye_btn.toggled.connect(toggle_echo)
+
+        def save_key(_checked=False, k=env_key, edit=key_edit,
+                     lbl=saved_lbl, effect=saved_effect):
+            try:
+                _write_env_key(k, edit.text())
+            except OSError as exc:
+                QMessageBox.warning(dialog, "Save failed", f"Could not write {k}:\n{exc}")
+                return
+            effect.setOpacity(1.0)
+            lbl.setText("Saved ✓")
+
+            def start_fade():
+                anim = QPropertyAnimation(effect, b"opacity", lbl)
+                anim.setDuration(400)
+                anim.setStartValue(1.0)
+                anim.setEndValue(0.0)
+                anim.finished.connect(lambda: lbl.setText(""))
+                anim.finished.connect(lambda: fade_anims.remove(anim) if anim in fade_anims else None)
+                fade_anims.append(anim)
+                anim.start()
+
+            QTimer.singleShot(2000, lbl, start_fade)
+
+        save_key_btn.clicked.connect(save_key)
+
+        for w in (key_edit, eye_btn, save_key_btn, saved_lbl):
+            rl.addWidget(w)
+            if not env_key:
+                w.setVisible(False)
+
+        rows_layout.addWidget(frame)
+        osint_rows.append((frame, category, is_free))
+
+    rows_layout.addStretch()
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setWidget(rows_host)
+    ol.addWidget(scroll, 1)
+
+    def apply_osint_filter(button):
+        chosen = button.text()
+        for frame, category, is_free in osint_rows:
+            if chosen == "All":
+                show = True
+            elif chosen == "Free":
+                show = is_free
+            elif chosen == "Paid":
+                show = not is_free
+            else:
+                show = category == chosen
+            frame.setVisible(show)
+
+    filter_group.buttonClicked.connect(apply_osint_filter)
+
+    update_reg_summary()
+    tabs.addTab(osint_tab, "OSINT Keys")
+
     def emergency_reset():
         phrase, accepted = QInputDialog.getText(
             dialog,
@@ -551,6 +833,13 @@ def show_settings(app):
                 except ValueError:
                     errors.append(f"Pricing {backend}/{model}: invalid number.")
             conn.commit()
+
+        # OSINT Keys (API keys are written to .env on "Save Key", not here)
+        save_setting("ops_email", ops_email_input.text().strip())
+        save_setting(
+            "osint_registrations",
+            json.dumps({tid: chk.isChecked() for tid, chk in osint_checks.items()}),
+        )
 
         app.update_usage_labels()
         app.registry = Registry()

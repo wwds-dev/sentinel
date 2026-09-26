@@ -8,6 +8,12 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|
+| 20 | OSINT Keys tab: add key-validation ping (HEAD request to each provider's API) so the tab can show green/red key health next to each Save Key button | feature | S | IDEA |
+| 21 | OSINT Keys tab: surface the BreachDirectory and IPinfo providers as live lookups inside Bloodhound (currently only email/domain/username/company dispatch) | feature | M | CONSIDERING |
+| 22 | OSINT Keys tab: Learning Centre topic explaining the ops-email strategy, HIBP vs BreachDirectory tradeoffs, and which keys to prioritise first | docs | S | IDEA |
+
+| # | Suggestion | Category | Effort | Status |
+|---|---|---|---|---|
 | 7 | Streaming responses in the chat panel rather than wait-then-dump | feature | L | IDEA |
 | 8 | Local model provider (Ollama) as a zero-cost fallback when the budget cap is hit | feature | L | IDEA |
 | 9 | Retry-with-backoff wrapper shared by every provider client, instead of per-client handling | infra | M | IDEA |
