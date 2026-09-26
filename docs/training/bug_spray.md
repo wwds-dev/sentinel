@@ -24,12 +24,19 @@ before testing. Automatic scans stop when Sentinel is closed.
 ## Inputs
 
 Enter the exact target, program name and scope type (for example Web, API or
-Network). Paste evidence into Findings: relevant requests/responses, behaviour,
-reproduction notes and observed impact. Remove secrets and unrelated user data.
+Network). The screen states this plainly: **program and scope are declared by
+you and are not verified or enforced.** Bug Spray drafts a report from what you
+enter; staying inside a program you are authorised to test is your
+responsibility, not a check the tool performs. Paste evidence into Findings:
+relevant requests/responses, behaviour, reproduction notes and observed impact.
+Remove secrets and unrelated user data.
 
-The optional Nmap section runs a real local process. Confirm that hosts and
-ports are allowed by the program, use conservative timing, and stop if the
-service becomes unstable. Scanner output alone is not a vulnerability.
+The optional Nmap section runs a real local process. As the caption under it
+warns, it **runs the command on your machine — the first word is the program to
+launch — with no scope check and outside the budget or authorisation guard.**
+Confirm that hosts and ports are allowed by the program, use conservative timing,
+and stop if the service becomes unstable. Scanner output alone is not a
+vulnerability.
 
 ## Analyse and review
 
@@ -48,4 +55,3 @@ clarity. Never paste session cookies, private keys or personal customer data.
 Use an intentionally vulnerable local training application. Paste a harmless
 finding, generate a report, and identify which claims are observed facts versus
 model interpretation.
-

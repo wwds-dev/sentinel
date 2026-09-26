@@ -1,15 +1,62 @@
 # Tunnel — personal VPN design and troubleshooting
 
-**Goal:** compare the current VPN state with an intended profile, understand the topology, and create a reviewable configuration or action plan. **Time:** 30 minutes.
+**Goal:** compare the current VPN state with an intended profile, understand the topology, and either create a reviewable configuration or run a gated connection. **Time:** 30 minutes.
 
 ![Tunnel workspace](docs/training/images/tunnel.png)
 
-Tunnel is for infrastructure you own or administer. It has five distinct
-paths: **Connection Check** reads current status, **Safe Action Preview** shows
-but cannot run a proposed change, the **Advisor** uses an AI model, and **Build
-Config** and **Config Inspection** are deterministic and offline. A status
-check, preview, or inspection does not send anything to a model and does not
-count against an AI budget.
+Tunnel is for infrastructure you own or administer. It has six distinct
+paths: **VPN Connection (live)** actually connects or disconnects a real
+tunnel, but only through an execution gate; **Connection Check** reads current
+status; **Safe Action Preview** shows but cannot run a proposed change; the
+**Advisor** uses an AI model; and **Build Config** and **Config Inspection** are
+deterministic and offline. A status check, preview, or inspection does not send
+anything to a model and does not count against an AI budget.
+
+The amber banner at the top of the screen states the boundary: connecting starts
+WireGuard or OpenVPN and may ask for your administrator password, traffic
+protection is not verified afterwards, and the example country profiles are
+templates that will not connect until you import a real config. Only the live
+connection and the kill switch can change your machine; every other path stays
+read-only.
+
+## VPN Connection (live)
+
+This is the only path that touches a real tunnel. Choose a **Server** profile,
+or select **Import config…** to load a WireGuard `.conf` or OpenVPN `.ovpn` file;
+importing saves the profile locally and selects it. The status line reads
+**Connection state not checked** until you act — Tunnel does not silently probe
+the tunnel.
+
+Selecting **Connect** or **Disconnect** never runs the command immediately. It
+first opens the **Execution** results tab with a target review, and only then
+asks a Yes/No question that defaults to **No**. The gate has fixed stages:
+
+1. **Target review** validates the profile and lists any blockers. If the review
+   is not allowed, Tunnel refuses, shows why, and executes nothing.
+2. **Explicit confirmation** — you must confirm the exact action and target.
+3. **Administrator prompt** — macOS asks for your password; Tunnel never stores it.
+4. **Post-change check** re-reads local state after the command so the result
+   reflects what actually happened, not what was requested.
+5. **Local audit** records one JSON line per privileged attempt — including
+   refused ones — in `tunnel_audit.jsonl`.
+6. **Rollback guidance** travels with every review and outcome, so you always
+   have the step that undoes what you just did.
+
+A template or example profile is refused before any of this: Tunnel tells you to
+import a real config or set a real endpoint first. When a connect command
+completes, the status line says the command completed and that **connection
+state and traffic protection are not verified** — confirm with Connection Check
+and, if it matters, an external IP check, rather than trusting the button alone.
+
+### Kill switch
+
+**Arm** installs a firewall rule that blocks all traffic except the selected
+tunnel's endpoint, so a dropped tunnel cannot leak; it needs macOS `pf` and your
+administrator password, and refuses to arm if the endpoint cannot be exempted.
+**Disarm** restores ordinary traffic. Arm the kill switch against a real server
+profile, not a template. Treat arming, connecting, and verifying no-leak as three
+separate steps: an armed kill switch proves traffic is blocked when the tunnel is
+down, not that the tunnel itself is protecting you.
 
 ## Connection Check
 
@@ -188,5 +235,10 @@ that separates observations, likely explanations, and what remains unverified.
   original file or private-key lines into an AI prompt.
 - Treat an Action Preview as a review artifact. Confirm the target, keep recovery
   access available, and make the change through your normal trusted VPN tool.
+- Before a live **Connect** or **Disconnect**, read the Execution review, confirm
+  the exact target, and keep a rollback and independent recovery path ready. The
+  confirmation defaults to No for a reason.
+- After a live connection completes, verify it with Connection Check; the status
+  line explicitly does not confirm traffic protection.
 - Treat an active tunnel, public-IP change, DNS configuration, and kill-switch
   behavior as separate checks. One passing result does not prove the others.
