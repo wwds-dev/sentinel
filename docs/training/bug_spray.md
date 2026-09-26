@@ -18,6 +18,14 @@ Bug Spray's `config.json` (60 minutes by default). **Scan now** starts one
 immediately. Sentinel checks for another scan while it remains open. The
 public-directory scan does not contact any program's assets.
 
+Narrow the list with the platform menu, or tick **Show all** to ignore the
+watchlist. **Watchlist…** edits which platforms are scanned and the keyword,
+tag and minimum-payout filters. The terminal (`bugspray`) uses the same
+settings. **Full details…**, or a double-click on a row, shows the whole saved
+scope, the reward range per severity, and the program's tags. The arrow next
+to **Scan now** offers **Full re-scan**, which re-downloads every program's
+details instead of reusing unchanged ones. It takes a few minutes.
+
 The saved scope is a lead. Read the current live program page and its rules
 before testing. Automatic scans stop when Sentinel is closed.
 
