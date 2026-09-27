@@ -67,7 +67,7 @@ def test_incompatible_manual_override_falls_back():
 
 
 def test_unavailable_primary_has_deterministic_fallback():
-    available = {"openai": ["gpt-4o-mini"], "deepseek": ["deepseek-v4-flash"]}
+    available = {"openai": ["gpt-4o-mini"], "deepseek": ["deepseek-flash"]}
     one = route_request("Refactor this code", enabled_providers=available, available_models=available)
     two = route_request("Refactor this code", enabled_providers=available, available_models=available)
     assert one == two

@@ -1926,7 +1926,14 @@ class TestBugSprayPanel:
         from PySide6.QtWidgets import QTabWidget
         assert spray.isHidden() is True
         assert spray.save_btn.isEnabled() is False
-        assert spray.findChildren(QTabWidget) == []
+        # The report is one sectioned view, not the five tabs it replaced in
+        # V2. The program radar above it is a separate feed whose Recent
+        # changes / Programs tabs are not report sections, so it is exempt.
+        report_tabs = [
+            tabs for tabs in spray.findChildren(QTabWidget)
+            if not spray.program_feed.isAncestorOf(tabs)
+        ]
+        assert report_tabs == []
         assert spray.sections is not None
 
     def test_nothing_to_analyse_says_so_without_spending(self, spray):
