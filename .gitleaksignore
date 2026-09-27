@@ -10,3 +10,4 @@
 # Same false positive, caught in this file: an earlier revision of these
 # comments quoted the offending line verbatim.
 7e22d19b299c8a83e4e4c465d60c96a5a6b89eb5:.gitleaksignore:generic-api-key:2
+9e85a0328e31013b92df17442b2a9b7d7733924e:tests/test_vpn_execution.py:generic-api-key:17
