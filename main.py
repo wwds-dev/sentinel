@@ -785,7 +785,7 @@ class GodAI(QWidget):
             if self.allow_kimi_checkbox.isChecked():
                 return as_dict(TASK_RECOMMENDATIONS["research"])
             if self.allow_deepseek_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "deepseek", "model": "deepseek-v4-flash", "reason": "DeepSeek is efficient for structured analysis."}
+                return {"mode": "Hybrid allowed", "provider": "deepseek", "model": "deepseek-flash", "reason": "DeepSeek is efficient for structured analysis."}
             if self.allow_gemini_checkbox.isChecked():
                 return as_dict(TASK_RECOMMENDATIONS["summarize"])
             return {"mode": "Local only", "provider": "ollama", "model": self.model_box.currentText(), "reason": "Analysis task detected, but APIs are not enabled. Using local model."}
@@ -2549,7 +2549,7 @@ class GodAI(QWidget):
                         "deepseek-reasoner",
                         "deepseek-coder",
                         "deepseek-v4-pro",
-                        "deepseek-v4-flash",
+                        "deepseek-flash",
                     ]
 
             elif provider == "kimi":
