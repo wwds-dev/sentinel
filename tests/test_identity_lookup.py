@@ -149,3 +149,89 @@ def test_email_lookup_cancellation_preserves_completed_sources(monkeypatch):
     assert result["cancelled"] is True
     assert result["reputation"] == {"score": "high"}
     assert len(result["sources_contacted"]) == 1
+
+
+class _JsonResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+def test_gravatar_sends_only_the_address_hash(monkeypatch):
+    import hashlib
+
+    urls = []
+
+    def fake_get(url, **kwargs):
+        urls.append(url)
+        return _JsonResponse({
+            "display_name": "Analyst", "profile_url": "https://gravatar.com/analyst",
+            "verified_accounts": [
+                {"service_label": "GitHub", "url": "https://github.com/analyst"},
+                {"service_label": "X", "url": "https://x.com/hidden", "is_hidden": True},
+            ],
+        })
+
+    monkeypatch.setattr(email_lookup.requests, "get", fake_get)
+    result = email_lookup._gravatar("  Analyst@Example.com ")
+
+    digest = hashlib.sha256(b"analyst@example.com").hexdigest()
+    assert urls == [f"https://api.gravatar.com/v3/profiles/{digest}"]
+    assert "example.com" not in urls[0]
+    assert result["found"] is True
+    assert result["verified_accounts"] == [
+        {"service": "GitHub", "url": "https://github.com/analyst"}
+    ]
+
+
+def test_gravatar_without_a_profile_is_checked_not_failed(monkeypatch):
+    monkeypatch.setattr(
+        email_lookup.requests, "get",
+        lambda *a, **k: _JsonResponse({"error": "Profile not found"}, status_code=404),
+    )
+    result = email_lookup.lookup("analyst@example.com", selected_sources={"gravatar"})
+    assert result["gravatar"] == {"source": "gravatar", "status": "ok", "found": False}
+    assert result["sources_contacted"] == [{"source": "Gravatar", "status": "checked"}]
+    assert result["summary"]["gravatar_profile"] is False
+
+
+def _urlscan_ok(monkeypatch):
+    monkeypatch.setattr(
+        username_lookup.requests, "get",
+        lambda *a, **k: _JsonResponse({"total": 0, "results": []}),
+    )
+
+
+def test_username_lookup_does_not_sweep_unless_asked(monkeypatch):
+    _urlscan_ok(monkeypatch)
+    monkeypatch.setattr(
+        username_lookup._wmn, "sweep",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not sweep")),
+    )
+    result = username_lookup.lookup("alice")
+    assert "whatsmyname" not in result
+    assert [s["source"] for s in result["sources_contacted"]] == ["URLScan"]
+
+
+def test_username_lookup_sweep_is_one_source_with_its_own_progress(monkeypatch):
+    _urlscan_ok(monkeypatch)
+
+    def fake_sweep(username, *, on_progress=None, should_stop=None):
+        on_progress(1, 2)
+        on_progress(2, 2)
+        return {"found_count": 1, "found": [{"site": "Example", "status": "found"}]}
+
+    monkeypatch.setattr(username_lookup._wmn, "sweep", fake_sweep)
+    counts, progress = [], []
+    result = username_lookup.lookup(
+        "alice", whatsmyname=True,
+        on_progress=lambda source, status: progress.append((source, status)),
+        on_sweep_progress=lambda done, total: counts.append((done, total)),
+    )
+    assert result["whatsmyname"]["found_count"] == 1
+    assert result["sources_contacted"][-1] == {"source": "WhatsMyName", "status": "checked"}
+    assert counts == [(1, 2), (2, 2)]
+    assert progress[-2:] == [("WhatsMyName", "checking"), ("WhatsMyName", "checked")]

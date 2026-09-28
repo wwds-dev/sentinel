@@ -80,8 +80,9 @@ class OsintPanel(AgentPanel):
         self.live_btn = QPushButton("Live Research")
         self.live_btn.setMinimumWidth(130)
         self.live_btn.setToolTip(
-            "Check public WHOIS, DNS, and certificate-transparency sources "
-            "after explicit confirmation. Supports domains, IPs, usernames, and emails."
+            "Check public WHOIS, DNS, certificate-transparency and web-archive "
+            "sources after explicit confirmation. Supports domains, IPs, "
+            "usernames, emails, and companies."
         )
         self.live_btn.clicked.connect(self.live_research)
 
@@ -317,6 +318,7 @@ class OsintPanel(AgentPanel):
                 return
             labels = {
                 "emailrep": "EmailRep",
+                "gravatar": "Gravatar",
                 "hibp": "Have I Been Pwned",
                 "breachdirectory": "BreachDirectory",
             }
@@ -324,7 +326,7 @@ class OsintPanel(AgentPanel):
         else:
             source_map = {
                 "IP Address": "WHOIS and DNS",
-                "Domain": "WHOIS, DNS, and crt.sh",
+                "Domain": "WHOIS, DNS, crt.sh, and the Wayback Machine",
                 "Username": "URLScan",
                 "Company": "GLEIF Legal Entity Index",
             }
@@ -380,10 +382,15 @@ class OsintPanel(AgentPanel):
 
         emailrep = QCheckBox("EmailRep — reputation and public profile signals")
         emailrep.setChecked(True)
+        gravatar = QCheckBox(
+            "Gravatar — public profile for the address (only its SHA-256 hash is sent)"
+        )
+        gravatar.setChecked(True)
         hibp = QCheckBox("Have I Been Pwned — breach and paste records (API key required)")
         hibp.setEnabled(bool(HIBP_KEY))
         breach = QCheckBox("BreachDirectory — open breach-index search")
         layout.addWidget(emailrep)
+        layout.addWidget(gravatar)
         layout.addWidget(hibp)
         layout.addWidget(breach)
 
@@ -396,6 +403,8 @@ class OsintPanel(AgentPanel):
         selected = []
         if emailrep.isChecked():
             selected.append("emailrep")
+        if gravatar.isChecked():
+            selected.append("gravatar")
         if hibp.isChecked():
             selected.append("hibp")
         if breach.isChecked():
@@ -450,10 +459,11 @@ class OsintPanel(AgentPanel):
                 ("DNS records", self._lookup_text(result.get("dns"))),
             ])
         if result.get("type") == "domain":
-            cards.append((
-                "Certificate transparency",
-                self._lookup_text(result.get("certificates")),
-            ))
+            cards.extend([
+                ("Certificate transparency",
+                 self._lookup_text(result.get("certificates"))),
+                ("Web archive", self._lookup_text(result.get("archive"))),
+            ])
         elif result.get("type") == "username":
             cards.append(("URLScan findings", self._lookup_text(result.get("urlscan"))))
         elif result.get("type") == "email":
@@ -461,6 +471,7 @@ class OsintPanel(AgentPanel):
                 ("Email reputation", self._lookup_text(
                     result.get("reputation") or result.get("emailrep")
                 )),
+                ("Gravatar profile", self._lookup_text(result.get("gravatar"))),
                 ("Have I Been Pwned", self._lookup_text(result.get("hibp"))),
                 ("BreachDirectory", self._lookup_text(result.get("breachdirectory"))),
             ])

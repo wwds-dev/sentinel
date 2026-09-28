@@ -105,3 +105,41 @@ def test_build_messages_injects_supplied_live_results():
         "example.com", "Domain / IP", "Deep Dive", "why", live_results=live)
     assert "LIVE OSINT DATA" in msgs[1]["content"]
     assert "example.com" in msgs[1]["content"]
+
+
+# ── Scope decides whether the WhatsMyName sweep runs ─────────────────────────
+
+@pytest.fixture
+def username_kwargs(monkeypatch):
+    seen: list[dict] = []
+
+    def fake(target, **kwargs):
+        seen.append(kwargs)
+        return {"type": "username", "query": target, "sources_contacted": []}
+
+    monkeypatch.setattr(heavy._username_prov, "lookup", fake)
+    return seen
+
+
+@pytest.mark.parametrize("scope,sweeps", [
+    ("Deep Dive", True),
+    ("Standard Investigation", False),
+    ("Quick Scan", False),
+    ("", False),
+])
+def test_only_a_deep_dive_sweeps_whatsmyname(username_kwargs, scope, sweeps):
+    heavy._run_providers("lonewolf", "Username", scope)
+    assert username_kwargs[-1]["whatsmyname"] is sweeps
+
+
+def test_collection_reports_progress_and_honours_stop(username_kwargs):
+    messages: list[str] = []
+    stop = lambda: False
+    heavy.OsintHeavyAgent().collect_live(
+        "lonewolf", "Username", "Deep Dive",
+        on_progress=messages.append, should_stop=stop)
+    kwargs = username_kwargs[-1]
+    assert kwargs["should_stop"] is stop
+    kwargs["on_progress"]("URLScan", "checked")
+    kwargs["on_sweep_progress"](10, 600)
+    assert messages == ["URLScan: checked", "WhatsMyName: 10 of 600 sites checked"]

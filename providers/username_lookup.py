@@ -7,17 +7,28 @@ Zero-cost stack:
                                 profiles, forum accounts, mentions, and platform
                                 presence without requiring an API key.
                                 (public rate-limit: ~100 searches/day)
+
+Opt-in (``whatsmyname=True``, used by Bloodhound's Deep Dive):
+  • WhatsMyName site list    → the username checked against ~600 profile URLs
+                                from this machine; see providers/whatsmyname.py
 """
 
 import requests
 
+from providers import whatsmyname as _wmn
 
-def lookup(username: str, *, on_progress=None, should_stop=None) -> dict:
+
+def lookup(username: str, *, whatsmyname: bool = False, on_progress=None,
+           on_sweep_progress=None, should_stop=None) -> dict:
     """
     Return a normalised OSINT dict for a username handle.
 
     Keys:
-      type, query, urlscan (total + hits list), error
+      type, query, urlscan (total + hits list), error,
+      whatsmyname (only when ``whatsmyname=True``)
+
+    ``on_sweep_progress(done, total)`` reports the WhatsMyName sweep, which
+    takes up to a minute and would otherwise look stalled.
     """
     username = username.strip().lstrip("@")
 
@@ -98,5 +109,21 @@ def lookup(username: str, *, on_progress=None, should_stop=None) -> dict:
     result["sources_contacted"].append({"source": "URLScan", "status": status})
     if on_progress:
         on_progress("URLScan", status)
+
+    if whatsmyname:
+        if should_stop and should_stop():
+            result["cancelled"] = True
+            return result
+        if on_progress:
+            on_progress("WhatsMyName", "checking")
+        sweep = _wmn.sweep(username, on_progress=on_sweep_progress,
+                           should_stop=should_stop)
+        result["whatsmyname"] = sweep
+        if sweep.get("cancelled"):
+            result["cancelled"] = True
+        status = "error" if sweep.get("error") else "checked"
+        result["sources_contacted"].append({"source": "WhatsMyName", "status": status})
+        if on_progress:
+            on_progress("WhatsMyName", status)
 
     return result

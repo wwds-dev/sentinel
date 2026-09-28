@@ -92,6 +92,42 @@ class IdentityLookupWorker(QThread):
             self.error_signal.emit(str(error))
 
 
+class LiveCollectionWorker(QThread):
+    """Run Bloodhound's live public-source collection off the UI thread.
+
+    A Deep Dive on a username sweeps several hundred sites and can take a
+    minute; run on the UI thread, that froze the whole window.
+    ``collect(target, target_type, scope, on_progress=, should_stop=)`` must
+    return the list of provider results.
+    """
+
+    progress_signal = Signal(str)
+    finished_signal = Signal(list)
+    error_signal = Signal(str)
+
+    def __init__(self, collect, target: str, target_type: str, scope: str):
+        super().__init__()
+        self.collect = collect
+        self.target = target
+        self.target_type = target_type
+        self.scope = scope
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def run(self):
+        try:
+            results = self.collect(
+                self.target, self.target_type, self.scope,
+                on_progress=self.progress_signal.emit,
+                should_stop=lambda: self._cancel_requested,
+            )
+            self.finished_signal.emit(list(results or []))
+        except Exception as error:
+            self.error_signal.emit(str(error))
+
+
 class ChatWorker(QThread):
     token_signal = Signal(str)
     status_signal = Signal(str)

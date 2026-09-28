@@ -1533,6 +1533,43 @@ class TestTracePanel:
         })
         assert "\"score\": \"high\"" in trace.sections._raw
 
+    def test_live_email_research_can_include_gravatar(self, trace, monkeypatch):
+        trace.target_input.setText("analyst@example.com")
+        monkeypatch.setattr(
+            trace, "_choose_email_sources", lambda target: ("emailrep", "gravatar")
+        )
+        trace.live_research()
+        worker = FakeIdentityLookupWorker.instances[-1]
+        assert worker.sources == ("emailrep", "gravatar")
+        assert "EmailRep, Gravatar" in trace.activity_box.toPlainText()
+
+        worker.finished_signal.emit({
+            "type": "email", "query": "analyst@example.com",
+            "gravatar": {"status": "ok", "found": True, "display_name": "Analyst"},
+            "sources_contacted": [{"source": "Gravatar", "status": "checked"}],
+        })
+        labels = " ".join(label.text() for label in trace.sections.findChildren(QLabel))
+        assert "Gravatar profile" in labels
+
+    def test_live_domain_research_names_and_shows_the_web_archive(
+            self, trace, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: prompts.append(a[2]) or QMessageBox.Yes),
+        )
+        trace.target_input.setText("example.com")
+        trace.live_research()
+        assert "Wayback Machine" in prompts[-1]
+        FakeLookupWorker.instances[-1].finished_signal.emit({
+            "type": "domain", "query": "example.com",
+            "archive": {"archived": True, "first_snapshot": {"date": "1999-01-02"}},
+            "sources_contacted": [{"source": "Wayback Machine", "status": "checked"}],
+        })
+        labels = " ".join(label.text() for label in trace.sections.findChildren(QLabel))
+        assert "Web archive" in labels
+        assert "1999-01-02" in trace.sections._raw
+
     def test_live_company_research_requires_consent_and_uses_gleif(
             self, trace, monkeypatch):
         trace.type_box.setCurrentText("Company")
@@ -2073,6 +2110,31 @@ DOSSIER = (
 )
 
 
+class FakeCollectionWorker(QObject):
+    """Bloodhound's live-collection worker with the thread taken out."""
+
+    progress_signal = Signal(str)
+    finished_signal = Signal(list)
+    error_signal = Signal(str)
+    instances = []
+
+    def __init__(self, collect, target, target_type, scope):
+        super().__init__()
+        self.args = (collect, target, target_type, scope)
+        self.cancelled = False
+        self.running = True
+        FakeCollectionWorker.instances.append(self)
+
+    def start(self):
+        pass
+
+    def isRunning(self):
+        return self.running
+
+    def cancel(self):
+        self.cancelled = True
+
+
 @pytest.fixture
 def hound(qapp, monkeypatch):
     from ui.panels.osint_heavy import OsintHeavyPanel
@@ -2224,6 +2286,72 @@ class TestBloodhoundPanel:
     def test_no_image_means_no_metadata_in_the_prompt(self, hound):
         hound.investigate()
         assert hound.host.agent_instances["osint_heavy"].calls[-1][4] == ""
+
+    # ── Live collection on its own thread ────────────────────────────────
+    @pytest.fixture
+    def collecting(self, hound, monkeypatch):
+        """Give the agent a collect_live and swap in a thread-free worker."""
+        agent = hound.host.agent_instances["osint_heavy"]
+        agent.collected = []
+
+        def collect_live(target, target_type, scope, on_progress=None,
+                         should_stop=None):
+            agent.collected.append((target, target_type, scope))
+            return []
+
+        agent.collect_live = collect_live
+        agent.last_source_count = 3
+        monkeypatch.setattr(type(hound), "collection_worker_class", FakeCollectionWorker)
+        FakeCollectionWorker.instances.clear()
+        return hound
+
+    def test_the_guard_runs_before_any_public_source_is_contacted(self, collecting):
+        collecting.host.authorized = False
+        collecting.investigate()
+        assert FakeCollectionWorker.instances == []
+        assert collecting.status_label.text() == "Blocked before sending."
+
+    def test_collection_runs_off_the_ui_thread_before_the_model_call(self, collecting):
+        collecting.scope_box.setCurrentText("Deep Dive")
+        collecting.investigate()
+        collector = FakeCollectionWorker.instances[-1]
+        assert collector.args[1:] == ("acme.com", "Person", "Deep Dive")
+        assert FakeWorker.instances == []           # no model call yet
+        assert "WhatsMyName" in collecting.status_label.text()
+
+        collector.progress_signal.emit("WhatsMyName: 10 of 600 sites checked")
+        assert "10 of 600" in collecting.status_label.text()
+
+        live = [{"type": "username", "sources_contacted": []}]
+        collector.finished_signal.emit(live)
+        assert len(FakeWorker.instances) == 1
+        assert collecting._live_source_count == 3
+        assert collecting.status_label.text() == "Investigating…"
+
+    def test_a_failed_collection_still_produces_a_dossier(self, collecting):
+        collecting.investigate()
+        FakeCollectionWorker.instances[-1].error_signal.emit("boom")
+        assert len(FakeWorker.instances) == 1
+
+    def test_stop_during_collection_cancels_and_never_calls_the_model(self, collecting):
+        collecting.investigate()
+        collector = FakeCollectionWorker.instances[-1]
+        collecting.stop()
+        assert collector.cancelled is True
+        assert ("abandon", "osint_heavy", "cancelled") in collecting.host.calls
+        collector.finished_signal.emit([])          # the sweep winds down late
+        assert FakeWorker.instances == []
+        assert collecting.investigate_btn.isEnabled() is True
+
+    def test_a_stale_sweep_cannot_answer_for_a_newer_investigation(self, collecting):
+        collecting.investigate()
+        first = FakeCollectionWorker.instances[-1]
+        collecting.stop()
+        collecting.investigate()
+        first.finished_signal.emit([])
+        assert FakeWorker.instances == []
+        FakeCollectionWorker.instances[-1].finished_signal.emit([])
+        assert len(FakeWorker.instances) == 1
 
     def test_attaching_an_image_shows_local_image_details(self, hound, tmp_path):
         fake = tmp_path / "target.jpg"
