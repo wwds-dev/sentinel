@@ -2533,24 +2533,9 @@ class GodAI(QWidget):
                     )
 
             elif provider == "deepseek":
-                # Try API model list if available. Fallback to known/common names.
-                try:
-                    if self.deepseek.client:
-                        result = self.deepseek.client.models.list()
-                        models = sorted(m.id for m in result.data)
-                    else:
-                        models = []
-                except Exception:
-                    models = []
-
-                if not models:
-                    models = [
-                        "deepseek-chat",
-                        "deepseek-reasoner",
-                        "deepseek-coder",
-                        "deepseek-v4-pro",
-                        "deepseek-flash",
-                    ]
+                # The client owns the API call and its offline fallback, the
+                # same route every agent panel takes via models_for_provider.
+                models = self.deepseek.list_models()
 
             elif provider == "kimi":
                 # Try API model list if available. Fallback to known/common names.

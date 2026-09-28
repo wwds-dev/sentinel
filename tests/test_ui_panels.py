@@ -250,6 +250,21 @@ class TestRecommendationsStillReachThePanels:
         assert idx >= 0
         assert model_box.itemData(idx, Qt.ForegroundRole) is not None
 
+    def test_deepseek_models_come_from_the_client_not_the_live_api(self, win):
+        # conftest serves KNOWN_MODELS, so both routes — the panels'
+        # models_for_provider and Chat's own loader — must go through
+        # list_models for the suite to stay independent of DeepSeek's API.
+        from services.deepseek_client import DeepSeekClientWrapper
+
+        known = DeepSeekClientWrapper.KNOWN_MODELS
+        trace_box = win.setup_widgets_for("osint")[1]
+        assert [trace_box.itemText(i) for i in range(trace_box.count())] == known
+
+        win.provider_box.setCurrentText("deepseek")
+        win.load_provider_models()
+        chat_box = win.model_box
+        assert [chat_box.itemText(i) for i in range(chat_box.count())] == known
+
     def test_trace_falls_back_inline_when_deepseek_permission_is_off(
             self, win, monkeypatch):
         from types import SimpleNamespace
