@@ -164,13 +164,82 @@ def test_sweep_counts_every_outcome_and_reports_progress(monkeypatch):
     assert "cancelled" not in result
 
 
-def test_widespread_connection_failures_are_called_out(monkeypatch):
-    outcomes = iter([{"status": "unclear", "reason": "ConnectionError"}] * 3
-                    + [{"status": "unclear", "reason": "HTTP 429"}])
-    monkeypatch.setattr(wmn, "check_site", lambda *a, **k: next(outcomes))
-    result = wmn.sweep("alice", sites=[site()] * 4)
+@pytest.fixture
+def fast_backoff(monkeypatch):
+    """Back-off pauses of a few milliseconds, so tests stay quick."""
+    monkeypatch.setattr(wmn, "BACKOFF_PAUSE_SECONDS", 0.01)
+
+
+def by_name(answers):
+    """A check_site fake answering per site name; a list answers per attempt."""
+    calls: dict = {}
+
+    def fake(entry, username, session=None):
+        name = entry["name"]
+        answer = answers[name]
+        if isinstance(answer, list):
+            answer = answer[min(calls.get(name, 0), len(answer) - 1)]
+        calls[name] = calls.get(name, 0) + 1
+        return {"site": name, "category": entry["cat"], **answer}
+
+    fake.calls = calls
+    return fake
+
+
+REFUSED = {"status": "unclear", "reason": "ConnectionError"}
+
+
+def test_widespread_connection_failures_are_called_out(monkeypatch, fast_backoff):
+    fake = by_name({"A": REFUSED, "B": REFUSED, "C": REFUSED,
+                    "D": {"status": "unclear", "reason": "HTTP 429"}})
+    monkeypatch.setattr(wmn, "check_site", fake)
+    result = wmn.sweep("alice", sites=[site(n) for n in "ABCD"])
     assert result["inconclusive_reasons"] == {"ConnectionError": 3, "HTTP 429": 1}
     assert result["network_warning"].startswith("3 of 4 sites could not be reached")
+    # Each refused site was tried twice; the HTTP answer was taken as given.
+    assert fake.calls == {"A": 2, "B": 2, "C": 2, "D": 1}
+
+
+def test_refused_sites_are_retried_once_and_can_recover(monkeypatch, fast_backoff):
+    fake = by_name({
+        "Flaky": [REFUSED, {"status": "found", "url": "https://flaky.example/alice"}],
+        "Steady": {"status": "missing"},
+    })
+    monkeypatch.setattr(wmn, "check_site", fake)
+    result = wmn.sweep("alice", sites=[site("Flaky"), site("Steady")])
+    assert [hit["site"] for hit in result["found"]] == ["Flaky"]
+    assert result["sites_checked"] == 2
+    assert result["backoff"]["retried"] == 1
+    assert result["backoff"]["recovered_on_retry"] == 1
+    assert "network_warning" not in result
+
+
+def test_a_burst_of_refusals_halves_the_parallel_requests(monkeypatch, fast_backoff):
+    names = [f"S{i}" for i in range(30)]
+    fake = by_name({name: REFUSED for name in names})
+    monkeypatch.setattr(wmn, "check_site", fake)
+    result = wmn.sweep("alice", sites=[site(n) for n in names])
+    assert result["backoff"]["slowdowns"] >= 1
+    assert result["backoff"]["final_parallel_requests"] < wmn.MAX_WORKERS
+    assert result["sites_checked"] == 30          # every site still accounted for
+
+
+def test_a_clean_sweep_never_slows_down(monkeypatch, fast_backoff):
+    names = [f"S{i}" for i in range(40)]
+    monkeypatch.setattr(wmn, "check_site", by_name({n: {"status": "missing"} for n in names}))
+    result = wmn.sweep("alice", sites=[site(n) for n in names])
+    assert "backoff" not in result
+    assert result["not_found_count"] == 40
+
+
+def test_stopping_before_the_retry_still_counts_refused_sites(monkeypatch, fast_backoff):
+    fake = by_name({"A": REFUSED})
+    monkeypatch.setattr(wmn, "check_site", fake)
+    checks = iter([False, False, False] + [True] * 100)
+    result = wmn.sweep("alice", sites=[site("A")], should_stop=lambda: next(checks))
+    assert result["cancelled"] is True
+    assert result["sites_checked"] == 1
+    assert result["inconclusive_reasons"] == {"ConnectionError": 1}
 
 
 def test_http_answers_alone_do_not_raise_the_network_warning(monkeypatch):

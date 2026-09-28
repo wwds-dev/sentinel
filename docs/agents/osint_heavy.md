@@ -56,16 +56,26 @@ request unbilled, and never calls the model.
 
 A **Deep Dive** on a username also sweeps the
 [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) site list (CC BY-SA
-4.0): about 600 profile URLs requested directly from this Mac, 12 at a time,
-with a 90-second budget. The list is downloaded once a week into
+4.0): about 600 profile URLs requested directly from this Mac, up to 12 at a
+time, with a 120-second budget. The list is downloaded once a week into
 `data/cache/wmn-data.json`, with a stale copy used if the download fails. Sites
 the list marks invalid, sites behind bot protection (their challenge pages
 would make every answer a guess), and its NSFW category are left out. A hit
 needs the site's exact "exists" status code **and** marker text; everything
 else is a confirmed miss or counted as inconclusive, with the top reasons
-reported. When more than a quarter of sites could not be reached at all, the
-result carries a `network_warning`. A VPN or firewall connection-rate limit
-produces exactly that pattern, and it means a missing hit proves nothing. The
+reported.
+
+Routers with flood protection refuse new connections when one device opens
+them too fast, and this sweep does exactly that. So a refused connection is
+treated as the network pushing back, not as an answer: when 5 of the last 20
+answers are refusals, the sweep halves how many requests it keeps in flight
+(never below 2) and pauses 3 s, then climbs back one step after each clean
+run of 20. Refused sites get one retry at the end, at most 4 at a time, and
+the result's `backoff` block reports slow-downs, retries and recoveries. On a
+router that refused 218–293 of ~600 connections per sweep, this removed the
+refusals entirely and found more accounts, at about 56 s instead of 20–25 s.
+If more than a quarter of sites still could not be reached, the result
+carries a `network_warning`, and a missing hit proves nothing. The
 prompt tells the model to treat hits as same-name accounts to corroborate, not
 as one identity.
 
