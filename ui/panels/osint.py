@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from ui.widgets import MenuComboBox, SectionView
 from ui.panels.base import AgentPanel
 from services.deepseek_client import is_insufficient_balance_error
-from ui.workers import DomainLookupWorker, IdentityLookupWorker
+from ui.workers import DomainLookupWorker, ExposureLookupWorker, IdentityLookupWorker
 
 
 class OsintPanel(AgentPanel):
@@ -34,6 +34,7 @@ class OsintPanel(AgentPanel):
     agent_key = "osint"
     lookup_worker_class = DomainLookupWorker
     identity_lookup_worker_class = IdentityLookupWorker
+    exposure_lookup_worker_class = ExposureLookupWorker
 
     def __init__(self, host, parent=None):
         super().__init__(host, parent)
@@ -86,6 +87,16 @@ class OsintPanel(AgentPanel):
         )
         self.live_btn.clicked.connect(self.live_research)
 
+        self.exposure_btn = QPushButton("Exposure Check")
+        self.exposure_btn.setMinimumWidth(140)
+        self.exposure_btn.setToolTip(
+            "Dark-web exposure check: is this domain, company or email in a leak "
+            "or on a ransomware leak site? Uses clearnet services (ransomware.live, "
+            "Ahmia, Intelligence X) after explicit confirmation. Text results only; "
+            "no onion sites are contacted and nothing is downloaded."
+        )
+        self.exposure_btn.clicked.connect(self.exposure_check)
+
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
@@ -95,7 +106,7 @@ class OsintPanel(AgentPanel):
         provider_row_container = self.build_run_bar(
             self.analyse_btn,
             stop=self.stop_btn,
-            secondary=(self.live_btn,),
+            secondary=(self.live_btn, self.exposure_btn),
             context="Query",
         )
 
@@ -282,9 +293,11 @@ class OsintPanel(AgentPanel):
 
     def _set_trace_busy(self, busy: bool) -> None:
         self.set_busy(self.analyse_btn, self.stop_btn, busy)
-        if hasattr(self, "live_btn"):
-            self.live_btn.setVisible(not busy)
-            self.live_btn.setEnabled(not busy)
+        for name in ("live_btn", "exposure_btn"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setVisible(not busy)
+                button.setEnabled(not busy)
 
     # ── Explicit live public-source research ───────────────────────────
     def live_research(self) -> None:
@@ -415,6 +428,112 @@ class OsintPanel(AgentPanel):
             )
         return tuple(selected)
 
+    # ── Dark-web exposure check ────────────────────────────────────────────
+    _EXPOSURE_LABELS = {
+        "ransomware_live": "Ransomware.live",
+        "ahmia": "Ahmia",
+        "intelx": "Intelligence X",
+    }
+
+    def exposure_check(self) -> None:
+        """Check whether a domain, company or email is in a leak or on a
+        ransomware leak site, using clearnet services behind explicit consent."""
+        target = self.target_input.text().strip()
+        validation = self.agent().validate_target(target, self.type_box.currentText())
+        if not validation.valid:
+            QMessageBox.warning(self, "Invalid Target", validation.message)
+            return
+        if validation.query_type not in {"Domain", "Company", "Email"}:
+            QMessageBox.information(
+                self, "Target Type Not Available",
+                "The exposure check answers 'is my company, domain or email in a "
+                "leak or on a ransomware leak site?'. Choose a Domain, Company, or "
+                "Email target (or let Auto-detect resolve one of those).",
+            )
+            return
+
+        selected = self._choose_exposure_sources(target, validation.query_type)
+        if not selected:
+            self.status_label.setText("Exposure check cancelled before any lookup.")
+            return
+        sources = ", ".join(self._EXPOSURE_LABELS[key] for key in selected)
+
+        self._clear_output()
+        self._reset_activity()
+        self._append_activity(
+            f"Consent recorded. Exposure check target: {target} "
+            f"({validation.query_type})."
+        )
+        self._append_activity(f"Approved dark-web / leak sources: {sources}.")
+        self._append_activity(
+            "Text metadata only — no onion sites are contacted and nothing is downloaded."
+        )
+        self.status_label.setText("Checking leak and dark-web sources…")
+        self._set_trace_busy(True)
+
+        worker = self.exposure_lookup_worker_class(
+            target, validation.query_type, selected
+        )
+        worker.progress_signal.connect(self._on_lookup_progress)
+        worker.finished_signal.connect(self._on_lookup_finished)
+        worker.error_signal.connect(self._on_lookup_error)
+        self.worker = worker
+        worker.start()
+
+    def _choose_exposure_sources(self, target: str, query_type: str) -> tuple[str, ...]:
+        """Ask which dark-web / leak services may receive the target."""
+        from providers.exposure_lookup import INTELX_KEY
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Choose Exposure Check Sources")
+        layout = QVBoxLayout(dialog)
+        explanation = QLabel(
+            f"'{target}' will be sent only to the clearnet services selected "
+            "below. Each does its own crawling under its own legal setup; Sentinel "
+            "receives text results only and never contacts an onion site."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+
+        ransomware = QCheckBox(
+            "Ransomware.live — victims posted on ransomware leak sites (free)"
+        )
+        ransomware.setChecked(True)
+        ahmia = QCheckBox(
+            "Ahmia — clearnet search of indexed .onion sites, abuse content filtered (free)"
+        )
+        ahmia.setChecked(True)
+        intelx = QCheckBox(
+            "Intelligence X — leaks, pastes and archived dark-web material (paid API key required)"
+        )
+        intelx.setEnabled(bool(INTELX_KEY))
+        intelx.setChecked(bool(INTELX_KEY))
+        if not INTELX_KEY:
+            intelx.setToolTip("Set INTELX_API_KEY in .env to enable Intelligence X.")
+        layout.addWidget(ransomware)
+        layout.addWidget(ahmia)
+        layout.addWidget(intelx)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return ()
+
+        selected = []
+        if ransomware.isChecked():
+            selected.append("ransomware_live")
+        if ahmia.isChecked():
+            selected.append("ahmia")
+        if intelx.isChecked():
+            selected.append("intelx")
+        if not selected:
+            QMessageBox.information(
+                self, "No Sources Selected", "Select at least one exposure source."
+            )
+        return tuple(selected)
+
     def _on_lookup_progress(self, source: str, status: str) -> None:
         if status == "checking":
             self._append_activity(f"Checking {source}…")
@@ -480,6 +599,31 @@ class OsintPanel(AgentPanel):
                 "Legal entity records",
                 self._lookup_text(result.get("legal_entities")),
             ))
+        elif result.get("type") == "exposure":
+            summary_info = result.get("summary", {})
+            if summary_info.get("on_ransomware_leak_site"):
+                headline = (
+                    f"⚠ On a ransomware leak site — "
+                    f"{summary_info.get('ransomware_victim_matches', 0)} direct victim "
+                    f"match(es). Treat as a likely breach and verify the listing."
+                )
+            elif summary_info.get("exposure_detected"):
+                headline = (
+                    "Possible exposure — matches found in dark-web / leak sources. "
+                    "Review each hit below; a mention is a lead, not proof."
+                )
+            else:
+                headline = (
+                    "No exposure found in the sources that were queried. This is not a "
+                    "guarantee of safety — coverage is limited to these indexes."
+                )
+            cards.insert(1, ("Exposure verdict", headline))
+            cards.extend([
+                ("Ransomware leak sites",
+                 self._lookup_text(result.get("ransomware_live"))),
+                ("Dark-web index (Ahmia)", self._lookup_text(result.get("ahmia"))),
+                ("Intelligence X", self._lookup_text(result.get("intelx"))),
+            ])
         raw = self._lookup_text(result)
         self.sections.show_sections(cards, raw=raw)
         self.sections.setVisible(True)
@@ -504,7 +648,7 @@ class OsintPanel(AgentPanel):
                     query_type={
                         "ip": "IP Address", "domain": "Domain",
                         "username": "Username", "email": "Email",
-                        "company": "Company",
+                        "company": "Company", "exposure": "Exposure",
                     }.get(result.get("type"), "Auto-detect"),
                     response=raw,
                     cancelled=bool(result.get("cancelled")),
