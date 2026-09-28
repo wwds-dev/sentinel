@@ -5,6 +5,8 @@ Zero-cost stack:
   • emailrep.io        → reputation, breach flag, profiles, SPF/DMARC
                          (no key; limit ≈ 10 req/day without key)
   • breachdirectory    → open breach search, no key required
+  • gravatar           → public profile linked to the address; only the
+                         SHA-256 hash of the address is sent, never the address
 
 Key-gated (set in .env):
   • haveibeenpwned     → HIBP_API_KEY  — breach names, data classes, pastes ($3.50/mo)
@@ -12,6 +14,7 @@ Key-gated (set in .env):
 Returns a normalised dict suitable for direct injection into an LLM prompt.
 """
 
+import hashlib
 import os
 import time
 import requests
@@ -94,6 +97,46 @@ def _breachdirectory(email: str) -> dict:
         return {"source": "breachdirectory", "status": "error", "detail": str(e)[:200]}
 
 
+def _gravatar(email: str) -> dict:
+    """Gravatar public profile for the address, looked up by its SHA-256 hash.
+
+    Gravatar keys profiles by the hash of the trimmed, lower-cased address, so
+    the address itself never leaves the machine. A 404 is a real answer (no
+    public profile), not a failure.
+    """
+    digest = hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()
+    try:
+        r = requests.get(
+            f"https://api.gravatar.com/v3/profiles/{digest}",
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
+            timeout=10,
+        )
+        if r.status_code == 404:
+            return {"source": "gravatar", "status": "ok", "found": False}
+        if r.status_code != 200:
+            return {"source": "gravatar", "status": "error", "code": r.status_code}
+        data = r.json()
+        return {
+            "source": "gravatar",
+            "status": "ok",
+            "found": True,
+            "display_name": data.get("display_name"),
+            "profile_url": data.get("profile_url"),
+            "avatar_url": data.get("avatar_url"),
+            "location": data.get("location"),
+            "job_title": data.get("job_title"),
+            "company": data.get("company"),
+            "description": (data.get("description") or "")[:300] or None,
+            "verified_accounts": [
+                {"service": account.get("service_label"), "url": account.get("url")}
+                for account in data.get("verified_accounts") or []
+                if not account.get("is_hidden")
+            ],
+        }
+    except Exception as e:
+        return {"source": "gravatar", "status": "error", "detail": str(e)[:200]}
+
+
 def _emailrep(email: str) -> dict:
     """Return EmailRep's normalized reputation payload or an error."""
     try:
@@ -161,9 +204,12 @@ def lookup(email: str, *, selected_sources=None, on_progress=None,
         result["error"] = "Invalid email format — skipping live lookup."
         return result
 
-    selected = set(selected_sources or {"emailrep", "hibp", "breachdirectory"})
+    selected = set(
+        selected_sources or {"emailrep", "hibp", "breachdirectory", "gravatar"}
+    )
     source_calls = [
         ("emailrep", "EmailRep", _emailrep),
+        ("gravatar", "Gravatar", _gravatar),
         ("hibp", "Have I Been Pwned", _hibp),
         ("breachdirectory", "BreachDirectory", _breachdirectory),
     ]
@@ -206,6 +252,7 @@ def lookup(email: str, *, selected_sources=None, on_progress=None,
     result["summary"] = {
         "breach_hits":    breach_hits,
         "suspicious":     emailrep_suspicious,
+        "gravatar_profile": bool(result.get("gravatar", {}).get("found")),
         "sources_queried": len(result["sources_contacted"]),
         "sources_live":   sum(
             1 for s in [result.get("reputation"), result.get("hibp"), result.get("breachdirectory")]

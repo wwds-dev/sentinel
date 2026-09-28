@@ -5,6 +5,7 @@ Zero-cost stack:
   • python-whois  → registrar, dates, nameservers, registrant org/country
   • dnspython     → A, AAAA, MX, NS, TXT, SOA records
   • crt.sh JSON API → certificate transparency subdomain enumeration
+  • Wayback Machine availability API → first and latest archived snapshot
 """
 
 import ipaddress
@@ -110,6 +111,47 @@ def _crtsh(domain: str) -> dict:
         return {"error": str(exc)[:300]}
 
 
+def _snapshot(entry) -> dict | None:
+    """Reduce an availability-API ``closest`` record to what the report needs."""
+    if not isinstance(entry, dict) or not entry.get("available"):
+        return None
+    stamp = str(entry.get("timestamp") or "")
+    date = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}" if len(stamp) >= 8 else None
+    return {"date": date, "timestamp": stamp or None, "url": entry.get("url")}
+
+
+def _wayback(domain: str) -> dict:
+    """First and latest Wayback Machine snapshot of a domain.
+
+    The availability API returns the capture closest to a timestamp, so asking
+    for 1996 gives the earliest capture and asking with none gives the latest.
+    The CDX search API would give full capture counts but routinely takes
+    longer than 30 s, which is too slow for an interactive lookup.
+    """
+    try:
+        found: dict = {}
+        for key, params in (("first_snapshot", {"timestamp": "19960101"}),
+                            ("latest_snapshot", {})):
+            resp = requests.get(
+                "https://archive.org/wayback/available",
+                params={"url": domain, **params},
+                timeout=12,
+                headers={"User-Agent": "Sentinel-OSINT/2.0"},
+            )
+            if resp.status_code != 200:
+                return {"error": f"Wayback Machine HTTP {resp.status_code}"}
+            closest = (resp.json().get("archived_snapshots") or {}).get("closest")
+            found[key] = _snapshot(closest)
+        archived = bool(found["first_snapshot"] or found["latest_snapshot"])
+        return {
+            "archived": archived,
+            **found,
+            "all_captures": f"https://web.archive.org/web/*/{domain}",
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
 # ── public interface ──────────────────────────────────────────────────────────
 
 def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
@@ -117,8 +159,8 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
     Return a normalised OSINT dict for a domain or IP address.
 
     Keys:
-      type, query, whois, dns, certificates   (domain)
-      type, query, whois, dns                 (IP — crt.sh skipped)
+      type, query, whois, dns, certificates, archive   (domain)
+      type, query, whois, dns                          (IP — crt.sh and Wayback skipped)
     """
     target = _normalize(domain)
     is_ip = _is_ip(target)
@@ -131,6 +173,7 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
     sources = [("WHOIS", "whois", _whois), ("DNS", "dns", _dns)]
     if not is_ip:
         sources.append(("Certificate transparency (crt.sh)", "certificates", _crtsh))
+        sources.append(("Wayback Machine", "archive", _wayback))
 
     for label, key, source_lookup in sources:
         if should_stop and should_stop():

@@ -27,7 +27,7 @@ from services.local_file_search import FileSearchFilters, FileSearchReport, norm
 from services.remote_file_search import validate_ssh_target
 from services.runtime_paths import user_data_base
 from ui.panels.base import AgentPanel
-from ui.workers import LocalFileSearchWorker, RemoteFileSearchWorker
+from ui.workers import LiveCollectionWorker, LocalFileSearchWorker, RemoteFileSearchWorker
 from ui.widgets import MenuComboBox, SectionView
 
 
@@ -115,6 +115,8 @@ class OsintHeavyPanel(AgentPanel):
     """Investigate one target in depth and produce a dossier."""
 
     agent_key = "osint_heavy"
+    #: Swapped by tests that would rather not start a thread.
+    collection_worker_class = LiveCollectionWorker
 
     def __init__(self, host, parent=None):
         super().__init__(host, parent)
@@ -123,6 +125,7 @@ class OsintHeavyPanel(AgentPanel):
         self._image_path = ""
         self._image_osint = ""
         self._file_search_worker = None
+        self._collecting = False
         self._build()
         self.polish_workspace()
         self.hide()
@@ -505,33 +508,15 @@ class OsintHeavyPanel(AgentPanel):
         if self._image_path:
             image_metadata = exif_for_prompt(self._image_path)
 
-        # Live public-source collection runs before the model call. It is a
-        # free, no-model step; the real number of sources contacted drives the
-        # Sources gauge instead of the model's self-declared estimate.
-        live_results: list[dict] = []
-        self._live_source_count = None
-        collect = getattr(self.agent(), "collect_live", None)
-        if collect is not None:
-            self.status_label.setText("Collecting live public-source data…")
-            try:
-                live_results = collect(target, target_type)
-                self._live_source_count = getattr(
-                    self.agent(), "last_source_count", None)
-            except Exception:
-                live_results = []
-                self._live_source_count = None
-
-        messages = self.agent().build_messages(
-            target, target_type, scope, objective, image_metadata,
-            live_results=live_results)
-
         self._clear_displays()
         self._last_response = ""
         self.depth_label.setText(scope)
-        self.status_label.setText("Investigating…")
         self.set_busy(self.investigate_btn, self.stop_btn, True)
         self.save_btn.setEnabled(False)
 
+        # The permission check comes first: live collection sends the target
+        # to public sources, and that must not happen for a request the guard
+        # is about to refuse.
         if not self.authorize(target):
             # Investigate was disabled above; put it back or a refused request
             # leaves the panel dead.
@@ -539,6 +524,53 @@ class OsintHeavyPanel(AgentPanel):
             self.set_busy(self.investigate_btn, self.stop_btn, False)
             return
 
+        brief = (target, target_type, scope, objective, image_metadata)
+        self._live_source_count = None
+        collect = getattr(self.agent(), "collect_live", None)
+        if collect is None:
+            self._send_dossier_request(brief, [])
+            return
+
+        # Live public-source collection runs before the model call, on a
+        # worker thread: a Deep Dive username sweep takes up to a minute. It is
+        # a free, no-model step; the real number of sources contacted drives
+        # the Sources gauge instead of the model's self-declared estimate.
+        self.status_label.setText(
+            "Collecting live public-source data (the WhatsMyName sweep on a "
+            "username can take a minute)…" if scope == "Deep Dive"
+            else "Collecting live public-source data…"
+        )
+        self._collecting = True
+        worker = self.collection_worker_class(collect, target, target_type, scope)
+        worker.progress_signal.connect(self._on_collection_progress)
+        worker.finished_signal.connect(
+            lambda results: self._on_collection_finished(worker, brief, results))
+        worker.error_signal.connect(
+            lambda error: self._on_collection_finished(worker, brief, []))
+        self.worker = worker
+        worker.start()
+
+    def _on_collection_progress(self, message: str) -> None:
+        if self._collecting:
+            self.status_label.setText(f"Collecting live data — {message}")
+
+    def _on_collection_finished(self, worker, brief: tuple, results: list) -> None:
+        if not self._collecting or self.worker is not worker:
+            # Stopped by the user (the request was already abandoned), or a
+            # stale sweep finishing after a newer investigation started.
+            return
+        self._collecting = False
+        # A provider failure never blocks the dossier: the model is told what
+        # was collected, and gaps are reported as gaps.
+        self._live_source_count = getattr(self.agent(), "last_source_count", None)
+        self._send_dossier_request(brief, results)
+
+    def _send_dossier_request(self, brief: tuple, live_results: list) -> None:
+        target, target_type, scope, objective, image_metadata = brief
+        messages = self.agent().build_messages(
+            target, target_type, scope, objective, image_metadata,
+            live_results=live_results)
+        self.status_label.setText("Investigating…")
         self.start_worker(
             messages, target,
             on_token=self._on_token,
@@ -574,6 +606,10 @@ class OsintHeavyPanel(AgentPanel):
 
     def stop(self) -> None:
         self.stop_worker()
+        if self._collecting:
+            # Authorised but never sent: close the request so it is not billed.
+            self._collecting = False
+            self.abandon("cancelled")
         self.status_label.setText("Stopped.")
         self.set_busy(self.investigate_btn, self.stop_btn, False)
 
