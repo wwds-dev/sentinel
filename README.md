@@ -6,7 +6,7 @@ Sentinel is a local-first PySide6 desktop command centre for security, investiga
 and is shown beside **SENTINEL** in the app. See the
 [versioning policy](docs/versioning.md) for numbering and release steps.
 
-Sentinel's built-in roster is intentionally limited to seven agents:
+Sentinel's built-in roster is intentionally limited to eight agents:
 
 | Display name | Key | Responsibility |
 |---|---|---|
@@ -14,6 +14,7 @@ Sentinel's built-in roster is intentionally limited to seven agents:
 | Trace | `osint` | Focused open-source research and source-led investigation planning |
 | Bloodhound | `osint_heavy` | Deep OSINT dossiers plus read-only file discovery in user-selected folders |
 | Beacon | `wifi` | Wi-Fi diagnostics and commands for networks the operator is authorised to test |
+| Sentry | `sentry` | Read-only network anomaly watch (new devices, ARP spoofing, unexpected services) with a continuous background option |
 | Bug Spray | `bug_bounty` | Public program radar with background updates, plus in-scope vulnerability analysis and report drafts |
 | Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, and self-hosted VPN design |
 | Forge | `manager` | Creates and reviews specifications for new agents and tools |
@@ -78,7 +79,7 @@ Saved chats can be searched and filtered by agent. The two side rails split by w
 
 The in-app **Learning Centre** is available from **More (•••)**. It contains a
 guided Quick Start, full workspace and Settings reference, courses for all
-seven agents, privacy/cost guidance, troubleshooting, multi-agent workflows,
+eight agents, privacy/cost guidance, troubleshooting, multi-agent workflows,
 practice exercises, current-interface screenshots, and the v3 advanced-tools
 roadmap. It also includes the complete testing roadmap for every agent, shared
 control, and release mode. Training source files live in `docs/training/`; they
@@ -241,7 +242,7 @@ recommended model and saved Chat default as found or missing. It also names
 offline `KNOWN_MODELS` entries the live API no longer serves. Exit status 1
 means something is missing.
 
-The current manual acceptance checklist is in `tests/manual_test_cases.md`. It covers all seven built-in agents and verifies that Writing and Coding remain Chat tools rather than sidebar agents.
+The current manual acceptance checklist is in `tests/manual_test_cases.md`. It covers all eight built-in agents and verifies that Writing and Coding remain Chat tools rather than sidebar agents.
 The [testing roadmap](docs/testing_roadmap.md) maps every shipped agent workflow
 and shared control to automated, packaged-app, and owned-lab checks, with
 priority and release gates. Sentinel's main test suite does not include the

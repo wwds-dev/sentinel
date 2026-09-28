@@ -428,6 +428,40 @@ GLOBAL_STYLESHEET = """
             font-size: 13px;
             min-width: 72px;
         }
+
+        /* ── Learning Centre: grouped lesson list + reading pane ─── */
+        QListWidget#LearningTopicList {
+            background-color: #121614;
+            border: 1px solid #232a26;
+            border-radius: 10px;
+            padding: 6px 0;
+            outline: none;
+        }
+        QListWidget#LearningTopicList::item {
+            color: #a8b3ad;
+            padding: 6px 12px 6px 14px;
+            border: none;
+            border-left: 2px solid transparent;
+        }
+        QListWidget#LearningTopicList::item:hover {
+            background-color: #151816;
+            color: #e8ece9;
+        }
+        QListWidget#LearningTopicList::item:selected {
+            background-color: rgba(60, 255, 136, 0.07);
+            border-left: 2px solid #3cff88;
+            color: #3cff88;
+        }
+        QTextBrowser#LearningBrowser {
+            background-color: #121614;
+            color: #d8dfdb;
+            border: 1px solid #232a26;
+            border-radius: 10px;
+            padding: 2px;
+        }
+        QTextBrowser#LearningBrowser:focus {
+            border: 1px solid #232a26;
+        }
         QScrollArea#AgentWorkspaceScroll {
             background-color: transparent;
             border: none;

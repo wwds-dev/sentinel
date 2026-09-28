@@ -22,6 +22,7 @@ CANONICAL_ROSTER = (
     "osint",
     "osint_heavy",
     "wifi",
+    "sentry",
     "bug_bounty",
     "vpn",
     "manager",
@@ -86,8 +87,8 @@ def test_sidebar_derives_from_the_catalog():
 
 def test_every_roster_entry_has_an_agent_implementation():
     # Chat/Trace/Bloodhound/Beacon/Forge each live under agents/<name>/ as
-    # their own repo (package-ified as __init__.py). Bug Spray and Tunnel
-    # already have their own standalone-app repo (bug_spray/, vpn_agent/),
+    # their own repo (package-ified as __init__.py). Bug Spray, Tunnel and
+    # Sentry carry a package with their engine plus a sentinel_chat_agent.py,
     # so their in-app chat-agent class lives there instead of under agents/
     # — no separate agents/bug_bounty_agent.py or agents/vpn_agent.py.
     expected_paths = {
@@ -96,6 +97,7 @@ def test_every_roster_entry_has_an_agent_implementation():
         "osint": ROOT / "agents" / "osint_agent" / "__init__.py",
         "osint_heavy": ROOT / "agents" / "osint_heavy_agent" / "__init__.py",
         "wifi": ROOT / "agents" / "wifi_agent" / "__init__.py",
+        "sentry": ROOT / "agents" / "sentry" / "sentinel_chat_agent.py",
         "bug_bounty": ROOT / "agents" / "bug_spray" / "sentinel_chat_agent.py",
         "vpn": ROOT / "agents" / "vpn_agent" / "sentinel_chat_agent.py",
     }

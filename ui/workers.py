@@ -446,3 +446,51 @@ class VpnDiagnosticsWorker(QThread):
             self.finished_signal.emit(report)
         except Exception as exc:
             self.error_signal.emit(str(exc))
+
+
+class SentryWatchWorker(QThread):
+    """Run one Sentry watch pass (read-only network snapshot + diff) off the UI."""
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, persist: bool = True):
+        super().__init__()
+        self._persist = persist
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            from agents.sentry.sentry.baseline import BaselineStore
+            from agents.sentry.sentry.engine import collect_snapshot, diff, run_watch
+
+            if self._persist:
+                self.finished_signal.emit(run_watch())
+                return
+            # Dry run: compare against the stored baseline without writing.
+            store = BaselineStore()
+            baseline = store.load_baseline()
+            current = collect_snapshot()
+            if baseline is None:
+                self.finished_signal.emit({
+                    "baseline_established": True, "findings": [],
+                    "device_count": len(current.devices),
+                    "listener_count": len(current.listeners),
+                    "connection_count": len(current.connections),
+                    "taken_at": current.taken_at, "dry_run": True,
+                })
+                return
+            findings = diff(baseline, current)
+            self.finished_signal.emit({
+                "baseline_established": False,
+                "findings": [f.as_dict() for f in findings],
+                "device_count": len(current.devices),
+                "listener_count": len(current.listeners),
+                "connection_count": len(current.connections),
+                "taken_at": current.taken_at, "dry_run": True,
+            })
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
