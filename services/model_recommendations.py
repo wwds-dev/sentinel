@@ -126,7 +126,6 @@ MODEL_CATALOG: tuple[ModelProfile, ...] = (
     ModelProfile("kimi", "kimi-k2.6", _caps(reasoning=2, coding=2, tool_use=True, context_window=256_000, cost=1, latency=1), 2, 0.95, 4.0),
     ModelProfile("gemini", "gemini-2.5-flash", _caps(reasoning=2, coding=2, vision=True, tool_use=True, context_window=1_000_000, cost=1, latency=1), 2),
     ModelProfile("gemini", "gemini-2.5-pro", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=3, latency=3), 3),
-    ModelProfile("gemini", "gemini-2.0-flash", _caps(reasoning=1, coding=1, vision=True, tool_use=True, context_window=1_000_000, cost=1, latency=1), 1),
     ModelProfile("anthropic", "claude-opus-5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=3, latency=3), 3, 5.0, 25.0),
     ModelProfile("anthropic", "claude-sonnet-5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=2, latency=2), 3, 2.0, 10.0),
     ModelProfile("anthropic", "claude-sonnet-4-6", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=2, latency=2), 3, 3.0, 15.0),

@@ -202,6 +202,10 @@ def win(_window):
     _window.history = FakeHistory()
     _window.run_logger = FakeRunLogger()
     _window.validator = Validator(FakeRegistry())
+    # Reset per test: a test that narrowed this used to leave every later
+    # test with openai disallowed, passing only when a real key in .env let
+    # the request through the one-time-consent path instead.
+    _window.current_api_permissions = lambda: dict(ALL_ALLOWED)
     _window.session_cost_total = 0.0
     _window.session_request_count = 0
     _window._pending_requests = {}
@@ -214,7 +218,7 @@ class TestAuthorizeRequest:
             self, win, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
 
-        win.current_api_permissions = lambda: {"allow_deepseek": False}
+        monkeypatch.setattr(win, "current_api_permissions", lambda: {"allow_deepseek": False})
         monkeypatch.setattr(win, "provider_key_available", lambda provider: True)
         confirmations = []
         monkeypatch.setattr(
@@ -231,7 +235,7 @@ class TestAuthorizeRequest:
     def test_missing_key_blocks_before_consent_or_run(self, win, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
 
-        win.current_api_permissions = lambda: {"allow_deepseek": False}
+        monkeypatch.setattr(win, "current_api_permissions", lambda: {"allow_deepseek": False})
         monkeypatch.setattr(win, "provider_key_available", lambda provider: False)
         monkeypatch.setattr(
             QMessageBox, "question",
