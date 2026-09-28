@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections import Counter
+from collections import Counter, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from urllib.parse import quote
@@ -38,7 +38,18 @@ CACHE_MAX_AGE = 7 * 24 * 3600
 EXCLUDED_CATEGORIES = {"xx NSFW xx"}
 MAX_WORKERS = 12
 REQUEST_TIMEOUT = 8
-SWEEP_BUDGET_SECONDS = 90
+SWEEP_BUDGET_SECONDS = 120
+#: A refused connection is the network pushing back (a router's flood
+#: protection, a VPN or firewall rate limit), not the site answering. When
+#: BACKOFF_TRIGGER of the last BACKOFF_WINDOW answers are refusals, the sweep
+#: halves how many requests it keeps in flight and pauses, then climbs back
+#: one at a time after a clean window. Refused sites get one retry at the end.
+REFUSAL_REASONS = {"ConnectionError"}
+BACKOFF_WINDOW = 20
+BACKOFF_TRIGGER = 5
+BACKOFF_PAUSE_SECONDS = 3.0
+MIN_WORKERS = 2
+RETRY_WORKERS = 4
 #: Above this share of refused/failed connections the sweep says so: it is
 #: what a VPN or firewall rate limit looks like, and it makes misses unreliable.
 NETWORK_FAILURE_WARNING_SHARE = 0.25
@@ -165,34 +176,87 @@ def sweep(username: str, *, on_progress=None, should_stop=None,
     reasons: Counter = Counter()
     deadline = time.monotonic() + SWEEP_BUDGET_SECONDS
     stopped = timed_out = False
+    queue = deque(sites)
+    deferred: list[dict] = []          # refused once, waiting for their retry
+    retrying = False
+    limit = MAX_WORKERS
+    pause_until = 0.0
+    recent: deque = deque(maxlen=BACKOFF_WINDOW)
+    slowdowns = recovered = retried = 0
+    in_flight: dict = {}
+    done_count = 0
+
+    def record(outcome: dict) -> None:
+        nonlocal done_count, missing, unclear
+        done_count += 1
+        if outcome["status"] == "found":
+            found.append(outcome)
+        elif outcome["status"] == "missing":
+            missing += 1
+        else:
+            unclear += 1
+            reasons[outcome.get("reason") or "unknown"] += 1
+
     # Not a `with` block: its exit waits for every in-flight request, and a
     # Stop should return at once rather than after the slowest site times out.
     pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
     try:
-        pending = {pool.submit(check_site, site, username) for site in sites}
-        done_count = 0
-        while pending:
+        while True:
             if should_stop and should_stop():
                 stopped = True
                 break
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            if now > deadline:
                 timed_out = True
                 break
-            finished, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            if now >= pause_until:
+                while queue and len(in_flight) < limit:
+                    site = queue.popleft()
+                    in_flight[pool.submit(check_site, site, username)] = site
+            if not in_flight:
+                if queue:                      # paused: wait out the back-off
+                    time.sleep(min(0.2, max(pause_until - now, 0.01)))
+                    continue
+                if deferred and not retrying:  # one gentle retry of refused sites
+                    retrying = True
+                    retried = len(deferred)
+                    queue.extend(deferred)
+                    deferred.clear()
+                    limit = min(limit, RETRY_WORKERS)
+                    pause_until = time.monotonic() + BACKOFF_PAUSE_SECONDS
+                    continue
+                break
+            finished, _ = wait(in_flight, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in finished:
+                site = in_flight.pop(future)
                 outcome = future.result()
-                done_count += 1
-                if outcome["status"] == "found":
-                    found.append(outcome)
-                elif outcome["status"] == "missing":
-                    missing += 1
-                else:
-                    unclear += 1
-                    reasons[outcome.get("reason") or "unknown"] += 1
+                refused = outcome.get("reason") in REFUSAL_REASONS
+                recent.append(refused)
+                if refused and not retrying:
+                    deferred.append(site)
+                    continue
+                if retrying and outcome["status"] in ("found", "missing"):
+                    recovered += 1
+                record(outcome)
             if finished and on_progress:
                 on_progress(done_count, len(sites))
+            if sum(recent) >= BACKOFF_TRIGGER:
+                limit = max(MIN_WORKERS, limit // 2)
+                pause_until = time.monotonic() + BACKOFF_PAUSE_SECONDS
+                slowdowns += 1
+                recent.clear()
+            elif len(recent) == BACKOFF_WINDOW and limit < MAX_WORKERS and not retrying:
+                limit += 1
+                recent.clear()
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+    # Refused sites whose retry never finished (Stop, time budget) still count.
+    # Once the retry round has begun, everything queued or in flight is one
+    # of them; before it, the queue holds sites never tried, which do not.
+    unfinished = len(deferred) + (len(queue) + len(in_flight) if retrying else 0)
+    for _ in range(unfinished):
+        record({"status": "unclear", "reason": "ConnectionError"})
 
     found.sort(key=lambda hit: (hit.get("category") or "", hit.get("site") or ""))
     result.update({
@@ -205,6 +269,13 @@ def sweep(username: str, *, on_progress=None, should_stop=None,
         "inconclusive_reasons": dict(reasons.most_common(5)),
         "found": found,
     })
+    if slowdowns or retrying:
+        result["backoff"] = {
+            "slowdowns": slowdowns,
+            "retried": retried,
+            "recovered_on_retry": recovered,
+            "final_parallel_requests": limit,
+        }
     failed = sum(n for reason, n in reasons.items() if not reason.startswith("HTTP"))
     if done_count and failed / done_count > NETWORK_FAILURE_WARNING_SHARE:
         result["network_warning"] = (

@@ -539,12 +539,12 @@ class OsintHeavyPanel(AgentPanel):
             return
 
         # Live public-source collection runs before the model call, on a
-        # worker thread: a Deep Dive username sweep takes up to a minute. It is
+        # worker thread: a Deep Dive username sweep takes up to two minutes. It is
         # a free, no-model step; the real number of sources contacted drives
         # the Sources gauge instead of the model's self-declared estimate.
         self.status_label.setText(
             "Collecting live public-source data (the WhatsMyName sweep on a "
-            "username can take a minute)…" if scope == "Deep Dive"
+            "username can take one to two minutes)…" if scope == "Deep Dive"
             else "Collecting live public-source data…"
         )
         self._collecting = True
