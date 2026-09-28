@@ -89,9 +89,30 @@ _AHMIA_HTML = """
 """
 
 
-def test_ahmia_parses_onion_title_and_snippet(monkeypatch):
+# Ahmia's home page carries the search form with a randomised-name hidden token.
+_AHMIA_HOME = (
+    '<html><body><form action="/search/" method="get">'
+    '<input type="search" name="q">'
+    '<input type="hidden" name="1c7baf" value="255594">'
+    '</form></body></html>'
+)
+
+
+def _ahmia_get(results_html="", results_status=200, calls=None):
+    """Fake requests.get dispatching Ahmia's two-step flow: home then search."""
+    def fake_get(url, *a, **k):
+        if calls is not None:
+            calls.append((url, k.get("params")))
+        if "/search" in url:
+            return _Response(status_code=results_status, text=results_html)
+        return _Response(status_code=200, text=_AHMIA_HOME)  # home page
+    return fake_get
+
+
+def test_ahmia_submits_token_then_parses_onion_title_and_snippet(monkeypatch):
+    calls = []
     monkeypatch.setattr(exposure_lookup.requests, "get",
-                        lambda *a, **k: _Response(status_code=200, text=_AHMIA_HTML))
+                        _ahmia_get(_AHMIA_HTML, 200, calls))
     result = exposure_lookup.lookup(
         "example.com", "Domain", selected_sources=("ahmia",))
     ah = result["ahmia"]
@@ -103,11 +124,14 @@ def test_ahmia_parses_onion_title_and_snippet(monkeypatch):
     assert "Leaked DB" in first["title"]
     assert "password hashes" in first["snippet"]
     assert result["summary"]["darkweb_index_hits"] == 2
+    # The search request carries the token parsed from the home page.
+    search_call = next(c for c in calls if "/search" in c[0])
+    assert search_call[1] == {"q": "example.com", "1c7baf": "255594"}
 
 
 def test_ahmia_redirect_to_home_is_reported_not_an_error(monkeypatch):
     monkeypatch.setattr(exposure_lookup.requests, "get",
-                        lambda *a, **k: _Response(status_code=302))
+                        _ahmia_get(results_html="", results_status=302))
     result = exposure_lookup.lookup(
         "example.com", "Domain", selected_sources=("ahmia",))
     ah = result["ahmia"]
@@ -116,6 +140,17 @@ def test_ahmia_redirect_to_home_is_reported_not_an_error(monkeypatch):
     assert "redirected" in ah["note"]
     # A redirect is still a contacted source, not an error.
     assert result["sources_contacted"] == [{"source": "Ahmia", "status": "checked"}]
+
+
+def test_ahmia_missing_token_is_a_clean_error(monkeypatch):
+    # Home page with no hidden token (layout changed) — reported, never crashes.
+    monkeypatch.setattr(
+        exposure_lookup.requests, "get",
+        lambda url, *a, **k: _Response(status_code=200, text="<html><form></form></html>"))
+    result = exposure_lookup.lookup(
+        "example.com", "Domain", selected_sources=("ahmia",))
+    assert result["ahmia"]["status"] == "error"
+    assert "token" in result["ahmia"]["detail"]
 
 
 # ── Intelligence X ───────────────────────────────────────────────────────────
