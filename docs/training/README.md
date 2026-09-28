@@ -19,17 +19,18 @@ troubleshooting and combined-agent workflows. Open it from Sentinel's
 - [Privacy and cost](privacy_cost.md)
 - [Troubleshooting](troubleshooting.md)
 
-### Agent courses
+### Agents
 
 - [Chat](chat.md)
 - [Trace](trace.md)
 - [Bloodhound](bloodhound.md)
 - [Beacon](beacon.md)
+- [Sentry](sentry.md)
 - [Bug Spray](bug_spray.md)
 - [Tunnel](tunnel.md)
 - [Forge](forge.md)
 
-### Working across Sentinel
+### Across Sentinel
 
 - [Agent workflows](workflows.md)
 - [Testing roadmap](../testing_roadmap.md)

@@ -1,7 +1,7 @@
 # Sentinel testing roadmap
 
 Updated 2026-09-16. This is the implementation plan for testing the **shipped**
-Sentinel application: all seven built-in agents, their distinct workflows, shared
+Sentinel application: all eight built-in agents, their distinct workflows, shared
 controls, storage, and three distribution modes. It complements the step-by-step
 [manual acceptance checklist](../tests/manual_test_cases.md); it does not replace
 it. Proposed V3 features get tests when their behavior is specified and built.
@@ -82,7 +82,7 @@ or related to the two built-ins. Keep their tests in their own repositories.
 
 | Surface | Required cases | Priority / evidence |
 |---|---|---|
-| Roster, navigation, enabled agents/tools | Exactly seven built-ins; retired history remains readable; dynamic Forge entries stay separate; panel switch preserves only intended state | **P1** — `test_agent_roster`, Qt navigation and migration tests |
+| Roster, navigation, enabled agents/tools | Exactly eight built-ins; retired history remains readable; dynamic Forge entries stay separate; panel switch preserves only intended state | **P1** — `test_agent_roster`, Qt navigation and migration tests |
 | Provider/model selection and Auto-route | All listed providers (Ollama, OpenAI, DeepSeek, Kimi, Gemini, Anthropic, Qwen); model-list failure/fallback; privacy/local preference; paid marker; explicit override wins | **P1** — extend router and UI contract tests; no network in default suite |
 | Request guard, permissions, budgets, cost | Missing key, disabled provider/tool/agent, exact Decimal cap, agent/session/daily limits, consent decline, two simultaneous same-agent runs, streamed usage, Kimi cache, cancellation/failure, no double billing | **P0** — `test_request_guard`, `test_cost_and_limits`, `test_kimi_cache_accounting`; fault-inject at each lifecycle transition |
 | Persistence and history | SQLite migration/idempotence, saved chats/searches, run status, project assignment/filter/search, usage/cost export, restart, corrupted/old record recovery | **P1** — extend migrations and UI tests with disposable app data; never use real `data/sentinel.db` |

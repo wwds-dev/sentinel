@@ -52,6 +52,15 @@ BUILTIN_AGENTS = {
         "allowed_tools": None,
         "budget_limit_eur": None,
     },
+    "sentry": {
+        "label": "Sentry",
+        "icon": "◎",
+        "subtitle": "Network anomaly watch",
+        "tooltip": "Read-only watch of your own network for new devices, ARP spoofing, and unexpected services.",
+        "description": "Continuous, read-only network monitoring with baseline diffing and an AI read of anomalies.",
+        "allowed_tools": None,
+        "budget_limit_eur": None,
+    },
     "bug_bounty": {
         "label": "Bug Spray",
         "icon": "⌁",
@@ -73,7 +82,7 @@ BUILTIN_AGENTS = {
 }
 
 BUILTIN_AGENT_ORDER = (
-    "chat", "osint", "osint_heavy", "wifi", "bug_bounty", "vpn", "manager",
+    "chat", "osint", "osint_heavy", "wifi", "sentry", "bug_bounty", "vpn", "manager",
 )
 
 # These were once Sentinel built-ins. Their application data is preserved in

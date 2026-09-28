@@ -160,6 +160,7 @@ def pricing_metadata(provider: str, model: str) -> PricingMetadata:
 AGENT_HINTS = {
     "osint": "research", "osint_heavy": "research", "wifi": "coding",
     "bug_bounty": "coding", "manager": "coding", "vpn": "coding",
+    "sentry": "coding",
 }
 
 
@@ -268,6 +269,7 @@ AGENT_RECOMMENDATIONS = {
     "bug_bounty": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for security and coding analysis."),
     "manager": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for code and specification generation."),
     "vpn": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for configuration reasoning."),
+    "sentry": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for network-anomaly interpretation."),
 }
 TASK_RECOMMENDATIONS = {
     "general": Recommendation("ollama", "deepseek-r1:8b", "Private local baseline for general chat."),

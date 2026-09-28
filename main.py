@@ -67,6 +67,7 @@ from agents.chat_agent import ChatAgent
 from agents.osint_agent import OSINTAgent
 from agents.bug_spray.sentinel_chat_agent import BugBountyAgent
 from agents.wifi_agent import WiFiAgent
+from agents.sentry.sentinel_chat_agent import SentryAgent
 from agents.osint_heavy_agent import OsintHeavyAgent
 from agents.vpn_agent.sentinel_chat_agent import VpnAgent
 from services.agent_factory import AgentFactory
@@ -130,6 +131,7 @@ AGENT_SETUP_WIDGETS = {
     "osint":       None,  # OsintPanel owns its boxes (phase 4)
     "osint_heavy": None,  # OsintHeavyPanel owns its boxes (phase 4)
     "wifi":        None,  # WifiPanel owns its boxes (phase 4)
+    "sentry":      None,  # SentryPanel owns its boxes
     "bug_bounty":  None,  # BugBountyPanel owns its boxes (phase 4)
     "manager":     None,  # ManagerPanel owns its boxes (phase 4)
     "vpn":         None,  # VpnPanel owns its boxes (phase 4)
@@ -147,6 +149,7 @@ from ui.panels.manager import ManagerPanel
 from ui.panels.osint_heavy import OsintHeavyPanel
 from ui.panels.vpn import VpnPanel
 from ui.panels.wifi import WifiPanel
+from ui.panels.sentry import SentryPanel
 from ui.panels.osint import OsintPanel
 
 class ChatInput(QTextEdit):
@@ -225,6 +228,7 @@ class GodAI(QWidget):
             "osint": OSINTAgent(),
             "bug_bounty": BugBountyAgent(),
             "wifi": WiFiAgent(),
+            "sentry": SentryAgent(),
             "osint_heavy": OsintHeavyAgent(),
             "vpn": VpnAgent(),
         }
@@ -2096,6 +2100,9 @@ class GodAI(QWidget):
         self.wifi_panel = WifiPanel(self)
         add_specialist_panel("wifi", self.wifi_panel)
 
+        self.sentry_panel = SentryPanel(self)
+        add_specialist_panel("sentry", self.sentry_panel)
+
         self.bug_bounty_panel = BugBountyPanel(self)
         add_specialist_panel("bug_bounty", self.bug_bounty_panel)
 
@@ -2601,10 +2608,11 @@ class GodAI(QWidget):
         is_osint = agent_name == "osint"
         is_osint_heavy = agent_name == "osint_heavy"
         is_wifi = agent_name == "wifi"
+        is_sentry = agent_name == "sentry"
         is_bug_bounty = agent_name == "bug_bounty"
         is_vpn = agent_name == "vpn"
         is_custom = (is_manager
-                     or is_osint or is_osint_heavy or is_wifi
+                     or is_osint or is_osint_heavy or is_wifi or is_sentry
                      or is_bug_bounty or is_vpn)
 
         chat_active = agent_name == "chat"
@@ -2624,6 +2632,7 @@ class GodAI(QWidget):
         self.osint_panel.setVisible(is_osint)
         self.osint_heavy_panel.setVisible(is_osint_heavy)
         self.wifi_panel.setVisible(is_wifi)
+        self.sentry_panel.setVisible(is_sentry)
         self.bug_bounty_panel.setVisible(is_bug_bounty)
         self.vpn_panel.setVisible(is_vpn)
         for key, scroll in self.panel_scrolls.items():

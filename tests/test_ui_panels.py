@@ -3012,3 +3012,142 @@ class TestBeaconSectionParsing:
         parsed = WifiPanel.parse_analysis_sections("## SUMMARY\nOnly a summary")
         assert parsed["summary"] == "Only a summary"
         assert parsed["security"] == ""
+
+
+# ── Sentry (network anomaly watch) ────────────────────────────────────────────
+
+class FakeSentryWatchWorker(QObject):
+    """A SentryWatchWorker that emits a canned summary instead of touching the
+    network. The summary to emit is set on the class before each run."""
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+    instances = []
+    next_summary = {"baseline_established": False, "findings": [],
+                    "device_count": 0, "listener_count": 0, "connection_count": 0}
+
+    def __init__(self, persist=True):
+        super().__init__()
+        self.persist = persist
+        self.running = True
+        FakeSentryWatchWorker.instances.append(self)
+
+    def start(self):
+        self.running = False
+        self.finished_signal.emit(dict(FakeSentryWatchWorker.next_summary))
+
+    def isRunning(self):
+        return self.running
+
+    def cancel(self):
+        self.running = False
+
+
+class FakeSentryAgent:
+    def build_messages(self, prompt):
+        return [{"role": "system", "content": "s"}, {"role": "user", "content": prompt}]
+
+
+@pytest.fixture
+def sentry_panel(qapp, monkeypatch, tmp_path):
+    import ui.panels.sentry as sentry_module
+    from agents.sentry.sentry import baseline as baseline_module
+    from ui.panels.sentry import SentryPanel
+
+    # No network worker, no launchctl, no writes outside tmp.
+    monkeypatch.setattr(sentry_module, "SentryWatchWorker", FakeSentryWatchWorker)
+    monkeypatch.setattr(SentryPanel, "worker_class", FakeWorker)
+    monkeypatch.setattr(sentry_module.watchd, "status",
+                        lambda: {"installed": False, "loaded": False, "interval": None})
+    monkeypatch.setattr(baseline_module, "default_state_dir", lambda: tmp_path)
+    FakeSentryWatchWorker.instances.clear()
+    FakeWorker.instances.clear()
+
+    host = FakeHost()
+    host.agent_instances["sentry"] = FakeSentryAgent()
+    return SentryPanel(host)
+
+
+class TestSentryPanel:
+
+    def test_it_builds_hidden_and_read_only_by_default(self, sentry_panel):
+        assert sentry_panel.isHidden() is True
+        assert sentry_panel.stop_btn.isEnabled() is False
+
+    def test_a_watch_pass_with_findings_feeds_the_ai_when_ticked(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False,
+            "findings": [{"severity": "alert", "kind": "gateway_mac_change",
+                          "title": "Gateway hardware changed", "detail": "d", "evidence": {}}],
+            "device_count": 4, "listener_count": 10, "connection_count": 12,
+            "taken_at": "2026-09-28T00:00:00+00:00",
+        }
+        sentry_panel.ai_checkbox.setChecked(True)
+        sentry_panel.run_pass(persist=True)
+        # persisted pass, findings rendered, and the paid read authorised
+        assert FakeSentryWatchWorker.instances[-1].persist is True
+        assert "ALERT" in sentry_panel.findings_box.toPlainText()
+        assert [c for c in sentry_panel.host.calls if c[0] == "authorize"]
+
+    def test_a_finding_read_is_recorded(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False,
+            "findings": [{"severity": "notice", "kind": "new_device",
+                          "title": "New device 10.0.0.5", "detail": "", "evidence": {}}],
+            "device_count": 1, "listener_count": 0, "connection_count": 0,
+        }
+        sentry_panel.run_pass(persist=True)
+        sentry_panel.worker.finished_signal.emit("Looks benign.")
+        assert [c for c in sentry_panel.host.calls if c[0] == "record"]
+        assert sentry_panel.status_label.text() == "Analysis complete."
+
+    def test_no_findings_never_spends(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False, "findings": [],
+            "device_count": 3, "listener_count": 5, "connection_count": 7,
+        }
+        sentry_panel.run_pass(persist=True)
+        assert [c for c in sentry_panel.host.calls if c[0] == "authorize"] == []
+        assert sentry_panel.status_label.text() == "No new anomalies."
+
+    def test_first_pass_baseline_never_spends(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": True, "findings": [],
+            "device_count": 3, "listener_count": 5, "connection_count": 7,
+        }
+        sentry_panel.run_pass(persist=True)
+        assert [c for c in sentry_panel.host.calls if c[0] == "authorize"] == []
+        assert "Baseline recorded" in sentry_panel.status_label.text()
+
+    def test_dry_run_uses_a_non_persisting_worker(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False, "findings": [],
+            "device_count": 0, "listener_count": 0, "connection_count": 0,
+        }
+        sentry_panel.run_pass(persist=False)
+        assert FakeSentryWatchWorker.instances[-1].persist is False
+
+    def test_a_blocked_request_leaves_the_panel_usable(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False,
+            "findings": [{"severity": "warning", "kind": "new_listener",
+                          "title": "New listener", "detail": "", "evidence": {}}],
+            "device_count": 0, "listener_count": 1, "connection_count": 0,
+        }
+        sentry_panel.host.authorized = False
+        sentry_panel.run_pass(persist=True)
+        assert FakeWorker.instances == []
+        assert sentry_panel.run_btn.isEnabled() is True
+        assert sentry_panel.stop_btn.isEnabled() is False
+
+    def test_install_and_remove_background_call_launchd(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        calls = []
+        monkeypatch.setattr(sentry_module.watchd, "install",
+                            lambda interval: calls.append(("install", interval)) or {"message": "ok"})
+        monkeypatch.setattr(sentry_module.watchd, "remove",
+                            lambda: calls.append(("remove",)) or {"message": "gone"})
+        sentry_panel.interval_box.setValue(5)
+        sentry_panel.install_background()
+        sentry_panel.remove_background()
+        assert calls == [("install", 300), ("remove",)]

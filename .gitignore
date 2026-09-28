@@ -48,3 +48,4 @@ data/usage_log.json
 /agents/osint_heavy_agent/
 /agents/wifi_agent/
 /agents/manager_agent/
+/agents/sentry/
