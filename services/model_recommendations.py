@@ -117,7 +117,7 @@ MODEL_CATALOG: tuple[ModelProfile, ...] = (
     ModelProfile("openai", "gpt-4o", _caps(reasoning=3, coding=2, vision=True, tool_use=True, context_window=128_000, cost=3, latency=2), 3),
     ModelProfile("openai", "gpt-4.1-mini", _caps(reasoning=2, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=1, latency=1), 2, 0.40, 1.60),
     ModelProfile("openai", "gpt-4.1", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=3, latency=2), 3, 2.0, 8.0),
-    ModelProfile("openai", "gpt-image-1.5", _caps(text=False, image_generation=True, context_window=4_000, cost=3, latency=3), 3),
+    ModelProfile("openai", "gpt-image-1.5", _caps(text=False, image_generation=True, context_window=4_000, cost=3, latency=3), 3, 5.0, 32.0),
     ModelProfile("deepseek", "deepseek-flash", _caps(reasoning=2, coding=2, tool_use=True, context_window=128_000, cost=1, latency=1), 2),
     ModelProfile("deepseek", "deepseek-v4-pro", _caps(reasoning=3, coding=3, tool_use=True, context_window=128_000, cost=2, latency=2), 3),
     ModelProfile("kimi", "kimi-k3", _caps(reasoning=3, coding=2, tool_use=True, context_window=1_000_000, cost=2, latency=2), 3, 3.0, 15.0),

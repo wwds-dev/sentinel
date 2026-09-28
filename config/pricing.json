@@ -16,6 +16,22 @@
     "gpt-4.1": {
       "input_per_1m_usd": 2.0,
       "output_per_1m_usd": 8.0
+    },
+    "gpt-image-2": {
+      "input_per_1m_usd": 5.0,
+      "output_per_1m_usd": 30.0
+    },
+    "gpt-image-1.5": {
+      "input_per_1m_usd": 5.0,
+      "output_per_1m_usd": 32.0
+    },
+    "gpt-image-1": {
+      "input_per_1m_usd": 5.0,
+      "output_per_1m_usd": 40.0
+    },
+    "gpt-image-1-mini": {
+      "input_per_1m_usd": 2.0,
+      "output_per_1m_usd": 8.0
     }
   },
   "deepseek": {
