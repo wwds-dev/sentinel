@@ -194,9 +194,22 @@ class FlowLayout(QLayout):
     def sizeHint(self):
         return self.minimumSize()
 
+    def _visible_items(self):
+        """Skip hidden widgets, the way QBoxLayout does.
+
+        A run bar toggles Run/Stop by hiding one of them; without this the
+        hidden button still reserves its slot, leaving a blank gap and counting
+        toward the wrap width.
+        """
+        for item in self._items:
+            widget = item.widget()
+            if widget is not None and widget.isHidden():
+                continue
+            yield item
+
     def minimumSize(self):
         size = QSize()
-        for item in self._items:
+        for item in self._visible_items():
             size = size.expandedTo(item.minimumSize())
         margins = self.contentsMargins()
         return size + QSize(margins.left() + margins.right(),
@@ -211,7 +224,7 @@ class FlowLayout(QLayout):
         line_height = 0
         space = self.spacing()
 
-        for item in self._items:
+        for item in self._visible_items():
             hint = item.sizeHint()
             if x + hint.width() > right and line_height > 0:   # wrap
                 x = left

@@ -181,11 +181,19 @@ class AgentPanel(QWidget):
         container = QWidget(self)
         container.setObjectName("RunBar")
         container.setAttribute(Qt.WA_StyledBackground, True)
-        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # A wrapping row instead of a QHBoxLayout: a fixed row of controls +
+        # actions reports the sum of their widths as its minimum, which pins a
+        # hard minimum width on the whole workspace (Beacon, with the most
+        # buttons, hit ~880px and had to be scrolled horizontally). FlowLayout
+        # lets the bar reflow onto a second line so the pane shrinks to the
+        # widest single control. The trade is right-alignment of the primary
+        # action, which a wrapping layout cannot express.
+        policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        policy.setHeightForWidth(True)
+        container.setSizePolicy(policy)
 
-        row = QHBoxLayout(container)
+        row = FlowLayout(container, spacing=8)
         row.setContentsMargins(8, 8, 8, 8)
-        row.setSpacing(8)
 
         if context:
             chip = QLabel(context)
@@ -210,7 +218,6 @@ class AgentPanel(QWidget):
             lambda _checked=False: self.auto_route(context)
         )
         row.addWidget(self.auto_route_btn)
-        row.addStretch()
 
         for button in secondary:
             row.addWidget(button)
