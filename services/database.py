@@ -414,6 +414,13 @@ def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
         ("qwen", "qwen3.8-max",                     1.65,   4.951),
         ("qwen", "qwen3-max",                       1.65,   4.951),
         ("qwen", "default",                         1.65,   4.951),
+        # OpenAI image models: text input and image output per 1M tokens,
+        # from the official pricing page (2026-09-28). A text prompt bills
+        # only text-input tokens; the image comes back as output tokens.
+        ("openai", "gpt-image-2",                   5.00,  30.00),
+        ("openai", "gpt-image-1.5",                 5.00,  32.00),
+        ("openai", "gpt-image-1",                   5.00,  40.00),
+        ("openai", "gpt-image-1-mini",              2.00,   8.00),
     ]
     for backend, model, inp, out in defaults:
         conn.execute(

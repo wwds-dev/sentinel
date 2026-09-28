@@ -132,3 +132,56 @@ def test_run_backend_passes_the_selected_image_model():
     )
     assert result == ("ok", None)
     assert calls == [("p", "gpt-image-2")]
+
+
+@pytest.fixture
+def seeded_pricing(tmp_path, monkeypatch):
+    """A scratch DB carrying only what the startup seed inserts."""
+    import sqlite3
+
+    from services import database, usage_tracker
+
+    db_path = tmp_path / "pricing.db"
+
+    def connect():
+        connection = sqlite3.connect(db_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    with connect() as conn:
+        conn.executescript("""
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO settings VALUES ('eur_per_usd', '1.0');
+            CREATE TABLE pricing (
+                backend TEXT NOT NULL, model TEXT NOT NULL,
+                input_per_1m_usd REAL NOT NULL DEFAULT 0.0,
+                cached_input_per_1m_usd REAL,
+                output_per_1m_usd REAL NOT NULL DEFAULT 0.0,
+                PRIMARY KEY (backend, model)
+            );
+            INSERT INTO pricing VALUES ('openai', 'default', 0.15, NULL, 0.6);
+        """)
+        database._seed_missing_pricing(conn)
+    monkeypatch.setattr(usage_tracker, "get_connection", connect)
+    return usage_tracker.UsageTracker()
+
+
+def test_default_image_model_is_priced_at_image_rates_not_the_text_default(seeded_pricing):
+    # 1M text-input tokens at $5 plus 1M image-output tokens at $32.
+    cost = seeded_pricing.calculate_cost_eur(
+        "openai", DEFAULT_IMAGE_MODEL, 1_000_000, 1_000_000,
+    )
+    assert cost == 37.0
+
+
+def test_every_priced_image_model_is_in_the_seed_and_the_json(seeded_pricing):
+    import json
+    from pathlib import Path
+
+    seeded = seeded_pricing.load_pricing()["openai"]
+    shipped = json.loads(
+        (Path(__file__).resolve().parents[1] / "config" / "pricing.json").read_text()
+    )["openai"]
+    for model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"):
+        assert seeded[model]["output_per_1m_usd"] == shipped[model]["output_per_1m_usd"] > 0
+        assert seeded[model]["input_per_1m_usd"] == shipped[model]["input_per_1m_usd"] > 0
