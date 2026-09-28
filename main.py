@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from services.ollama_client import OllamaClient, MUSE_GLIMMER_VARIANTS, muse_glimmer_default
-from services.openai_client import OpenAIClientWrapper
+from services.openai_client import OpenAIClientWrapper, is_image_model
 from services.deepseek_client import DeepSeekClientWrapper
 from services.kimi_client import KimiClientWrapper
 from services.gemini_client import GeminiClientWrapper
@@ -3351,8 +3351,8 @@ class GodAI(QWidget):
                 return self.ollama.generate(model=model, prompt=prompt)
 
         if backend == "openai":
-            if model in {"dall-e-3", "chatgpt-image-latest", "gpt-image-1"}:
-                return self.openai.generate_image(prompt)
+            if is_image_model(model):
+                return self.openai.generate_image(prompt, model=model)
             if hasattr(self.openai, "stream_chat"):
                 return self.openai.stream_chat(messages=messages, model=model)
             if hasattr(self.openai, "chat"):

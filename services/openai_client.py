@@ -1,7 +1,27 @@
+import base64
 import os
+import re
+from datetime import datetime
+from pathlib import Path
+
 from openai import OpenAI
 
 from services.api_limits import REQUEST_TIMEOUT_SECONDS, MAX_RETRIES
+from services.runtime_paths import user_data_base
+
+# dall-e-3 left OpenAI's model list in Sep 2026; the gpt-image models replace it.
+DEFAULT_IMAGE_MODEL = "gpt-image-1.5"
+IMAGE_MODEL_PREFIXES = ("gpt-image", "chatgpt-image", "dall-e")
+
+
+def is_image_model(model: str) -> bool:
+    """True for a model served by images.generate rather than chat."""
+    return str(model).lower().startswith(IMAGE_MODEL_PREFIXES)
+
+
+def image_output_dir() -> Path:
+    """Generated images go under the ignored output/ folder of the data base."""
+    return user_data_base() / "output" / "images"
 
 
 class OpenAIClientWrapper:
@@ -10,7 +30,7 @@ class OpenAIClientWrapper:
         "gpt-4o",
         "gpt-4.1-mini",
         "gpt-4.1",
-        "dall-e-3",
+        DEFAULT_IMAGE_MODEL,
     ]
 
     def __init__(self):
@@ -70,18 +90,46 @@ class OpenAIClientWrapper:
         messages = [{"role": "user", "content": prompt}]
         return self.chat(messages=messages, model=model)
     
-    def generate_image(self, prompt: str, size: str = "1024x1024") -> str:
-        """Generate an image with DALL-E 3. Returns the image URL."""
+    def generate_image(self, prompt: str, model: str = DEFAULT_IMAGE_MODEL,
+                       size: str = "1024x1024", quality: str | None = None,
+                       output_dir: Path | None = None) -> tuple[str, dict | None]:
+        """Generate one image, save it, and return (transcript text, usage).
+
+        The gpt-image models answer with base64 data, not a URL, so the image
+        is written under output/images/ and the text names that file. Quality
+        is only sent when given: gpt-image takes low/medium/high/auto, not
+        dall-e-3's standard/hd, and the API default is auto.
+        """
         if not self.client:
             raise RuntimeError("OPENAI_API_KEY is not set.")
-        response = self.client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size=size,
-            quality="standard",
-            n=1,
-        )
-        return response.data[0].url
+        params = {"model": model, "prompt": prompt, "size": size, "n": 1}
+        if quality:
+            params["quality"] = quality
+        response = self.client.images.generate(**params)
+
+        image = (response.data or [None])[0]
+        if image is None:
+            raise RuntimeError(f"{model} returned no image.")
+        usage = None
+        if getattr(response, "usage", None) is not None:
+            usage = {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        if not image.b64_json:
+            if image.url:
+                return f"Image: {image.url}", usage
+            raise RuntimeError(f"{model} returned neither image data nor a URL.")
+
+        extension = getattr(response, "output_format", None) or "png"
+        folder = Path(output_dir) if output_dir is not None else image_output_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        safe_model = re.sub(r"[^A-Za-z0-9._-]", "_", model)
+        path = folder / f"{stamp}_{safe_model}.{extension}"
+        path.write_bytes(base64.b64decode(image.b64_json))
+        return f"Image saved to {path}", usage
 
     def stream_chat(self, messages, model="gpt-4o-mini"):
         if not self.client:
