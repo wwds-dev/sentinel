@@ -225,6 +225,22 @@ Run the automated suite from the activated environment:
 pytest
 ```
 
+The suite never contacts a model provider or the local Ollama daemon:
+`tests/conftest.py` serves every client's offline `KNOWN_MODELS` and points
+Chat's saved defaults at a temporary copy of `config/settings.json`. That keeps
+results independent of which keys are in `.env` and what is pulled locally, but
+it also means the suite cannot notice a provider renaming or retiring a model.
+Check that by hand, before a release or when a panel opens on the wrong model:
+
+```bash
+.venv/bin/python scripts/check_live_models.py
+```
+
+It lists each provider's models (free; no prompt is sent), and reports every
+recommended model and saved Chat default as found or missing. It also names
+offline `KNOWN_MODELS` entries the live API no longer serves. Exit status 1
+means something is missing.
+
 The current manual acceptance checklist is in `tests/manual_test_cases.md`. It covers all seven built-in agents and verifies that Writing and Coding remain Chat tools rather than sidebar agents.
 The [testing roadmap](docs/testing_roadmap.md) maps every shipped agent workflow
 and shared control to automated, packaged-app, and owned-lab checks, with

@@ -24,23 +24,58 @@ def _session_qapplication():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _offline_deepseek_models():
-    """Serve DeepSeek's model list from KNOWN_MODELS, never the live API.
+def _offline_model_lists():
+    """Serve every provider's model list from its KNOWN_MODELS, never live.
 
-    The app loads the real `.env`, so with a key present every panel asked
-    DeepSeek for its models at construction, and a rename on DeepSeek's side
+    The app loads the real `.env`, so with a key present every panel asked the
+    provider for its models at construction, and a rename on DeepSeek's side
     (deepseek-v4-flash -> deepseek-flash, Sep 2026) failed the suite with no
-    local change. Session scope, because the module-scoped `win` fixtures are
-    built before any function-scoped patch would apply. A test of
-    `list_models` itself would need to undo this.
-    """
-    from services.deepseek_client import DeepSeekClientWrapper
+    local change. Ollama is the same problem on this machine: what is pulled
+    decided which tests passed. Ollama here is a daemon that lists
+    KNOWN_MODELS, reports no sizes and has nothing loaded.
 
+    Session scope, because the module-scoped `win` fixtures are built before
+    any function-scoped patch would apply. A test of a client's own
+    `list_models` would need to undo this. Whether the recommended models
+    still exist on the real APIs is `scripts/check_live_models.py`'s job.
+    """
+    from services.anthropic_client import AnthropicClientWrapper
+    from services.deepseek_client import DeepSeekClientWrapper
+    from services.gemini_client import GeminiClientWrapper
+    from services.kimi_client import KimiClientWrapper
+    from services.ollama_client import OllamaClient
+    from services.openai_client import OpenAIClientWrapper
+    from services.qwen_client import QwenClientWrapper
+
+    known = lambda self: list(self.KNOWN_MODELS)  # noqa: E731
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(
-            DeepSeekClientWrapper, "list_models",
-            lambda self: list(self.KNOWN_MODELS),
-        )
+        for client in (
+            AnthropicClientWrapper, DeepSeekClientWrapper, GeminiClientWrapper,
+            KimiClientWrapper, OllamaClient, OpenAIClientWrapper,
+            QwenClientWrapper,
+        ):
+            patch.setattr(client, "list_models", known)
+        patch.setattr(OllamaClient, "model_details", lambda self: {})
+        patch.setattr(OllamaClient, "loaded_models", lambda self: [])
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_settings_file():
+    """Point Chat's saved provider/model defaults at a copy under _TEST_ROOT.
+
+    Switching Chat's provider saves the selected model, and the tests switch
+    providers, so they were rewriting the real config/settings.json. Session
+    scope for the same reason as the model lists: `win` is built first.
+    """
+    import main
+
+    copy = _TEST_ROOT / "config" / "settings.json"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    if main.SETTINGS_FILE.exists():
+        shutil.copyfile(main.SETTINGS_FILE, copy)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(main, "SETTINGS_FILE", copy)
         yield
 
 

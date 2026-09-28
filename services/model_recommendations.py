@@ -283,6 +283,29 @@ def as_dict(rec: Recommendation, *, mode: str | None = None) -> dict:
     return {"mode": mode or ("Local only" if rec.provider == "ollama" else "Hybrid allowed"), "provider": rec.provider, "model": rec.model, "reason": rec.reason, "pricing": pricing, "cost_label": pricing.compact}
 
 
+def find_model(names: Sequence[str], wanted: str) -> int:
+    """Index of `wanted` in `names`, tolerating dated API model ids, or -1.
+
+    Providers return ids like "claude-sonnet-4-6-20260112" from the live API
+    but bare names like "claude-sonnet-4-6" from the offline fallback list,
+    so an exact match alone would silently miss. Tries exact, then prefix,
+    then substring. This is how a panel selects its recommended model, and
+    what scripts/check_live_models.py asks of the live lists.
+    """
+    if not wanted:
+        return -1
+    if wanted in names:
+        return list(names).index(wanted)
+    lowered = wanted.lower()
+    for i, name in enumerate(names):
+        if name.lower().startswith(lowered):
+            return i
+    for i, name in enumerate(names):
+        if lowered in name.lower():
+            return i
+    return -1
+
+
 def resolve_available_model(wanted: str, available: list[str]) -> str:
     if not available: return wanted
     if wanted in available: return wanted

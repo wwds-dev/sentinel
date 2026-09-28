@@ -250,20 +250,37 @@ class TestRecommendationsStillReachThePanels:
         assert idx >= 0
         assert model_box.itemData(idx, Qt.ForegroundRole) is not None
 
-    def test_deepseek_models_come_from_the_client_not_the_live_api(self, win):
-        # conftest serves KNOWN_MODELS, so both routes — the panels'
-        # models_for_provider and Chat's own loader — must go through
-        # list_models for the suite to stay independent of DeepSeek's API.
+    def test_trace_models_come_from_the_client_not_the_live_api(self, win):
+        # conftest serves KNOWN_MODELS; the panels reach it through
+        # models_for_provider -> list_models.
         from services.deepseek_client import DeepSeekClientWrapper
 
-        known = DeepSeekClientWrapper.KNOWN_MODELS
         trace_box = win.setup_widgets_for("osint")[1]
-        assert [trace_box.itemText(i) for i in range(trace_box.count())] == known
+        assert [trace_box.itemText(i) for i in range(trace_box.count())] == (
+            DeepSeekClientWrapper.KNOWN_MODELS)
 
-        win.provider_box.setCurrentText("deepseek")
-        win.load_provider_models()
-        chat_box = win.model_box
-        assert [chat_box.itemText(i) for i in range(chat_box.count())] == known
+    @pytest.mark.parametrize("provider", [
+        "ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen",
+    ])
+    def test_chat_models_come_from_the_client_not_the_live_api(
+            self, win, provider):
+        # Chat used to call three providers' APIs itself, around list_models
+        # and so around conftest's offline lists. OpenAI keeps Chat's
+        # text-only filter; everything else is the client's list unchanged.
+        known = list(win.models_for_provider(provider))
+        if provider == "openai":
+            known = [m for m in known if not m.startswith("dall-e")]
+
+        original = win.provider_box.currentText()
+        try:
+            win.provider_box.setCurrentText(provider)
+            win.load_provider_models()
+            chat_box = win.model_box
+            assert [chat_box.itemText(i) for i in range(chat_box.count())] == known
+            assert known
+        finally:
+            win.provider_box.setCurrentText(original)
+            win.load_provider_models()
 
     def test_trace_falls_back_inline_when_deepseek_permission_is_off(
             self, win, monkeypatch):
