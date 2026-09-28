@@ -15,7 +15,10 @@ Zero-cost stack (no key required):
   • Ahmia            → clearnet search of indexed .onion sites, with abuse
                        content filtered out by Ahmia itself. Returns onion
                        addresses and snippets as text; Sentinel does not fetch
-                       the onion sites. GET https://ahmia.fi/search/?q={term}
+                       the onion sites. Two GETs: the home page (to read the
+                       search form's hidden anti-bot token, whose name is
+                       randomised) then GET https://ahmia.fi/search/?q={term}
+                       with that token — a query without it is bounced to home.
 
 Key-gated (set in .env):
   • Intelligence X   → INTELX_API_KEY — leaks, pastes, dark-web and other
@@ -203,34 +206,64 @@ def _ransomware_live(keyword: str) -> dict:
 
 # ── Ahmia ────────────────────────────────────────────────────────────────────
 
+_AHMIA_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+_HIDDEN_INPUT_RE = re.compile(r"<input\b[^>]*type=[\"']hidden[\"'][^>]*>", re.IGNORECASE)
+_INPUT_NAME_RE = re.compile(r"name=[\"']([^\"']+)[\"']", re.IGNORECASE)
+_INPUT_VALUE_RE = re.compile(r"value=[\"']([^\"']*)[\"']", re.IGNORECASE)
+
+
+def _ahmia_token(html: str) -> tuple[str, str] | None:
+    """Read Ahmia's search-form anti-bot token from the home page.
+
+    The form carries a hidden field whose **name is randomised** and whose value
+    the server sets; a search query submitted without that exact name/value pair
+    is redirected to the home page (a plain `?q=` is refused). Parsing the pair
+    lets a keyless request submit the form the way a browser does.
+    """
+    for tag in _HIDDEN_INPUT_RE.findall(html):
+        name = _INPUT_NAME_RE.search(tag)
+        if name:
+            value = _INPUT_VALUE_RE.search(tag)
+            return name.group(1), (value.group(1) if value else "")
+    return None
+
+
 def _ahmia(term: str) -> dict:
     """Search Ahmia's clearnet index of .onion sites for a term.
 
     Ahmia crawls onion services and filters out abuse content on its own side.
-    We read the results page as text and extract the onion address, title and
-    snippet of each hit — Sentinel never contacts the onion sites themselves.
-
-    Ahmia redirects a query it will not serve (unmatched, or a rate-limited or
-    datacentre client) to its home page; that is reported as "no results" with a
-    note rather than an error, because it usually succeeds from an ordinary
-    connection.
+    Two steps, because a bare `GET /search/?q=` is bounced to the home page: read
+    the home page, lift the search form's hidden token (see ``_ahmia_token``),
+    then submit the query with that token. We read the results page as text and
+    extract the onion address, title and snippet of each hit — Sentinel never
+    contacts the onion sites themselves.
     """
     try:
+        home = requests.get("https://ahmia.fi/", timeout=15, headers=_AHMIA_HEADERS)
+        if home.status_code != 200:
+            return {"source": "ahmia", "status": "error",
+                    "detail": f"could not load Ahmia (HTTP {home.status_code})"}
+        token = _ahmia_token(home.text)
+        if token is None:
+            return {"source": "ahmia", "status": "error",
+                    "detail": "could not read Ahmia's search token — its page layout may have changed"}
+        name, value = token
+
         resp = requests.get(
             "https://ahmia.fi/search/",
-            params={"q": term},
+            params={"q": term, name: value},
             timeout=15,
-            headers={
-                "User-Agent": _BROWSER_UA,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
+            headers=_AHMIA_HEADERS,
             allow_redirects=False,
         )
         if resp.status_code in (301, 302, 303, 307, 308):
             return {"source": "ahmia", "status": "ok", "found": False, "results": [],
-                    "note": "Ahmia redirected the query to its home page (no indexed match, "
-                            "or the request was rate-limited); retry from a normal connection."}
+                    "note": "Ahmia redirected the query to its home page — no indexed match, "
+                            "or the search token was rejected."}
         if resp.status_code != 200:
             return {"source": "ahmia", "status": "error", "code": resp.status_code}
 
