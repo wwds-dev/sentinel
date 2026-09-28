@@ -934,9 +934,6 @@ def show_model_guide(app):
         <li><b>claude-opus-4-6</b> — Most capable. Best for complex reasoning, long documents, difficult coding. ~$15/$75 per 1M tokens.</li>
         <li><b>claude-sonnet-4-6</b> — Best balance of quality and cost. Recommended for most tasks. ~$3/$15 per 1M tokens.</li>
         <li><b>claude-haiku-4-5-20251001</b> — Fastest and cheapest. Good for simple tasks and high-volume use. ~$0.80/$4 per 1M tokens.</li>
-        <li><b>claude-3-5-sonnet-20241022</b> — Previous generation Sonnet. Still highly capable. ~$3/$15 per 1M tokens.</li>
-        <li><b>claude-3-5-haiku-20241022</b> — Previous generation Haiku. Fast and affordable. ~$0.80/$4 per 1M tokens.</li>
-        <li><b>claude-3-opus-20240229</b> — Previous generation Opus. ~$15/$75 per 1M tokens.</li>
     </ul>
     <p><b>Use when:</b> you need high-quality, nuanced responses — especially for coding, writing, and analysis.</p>
 
@@ -957,9 +954,8 @@ def show_model_guide(app):
     <p><b>Key:</b> DEEPSEEK_API_KEY — get it at platform.deepseek.com</p>
     <p><b>Models:</b></p>
     <ul>
-        <li><b>deepseek-chat</b> — General-purpose. Strong for coding and analysis.</li>
-        <li><b>deepseek-reasoner</b> — Extended reasoning model. Good for multi-step logic.</li>
-        <li><b>deepseek-coder</b> — Specialised for code generation and debugging.</li>
+        <li><b>deepseek-flash</b> — Fast and inexpensive. Trace's recommended model for structured research.</li>
+        <li><b>deepseek-v4-pro</b> — Stronger reasoning and coding. The Coding tool's recommended model.</li>
     </ul>
     <p><b>Use when:</b> you want strong analysis and coding at potentially lower cost than OpenAI.</p>
 
@@ -982,9 +978,6 @@ def show_model_guide(app):
     <ul>
         <li><b>gemini-2.5-pro</b> — Most capable Gemini. Excellent long-context handling.</li>
         <li><b>gemini-2.5-flash</b> — Fast and cost-effective. Good for summaries and drafts.</li>
-        <li><b>gemini-2.0-flash</b> — Previous generation Flash. Still solid for general use.</li>
-        <li><b>gemini-1.5-pro</b> — 1M token context window. Best for very long documents.</li>
-        <li><b>gemini-1.5-flash</b> — Affordable. Good fallback for most tasks.</li>
     </ul>
     <p><b>Use when:</b> you need very long context or a cost-effective alternative to OpenAI/Claude.</p>
 
