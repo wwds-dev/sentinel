@@ -43,6 +43,7 @@ TARGET_BRANCHES: dict[str, tuple[tuple[str, ...], ...]] = {
     "company": (("Business Records",), ("Compliance & Risk Intelligence",)),
     "phone": (("Telephone Numbers",),),
     "person": (("People Search Engines",), ("Public Records",), ("Social Networks",)),
+    "crypto": (("Blockchain & Cryptocurrency",),),
 }
 
 #: Trace does not send personal identifiers to people-search or dating

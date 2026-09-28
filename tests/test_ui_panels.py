@@ -1640,6 +1640,47 @@ class TestTracePanel:
         labels = " ".join(label.text() for label in trace.sections.findChildren(QLabel))
         assert "GitHub profile" in labels and "Keybase profile and proofs" in labels
 
+    @pytest.mark.parametrize("key,named,sources", [
+        ("", False, ()),
+        ("test-key", True, ("opensanctions",)),
+    ])
+    def test_company_research_adds_opensanctions_only_with_a_key(
+            self, trace, monkeypatch, key, named, sources):
+        from providers import company_lookup
+
+        monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", key)
+        prompts = []
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: prompts.append(a[2]) or QMessageBox.Yes),
+        )
+        trace.type_box.setCurrentText("Company")
+        trace.target_input.setText("Example Limited")
+        trace.live_research()
+        assert ("OpenSanctions" in prompts[-1]) is named
+        worker = FakeIdentityLookupWorker.instances[-1]
+        assert worker.sources == sources
+        worker.finished_signal.emit({
+            "type": "company", "query": "Example Limited",
+            "legal_entities": {"records": []},
+            **({"sanctions": {"matches": [{"name": "Example Limited", "listed": True}]}}
+               if named else {}),
+            "sources_contacted": [{"source": "GLEIF Legal Entity Index", "status": "checked"}],
+        })
+        labels = " ".join(label.text() for label in trace.sections.findChildren(QLabel))
+        assert ("Sanctions and watchlists (OpenSanctions)" in labels) is named
+
+    def test_the_company_worker_passes_the_sanctions_choice_through(self, monkeypatch):
+        from providers import company_lookup
+        from ui.workers import IdentityLookupWorker
+
+        seen = []
+        monkeypatch.setattr(company_lookup, "lookup",
+                            lambda target, **kwargs: seen.append(kwargs) or {"type": "company"})
+        IdentityLookupWorker("Example", "Company", ("opensanctions",)).run()
+        IdentityLookupWorker("Example", "Company", ()).run()
+        assert [kwargs["sanctions"] for kwargs in seen] == [True, False]
+
     def test_live_company_research_requires_consent_and_uses_gleif(
             self, trace, monkeypatch):
         trace.type_box.setCurrentText("Company")

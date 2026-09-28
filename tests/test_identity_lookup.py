@@ -352,3 +352,49 @@ def test_offshore_leaks_matches_are_labelled_as_name_similarity(monkeypatch):
     assert "not evidence of wrongdoing" in result["offshore_leaks"]["note"]
     assert result["sources_contacted"][-1] == {
         "source": "ICIJ Offshore Leaks", "status": "checked"}
+
+
+# ── OpenSanctions (key-gated) ────────────────────────────────────────────────
+
+def test_sanctions_without_a_key_is_skipped_not_contacted(monkeypatch):
+    _gleif_empty(monkeypatch)
+    monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", "")
+    result = company_lookup.lookup("Example Limited", sanctions=True)
+    assert result["sanctions"]["status"] == "skipped"
+    assert {"source": "OpenSanctions", "status": "skipped"} in result["sources_skipped"]
+    assert all(s["source"] != "OpenSanctions" for s in result["sources_contacted"])
+
+
+def test_sanctions_matches_carry_listing_and_datasets(monkeypatch):
+    monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", "test-key")
+    calls = []
+
+    def fake_get(url, params=None, headers=None, **kwargs):
+        calls.append((url, params, headers))
+        if "opensanctions" in url:
+            return _JsonResponse({"total": {"value": 1}, "results": [{
+                "id": "NK-abc", "caption": "Example Limited", "schema": "Company",
+                "target": True, "datasets": ["us_ofac_sdn", "eu_fsf"],
+                "properties": {"country": ["ru"]},
+            }]})
+        return _JsonResponse({"meta": {"pagination": {"total": 0}}, "data": []})
+
+    monkeypatch.setattr(company_lookup.requests, "get", fake_get)
+    result = company_lookup.lookup("Example Limited", sanctions=True)
+    url, params, headers = [c for c in calls if "opensanctions" in c[0]][0]
+    assert headers["Authorization"] == "ApiKey test-key"
+    assert params["q"] == "Example Limited"
+    assert result["sanctions"]["matches"] == [{
+        "name": "Example Limited", "kind": "Company", "listed": True,
+        "datasets": ["us_ofac_sdn", "eu_fsf"], "countries": ["ru"],
+        "url": "https://www.opensanctions.org/entities/NK-abc/",
+    }]
+    assert {"source": "OpenSanctions", "status": "checked"} in result["sources_contacted"]
+
+
+def test_a_rejected_sanctions_key_is_an_error(monkeypatch):
+    monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", "bad")
+    monkeypatch.setattr(company_lookup.requests, "get",
+                        lambda *a, **k: _JsonResponse({}, status_code=401))
+    assert company_lookup._opensanctions("Example") == {
+        "error": "OpenSanctions rejected the API key"}

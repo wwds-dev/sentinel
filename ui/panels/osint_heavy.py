@@ -154,7 +154,7 @@ class OsintHeavyPanel(AgentPanel):
         self.type_box = MenuComboBox()
         self.type_box.addItems([
             "Person", "Username", "Email Address", "Domain / IP",
-            "Organisation", "Phone Number", "Auto-detect",
+            "Organisation", "Phone Number", "Crypto Address", "Auto-detect",
         ])
         brief_layout.addWidget(self.type_box, 1, 1)
 

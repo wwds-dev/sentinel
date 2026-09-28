@@ -9,7 +9,7 @@ Produces a research-grade, five-section intelligence dossier on a target, with a
 | Control | Purpose |
 |---|---|
 | Target identifier | Person / username / email / domain / IP / organisation. |
-| Target type | Guides which tool families and pivots are emphasised. |
+| Target type | Guides which tool families and pivots are emphasised. **Crypto Address** takes a Bitcoin or Ethereum address; Auto-detect recognises both. |
 | Scope | `Quick Scan` (3–5 pts/section), `Standard`, or `Deep Dive` (exhaustive). |
 | Objective / context | Free-text investigation goal. |
 | Add target image | Optional collapsed section; EXIF is parsed and injected into the prompt. |
@@ -79,6 +79,17 @@ carries a `network_warning`, and a missing hit proves nothing. The
 prompt tells the model to treat hits as same-name accounts to corroborate, not
 as one identity.
 
+**Crypto Address** targets (Bitcoin legacy, P2SH or bech32 addresses, and
+Ethereum `0x…` addresses; Auto-detect recognises them before trying a
+username) go to **Blockstream** for Bitcoin (balance, amounts received and
+sent, transaction count, latest activity) or **Blockscout** for Ethereum (ETH
+balance, transaction and token-transfer counts, ENS name, contract flag, and
+Blockscout's public tags and scam flag). Neither needs a key. The prompt tells
+the model that on-chain data shows what an address did, never who controls it,
+and that exchange addresses pool many users' funds. Organisation targets are
+also screened with **OpenSanctions** when `OPENSANCTIONS_API_KEY` is set; a
+skipped check is reported as "no key", not as a clean result.
+
 ## Catalogue tools
 
 After the built-in library, the system prompt adds tools from the **OSINT
@@ -102,6 +113,7 @@ recommends one. The catalogue shares Trace's weekly cache in
 |---|---|
 | `agents/osint_heavy_agent.py` | `OsintHeavyAgent` + the tool library + section spec. |
 | `ui/panels/osint_heavy.py` | Panel, optional image workflow, structured dossier cards, and indicators. |
+| `providers/crypto_lookup.py` | Crypto Address targets: Blockstream (Bitcoin) and Blockscout (Ethereum). |
 | `providers/whatsmyname.py` | Deep Dive username sweep: site-list cache, per-site check, bounded parallel sweep. |
 | `services/osint_catalog.py` | OSINT Framework catalogue: weekly cached download, filtering, and per-agent tool selection. |
 | `ui/workers.py: LiveCollectionWorker` | Runs live collection without freezing the interface. |

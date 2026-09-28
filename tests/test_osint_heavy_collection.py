@@ -161,3 +161,25 @@ def test_organisation_targets_also_check_offshore_leaks(monkeypatch):
                             lambda *a, **k: {"sources_contacted": []})
     heavy._run_providers("Acme Corporation", "Organisation")
     assert seen[-1]["offshore_leaks"] is True
+    assert seen[-1]["sanctions"] is True       # skipped inside without a key
+
+
+@pytest.mark.parametrize("label,target", [
+    ("Crypto Address", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
+    ("Auto-detect", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"),
+    ("Auto-detect", "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"),
+])
+def test_crypto_addresses_go_to_the_crypto_provider(monkeypatch, label, target):
+    calls = []
+    monkeypatch.setattr(heavy._crypto_prov, "lookup",
+                        lambda t, **k: calls.append(t) or {"type": "crypto", "query": t,
+                                                           "sources_contacted": []})
+    monkeypatch.setattr(heavy._username_prov, "lookup",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not a username")))
+    heavy._run_providers(target, label)
+    assert calls == [target]
+    assert heavy._catalog_kind(target, label) == "crypto"
+
+
+def test_an_ordinary_handle_is_still_a_username():
+    assert heavy._normalize_target_type("lonewolf", "Auto-detect") == "username"

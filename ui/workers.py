@@ -83,7 +83,9 @@ class IdentityLookupWorker(QThread):
             elif self.query_type == "Company":
                 from providers.company_lookup import lookup
                 result = lookup(
-                    self.target, on_progress=progress, should_stop=stopped
+                    self.target,
+                    sanctions="opensanctions" in self.sources,
+                    on_progress=progress, should_stop=stopped,
                 )
             else:
                 raise ValueError(f"Unsupported identity lookup type: {self.query_type}")
