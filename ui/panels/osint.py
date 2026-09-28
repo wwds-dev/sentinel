@@ -353,6 +353,14 @@ class OsintPanel(AgentPanel):
                 "Company": "GLEIF Legal Entity Index",
             }
             sources = source_map[validation.query_type]
+            if validation.query_type == "Company":
+                from providers.company_lookup import OPENSANCTIONS_KEY
+
+                # OpenSanctions needs a key for every call; without one it is
+                # neither named here nor contacted.
+                if OPENSANCTIONS_KEY:
+                    selected_sources = ("opensanctions",)
+                    sources = "GLEIF Legal Entity Index and OpenSanctions"
             consent = QMessageBox.question(
                 self,
                 "Confirm Live Research",
@@ -619,6 +627,11 @@ class OsintPanel(AgentPanel):
                 "Legal entity records",
                 self._lookup_text(result.get("legal_entities")),
             ))
+            if "sanctions" in result:
+                cards.append((
+                    "Sanctions and watchlists (OpenSanctions)",
+                    self._lookup_text(result.get("sanctions")),
+                ))
         elif result.get("type") == "exposure":
             summary_info = result.get("summary", {})
             if summary_info.get("on_ransomware_leak_site"):

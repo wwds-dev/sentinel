@@ -76,6 +76,14 @@ For company targets, the complete company name is sent only to the **GLEIF Legal
 Entity Index** after the user confirms that exact destination. Results contain
 legal-entity identifiers and registration reference data. GLEIF covers entities
 with an LEI, so no match is not proof that an organization does not exist.
+When `OPENSANCTIONS_API_KEY` is set, the confirmation also names
+**OpenSanctions**, and the name is screened against sanctions lists,
+politically exposed persons and other watchlists. Each match shows whether the
+entity itself is listed or only related to a listed one. Without a key,
+OpenSanctions is neither named nor contacted. Its API needs a key for every
+call, and commercial use needs their licence. The parsing is tested against
+recorded responses; it has not been run against the live API, because no key
+was available.
 
 Trace intentionally performs no live collection for **Person** or **Phone**
 targets. It does not send those personal identifiers to people-search,

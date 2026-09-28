@@ -7,9 +7,24 @@ Opt-in (``offshore_leaks=True``, used by Bloodhound):
   • ICIJ Offshore Leaks → entities, intermediaries and addresses named in the
     Panama, Paradise, Pandora and earlier leak investigations, matched by name
     through ICIJ's reconciliation API (no key)
+
+Key-gated (set in .env; skipped and reported as skipped without it):
+  • OpenSanctions → OPENSANCTIONS_API_KEY — sanctions lists, politically
+    exposed persons and other watchlists in one search. Every API call needs a
+    key; the data is free for non-commercial use, commercial use needs their
+    licence. Opt-in (``sanctions=True``).
 """
 
+import os
+
 import requests
+from dotenv import load_dotenv
+
+from services.runtime_paths import user_data_base
+
+load_dotenv(user_data_base() / ".env", override=False)
+OPENSANCTIONS_KEY = os.getenv("OPENSANCTIONS_API_KEY", "")
+OPENSANCTIONS_URL = "https://api.opensanctions.org/search/default"
 
 
 GLEIF_URL = "https://api.gleif.org/api/v1/lei-records"
@@ -88,17 +103,60 @@ def _offshore_leaks(company: str) -> dict:
         return {"error": str(error)[:300]}
 
 
-def lookup(company: str, *, offshore_leaks: bool = False, on_progress=None,
-           should_stop=None) -> dict:
+def _opensanctions(company: str) -> dict:
+    """OpenSanctions watchlist matches for a name, best first."""
+    if not OPENSANCTIONS_KEY:
+        return {"status": "skipped",
+                "detail": "OPENSANCTIONS_API_KEY is not set (opensanctions.org/api)."}
+    try:
+        response = requests.get(
+            OPENSANCTIONS_URL,
+            params={"q": company, "limit": 10},
+            timeout=15,
+            headers={"Authorization": f"ApiKey {OPENSANCTIONS_KEY}",
+                     "User-Agent": "Sentinel-OSINT/2.0"},
+        )
+        if response.status_code in (401, 403):
+            return {"error": "OpenSanctions rejected the API key"}
+        if response.status_code == 429:
+            return {"error": "OpenSanctions rate limit reached; try again later"}
+        if response.status_code != 200:
+            return {"error": f"OpenSanctions HTTP {response.status_code}"}
+        payload = response.json()
+        results = payload.get("results") or []
+        total = payload.get("total") or {}
+        return {
+            "total_matches": total.get("value", len(results)) if isinstance(total, dict) else total,
+            "matches": [{
+                "name": item.get("caption"),
+                "kind": item.get("schema"),
+                "listed": bool(item.get("target")),
+                "datasets": (item.get("datasets") or [])[:8],
+                "countries": ((item.get("properties") or {}).get("country") or [])[:5],
+                "url": f"https://www.opensanctions.org/entities/{item.get('id')}/",
+            } for item in results[:10]],
+            "note": ("A text match, not a confirmed identity: compare country, "
+                     "registration and dates before treating a hit as the target. "
+                     "listed=true means the entity itself is on a sanctions or "
+                     "watch list; false means it is only related to one."),
+        }
+    except Exception as error:
+        return {"error": str(error)[:300]}
+
+
+def lookup(company: str, *, offshore_leaks: bool = False, sanctions: bool = False,
+           on_progress=None, should_stop=None) -> dict:
     """Search GLEIF by company name and return compact legal-entity records.
 
-    ``offshore_leaks=True`` also checks the name against ICIJ Offshore Leaks.
+    ``offshore_leaks=True`` also checks the name against ICIJ Offshore Leaks;
+    ``sanctions=True`` also screens it with OpenSanctions (skipped without a key).
     """
     company = company.strip()
     result = {
         "type": "company",
         "query": company,
         "sources_contacted": [],
+        "sources_skipped": [],
     }
     if not company:
         result["error"] = "Empty company name — skipping live lookup."
@@ -146,6 +204,21 @@ def lookup(company: str, *, offshore_leaks: bool = False, on_progress=None,
     result["sources_contacted"].append({"source": label, "status": status})
     if on_progress:
         on_progress(label, status)
+
+    if sanctions:
+        if should_stop and should_stop():
+            result["cancelled"] = True
+            return result
+        label = "OpenSanctions"
+        if on_progress:
+            on_progress(label, "checking")
+        result["sanctions"] = _opensanctions(company)
+        status = result["sanctions"].get("status") or (
+            "error" if result["sanctions"].get("error") else "checked")
+        destination = "sources_skipped" if status == "skipped" else "sources_contacted"
+        result[destination].append({"source": label, "status": status})
+        if on_progress:
+            on_progress(label, status)
 
     if offshore_leaks:
         if should_stop and should_stop():
