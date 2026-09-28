@@ -92,6 +92,46 @@ class IdentityLookupWorker(QThread):
             self.error_signal.emit(str(error))
 
 
+class ExposureLookupWorker(QThread):
+    """Run a consented dark-web exposure check (leak / ransomware sites) off the UI thread.
+
+    The Intelligence X poll and the ransomware.live/Ahmia calls together take a
+    few seconds, so this must not run on the interface thread. ``sources`` is the
+    subset of {"ransomware_live", "ahmia", "intelx"} the user approved.
+    """
+
+    progress_signal = Signal(str, str)
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, target: str, target_type: str, sources=()):
+        super().__init__()
+        self.target = target
+        self.target_type = target_type
+        self.sources = tuple(sources)
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def run(self):
+        try:
+            from providers.exposure_lookup import lookup
+
+            result = lookup(
+                self.target,
+                self.target_type,
+                selected_sources=self.sources or None,
+                on_progress=lambda source, status: self.progress_signal.emit(
+                    source, status
+                ),
+                should_stop=lambda: self._cancel_requested,
+            )
+            self.finished_signal.emit(result)
+        except Exception as error:
+            self.error_signal.emit(str(error))
+
+
 class LiveCollectionWorker(QThread):
     """Run Bloodhound's live public-source collection off the UI thread.
 

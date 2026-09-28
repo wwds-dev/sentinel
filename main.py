@@ -2574,6 +2574,8 @@ class GodAI(QWidget):
         ("dehashed",       "DeHashed",            "Breach",   "$5/mo",      "https://dehashed.com/register",                 "DEHASHED_API_KEY"),
         ("snusbase",       "Snusbase",            "Breach",   "$2/mo",      "https://snusbase.com/",                         "SNUSBASE_API_KEY"),
         ("leakcheck",      "LeakCheck",           "Breach",   "Paid",       "https://leakcheck.io/",                         "LEAKCHECK_API_KEY"),
+        ("ransomware_live","Ransomware.live",     "Dark Web", "Free",       "https://www.ransomware.live/api",               ""),
+        ("ahmia",          "Ahmia",               "Dark Web", "Free",       "https://ahmia.fi/",                             ""),
         ("intelx",         "IntelligenceX",       "Dark Web", "Paid",       "https://intelx.io/",                            "INTELX_API_KEY"),
         ("domaintools",    "DomainTools",         "Domain",   "Paid",       "https://www.domaintools.com/",                  "DOMAINTOOLS_API_KEY"),
     ]
