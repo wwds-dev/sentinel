@@ -6,6 +6,8 @@ from services.model_recommendations import (
 )
 
 
+IMAGE_MODEL = "gpt-image-1.5"
+
 ALL = {}
 for profile in MODEL_CATALOG:
     ALL.setdefault(profile.provider, []).append(profile.model)
@@ -27,7 +29,7 @@ def test_task_classification_and_compatible_primary(prompt, task, capability):
 
 def test_general_chat_never_uses_image_only_model():
     decision = route_request("Hello, help me plan my day", available_models=ALL)
-    assert decision.model != "dall-e-3"
+    assert decision.model != IMAGE_MODEL
     assert next(p for p in MODEL_CATALOG if p.model == decision.model).capabilities.text
 
 
@@ -60,9 +62,9 @@ def test_manual_override_is_preserved_when_compatible():
 
 
 def test_incompatible_manual_override_falls_back():
-    decision = route_request("General chat", manual_provider="openai", manual_model="dall-e-3", available_models=ALL)
+    decision = route_request("General chat", manual_provider="openai", manual_model=IMAGE_MODEL, available_models=ALL)
     assert not decision.manual
-    assert decision.model != "dall-e-3"
+    assert decision.model != IMAGE_MODEL
     assert "incompatible" in decision.reason
 
 
@@ -72,6 +74,15 @@ def test_unavailable_primary_has_deterministic_fallback():
     two = route_request("Refactor this code", enabled_providers=available, available_models=available)
     assert one == two
     assert one.fallbacks
+
+
+def test_image_request_routes_to_the_current_gpt_image_model():
+    decision = route_request("Generate an image of a lighthouse", available_models=ALL)
+    assert (decision.provider, decision.model) == ("openai", IMAGE_MODEL)
+
+
+def test_catalog_no_longer_offers_retired_dall_e():
+    assert not any(p.model.startswith("dall-e") for p in MODEL_CATALOG)
 
 
 def test_no_eligible_route_is_a_clear_error():
