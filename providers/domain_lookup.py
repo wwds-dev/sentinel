@@ -1,14 +1,23 @@
 """
-Domain OSINT provider — WHOIS, DNS, and certificate transparency.
+Domain OSINT provider — WHOIS, DNS, network owner, passive DNS, certificate
+transparency, web archive, and (for IPs) attack reports.
 
 Zero-cost stack:
   • python-whois  → registrar, dates, nameservers, registrant org/country
   • dnspython     → A, AAAA, MX, NS, TXT, SOA records
+  • Team Cymru    → IP-to-ASN: network owner, prefix, country — asked over DNS
+                    (TXT records under asn.cymru.com), so no web request
+  • Mnemonic PDNS → passive DNS: what a name resolved to over time, or which
+                    names were seen on an IP (no key; rate-limited)
+  • SANS DShield  → IP only: attack reports from the Internet Storm Center's
+                    sensors, and the threat feeds that list the IP
   • crt.sh JSON API → certificate transparency subdomain enumeration
   • Wayback Machine availability API → first and latest archived snapshot
 """
 
 import ipaddress
+from datetime import datetime, timezone
+
 import requests
 from urllib.parse import urlsplit
 
@@ -152,6 +161,147 @@ def _wayback(domain: str) -> dict:
         return {"error": str(exc)[:300]}
 
 
+def _cymru_origin_name(ip: str) -> str:
+    """The Team Cymru DNS name that answers "which network announces this IP"."""
+    address = ipaddress.ip_address(ip)
+    if address.version == 4:
+        return ".".join(reversed(ip.split("."))) + ".origin.asn.cymru.com"
+    nibbles = address.exploded.replace(":", "")
+    return ".".join(reversed(nibbles)) + ".origin6.asn.cymru.com"
+
+
+def _txt_fields(name: str) -> list[str] | None:
+    import dns.resolver
+
+    try:
+        answer = dns.resolver.resolve(name, "TXT", lifetime=5)
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return None
+    text = b"".join(next(iter(answer)).strings).decode("utf-8", "replace")
+    return [part.strip() for part in text.split("|")]
+
+
+def _asn(target: str) -> dict:
+    """Network owner of an IP, or of the first IPv4 address a domain resolves to."""
+    try:
+        import dns.resolver  # dnspython
+
+        ip = target
+        if not _is_ip(target):
+            try:
+                ip = str(next(iter(dns.resolver.resolve(target, "A", lifetime=5))))
+            except Exception:
+                return {"error": "the domain has no IPv4 address to look up"}
+        origin = _txt_fields(_cymru_origin_name(ip))
+        if origin is None:
+            return {"ip": ip, "announced": False,
+                    "note": "No network announces this address (private, reserved, or unrouted)."}
+        asn = origin[0].split()[0]
+        record = {
+            "ip": ip, "announced": True, "asn": f"AS{asn}",
+            "prefix": origin[1] if len(origin) > 1 else None,
+            "country": origin[2] if len(origin) > 2 else None,
+            "registry": origin[3] if len(origin) > 3 else None,
+            "allocated": origin[4] if len(origin) > 4 else None,
+        }
+        described = _txt_fields(f"AS{asn}.asn.cymru.com")
+        if described and len(described) > 4:
+            record["as_name"] = described[4]
+        return record
+    except ImportError:
+        return {"error": "dnspython not installed — run: pip install dnspython"}
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
+def _day(epoch_ms) -> str | None:
+    if not epoch_ms:
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _passive_dns(target: str) -> dict:
+    """Mnemonic passive DNS: a name's past answers, or the names seen on an IP."""
+    try:
+        resp = requests.get(
+            f"https://api.mnemonic.no/pdns/v3/{target}",
+            params={"limit": 25},
+            timeout=15,
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
+        )
+        if resp.status_code == 429:
+            return {"error": "Mnemonic passive DNS rate limit reached; try again later"}
+        if resp.status_code != 200:
+            return {"error": f"Mnemonic passive DNS HTTP {resp.status_code}"}
+        data = resp.json()
+        rows = data.get("data") or []
+        # Busy IPs come back as partial results with the seen-timestamps
+        # zeroed; the record's own created/updated times are the next best.
+        records = [{
+            "name": row.get("query"),
+            "type": (row.get("rrtype") or "").upper(),
+            "answer": row.get("answer"),
+            "first_seen": _day(row.get("firstSeenTimestamp") or row.get("createdTimestamp")),
+            "last_seen": _day(row.get("lastSeenTimestamp") or row.get("lastUpdatedTimestamp")),
+            "times_seen": row.get("times"),
+        } for row in rows]
+        result = {
+            "total_records": data.get("count", len(records)),
+            "shown": len(records),
+            "records": records,
+            "note": ("Names seen resolving to this IP." if _is_ip(target)
+                     else "Answers this name has returned over time."),
+        }
+        if any("partialResult" in (row.get("flags") or []) for row in rows):
+            result["partial"] = ("Mnemonic returned a partial result (a busy address); "
+                                 "dates are when its records were created and updated.")
+        return result
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
+def _dshield(ip: str) -> dict:
+    """SANS Internet Storm Center: has this IP attacked its sensors?"""
+    try:
+        resp = requests.get(
+            f"https://isc.sans.edu/api/ip/{ip}",
+            params={"json": ""},
+            timeout=15,
+            headers={"User-Agent": "Sentinel-OSINT/2.0 (desktop research tool)"},
+        )
+        if resp.status_code != 200:
+            return {"error": f"DShield HTTP {resp.status_code}"}
+        info = resp.json().get("ip") or {}
+        feeds = info.get("threatfeeds") or {}
+        ssh = info.get("ssh") or {}
+        weblogs = info.get("weblogs") or {}
+        return {
+            "reports": info.get("count") or 0,
+            "targets_attacked": info.get("attacks") or 0,
+            "first_reported": info.get("mindate"),
+            "last_reported": info.get("maxdate"),
+            "threat_feeds": [
+                {"feed": name, "first_seen": seen.get("firstseen"),
+                 "last_seen": seen.get("lastseen")}
+                for name, seen in feeds.items() if isinstance(seen, dict)
+            ],
+            "ssh_brute_force": {
+                "attempts": ssh.get("attempts"), "first": ssh.get("start"),
+                "last": ssh.get("end"),
+            } if ssh else None,
+            "web_attacks": {
+                "requests": weblogs.get("count"), "first": weblogs.get("firstseen"),
+                "last": weblogs.get("lastseen"),
+            } if weblogs else None,
+            "network": info.get("network") or None,
+            "as_name": info.get("asname"),
+            "abuse_contact": info.get("asabusecontact"),
+            "comment": info.get("comment"),
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
 # ── public interface ──────────────────────────────────────────────────────────
 
 def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
@@ -159,8 +309,8 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
     Return a normalised OSINT dict for a domain or IP address.
 
     Keys:
-      type, query, whois, dns, certificates, archive   (domain)
-      type, query, whois, dns                          (IP — crt.sh and Wayback skipped)
+      type, query, whois, dns, network, passive_dns, certificates, archive   (domain)
+      type, query, whois, dns, network, attack_reports, passive_dns          (IP)
     """
     target = _normalize(domain)
     is_ip = _is_ip(target)
@@ -170,7 +320,14 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
         "sources_contacted": [],
     }
 
-    sources = [("WHOIS", "whois", _whois), ("DNS", "dns", _dns)]
+    sources = [
+        ("WHOIS", "whois", _whois),
+        ("DNS", "dns", _dns),
+        ("Team Cymru IP-to-ASN", "network", _asn),
+    ]
+    if is_ip:
+        sources.append(("SANS DShield", "attack_reports", _dshield))
+    sources.append(("Mnemonic passive DNS", "passive_dns", _passive_dns))
     if not is_ip:
         sources.append(("Certificate transparency (crt.sh)", "certificates", _crtsh))
         sources.append(("Wayback Machine", "archive", _wayback))

@@ -97,6 +97,23 @@ def _isolated_tunnel_audit():
         yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _offline_osint_catalog(tmp_path_factory):
+    """No OSINT Framework download, and no machine-specific cached copy.
+
+    Trace and Bloodhound append catalogue tools to their prompts from
+    `data/cache/`; a developer's cache would make prompt tests depend on the
+    week it was fetched. Tests that exercise the catalogue supply their own.
+    """
+    from services import osint_catalog
+
+    empty = tmp_path_factory.mktemp("osint-catalog") / "osint-framework.json"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(osint_catalog, "_cache_path", lambda: empty)
+        patch.setattr(osint_catalog, "refresh_in_background", lambda: False)
+        yield
+
+
 def pytest_configure(config):
     """Redirect SQLite before test modules import application services.
 

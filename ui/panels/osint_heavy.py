@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from services import osint_catalog
 from services.local_file_search import FileSearchFilters, FileSearchReport, normalise_extensions
 from services.remote_file_search import validate_ssh_target
 from services.runtime_paths import user_data_base
@@ -489,6 +490,12 @@ class OsintHeavyPanel(AgentPanel):
         self.file_discovery_body.setVisible(False)
         group.toggled.connect(self.file_discovery_body.setVisible)
         layout.addWidget(group)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # The OSINT Framework catalogue feeds this agent's source suggestions;
+        # refresh it off the UI thread, at most once a week (and once a run).
+        osint_catalog.refresh_in_background()
 
     # ── Running ─────────────────────────────────────────────────────────
     def investigate(self) -> None:

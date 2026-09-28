@@ -143,3 +143,18 @@ def test_collection_reports_progress_and_honours_stop(username_kwargs):
     kwargs["on_progress"]("URLScan", "checked")
     kwargs["on_sweep_progress"](10, 600)
     assert messages == ["URLScan: checked", "WhatsMyName: 10 of 600 sites checked"]
+
+
+def test_organisation_targets_also_check_offshore_leaks(monkeypatch):
+    seen: list[dict] = []
+
+    def fake(target, **kwargs):
+        seen.append(kwargs)
+        return {"type": "company", "query": target, "sources_contacted": []}
+
+    monkeypatch.setattr(heavy._company_prov, "lookup", fake)
+    if hasattr(heavy, "_exposure_prov"):
+        monkeypatch.setattr(heavy._exposure_prov, "lookup",
+                            lambda *a, **k: {"sources_contacted": []})
+    heavy._run_providers("Acme Corporation", "Organisation")
+    assert seen[-1]["offshore_leaks"] is True

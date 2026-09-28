@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ui.widgets import MenuComboBox, SectionView
 from ui.panels.base import AgentPanel
+from services import osint_catalog
 from services.deepseek_client import is_insufficient_balance_error
 from ui.workers import DomainLookupWorker, ExposureLookupWorker, IdentityLookupWorker
 
@@ -45,6 +46,12 @@ class OsintPanel(AgentPanel):
         self._build()
         self.polish_workspace()
         self.hide()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # The OSINT Framework catalogue feeds this agent's source suggestions;
+        # refresh it off the UI thread, at most once a week (and once a run).
+        osint_catalog.refresh_in_background()
 
     # ── Construction ────────────────────────────────────────────────────
     def _build(self) -> None:
@@ -338,9 +345,11 @@ class OsintPanel(AgentPanel):
             sources = ", ".join(labels[source] for source in selected_sources)
         else:
             source_map = {
-                "IP Address": "WHOIS and DNS",
-                "Domain": "WHOIS, DNS, crt.sh, and the Wayback Machine",
-                "Username": "URLScan",
+                "IP Address": ("WHOIS, DNS, Team Cymru IP-to-ASN, SANS DShield, and "
+                               "Mnemonic passive DNS"),
+                "Domain": ("WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, "
+                           "crt.sh, and the Wayback Machine"),
+                "Username": "URLScan, GitHub, and Keybase",
                 "Company": "GLEIF Legal Entity Index",
             }
             sources = source_map[validation.query_type]
@@ -576,7 +585,14 @@ class OsintPanel(AgentPanel):
             cards.extend([
                 ("WHOIS", self._lookup_text(result.get("whois"))),
                 ("DNS records", self._lookup_text(result.get("dns"))),
+                ("Network owner (ASN)", self._lookup_text(result.get("network"))),
+                ("Passive DNS history", self._lookup_text(result.get("passive_dns"))),
             ])
+        if result.get("type") == "ip":
+            cards.append((
+                "Attack reports (DShield)",
+                self._lookup_text(result.get("attack_reports")),
+            ))
         if result.get("type") == "domain":
             cards.extend([
                 ("Certificate transparency",
@@ -584,7 +600,11 @@ class OsintPanel(AgentPanel):
                 ("Web archive", self._lookup_text(result.get("archive"))),
             ])
         elif result.get("type") == "username":
-            cards.append(("URLScan findings", self._lookup_text(result.get("urlscan"))))
+            cards.extend([
+                ("URLScan findings", self._lookup_text(result.get("urlscan"))),
+                ("GitHub profile", self._lookup_text(result.get("github"))),
+                ("Keybase profile and proofs", self._lookup_text(result.get("keybase"))),
+            ])
         elif result.get("type") == "email":
             cards.extend([
                 ("Email reputation", self._lookup_text(
