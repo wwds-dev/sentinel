@@ -1602,6 +1602,44 @@ class TestTracePanel:
         assert "Web archive" in labels
         assert "1999-01-02" in trace.sections._raw
 
+    def test_live_ip_research_names_and_shows_network_and_attack_reports(
+            self, trace, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: prompts.append(a[2]) or QMessageBox.Yes),
+        )
+        trace.target_input.setText("192.0.2.10")
+        trace.live_research()
+        assert "Team Cymru" in prompts[-1] and "DShield" in prompts[-1]
+        FakeLookupWorker.instances[-1].finished_signal.emit({
+            "type": "ip", "query": "192.0.2.10",
+            "network": {"asn": "AS64500"}, "attack_reports": {"reports": 4},
+            "passive_dns": {"records": []},
+            "sources_contacted": [{"source": "SANS DShield", "status": "checked"}],
+        })
+        labels = " ".join(label.text() for label in trace.sections.findChildren(QLabel))
+        for card in ("Network owner (ASN)", "Passive DNS history", "Attack reports (DShield)"):
+            assert card in labels
+        assert "AS64500" in trace.sections._raw
+
+    def test_live_username_research_shows_github_and_keybase(self, trace, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: prompts.append(a[2]) or QMessageBox.Yes),
+        )
+        trace.target_input.setText("@researcher_1")
+        trace.live_research()
+        assert "GitHub, and Keybase" in prompts[-1]
+        FakeIdentityLookupWorker.instances[-1].finished_signal.emit({
+            "type": "username", "query": "researcher_1",
+            "github": {"found": True}, "keybase": {"found": False},
+            "sources_contacted": [{"source": "GitHub", "status": "checked"}],
+        })
+        labels = " ".join(label.text() for label in trace.sections.findChildren(QLabel))
+        assert "GitHub profile" in labels and "Keybase profile and proofs" in labels
+
     def test_live_company_research_requires_consent_and_uses_gleif(
             self, trace, monkeypatch):
         trace.type_box.setCurrentText("Company")

@@ -2,12 +2,18 @@
 
 Only organization records are queried.  Trace deliberately does not use
 people-search or data-broker services for person and phone targets.
+
+Opt-in (``offshore_leaks=True``, used by Bloodhound):
+  • ICIJ Offshore Leaks → entities, intermediaries and addresses named in the
+    Panama, Paradise, Pandora and earlier leak investigations, matched by name
+    through ICIJ's reconciliation API (no key)
 """
 
 import requests
 
 
 GLEIF_URL = "https://api.gleif.org/api/v1/lei-records"
+ICIJ_URL = "https://offshoreleaks.icij.org/api/v1/reconcile"
 
 
 def _name(value) -> str | None:
@@ -49,8 +55,45 @@ def _record(item: dict) -> dict:
     }
 
 
-def lookup(company: str, *, on_progress=None, should_stop=None) -> dict:
-    """Search GLEIF by company name and return compact legal-entity records."""
+def _offshore_leaks(company: str) -> dict:
+    """ICIJ Offshore Leaks name matches, best first.
+
+    A match is a similar name in leaked records, not proof it is the same
+    organisation — and being named in the leaks is not itself wrongdoing.
+    """
+    try:
+        response = requests.post(
+            ICIJ_URL,
+            json={"queries": {"q0": {"query": company}}},
+            timeout=20,
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
+        )
+        if response.status_code not in (200, 201):
+            return {"error": f"ICIJ Offshore Leaks HTTP {response.status_code}"}
+        matches = ((response.json().get("q0") or {}).get("result")) or []
+        return {
+            "matches_shown": min(len(matches), 10),
+            "matches": [{
+                "name": match.get("name"),
+                "kind": ", ".join(t.get("name", "") for t in match.get("types") or []),
+                "source": match.get("description"),
+                "similarity": round(match.get("score") or 0),
+                "exact": bool(match.get("match")),
+                "url": f"https://offshoreleaks.icij.org/nodes/{match.get('id')}",
+            } for match in matches[:10]],
+            "note": ("Name similarity only. Appearing in the leaks is not evidence of "
+                     "wrongdoing; many offshore structures are legal."),
+        }
+    except Exception as error:
+        return {"error": str(error)[:300]}
+
+
+def lookup(company: str, *, offshore_leaks: bool = False, on_progress=None,
+           should_stop=None) -> dict:
+    """Search GLEIF by company name and return compact legal-entity records.
+
+    ``offshore_leaks=True`` also checks the name against ICIJ Offshore Leaks.
+    """
     company = company.strip()
     result = {
         "type": "company",
@@ -103,4 +146,17 @@ def lookup(company: str, *, on_progress=None, should_stop=None) -> dict:
     result["sources_contacted"].append({"source": label, "status": status})
     if on_progress:
         on_progress(label, status)
+
+    if offshore_leaks:
+        if should_stop and should_stop():
+            result["cancelled"] = True
+            return result
+        label = "ICIJ Offshore Leaks"
+        if on_progress:
+            on_progress(label, "checking")
+        result["offshore_leaks"] = _offshore_leaks(company)
+        status = "error" if result["offshore_leaks"].get("error") else "checked"
+        result["sources_contacted"].append({"source": label, "status": status})
+        if on_progress:
+            on_progress(label, status)
     return result

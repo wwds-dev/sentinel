@@ -1,4 +1,16 @@
+import pytest
+
 from providers import company_lookup, email_lookup, username_lookup
+
+_REAL_GITHUB = username_lookup._github
+_REAL_KEYBASE = username_lookup._keybase
+
+
+@pytest.fixture(autouse=True)
+def _offline_profile_sources(monkeypatch):
+    """GitHub and Keybase answer "no such user" unless a test says otherwise."""
+    monkeypatch.setattr(username_lookup, "_github", lambda username: {"found": False})
+    monkeypatch.setattr(username_lookup, "_keybase", lambda username: {"found": False})
 
 
 def test_company_lookup_reports_gleif_records_and_progress(monkeypatch):
@@ -90,8 +102,13 @@ def test_username_lookup_reports_urlscan_progress(monkeypatch):
     )
     assert result["query"] == "alice"
     assert result["urlscan"]["unique_domains_found"] == 1
-    assert result["sources_contacted"] == [{"source": "URLScan", "status": "checked"}]
-    assert progress == [("URLScan", "checking"), ("URLScan", "checked")]
+    assert result["sources_contacted"] == [
+        {"source": "URLScan", "status": "checked"},
+        {"source": "GitHub", "status": "checked"},
+        {"source": "Keybase", "status": "checked"},
+    ]
+    assert progress[:2] == [("URLScan", "checking"), ("URLScan", "checked")]
+    assert result["github"] == {"found": False}
 
 
 def test_email_lookup_contacts_only_selected_source(monkeypatch):
@@ -213,7 +230,8 @@ def test_username_lookup_does_not_sweep_unless_asked(monkeypatch):
     )
     result = username_lookup.lookup("alice")
     assert "whatsmyname" not in result
-    assert [s["source"] for s in result["sources_contacted"]] == ["URLScan"]
+    assert [s["source"] for s in result["sources_contacted"]] == [
+        "URLScan", "GitHub", "Keybase"]
 
 
 def test_username_lookup_sweep_is_one_source_with_its_own_progress(monkeypatch):
@@ -235,3 +253,102 @@ def test_username_lookup_sweep_is_one_source_with_its_own_progress(monkeypatch):
     assert result["sources_contacted"][-1] == {"source": "WhatsMyName", "status": "checked"}
     assert counts == [(1, 2), (2, 2)]
     assert progress[-2:] == [("WhatsMyName", "checking"), ("WhatsMyName", "checked")]
+
+
+
+# ── GitHub and Keybase profile lookups ───────────────────────────────────────
+
+def test_github_profile_is_reduced_to_public_facts(monkeypatch):
+    monkeypatch.setattr(username_lookup.requests, "get", lambda *a, **k: _JsonResponse({
+        "html_url": "https://github.com/alice", "name": "Alice", "type": "User",
+        "company": "Example", "blog": "", "location": "Cork", "email": None,
+        "bio": "hi", "twitter_username": "alice_x", "public_repos": 3,
+        "followers": 7, "created_at": "2015-04-01T10:00:00Z",
+        "updated_at": "2026-09-01T10:00:00Z", "node_id": "noise",
+    }))
+    result = _REAL_GITHUB("alice")
+    assert result["found"] is True
+    assert result["blog"] is None                   # empty string is "not given"
+    assert result["created"] == "2015-04-01"
+    assert "node_id" not in result
+
+
+@pytest.mark.parametrize("status,expected", [
+    (404, {"found": False}),
+    (403, {"error": "GitHub rate limit reached (60 requests/hour without a token)"}),
+])
+def test_github_miss_and_rate_limit(monkeypatch, status, expected):
+    monkeypatch.setattr(username_lookup.requests, "get",
+                        lambda *a, **k: _JsonResponse({}, status_code=status))
+    assert _REAL_GITHUB("alice") == expected
+
+
+def test_keybase_keeps_only_proofs_that_verify(monkeypatch):
+    monkeypatch.setattr(username_lookup.requests, "get", lambda *a, **k: _JsonResponse({
+        "status": {"code": 0, "name": "OK"},
+        "them": [{
+            "basics": {"username": "alice", "ctime": 1391653108},
+            "profile": {"full_name": "Alice A", "location": "Cork", "bio": None},
+            "proofs_summary": {"all": [
+                {"proof_type": "github", "nametag": "alice", "state": 1,
+                 "service_url": "https://github.com/alice"},
+                {"proof_type": "twitter", "nametag": "old", "state": 2,
+                 "service_url": "https://twitter.com/old"},
+            ]},
+        }],
+    }))
+    result = _REAL_KEYBASE("alice")
+    assert result["created"] == "2014-02-06"
+    assert result["verified_accounts"] == [
+        {"service": "github", "name": "alice", "url": "https://github.com/alice"}
+    ]
+
+
+def test_keybase_unknown_user_is_not_found(monkeypatch):
+    monkeypatch.setattr(username_lookup.requests, "get", lambda *a, **k: _JsonResponse(
+        {"status": {"code": 0, "name": "OK"}, "them": [None]}))
+    assert _REAL_KEYBASE("nobody") == {"found": False}
+
+
+# ── ICIJ Offshore Leaks ──────────────────────────────────────────────────────
+
+def _gleif_empty(monkeypatch):
+    monkeypatch.setattr(company_lookup.requests, "get", lambda *a, **k: _JsonResponse(
+        {"meta": {"pagination": {"total": 0}}, "data": []}))
+
+
+def test_offshore_leaks_only_runs_when_asked(monkeypatch):
+    _gleif_empty(monkeypatch)
+    monkeypatch.setattr(
+        company_lookup.requests, "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not contact ICIJ")),
+    )
+    result = company_lookup.lookup("Example Limited")
+    assert "offshore_leaks" not in result
+
+
+def test_offshore_leaks_matches_are_labelled_as_name_similarity(monkeypatch):
+    _gleif_empty(monkeypatch)
+    sent = []
+
+    def fake_post(url, json=None, **kwargs):
+        sent.append(json)
+        return _JsonResponse({"q0": {"result": [{
+            "id": "10022201", "name": "EXAMPLE LIMITED", "score": 65.2, "match": False,
+            "description": "Entity node extracted from the Panama Papers data.",
+            "types": [{"name": "Entity"}],
+        }]}}, status_code=201)
+
+    monkeypatch.setattr(company_lookup.requests, "post", fake_post)
+    result = company_lookup.lookup("Example Limited", offshore_leaks=True)
+    assert sent == [{"queries": {"q0": {"query": "Example Limited"}}}]
+    match = result["offshore_leaks"]["matches"][0]
+    assert match == {
+        "name": "EXAMPLE LIMITED", "kind": "Entity",
+        "source": "Entity node extracted from the Panama Papers data.",
+        "similarity": 65, "exact": False,
+        "url": "https://offshoreleaks.icij.org/nodes/10022201",
+    }
+    assert "not evidence of wrongdoing" in result["offshore_leaks"]["note"]
+    assert result["sources_contacted"][-1] == {
+        "source": "ICIJ Offshore Leaks", "status": "checked"}
