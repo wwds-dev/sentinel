@@ -34,19 +34,22 @@ def recording_providers(monkeypatch):
     monkeypatch.setattr(heavy._email_prov, "lookup", make("email"))
     monkeypatch.setattr(heavy._username_prov, "lookup", make("username"))
     monkeypatch.setattr(heavy._company_prov, "lookup", make("company"))
+    # Domain, organisation and email collection also runs a dark-web exposure
+    # check; unstubbed, it queried Ransomware.live and Ahmia on every run.
+    monkeypatch.setattr(heavy._exposure_prov, "lookup", make("exposure"))
     return calls
 
 
 # ── Label → provider dispatch ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("label,target,expected", [
-    ("Email Address", "suspect@darkmail.io", ["email"]),
-    ("email", "suspect@darkmail.io", ["email"]),
-    ("Domain / IP", "phishkit-delivery.net", ["domain"]),
-    ("Domain / IP", "192.0.2.10", ["domain"]),
-    ("domain", "example.com", ["domain"]),
+    ("Email Address", "suspect@darkmail.io", ["email", "exposure"]),
+    ("email", "suspect@darkmail.io", ["email", "exposure"]),
+    ("Domain / IP", "phishkit-delivery.net", ["domain", "exposure"]),
+    ("Domain / IP", "192.0.2.10", ["domain", "exposure"]),
+    ("domain", "example.com", ["domain", "exposure"]),
     ("Username", "h4x0r_pete", ["username"]),
-    ("Organisation", "Acme Corporation", ["company"]),
+    ("Organisation", "Acme Corporation", ["company", "exposure"]),
     ("Phone Number", "+353 1 234 5678", []),          # no provider by design
 ])
 def test_labels_dispatch_to_the_right_provider(
@@ -59,14 +62,14 @@ def test_auto_detect_routes_by_target_shape(recording_providers):
     heavy._run_providers("suspect@darkmail.io", "Auto-detect")
     heavy._run_providers("example.com", "Auto-detect")
     heavy._run_providers("lonewolf", "Auto-detect")
-    assert recording_providers == ["email", "domain", "username"]
+    assert recording_providers == ["email", "exposure", "domain", "exposure", "username"]
 
 
 def test_email_address_label_is_no_longer_a_silent_noop(recording_providers):
     # The exact regression: this used to return [] because "email address" != "email".
     results = heavy._run_providers("victim@example.com", "Email Address")
     assert results and results[0]["type"] == "email"
-    assert recording_providers == ["email"]
+    assert recording_providers == ["email", "exposure"]
 
 
 # ── Real source count feeds the gauge, not the model's estimate ─────────────
@@ -74,7 +77,7 @@ def test_email_address_label_is_no_longer_a_silent_noop(recording_providers):
 def test_real_source_count_sums_contacted_sources(recording_providers):
     agent = heavy.OsintHeavyAgent()
     agent.collect_live("victim@example.com", "Email Address")
-    assert agent.last_source_count == 1  # one stubbed source contacted
+    assert agent.last_source_count == 2  # stubbed email + exposure sources
     assert heavy.real_source_count([]) == 0
     assert heavy.real_source_count(None) == 0
 
