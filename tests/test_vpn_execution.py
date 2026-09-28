@@ -313,6 +313,19 @@ def test_kill_switch_changes_are_audited(tmp_path):
     assert entry["action"] == "killswitch-arm" and entry["outcome"] == "succeeded"
 
 
+def test_suite_never_writes_the_operators_audit_log():
+    """conftest's `_isolated_tunnel_audit` must stay in place.
+
+    Without it, any test that omits `audit_path` appends fake kill-switch
+    records to the real data/logs/tunnel_audit.jsonl.
+    """
+    from services import runtime_paths
+
+    real = runtime_paths.user_data_base() / "data" / "logs" / vpn_execution.AUDIT_FILENAME
+    assert vpn_execution.default_audit_path() != real
+    assert not vpn_execution.default_audit_path().is_relative_to(runtime_paths.user_data_base())
+
+
 def test_openvpn_post_check_reads_the_tracked_process(tmp_path, monkeypatch):
     conf = tmp_path / "home.ovpn"
     conf.write_text("client\nremote 203.0.113.7 1194\n")
