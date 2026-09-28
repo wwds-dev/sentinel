@@ -76,7 +76,7 @@ from services.tool_catalog import runtime_tool_prompts
 from services.app_version import DISPLAY_VERSION, build_description
 from services.model_recommendations import (
     AGENT_RECOMMENDATIONS as RECOMMENDATION_OBJECTS,
-    TASK_RECOMMENDATIONS, as_dict, resolve_available_model,
+    TASK_RECOMMENDATIONS, as_dict, find_model, resolve_available_model,
     RoutingPreferences, route_request, pricing_metadata,
 )
 
@@ -1120,28 +1120,8 @@ class GodAI(QWidget):
 
     @staticmethod
     def _find_model_index(combo, wanted: str) -> int:
-        """Locate `wanted` in a model combo, tolerating dated API model ids.
-
-        Providers return ids like "claude-sonnet-4-6-20260112" from the live API
-        but bare names like "claude-sonnet-4-6" from the offline fallback list,
-        so an exact match alone would silently miss. Tries exact, then prefix,
-        then substring, and returns -1 when nothing matches.
-        """
-        if not wanted:
-            return -1
-
-        exact = combo.findText(wanted)
-        if exact >= 0:
-            return exact
-
-        lowered = wanted.lower()
-        for i in range(combo.count()):
-            if combo.itemText(i).lower().startswith(lowered):
-                return i
-        for i in range(combo.count()):
-            if lowered in combo.itemText(i).lower():
-                return i
-        return -1
+        """Locate `wanted` in a model combo; see `find_model` for the rule."""
+        return find_model([combo.itemText(i) for i in range(combo.count())], wanted)
 
     def _paint_recommended_item(self, combo, index: int, tooltip: str) -> None:
         """Colour one dropdown entry red + bold and clear any previous marking.
@@ -2517,71 +2497,20 @@ class GodAI(QWidget):
         self.model_box.clear()
 
         try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-                if not models:
-                    models = list(OllamaClient.KNOWN_MODELS)
-
+            # The same route the agent panels take: each client owns its API
+            # call and its offline fallback, and a failure is noted on the
+            # model box as "chat: load models" instead of raising here.
+            models = self.models_for_provider(provider, "chat", self.model_box)
+            if provider == "ollama" and not models:
+                # No daemon, or nothing pulled yet: offer the names we know.
+                models = list(OllamaClient.KNOWN_MODELS)
             elif provider == "openai":
-                if not self.openai.client:
-                    models = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]
-                else:
-                    result = self.openai.client.models.list()
-                    models = sorted(
-                        m.id for m in result.data
-                        if any(x in m.id.lower() for x in ["gpt", "o1", "o3", "o4"])
-                    )
-
-            elif provider == "deepseek":
-                # The client owns the API call and its offline fallback, the
-                # same route every agent panel takes via models_for_provider.
-                models = self.deepseek.list_models()
-
-            elif provider == "kimi":
-                # Try API model list if available. Fallback to known/common names.
-                try:
-                    if self.kimi.client:
-                        result = self.kimi.client.models.list()
-                        models = sorted(m.id for m in result.data)
-                    else:
-                        models = []
-                except Exception:
-                    models = []
-
-                if not models:
-                    models = self.kimi.KNOWN_MODELS
-
-            elif provider == "gemini":
-                try:
-                    if self.gemini.client:
-                        result = self.gemini.client.models.list()
-                        models = sorted(
-                            m.name.replace("models/", "")
-                            for m in result
-                            if "generateContent" in getattr(m, "supported_actions", [])
-                            or "generateContent" in getattr(m, "supported_generation_methods", [])
-                        )
-                    else:
-                        models = []
-                except Exception:
-                    models = []
-
-                if not models:
-                    models = [
-                        "gemini-1.5-flash",
-                        "gemini-1.5-pro",
-                        "gemini-2.0-flash",
-                        "gemini-2.5-flash",
-                        "gemini-2.5-pro",
-                    ]
-
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-
-            else:
-                models = []
+                # Chat is text-only; the client's list also carries the image
+                # models that other routes can use.
+                models = [
+                    m for m in models
+                    if any(x in m.lower() for x in ("gpt", "o1", "o3", "o4"))
+                ]
 
             self.model_box.addItems(models)
 
@@ -2594,8 +2523,6 @@ class GodAI(QWidget):
             # Model discovery is setup metadata, not conversation output. Keep
             # the Chat canvas clean and expose the diagnostic through the model
             # control tooltip and launcher log instead.
-            if provider == "ollama" and self.model_box.count() == 0:
-                self.model_box.addItems(list(OllamaClient.KNOWN_MODELS))
             self._note_failure("chat: load models", e, self.model_box)
 
         # Route cost styling reflects the selected provider even when model
