@@ -549,6 +549,73 @@ def show_settings(app):
 
     copy_email_btn.clicked.connect(copy_ops_email)
 
+    # addy.io burner-alias minting — a user-triggered write to the operator's own
+    # addy.io account. Needs ADDYIO_API_KEY, saved in the tool list below.
+    mint_row = QHBoxLayout()
+    mint_alias_btn = QPushButton("Mint addy.io alias")
+    mint_alias_btn.setToolTip(
+        "Create a fresh burner alias on your addy.io account and use it as the "
+        "operational email above. Needs ADDYIO_API_KEY (saved in the list below).")
+    mint_status_lbl = QLabel("")
+    mint_status_lbl.setStyleSheet("color: #888; font-size: 11px;")
+    mint_status_lbl.setWordWrap(True)
+    mint_row.addWidget(mint_alias_btn)
+    mint_row.addWidget(mint_status_lbl, 1)
+    ol.addLayout(mint_row)
+
+    def mint_alias():
+        worker = getattr(dialog, "_alias_worker", None)
+        if worker is not None and worker.isRunning():
+            return
+        from ui.workers import AliasMintWorker
+        mint_alias_btn.setEnabled(False)
+        mint_status_lbl.setText("Minting alias…")
+
+        def on_mint_finished(result):
+            mint_alias_btn.setEnabled(True)
+            status = result.get("status")
+            if status == "ok" and result.get("email"):
+                alias = result["email"]
+                ops_email_input.setText(alias)
+                QApplication.clipboard().setText(alias)
+                mint_status_lbl.setText(f"New alias {alias} — set as ops email and copied.")
+            elif status == "skipped":
+                mint_status_lbl.setText(result.get("reason", "addy.io key not set."))
+            else:
+                mint_status_lbl.setText(result.get("detail", "Could not mint an alias.")[:200])
+
+        def on_mint_error(message):
+            mint_alias_btn.setEnabled(True)
+            mint_status_lbl.setText(f"Error: {message}"[:200])
+
+        worker = AliasMintWorker(description="Sentinel operational alias")
+        worker.finished_signal.connect(on_mint_finished)
+        worker.error_signal.connect(on_mint_error)
+        dialog._alias_worker = worker
+        worker.start()
+
+    mint_alias_btn.clicked.connect(mint_alias)
+
+    def _join_alias_worker(_result=None):
+        worker = getattr(dialog, "_alias_worker", None)
+        if worker is None or not worker.isRunning():
+            return
+        # The dialog is closing; its widgets are about to be destroyed. Drop the
+        # slots first so a late finish can't call into dead widgets, then join —
+        # a mint can block up to ~35s (account-details + POST), so wait briefly
+        # and fall back to terminate rather than freeze the close or let a live
+        # QThread be destroyed.
+        for signal in (worker.finished_signal, worker.error_signal):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        if not worker.wait(3000):
+            worker.terminate()
+            worker.wait(1000)
+
+    dialog.finished.connect(_join_alias_worker)
+
     # Progress / summary
     total_tools = len(osint_tools)
     progress_row = QHBoxLayout()
@@ -571,7 +638,7 @@ def show_settings(app):
         "QPushButton:checked { background: #2d6cdf; color: white; }"
     )
     for name in ["All", "Free", "Paid", "Email", "Domain", "Network",
-                 "Breach", "Threat", "Dark Web"]:
+                 "Breach", "Threat", "Dark Web", "Legal"]:
         chip = QPushButton(name)
         chip.setCheckable(True)
         chip.setStyleSheet(chip_style)
@@ -585,6 +652,7 @@ def show_settings(app):
     category_colors = {
         "Email": "#3b82f6", "Domain": "#8b5cf6", "Network": "#0ea5e9",
         "Breach": "#ef4444", "Threat": "#f97316", "Dark Web": "#6b7280",
+        "Legal": "#0d9488",
     }
     rows_host = QWidget()
     rows_layout = QVBoxLayout(rows_host)

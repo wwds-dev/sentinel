@@ -85,6 +85,9 @@ class IdentityLookupWorker(QThread):
                 result = lookup(
                     self.target,
                     sanctions="opensanctions" in self.sources,
+                    # CourtListener is free, keyless and metadata-only, so Trace
+                    # runs it for every company lookup, like the GLEIF base search.
+                    court_records=True,
                     on_progress=progress, should_stop=stopped,
                 )
             else:
@@ -99,7 +102,7 @@ class ExposureLookupWorker(QThread):
 
     The Intelligence X poll and the ransomware.live/Ahmia calls together take a
     few seconds, so this must not run on the interface thread. ``sources`` is the
-    subset of {"ransomware_live", "ahmia", "intelx"} the user approved.
+    subset of {"ransomware_live", "ahmia", "intelx", "dehashed"} the user approved.
     """
 
     progress_signal = Signal(str, str)
@@ -446,6 +449,91 @@ class VpnDiagnosticsWorker(QThread):
                 should_cancel=lambda: self._cancel_requested,
             )
             self.finished_signal.emit(report)
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
+class IpSnapshotWorker(QThread):
+    """Read the operator's own local and (optionally) public IP off the UI thread.
+
+    Local addresses are read from ``ifconfig`` with no network contact; the
+    public IP and its detail are fetched only when ``include_public`` is set, so
+    the panel can show the LAN/tunnel view without reaching out.
+    """
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, include_public: bool = True):
+        super().__init__()
+        self._include_public = include_public
+
+    def cancel(self) -> None:
+        """No-op for shutdown compatibility; each request is timeout-bounded, so
+        ``wait()`` joins this worker within a few seconds on its own."""
+
+    def run(self) -> None:
+        try:
+            from agents.vpn_agent.services import public_ip
+
+            self.finished_signal.emit(
+                public_ip.get_ip_snapshot(include_public=self._include_public)
+            )
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
+class DnsLeakWorker(QThread):
+    """Run bash.ws's real egress DNS-leak test off the UI thread.
+
+    The test resolves a dozen probe hostnames and makes two HTTP calls, so it
+    takes a few seconds and must not block the interface. ``cancel`` is honoured
+    between probes.
+    """
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            from agents.vpn_agent.services import dns_check
+
+            self.finished_signal.emit(
+                dns_check.run_dns_leak_test(should_stop=lambda: self._cancel_requested)
+            )
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
+class AliasMintWorker(QThread):
+    """Create one addy.io alias off the UI thread (a single bounded POST).
+
+    Triggered only by the operator's explicit "Mint alias" action in the OSINT
+    Keys tab.
+    """
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, description: str = ""):
+        super().__init__()
+        self.description = description
+
+    def cancel(self) -> None:
+        """No-op for shutdown compatibility; the POST is timeout-bounded."""
+
+    def run(self) -> None:
+        try:
+            from providers.alias_mint import mint_alias
+
+            self.finished_signal.emit(mint_alias(self.description))
         except Exception as exc:
             self.error_signal.emit(str(exc))
 

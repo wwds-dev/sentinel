@@ -32,7 +32,9 @@ from services.vpn_diagnostics import (
 from services import vpn_connection, vpn_execution
 from ui.panels.base import AgentPanel
 from ui.widgets import MenuComboBox, SectionView
-from ui.workers import VpnConnectionWorker, VpnDiagnosticsWorker
+from ui.workers import (
+    DnsLeakWorker, IpSnapshotWorker, VpnConnectionWorker, VpnDiagnosticsWorker,
+)
 
 
 class VpnPanel(AgentPanel):
@@ -41,6 +43,8 @@ class VpnPanel(AgentPanel):
     agent_key = "vpn"
     diagnostics_worker_class = VpnDiagnosticsWorker
     connection_worker_class = VpnConnectionWorker
+    ip_worker_class = IpSnapshotWorker
+    dns_leak_worker_class = DnsLeakWorker
 
     def __init__(self, host, parent=None):
         super().__init__(host, parent)
@@ -48,6 +52,9 @@ class VpnPanel(AgentPanel):
         self._last_response = ""
         self._last_diagnostics_report = None
         self._diagnostics_worker = None
+        self._ip_worker = None
+        self._dns_worker = None
+        self._public_ip_fetched = False
         self._build()
         self.polish_workspace()
         self.hide()
@@ -122,6 +129,58 @@ class VpnPanel(AgentPanel):
 
         layout.addWidget(connect_group)
         self.reload_connect_profiles()
+
+        # ── Your IP (local now, public on request) ───────────────────────
+        ip_group = QGroupBox("Your IP && DNS")
+        ip_group.setObjectName("VPNIpGroup")
+        ip_layout = QGridLayout(ip_group)
+        ip_layout.setSpacing(6)
+
+        ip_layout.addWidget(QLabel("Local:"), 0, 0)
+        self.local_ip_label = QLabel("—")
+        self.local_ip_label.setWordWrap(True)
+        self.local_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.local_ip_label.setToolTip(
+            "Your LAN address and any VPN tunnel interface that currently holds "
+            "one. Read locally — this contacts nothing.")
+        ip_layout.addWidget(self.local_ip_label, 0, 1)
+        self.refresh_local_ip_btn = QPushButton("Refresh")
+        self.refresh_local_ip_btn.setToolTip("Re-read local interface addresses. Local only.")
+        self.refresh_local_ip_btn.clicked.connect(self.refresh_local_ip)
+        ip_layout.addWidget(self.refresh_local_ip_btn, 0, 2)
+
+        ip_layout.addWidget(QLabel("Public:"), 1, 0)
+        self.public_ip_label = QLabel("Not checked")
+        self.public_ip_label.setWordWrap(True)
+        self.public_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.public_ip_label.setToolTip(
+            "Your exit IP, its location and network owner, and whether it is "
+            "flagged as a VPN/proxy/hosting range.")
+        ip_layout.addWidget(self.public_ip_label, 1, 1)
+        self.check_public_ip_btn = QPushButton("Check public IP")
+        self.check_public_ip_btn.setToolTip(
+            "Optional: contacts api.ipify.org and IPinfo (or ipapi.co) to read "
+            "your exit IP. No AI provider is used.")
+        self.check_public_ip_btn.clicked.connect(self.check_public_ip)
+        ip_layout.addWidget(self.check_public_ip_btn, 1, 2)
+
+        ip_layout.addWidget(QLabel("DNS leak:"), 2, 0)
+        self.dns_leak_label = QLabel("Not checked")
+        self.dns_leak_label.setWordWrap(True)
+        self.dns_leak_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.dns_leak_label.setToolTip(
+            "Which DNS resolvers your traffic actually uses, and whether they sit "
+            "outside your tunnel's network — a real egress test, not a guess.")
+        ip_layout.addWidget(self.dns_leak_label, 2, 1)
+        self.dns_leak_btn = QPushButton("Run test")
+        self.dns_leak_btn.setToolTip(
+            "Optional: runs a real DNS-leak test via bash.ws (resolves probe "
+            "hostnames and reads back the resolvers seen). No AI provider is used.")
+        self.dns_leak_btn.clicked.connect(self.run_dns_leak_test)
+        ip_layout.addWidget(self.dns_leak_btn, 2, 2)
+
+        layout.addWidget(ip_group)
+        self.refresh_local_ip()
 
         # ── Deployment setup ─────────────────────────────────────────────
         setup_group = QGroupBox("Deployment")
@@ -460,6 +519,115 @@ class VpnPanel(AgentPanel):
         profile = self.connect_profile_box.currentData()
         return dict(profile) if isinstance(profile, dict) else None
 
+    # ── Your IP readout ─────────────────────────────────────────────────
+    @staticmethod
+    def _format_local_ip(local: dict) -> str:
+        primary = local.get("primary") or "unknown"
+        parts = [f"{primary} (LAN)"]
+        interfaces = local.get("interfaces") or {}
+        for name in local.get("tunnels") or []:
+            for address in interfaces.get(name, []):
+                parts.append(f"{address} ({name}, tunnel)")
+        if not local.get("tunnels"):
+            parts.append("no tunnel interface up")
+        return "   ·   ".join(parts)
+
+    @staticmethod
+    def _format_public_ip(public: dict) -> str:
+        ip = public.get("ip") or "unknown"
+        parts = [ip]
+        location = ", ".join(
+            value for value in (public.get("city"), public.get("country"))
+            if value and value != "Unknown"
+        )
+        if location:
+            parts.append(location)
+        org = public.get("org")
+        if org and org != "Unknown":
+            parts.append(org)
+        flags = public.get("privacy_flags")
+        if flags:
+            parts.append("flagged: " + ", ".join(flags))
+        return "   ·   ".join(parts)
+
+    def refresh_local_ip(self) -> None:
+        """Read local interface addresses synchronously — local only, no network."""
+        from agents.vpn_agent.services import public_ip
+        try:
+            self.local_ip_label.setText(self._format_local_ip(public_ip.get_local_addresses()))
+        except Exception as exc:
+            self.local_ip_label.setText(f"Could not read local addresses: {exc}"[:200])
+
+    def check_public_ip(self) -> None:
+        """Fetch the public exit IP (and refresh the local view) off the UI thread."""
+        if self._ip_worker is not None and self._ip_worker.isRunning():
+            return
+        self.check_public_ip_btn.setEnabled(False)
+        self.public_ip_label.setText("Checking…")
+        worker = self.ip_worker_class(include_public=True)
+        worker.finished_signal.connect(self._on_ip_snapshot)
+        worker.error_signal.connect(self._on_ip_error)
+        self._ip_worker = worker
+        worker.start()
+
+    def _on_ip_snapshot(self, snapshot: dict) -> None:
+        self.check_public_ip_btn.setEnabled(True)
+        local = snapshot.get("local")
+        if local:
+            self.local_ip_label.setText(self._format_local_ip(local))
+        public = snapshot.get("public")
+        if public is not None:
+            self._public_ip_fetched = True
+            self.public_ip_label.setText(self._format_public_ip(public))
+
+    def _on_ip_error(self, error: str) -> None:
+        self.check_public_ip_btn.setEnabled(True)
+        self.public_ip_label.setText(f"Error: {error}"[:200])
+
+    # ── DNS-leak test ────────────────────────────────────────────────────
+    @staticmethod
+    def _format_dns_leak(result: dict) -> str:
+        status = result.get("status")
+        if status == "cancelled":
+            return "Test stopped."
+        if status != "ok":
+            return f"Could not run the test: {result.get('detail', 'unknown error')}"[:200]
+        count = result.get("resolver_count", 0)
+        if not count:
+            return result.get("conclusion") or "No resolvers were observed — try again."
+        leak = result.get("leak")
+        verdict = ("possible leak" if leak else "no leak detected"
+                   if leak is False else "review resolvers")
+        head = f"{count} resolver(s), {result.get('distinct_asns', 0)} network(s) — {verdict}"
+        seen = []
+        for resolver in result.get("resolvers", [])[:4]:
+            label = resolver.get("ip") or "?"
+            asn = resolver.get("asn")
+            country = resolver.get("country")
+            extra = ", ".join(part for part in (asn, country) if part)
+            seen.append(f"{label} ({extra})" if extra else label)
+        return head + ("   ·   " + "   ·   ".join(seen) if seen else "")
+
+    def run_dns_leak_test(self) -> None:
+        """Run the real egress DNS-leak test off the UI thread."""
+        if self._dns_worker is not None and self._dns_worker.isRunning():
+            return
+        self.dns_leak_btn.setEnabled(False)
+        self.dns_leak_label.setText("Testing… (resolving probes)")
+        worker = self.dns_leak_worker_class()
+        worker.finished_signal.connect(self._on_dns_leak)
+        worker.error_signal.connect(self._on_dns_leak_error)
+        self._dns_worker = worker
+        worker.start()
+
+    def _on_dns_leak(self, result: dict) -> None:
+        self.dns_leak_btn.setEnabled(True)
+        self.dns_leak_label.setText(self._format_dns_leak(result))
+
+    def _on_dns_leak_error(self, error: str) -> None:
+        self.dns_leak_btn.setEnabled(True)
+        self.dns_leak_label.setText(f"Error: {error}"[:200])
+
     def import_vpn_config(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Import VPN config", str(Path.home()),
@@ -559,6 +727,12 @@ class VpnPanel(AgentPanel):
                 "Connection state and traffic protection are not verified.")
         else:
             self.connection_status_label.setText(f"Failed: {result.get('error', 'unknown')}"[:300])
+        # The tunnel interface just appeared or went away — reflect it locally,
+        # and re-read the exit IP only if the operator already opted into that
+        # external check this session.
+        self.refresh_local_ip()
+        if self._public_ip_fetched:
+            self.check_public_ip()
 
     def _on_connection_error(self, error: str) -> None:
         self.connect_btn.setEnabled(True)
@@ -717,7 +891,8 @@ class VpnPanel(AgentPanel):
 
     def shutdown(self, timeout_ms: int = 2000) -> None:
         """Cancel and join Tunnel workers before their widgets are destroyed."""
-        workers = [self.worker, self._diagnostics_worker]
+        workers = [self.worker, self._diagnostics_worker, self._ip_worker,
+                   self._dns_worker, getattr(self, "_connection_worker", None)]
         for worker in workers:
             if worker is not None and worker.isRunning():
                 worker.cancel()

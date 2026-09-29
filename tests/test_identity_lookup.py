@@ -392,6 +392,90 @@ def test_sanctions_matches_carry_listing_and_datasets(monkeypatch):
     assert {"source": "OpenSanctions", "status": "checked"} in result["sources_contacted"]
 
 
+# ── CourtListener (metadata-only court records) ──────────────────────────────
+
+def _court_get(monkeypatch, court_payload, status_code=200):
+    """A requests.get that answers GLEIF empty and CourtListener with a payload,
+    recording the headers/params the CourtListener call was made with."""
+    def fake_get(url, params=None, headers=None, **kwargs):
+        if "courtlistener" in url:
+            fake_get.court_headers = headers
+            fake_get.court_params = params
+            return _JsonResponse(court_payload, status_code=status_code)
+        return _JsonResponse({"meta": {"pagination": {"total": 0}}, "data": []})
+    fake_get.court_headers = None
+    fake_get.court_params = None
+    monkeypatch.setattr(company_lookup.requests, "get", fake_get)
+    return fake_get
+
+
+def test_court_records_only_runs_when_asked(monkeypatch):
+    _gleif_empty(monkeypatch)
+    monkeypatch.setattr(
+        company_lookup, "_court_records",
+        lambda company: (_ for _ in ()).throw(AssertionError("must not query CourtListener")))
+    result = company_lookup.lookup("Example Limited")
+    assert "court_records" not in result
+
+
+def test_court_records_surface_metadata_only_never_document_content(monkeypatch):
+    payload = {
+        "count": 2,
+        "results": [{
+            "caseName": "United States v. Acme Corp",
+            "court": "S.D.N.Y.", "court_id": "nysd",
+            "docketNumber": "1:20-cv-01234", "docket_id": 42,
+            "dateFiled": "2020-02-03", "dateTerminated": "2021-05-01",
+            "suitNature": "Contract", "cause": "28:1332",
+            "party": ["Acme Corp", "United States"],
+            "docket_absolute_url": "/docket/42/us-v-acme/",
+            # Document-content fields that MUST NEVER be surfaced:
+            "snippet": "SECRETLEAKEDFILINGTEXT",
+            "plain_text": "FULLDOCUMENTBODY",
+            "filepath_local": "/recap/gov.uscourts.nysd.pdf",
+            "recap_documents": [{"snippet": "DOCBODY", "plain_text": "MORE"}],
+        }],
+    }
+    monkeypatch.setattr(company_lookup, "COURTLISTENER_KEY", "")
+    fake_get = _court_get(monkeypatch, payload)
+    result = company_lookup.lookup("Acme Corp", court_records=True)
+
+    cr = result["court_records"]
+    assert cr["total_matches"] == 2
+    docket = cr["dockets"][0]
+    assert docket["case_name"] == "United States v. Acme Corp"
+    assert docket["court"] == "S.D.N.Y."
+    assert docket["docket_number"] == "1:20-cv-01234"
+    assert docket["parties"] == ["Acme Corp", "United States"]
+    assert docket["docket_url"] == "https://www.courtlistener.com/docket/42/us-v-acme/"
+    # No document-content field or value leaks into the surfaced result, at any depth.
+    blob = str(result)
+    for forbidden in ("snippet", "plain_text", "filepath_local", "recap_documents",
+                      "SECRETLEAKEDFILINGTEXT", "FULLDOCUMENTBODY", "DOCBODY", "MORE"):
+        assert forbidden not in blob
+    # Metadata-only query: type=d, and never highlight=on.
+    assert fake_get.court_params["type"] == "d"
+    assert "highlight" not in fake_get.court_params
+    # Keyless → no Authorization header is sent (anonymous access).
+    assert "Authorization" not in fake_get.court_headers
+    assert result["sources_contacted"][-1] == {"source": "CourtListener", "status": "checked"}
+
+
+def test_court_records_sends_token_header_when_key_is_set(monkeypatch):
+    monkeypatch.setattr(company_lookup, "COURTLISTENER_KEY", "cl-key")
+    fake_get = _court_get(monkeypatch, {"count": 0, "results": []})
+    company_lookup.lookup("Acme Corp", court_records=True)
+    assert fake_get.court_headers["Authorization"] == "Token cl-key"
+
+
+def test_court_records_401_is_a_clean_error(monkeypatch):
+    monkeypatch.setattr(company_lookup, "COURTLISTENER_KEY", "bad-key")
+    _court_get(monkeypatch, {"detail": "Invalid token."}, status_code=401)
+    result = company_lookup.lookup("Acme Corp", court_records=True)
+    assert "rejected the API key" in result["court_records"]["error"]
+    assert result["sources_contacted"][-1] == {"source": "CourtListener", "status": "error"}
+
+
 def test_a_rejected_sanctions_key_is_an_error(monkeypatch):
     monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", "bad")
     monkeypatch.setattr(company_lookup.requests, "get",

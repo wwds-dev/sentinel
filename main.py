@@ -2573,8 +2573,10 @@ class GodAI(QWidget):
         ("abuseipdb",      "AbuseIPDB",           "Network",  "Free",       "https://www.abuseipdb.com/register",            "ABUSEIPDB_API_KEY"),
         ("greynoise",      "GreyNoise",           "Network",  "Free",       "https://www.greynoise.io/signup",               "GREYNOISE_API_KEY"),
         ("censys",         "Censys",              "Network",  "Free",       "https://search.censys.io/register",             "CENSYS_API_KEY"),
+        ("criminalip",     "Criminal IP",         "Network",  "Free",       "https://www.criminalip.io/register",            "CRIMINALIP_API_KEY"),
         ("securitytrails", "SecurityTrails",      "Domain",   "Free",       "https://securitytrails.com/app/signup",         "SECURITYTRAILS_API_KEY"),
         ("hunter",         "Hunter.io",           "Email",    "Free",       "https://hunter.io/users/sign_up",               "HUNTER_API_KEY"),
+        ("addyio",         "addy.io",             "Email",    "Free",       "https://app.addy.io/register",                  "ADDYIO_API_KEY"),
         ("breachdirectory","BreachDirectory",     "Breach",   "Free",       "https://breachdirectory.org",                   ""),
         ("hibp",           "HaveIBeenPwned",      "Breach",   "$3.50/mo",   "https://haveibeenpwned.com/API/Key",            "HIBP_API_KEY"),
         ("shodan",         "Shodan",              "Network",  "$49/mo",     "https://account.shodan.io/register",            "SHODAN_API_KEY"),
@@ -2585,6 +2587,7 @@ class GodAI(QWidget):
         ("ahmia",          "Ahmia",               "Dark Web", "Free",       "https://ahmia.fi/",                             ""),
         ("intelx",         "IntelligenceX",       "Dark Web", "Paid",       "https://intelx.io/",                            "INTELX_API_KEY"),
         ("domaintools",    "DomainTools",         "Domain",   "Paid",       "https://www.domaintools.com/",                  "DOMAINTOOLS_API_KEY"),
+        ("courtlistener",  "CourtListener",       "Legal",    "Free",       "https://www.courtlistener.com/register/",       "COURTLISTENER_API_KEY"),
     ]
 
     def select_agent(self, agent_name):

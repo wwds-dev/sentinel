@@ -2,6 +2,10 @@ import pytest
 
 from providers import domain_lookup
 
+# Captured before the autouse fixture replaces it, so the parsing tests can
+# exercise the real Criminal IP source.
+_REAL_CRIMINALIP = domain_lookup._criminalip
+
 
 @pytest.fixture(autouse=True)
 def _no_network_sources(monkeypatch):
@@ -9,8 +13,15 @@ def _no_network_sources(monkeypatch):
     monkeypatch.setattr(domain_lookup, "_asn", lambda target: {"asn": "AS64500"})
     monkeypatch.setattr(domain_lookup, "_passive_dns", lambda target: {"records": []})
     monkeypatch.setattr(domain_lookup, "_dshield", lambda target: {"reports": 0})
+    monkeypatch.setattr(domain_lookup, "_shodan_internetdb", lambda target: {"found": False})
+    monkeypatch.setattr(domain_lookup, "_ipinfo", lambda target: {"country": "ZZ"})
+    monkeypatch.setattr(domain_lookup, "_criminalip", lambda target: {"risk_inbound": "Safe"})
     monkeypatch.setattr(domain_lookup, "_crtsh", lambda target: {"total_unique": 0})
     monkeypatch.setattr(domain_lookup, "_wayback", lambda target: {"archived": False})
+    # Criminal IP is key-gated; default the tests to "no key" so the IP source
+    # list is deterministic regardless of the developer's real .env. Tests that
+    # exercise it set the key themselves.
+    monkeypatch.delenv("CRIMINALIP_API_KEY", raising=False)
 
 
 def test_domain_lookup_reports_each_source_and_keeps_errors(monkeypatch):
@@ -44,6 +55,21 @@ def test_domain_lookup_reports_each_source_and_keeps_errors(monkeypatch):
     assert ("Wayback Machine", "checked") in progress
 
 
+def test_ipinfo_source_is_included_only_when_its_key_is_set(monkeypatch):
+    monkeypatch.setattr(domain_lookup, "_whois", lambda target: {})
+    monkeypatch.setattr(domain_lookup, "_dns", lambda target: {})
+
+    monkeypatch.delenv("IPINFO_API_KEY", raising=False)
+    without = domain_lookup.lookup("192.0.2.1")
+    assert "IPinfo" not in [item["source"] for item in without["sources_contacted"]]
+    assert "ip_details" not in without
+
+    monkeypatch.setenv("IPINFO_API_KEY", "test-key")
+    withkey = domain_lookup.lookup("192.0.2.1")
+    assert "IPinfo" in [item["source"] for item in withkey["sources_contacted"]]
+    assert withkey["ip_details"] == {"country": "ZZ"}   # from the autouse stub
+
+
 def test_cancel_between_sources_returns_partial_result(monkeypatch):
     monkeypatch.setattr(domain_lookup, "_whois", lambda target: {"country": "ZZ"})
     monkeypatch.setattr(
@@ -60,6 +86,7 @@ def test_cancel_between_sources_returns_partial_result(monkeypatch):
 
 
 def test_ipv6_is_preserved_and_certificate_lookup_is_skipped(monkeypatch):
+    monkeypatch.setenv("IPINFO_API_KEY", "test-key")  # so the IPinfo source is included
     monkeypatch.setattr(domain_lookup, "_whois", lambda target: {})
     monkeypatch.setattr(domain_lookup, "_dns", lambda target: {"AAAA": [target]})
     monkeypatch.setattr(
@@ -78,7 +105,8 @@ def test_ipv6_is_preserved_and_certificate_lookup_is_skipped(monkeypatch):
     assert "certificates" not in result
     assert "archive" not in result
     assert [item["source"] for item in result["sources_contacted"]] == [
-        "WHOIS", "DNS", "Team Cymru IP-to-ASN", "SANS DShield", "Mnemonic passive DNS",
+        "WHOIS", "DNS", "Team Cymru IP-to-ASN", "SANS DShield",
+        "Shodan InternetDB", "IPinfo", "Mnemonic passive DNS",
     ]
 
 
@@ -244,3 +272,166 @@ def test_dshield_clean_ip_reports_zero_not_null(monkeypatch):
     result = domain_lookup._dshield("192.0.2.1")
     assert (result["reports"], result["targets_attacked"]) == (0, 0)
     assert result["ssh_brute_force"] is None and result["web_attacks"] is None
+
+
+# ── Shodan InternetDB ────────────────────────────────────────────────────────
+
+def test_shodan_internetdb_extracts_ports_software_and_vulns(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(domain_lookup.requests, "get", lambda *a, **k: _Response({
+        "ip": "192.0.2.1", "ports": [22, 443], "hostnames": ["host.example"],
+        "cpes": ["cpe:/a:nginx:nginx"], "tags": ["cloud"], "vulns": ["CVE-2021-1234"],
+    }))
+    result = domain_lookup._shodan_internetdb("192.0.2.1")
+    assert result["found"] is True
+    assert result["ports"] == [22, 443]
+    assert result["software"] == ["cpe:/a:nginx:nginx"]
+    assert result["vulnerabilities"] == ["CVE-2021-1234"]
+
+
+def test_shodan_internetdb_404_is_a_clean_result_not_an_error(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(domain_lookup.requests, "get",
+                        lambda *a, **k: _Response({}, status_code=404))
+    result = domain_lookup._shodan_internetdb("192.0.2.1")
+    assert result["found"] is False
+    assert "error" not in result
+
+
+def test_shodan_internetdb_other_http_status_is_an_error(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(domain_lookup.requests, "get",
+                        lambda *a, **k: _Response({}, status_code=502))
+    assert domain_lookup._shodan_internetdb("192.0.2.1") == {
+        "error": "Shodan InternetDB HTTP 502"
+    }
+
+
+# ── IPinfo ───────────────────────────────────────────────────────────────────
+
+def test_ipinfo_sends_the_key_when_present_and_surfaces_privacy_flags(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setenv("IPINFO_API_KEY", "tok_123")
+    seen = {}
+
+    def fake_get(url, params=None, **kwargs):
+        seen["url"] = url
+        seen["params"] = params
+        return _Response({
+            "ip": "192.0.2.1", "city": "Berlin", "region": "Berlin",
+            "country": "DE", "org": "AS64500 Example Net",
+            "privacy": {"vpn": True, "proxy": False, "tor": False,
+                        "relay": False, "hosting": True},
+        })
+
+    monkeypatch.setattr(domain_lookup.requests, "get", fake_get)
+    result = domain_lookup._ipinfo("192.0.2.1")
+    assert seen["url"] == "https://ipinfo.io/192.0.2.1/json"
+    assert seen["params"] == {"token": "tok_123"}
+    assert result["country"] == "DE"
+    assert result["org"] == "AS64500 Example Net"
+    assert result["privacy_flags"] == ["vpn", "hosting"]
+
+
+def test_ipinfo_without_a_key_sends_no_token_and_omits_privacy(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.delenv("IPINFO_API_KEY", raising=False)
+    seen = {}
+
+    def fake_get(url, params=None, **kwargs):
+        seen["params"] = params
+        return _Response({"ip": "192.0.2.1", "city": "Berlin", "country": "DE"})
+
+    monkeypatch.setattr(domain_lookup.requests, "get", fake_get)
+    result = domain_lookup._ipinfo("192.0.2.1")
+    assert seen["params"] == {}
+    assert "privacy_flags" not in result
+    assert result["city"] == "Berlin"
+
+
+def test_ipinfo_rate_limit_is_reported(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(domain_lookup.requests, "get",
+                        lambda *a, **k: _Response({}, status_code=429))
+    assert "rate limit" in domain_lookup._ipinfo("192.0.2.1")["error"]
+
+
+def test_ipinfo_reports_a_bogon_address_as_a_fact(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(domain_lookup.requests, "get",
+                        lambda *a, **k: _Response({"ip": "10.0.0.1", "bogon": True}))
+    result = domain_lookup._ipinfo("10.0.0.1")
+    assert result["bogon"] is True
+    assert "error" not in result
+
+
+# ── Criminal IP (key-gated) ───────────────────────────────────────────────────
+
+def test_criminalip_source_included_only_when_key_is_set(monkeypatch):
+    monkeypatch.setattr(domain_lookup, "_whois", lambda target: {})
+    monkeypatch.setattr(domain_lookup, "_dns", lambda target: {})
+
+    monkeypatch.delenv("CRIMINALIP_API_KEY", raising=False)
+    without = domain_lookup.lookup("192.0.2.1")
+    assert "Criminal IP" not in [item["source"] for item in without["sources_contacted"]]
+    assert "ip_reputation" not in without
+
+    monkeypatch.setenv("CRIMINALIP_API_KEY", "cip-key")
+    withkey = domain_lookup.lookup("192.0.2.1")
+    assert "Criminal IP" in [item["source"] for item in withkey["sources_contacted"]]
+    assert withkey["ip_reputation"] == {"risk_inbound": "Safe"}   # from the autouse stub
+
+
+def test_criminalip_parses_score_flags_owner_and_ports(monkeypatch):
+    monkeypatch.setenv("CRIMINALIP_API_KEY", "cip-key")
+    seen = {}
+
+    def fake_get(url, params=None, headers=None, **kwargs):
+        seen["url"] = url
+        seen["params"] = params
+        seen["headers"] = headers
+        return _Response({
+            "status": 200,
+            "score": {"inbound": "Dangerous", "outbound": "Low"},
+            "issues": {"is_vpn": True, "is_proxy": False, "is_tor": True,
+                       "is_hosting": True, "is_scanner": False},
+            "whois": {"data": [{"as_name": "EXAMPLE-AS", "org_name": "Example Ltd",
+                                "org_country_code": "US"}]},
+            "current_opened_port": {"data": [{"open_port": 443}, {"open_port": 22}]},
+        })
+
+    monkeypatch.setattr(domain_lookup.requests, "get", fake_get)
+    out = _REAL_CRIMINALIP("1.2.3.4")
+    assert out["risk_inbound"] == "Dangerous"
+    assert out["risk_outbound"] == "Low"
+    assert out["flags"] == ["vpn", "tor", "hosting"]
+    assert out["as_name"] == "EXAMPLE-AS"
+    assert out["org"] == "Example Ltd"
+    assert out["country"] == "US"
+    assert out["open_ports"] == [22, 443]
+    # Key travels only in the x-api-key header, never the URL/query string.
+    assert seen["headers"]["x-api-key"] == "cip-key"
+    assert seen["params"] == {"ip": "1.2.3.4"}
+    assert "cip-key" not in seen["url"]
+
+
+def test_criminalip_rejected_key_http_401_is_clean_error(monkeypatch):
+    monkeypatch.setenv("CRIMINALIP_API_KEY", "bad")
+    monkeypatch.setattr(domain_lookup.requests, "get",
+                        lambda *a, **k: _Response({}, status_code=401))
+    out = _REAL_CRIMINALIP("1.2.3.4")
+    assert "rejected the key" in out["error"]
+
+
+def test_criminalip_in_body_status_non_200_is_error(monkeypatch):
+    monkeypatch.setenv("CRIMINALIP_API_KEY", "cip-key")
+    monkeypatch.setattr(domain_lookup.requests, "get",
+                        lambda *a, **k: _Response({"status": 401}, status_code=200))
+    out = _REAL_CRIMINALIP("1.2.3.4")
+    assert "rejected the key" in out["error"]
+
+
+def test_criminalip_missing_key_self_skips(monkeypatch):
+    monkeypatch.delenv("CRIMINALIP_API_KEY", raising=False)
+    out = _REAL_CRIMINALIP("1.2.3.4")
+    assert "CRIMINALIP_API_KEY" in out["error"]

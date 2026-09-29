@@ -28,6 +28,14 @@ Key-gated (set in .env):
                        stays skipped until a licensed key is present. Only the
                        search index is queried — the file/read (download)
                        endpoints are never called.
+  • DeHashed         → DEHASHED_API_KEY — which breach databases an email or
+                       domain appears in. Paid and credit-metered; skipped until
+                       a key is present. STRICTLY metadata only: Sentinel reads
+                       just the breach-database name and record counts and never
+                       surfaces (or logs) the leaked passwords, hashes or other
+                       record contents. Searches emails and domains, not company
+                       names. The free password/hash lookup endpoint is never
+                       called.
 
 Returns a normalised dict suitable for direct injection into an LLM prompt and
 for the Trace / Bloodhound result cards. Mirrors the shape of the other
@@ -48,6 +56,12 @@ from services.runtime_paths import user_data_base
 load_dotenv(user_data_base() / ".env", override=False)
 INTELX_KEY = os.getenv("INTELX_API_KEY", "")
 
+
+def dehashed_key() -> str:
+    """The DeHashed key, read live so a key saved in the OSINT Keys tab (which
+    writes it into the environment) takes effect without an app restart."""
+    return os.getenv("DEHASHED_API_KEY", "").strip()
+
 _UA = "Sentinel-OSINT/2.0"
 # Ahmia serves its result page to browsers; a bare client UA is bounced to the
 # home page. A plain desktop UA is honest about being an automated read and
@@ -57,7 +71,7 @@ _BROWSER_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-DEFAULT_SOURCES = ("ransomware_live", "ahmia", "intelx")
+DEFAULT_SOURCES = ("ransomware_live", "ahmia", "intelx", "dehashed")
 
 # Intelligence X media codes → readable labels (from the IntelX SDK).
 _INTELX_MEDIA = {
@@ -433,6 +447,95 @@ def _intelx(term: str, *, should_stop=None) -> dict:
         return {"source": "intelx", "status": "error", "detail": str(exc)[:200]}
 
 
+# ── DeHashed v2 ────────────────────────────────────────────────────────────────
+
+def _dehashed(terms: dict) -> dict:
+    """DeHashed v2: which breach databases an email or domain appears in.
+
+    Metadata only. Sentinel sends a single search (one credit-metered call),
+    groups the returned records by ``database_name`` for a per-breach count, and
+    reads nothing else — the leaked ``password`` / ``hashed_password`` /
+    ``hash_type`` fields and the other per-record PII are never touched, surfaced
+    or logged. The free password/hash endpoint (``/v2/search-password``) is never
+    called. Requires a paid DEHASHED_API_KEY; self-skips without one. DeHashed
+    indexes emails and domains, not company names, so a company target is skipped.
+    """
+    key = dehashed_key()
+    if not key:
+        return {
+            "source": "dehashed",
+            "status": "skipped",
+            "reason": "DEHASHED_API_KEY not set in .env — DeHashed is a paid, "
+                      "credit-metered service; add a key to enable it.",
+        }
+    kind = terms.get("kind")
+    if kind == "email" and terms.get("address"):
+        query = f'email:"{terms["address"]}"'
+    elif kind in ("domain", "email") and terms.get("domain"):
+        query = f'domain:{terms["domain"]}'
+    else:
+        return {
+            "source": "dehashed",
+            "status": "skipped",
+            "reason": "DeHashed searches emails and domains, not company names.",
+        }
+    try:
+        resp = requests.post(
+            "https://api.dehashed.com/v2/search",
+            json={"query": query, "page": 1, "size": 100},
+            timeout=20,
+            headers={
+                "Dehashed-Api-Key": key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": _UA,
+            },
+        )
+        if resp.status_code in (401, 403):
+            return {"source": "dehashed", "status": "error",
+                    "detail": "DeHashed rejected the key (check the key and that it has API credits)"}
+        if resp.status_code == 429:
+            return {"source": "dehashed", "status": "error",
+                    "detail": "DeHashed rate limit reached; try again later"}
+        if resp.status_code != 200:
+            return {"source": "dehashed", "status": "error", "code": resp.status_code}
+
+        parsed = resp.json()
+        body = parsed if isinstance(parsed, dict) else {}
+        entries = body.get("entries") or []
+
+        # Count exposures per breach database. Only ``database_name`` is read;
+        # credential and PII fields on each entry are deliberately ignored.
+        breaches: dict[str, int] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            names = entry.get("database_name")
+            for name in (names if isinstance(names, list) else [names]):
+                if name:
+                    breaches[str(name)] = breaches.get(str(name), 0) + 1
+        databases = sorted(
+            ({"database": name, "records": count} for name, count in breaches.items()),
+            key=lambda item: item["records"], reverse=True)
+
+        return {
+            "source": "dehashed",
+            "status": "ok",
+            "records_on_page": len(entries),
+            "total_records": body.get("total", len(entries)),
+            "breach_count": len(databases),
+            "breach_databases": databases,
+            "credits_remaining": body.get("balance"),
+            "note": ("Breach databases the target appears in, with a record count each. "
+                     "Metadata only — Sentinel does not read or store the leaked "
+                     "passwords, hashes or other record contents."),
+        }
+    except requests.exceptions.Timeout:
+        return {"source": "dehashed", "status": "error", "detail": "request timed out (>20 s)"}
+    except Exception as exc:
+        return {"source": "dehashed", "status": "error", "detail": str(exc)[:200]}
+
+
 # ── public interface ──────────────────────────────────────────────────────────
 
 def lookup(target: str, target_type: str = "", *, selected_sources=None,
@@ -468,6 +571,8 @@ def lookup(target: str, target_type: str = "", *, selected_sources=None,
          lambda: _ahmia(terms["keyword"])),
         ("intelx", "Intelligence X", "intelx",
          lambda: _intelx(terms["intelx_term"], should_stop=should_stop)),
+        ("dehashed", "DeHashed", "dehashed",
+         lambda: _dehashed(terms)),
     ]
 
     for key, label, result_key, call in source_calls:
@@ -491,21 +596,26 @@ def lookup(target: str, target_type: str = "", *, selected_sources=None,
     rl = result.get("ransomware_live", {})
     ah = result.get("ahmia", {})
     ix = result.get("intelx", {})
+    dh = result.get("dehashed", {})
     rl_ok = rl.get("status") == "ok"
     ransomware_direct = rl.get("direct_victim_matches", 0) if rl_ok else 0
     ransomware_total = rl.get("total_results", 0) if rl_ok else 0
     darkweb_hits = ah.get("result_count", 0) if ah.get("status") == "ok" else 0
     intelx_hits = ix.get("total", 0) if ix.get("status") == "ok" else 0
+    dehashed_breaches = dh.get("breach_count", 0) if dh.get("status") == "ok" else 0
 
     result["summary"] = {
         # A direct victim/domain match is a strong claim; a bare listing, an Ahmia
-        # index hit or an IntelX record is a lead to review, not proof of breach.
-        "exposure_detected": bool(ransomware_total or darkweb_hits or intelx_hits),
+        # index hit, an IntelX record or a DeHashed breach hit is a lead to
+        # review, not proof of a fresh breach.
+        "exposure_detected": bool(ransomware_total or darkweb_hits or intelx_hits
+                                  or dehashed_breaches),
         "on_ransomware_leak_site": ransomware_direct > 0,
         "ransomware_victim_matches": ransomware_direct,
         "ransomware_listings": ransomware_total,
         "darkweb_index_hits": darkweb_hits,
         "intelx_records": intelx_hits,
+        "breach_databases": dehashed_breaches,
         "sources_queried": len(result["sources_contacted"]),
     }
     return result

@@ -8,6 +8,14 @@ Opt-in (``offshore_leaks=True``, used by Bloodhound):
     Panama, Paradise, Pandora and earlier leak investigations, matched by name
     through ICIJ's reconciliation API (no key)
 
+Opt-in (``court_records=True``, used by Trace's company lookup and Bloodhound):
+  • CourtListener (RECAP) → U.S. federal and state court dockets whose parties
+    match the company name, from the Free Law Project's RECAP archive. Uses the
+    ``type=d`` (dockets-only) search, which returns docket METADATA with no
+    nested documents, so no filing text or PDF is ever fetched — Sentinel reports
+    that a case exists, never its contents. Works anonymously; COURTLISTENER_API_KEY
+    is optional and only raises the rate limit.
+
 Key-gated (set in .env; skipped and reported as skipped without it):
   • OpenSanctions → OPENSANCTIONS_API_KEY — sanctions lists, politically
     exposed persons and other watchlists in one search. Every API call needs a
@@ -25,6 +33,9 @@ from services.runtime_paths import user_data_base
 load_dotenv(user_data_base() / ".env", override=False)
 OPENSANCTIONS_KEY = os.getenv("OPENSANCTIONS_API_KEY", "")
 OPENSANCTIONS_URL = "https://api.opensanctions.org/search/default"
+COURTLISTENER_KEY = os.getenv("COURTLISTENER_API_KEY", "")
+COURTLISTENER_URL = "https://www.courtlistener.com/api/rest/v4/search/"
+COURTLISTENER_SITE = "https://www.courtlistener.com"
 
 
 GLEIF_URL = "https://api.gleif.org/api/v1/lei-records"
@@ -144,12 +155,90 @@ def _opensanctions(company: str) -> dict:
         return {"error": str(error)[:300]}
 
 
+def _court_url(path) -> str | None:
+    """Turn a CourtListener relative path into an absolute docket-page URL."""
+    if not path:
+        return None
+    path = str(path)
+    return path if path.startswith("http") else COURTLISTENER_SITE + path
+
+
+def _docket_record(item: dict) -> dict:
+    """Whitelist docket METADATA from one search result.
+
+    Deliberately reads only metadata fields and never touches
+    ``recap_documents``, ``snippet``, ``plain_text`` or ``filepath_local`` — so
+    no filing content or document PDF is ever surfaced, even if a caller passed a
+    result that carries them. ``docket_url`` points at the docket page on
+    CourtListener, not at any document.
+    """
+    parties = [p for p in (item.get("party") or []) if isinstance(p, str)][:10]
+    return {
+        "case_name": item.get("caseName") or item.get("case_name_full"),
+        "court": item.get("court") or item.get("court_id"),
+        "docket_number": item.get("docketNumber"),
+        "date_filed": item.get("dateFiled"),
+        "date_terminated": item.get("dateTerminated"),
+        "nature_of_suit": item.get("suitNature"),
+        "cause": item.get("cause"),
+        "parties": parties,
+        "docket_url": _court_url(item.get("docket_absolute_url")),
+    }
+
+
+def _court_records(company: str) -> dict:
+    """CourtListener (RECAP) dockets whose parties match a company name.
+
+    Uses ``type=d`` (dockets only): the search returns docket metadata with no
+    nested documents, so document text and PDFs are structurally excluded and
+    never fetched. Anonymous access works; the key only raises the rate limit.
+    A name match is a lead, not proof the case concerns this organisation.
+    """
+    headers = {"User-Agent": "Sentinel-OSINT/2.0", "Accept": "application/json"}
+    if COURTLISTENER_KEY:
+        headers["Authorization"] = f"Token {COURTLISTENER_KEY}"
+    try:
+        response = requests.get(
+            COURTLISTENER_URL,
+            # type=d → dockets only (no recap_documents). Never highlight=on,
+            # which would populate document snippets.
+            params={"type": "d", "q": company, "order_by": "dateFiled desc"},
+            timeout=20,
+            headers=headers,
+        )
+        if response.status_code in (401, 403):
+            return {"error": ("CourtListener rejected the API key"
+                              if COURTLISTENER_KEY else
+                              f"CourtListener refused anonymous access (HTTP {response.status_code})")}
+        if response.status_code == 429:
+            return {"error": "CourtListener rate limit reached; try again later"}
+        if response.status_code != 200:
+            return {"error": f"CourtListener HTTP {response.status_code}"}
+        payload = response.json()
+        results = payload.get("results") or []
+        dockets = [_docket_record(item) for item in results[:15]]
+        return {
+            "total_matches": payload.get("count", len(dockets)),
+            "dockets_shown": len(dockets),
+            "dockets": dockets,
+            "note": ("U.S. federal and state dockets from the RECAP archive, matched "
+                     "by party name — metadata only, no filing text or PDFs. A name "
+                     "match is a lead, not proof the case concerns this organisation."),
+        }
+    except requests.exceptions.Timeout:
+        return {"error": "CourtListener did not respond within 20 seconds."}
+    except Exception as error:
+        return {"error": str(error)[:300]}
+
+
 def lookup(company: str, *, offshore_leaks: bool = False, sanctions: bool = False,
-           on_progress=None, should_stop=None) -> dict:
+           court_records: bool = False, on_progress=None, should_stop=None) -> dict:
     """Search GLEIF by company name and return compact legal-entity records.
 
     ``offshore_leaks=True`` also checks the name against ICIJ Offshore Leaks;
-    ``sanctions=True`` also screens it with OpenSanctions (skipped without a key).
+    ``sanctions=True`` also screens it with OpenSanctions (skipped without a key);
+    ``court_records=True`` also lists matching U.S. court dockets from
+    CourtListener (metadata only; works without a key).
     """
     company = company.strip()
     result = {
@@ -229,6 +318,19 @@ def lookup(company: str, *, offshore_leaks: bool = False, sanctions: bool = Fals
             on_progress(label, "checking")
         result["offshore_leaks"] = _offshore_leaks(company)
         status = "error" if result["offshore_leaks"].get("error") else "checked"
+        result["sources_contacted"].append({"source": label, "status": status})
+        if on_progress:
+            on_progress(label, status)
+
+    if court_records:
+        if should_stop and should_stop():
+            result["cancelled"] = True
+            return result
+        label = "CourtListener"
+        if on_progress:
+            on_progress(label, "checking")
+        result["court_records"] = _court_records(company)
+        status = "error" if result["court_records"].get("error") else "checked"
         result["sources_contacted"].append({"source": label, "status": status})
         if on_progress:
             on_progress(label, status)

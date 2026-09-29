@@ -11,15 +11,32 @@ Zero-cost stack:
                     names were seen on an IP (no key; rate-limited)
   • SANS DShield  → IP only: attack reports from the Internet Storm Center's
                     sensors, and the threat feeds that list the IP
+  • Shodan InternetDB → IP only: the open ports, software and known CVEs Shodan
+                    has already crawled for the address. Free, unauthenticated,
+                    and passive — a lookup of Shodan's data, not a scan.
   • crt.sh JSON API → certificate transparency subdomain enumeration
   • Wayback Machine availability API → first and latest archived snapshot
+
+Key-gated (set in .env), IP only:
+  • IPinfo        → IPINFO_API_KEY — geolocation, network owner, and (on paid
+                    plans) VPN/proxy/hosting/Tor flags. IPinfo refuses anonymous
+                    API access, so this source is skipped unless a key is set.
+  • Criminal IP   → CRIMINALIP_API_KEY — reputation score, VPN/proxy/Tor/hosting
+                    flags, open ports and the network owner. Credit-metered; this
+                    source is skipped unless a key is set.
 """
 
 import ipaddress
+import os
 from datetime import datetime, timezone
 
 import requests
+from dotenv import load_dotenv
 from urllib.parse import urlsplit
+
+from services.runtime_paths import user_data_base
+
+load_dotenv(user_data_base() / ".env", override=False)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -302,6 +319,147 @@ def _dshield(ip: str) -> dict:
         return {"error": str(exc)[:300]}
 
 
+def _shodan_internetdb(ip: str) -> dict:
+    """Shodan InternetDB: open ports, detected software and known CVEs for an IP.
+
+    Free and unauthenticated. It only returns what Shodan already crawled, so it
+    is passive — Sentinel never scans the target. A 404 means Shodan holds
+    nothing on the address, which is a clean result and not an error.
+    """
+    try:
+        resp = requests.get(
+            f"https://internetdb.shodan.io/{ip}",
+            timeout=12,
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
+        )
+        if resp.status_code == 404:
+            return {"found": False, "note": "Shodan has no record of this address."}
+        if resp.status_code != 200:
+            return {"error": f"Shodan InternetDB HTTP {resp.status_code}"}
+        data = resp.json()
+        return {
+            "found": True,
+            "ports": data.get("ports") or [],
+            "hostnames": data.get("hostnames") or [],
+            "software": data.get("cpes") or [],
+            "tags": data.get("tags") or [],
+            "vulnerabilities": data.get("vulns") or [],
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
+def _ipinfo(ip: str) -> dict:
+    """IPinfo: geolocation, network owner and (paid plans) VPN/proxy flags.
+
+    Reads IPINFO_API_KEY at call time. IPinfo refuses anonymous access (HTTP
+    403), so ``lookup`` only reaches here when a key is set; the keyless branch
+    remains for a direct call and reports the refusal plainly. The response
+    carries city/region/country and the org (ASN + name); the ``privacy`` object
+    with the VPN/proxy/Tor/hosting flags is a paid feature, surfaced only when
+    present.
+    """
+    try:
+        key = os.getenv("IPINFO_API_KEY", "").strip()
+        resp = requests.get(
+            f"https://ipinfo.io/{ip}/json",
+            params={"token": key} if key else {},
+            timeout=12,
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
+        )
+        if resp.status_code == 429:
+            return {"error": "IPinfo rate limit reached; try again later"}
+        if resp.status_code in (401, 403):
+            return {"error": ("IPinfo rejected the key" if key
+                              else "IPinfo needs an IPINFO_API_KEY (anonymous access is refused)")}
+        if resp.status_code != 200:
+            return {"error": f"IPinfo HTTP {resp.status_code}"}
+        data = resp.json()
+        if data.get("bogon"):
+            return {"bogon": True, "note": "Private, reserved or unrouted address."}
+        result = {
+            "city": data.get("city") or None,
+            "region": data.get("region") or None,
+            "country": data.get("country") or None,
+            "org": data.get("org") or None,
+            "hostname": data.get("hostname") or None,
+            "timezone": data.get("timezone") or None,
+        }
+        privacy = data.get("privacy")
+        if isinstance(privacy, dict):
+            result["privacy_flags"] = [
+                name for name in ("vpn", "proxy", "tor", "relay", "hosting")
+                if privacy.get(name)
+            ]
+        return result
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
+def _criminalip(ip: str) -> dict:
+    """Criminal IP: reputation score, VPN/proxy/Tor/hosting flags and open ports.
+
+    Reads CRIMINALIP_API_KEY at call time and uses the lightweight
+    ``/asset/ip/report/summary`` endpoint. ``lookup`` only reaches here when a
+    key is set. The ``score`` fields are risk categories
+    (Safe/Low/Moderate/Dangerous/Critical), not numbers, and the ``issues`` flags
+    (VPN/proxy/Tor/hosting) are infrastructure signals — context, not proof of
+    wrongdoing. The response carries its own integer ``status``; a non-200 there,
+    or an HTTP 401/403, means the call did not succeed.
+    """
+    key = os.getenv("CRIMINALIP_API_KEY", "").strip()
+    if not key:
+        return {"error": "Criminal IP needs a CRIMINALIP_API_KEY"}
+    try:
+        resp = requests.get(
+            "https://api.criminalip.io/v1/asset/ip/report/summary",
+            params={"ip": ip},
+            timeout=15,
+            headers={"x-api-key": key, "User-Agent": "Sentinel-OSINT/2.0"},
+        )
+        if resp.status_code in (401, 403):
+            return {"error": "Criminal IP rejected the key"}
+        if resp.status_code == 429:
+            return {"error": "Criminal IP rate/credit limit reached; try again later"}
+        if resp.status_code != 200:
+            return {"error": f"Criminal IP HTTP {resp.status_code}"}
+        data = resp.json()
+        body_status = data.get("status")
+        if body_status not in (200, None):
+            if body_status in (401, 403):
+                return {"error": "Criminal IP rejected the key"}
+            return {"error": f"Criminal IP returned status {body_status}"}
+        score = data.get("score") or {}
+        issues = data.get("issues") or {}
+        flags = [name[len("is_"):] for name in (
+            "is_vpn", "is_proxy", "is_tor", "is_hosting", "is_cloud",
+            "is_anonymous_vpn", "is_darkweb", "is_scanner") if issues.get(name)]
+        whois_rows = ((data.get("whois") or {}).get("data")) or []
+        whois = whois_rows[0] if isinstance(whois_rows, list) and whois_rows else {}
+        ports_obj = data.get("current_opened_port") or data.get("port") or {}
+        port_rows = ports_obj.get("data") or [] if isinstance(ports_obj, dict) else []
+        ports = sorted({
+            row.get("open_port") or row.get("port")
+            for row in port_rows
+            if isinstance(row, dict) and (row.get("open_port") or row.get("port"))
+        })
+        return {
+            "risk_inbound": score.get("inbound"),
+            "risk_outbound": score.get("outbound"),
+            "flags": flags,
+            "as_name": whois.get("as_name") or whois.get("org_name"),
+            "org": whois.get("org_name"),
+            "country": whois.get("org_country_code"),
+            "open_ports": ports[:30],
+            "note": ("Reputation score and infrastructure flags from Criminal IP. "
+                     "VPN/proxy/Tor/hosting are context, not proof of wrongdoing."),
+        }
+    except requests.exceptions.Timeout:
+        return {"error": "Criminal IP did not respond within 15 seconds."}
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
 # ── public interface ──────────────────────────────────────────────────────────
 
 def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
@@ -310,7 +468,8 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
 
     Keys:
       type, query, whois, dns, network, passive_dns, certificates, archive   (domain)
-      type, query, whois, dns, network, attack_reports, passive_dns          (IP)
+      type, query, whois, dns, network, attack_reports, host_exposure,
+        ip_details, ip_reputation, passive_dns                               (IP)
     """
     target = _normalize(domain)
     is_ip = _is_ip(target)
@@ -327,6 +486,16 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
     ]
     if is_ip:
         sources.append(("SANS DShield", "attack_reports", _dshield))
+        sources.append(("Shodan InternetDB", "host_exposure", _shodan_internetdb))
+        # IPinfo refuses anonymous access and Criminal IP is credit-metered, so
+        # both are only worth contacting when a key is set. Unlike the exposure
+        # provider (where key-gated sources run and report a "skipped" status),
+        # domain_lookup has no sources_skipped list, so a keyless source is simply
+        # omitted from the run rather than listed as skipped.
+        if os.getenv("IPINFO_API_KEY", "").strip():
+            sources.append(("IPinfo", "ip_details", _ipinfo))
+        if os.getenv("CRIMINALIP_API_KEY", "").strip():
+            sources.append(("Criminal IP", "ip_reputation", _criminalip))
     sources.append(("Mnemonic passive DNS", "passive_dns", _passive_dns))
     if not is_ip:
         sources.append(("Certificate transparency (crt.sh)", "certificates", _crtsh))

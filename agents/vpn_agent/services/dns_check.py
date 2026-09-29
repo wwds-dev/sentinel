@@ -1,14 +1,22 @@
 """
 dns_check.py — Checks which DNS resolvers are currently answering queries.
-A basic DNS leak test sends queries to known public DNS addresses and
-sees if the answers come from unexpected resolvers.
+
+``check_dns_leak`` is a quick local heuristic (it only inspects the resolver
+list the system is configured with). ``run_dns_leak_test`` is the real thing: it
+exercises the actual egress resolver path through bash.ws and reports the DNS
+servers that traffic genuinely used, plus the public exit IP.
 """
 
 import socket
+
 import dns.resolver  # dnspython library
+import requests
 
 # Test domain — known to return different results depending on resolver
 DNS_TEST_DOMAIN = "whoami.akamai.net"
+
+BASHWS_BASE = "https://bash.ws"
+_UA = "Sentinel-OSINT/2.0"
 
 # Public resolvers to verify against
 KNOWN_PUBLIC_RESOLVERS = {
@@ -85,3 +93,117 @@ def resolve_test_domain() -> str:
         return ip
     except Exception as e:
         return f"Failed: {e}"
+
+
+def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
+                      resolve=None, session_get=None) -> dict:
+    """Run a real egress DNS-leak test via bash.ws (no API key required).
+
+    Unlike ``check_dns_leak`` (which only inspects the configured resolver list),
+    this exercises the actual resolver path:
+
+      1. ask bash.ws for a one-off test id;
+      2. resolve ``{i}.{id}.bash.ws`` for i in 1..N through the system's real
+         resolver stack, so bash.ws's authoritative nameservers record every
+         resolver that looked the names up;
+      3. read back the observed resolvers and the public egress IP.
+
+    Everything returned is the user's own network information; it is shown back to
+    them and sent nowhere but bash.ws. ``resolve`` and ``session_get`` are
+    injectable for testing (defaults: ``socket.gethostbyname`` and
+    ``requests.get``).
+
+    Returns a dict: ``status`` ("ok"/"error"/"cancelled"), ``public_ip``,
+    ``resolvers`` (list of {ip, country, asn}), ``resolver_count``,
+    ``distinct_asns``, ``leak`` (bool or None), ``conclusion`` and ``note``.
+    """
+    resolve = resolve or socket.gethostbyname
+    get = session_get or requests.get
+    headers = {"User-Agent": _UA}
+    probe_count = max(1, min(int(probe_count), 30))
+
+    # Step 1 — obtain the opaque test id.
+    try:
+        id_resp = get(f"{BASHWS_BASE}/id", timeout=15, headers=headers)
+        if getattr(id_resp, "status_code", 200) != 200:
+            return {"status": "error",
+                    "detail": f"bash.ws did not issue a test id (HTTP {id_resp.status_code})"}
+        test_id = (id_resp.text or "").strip()
+        if not test_id or len(test_id) > 64 or not test_id.isalnum():
+            return {"status": "error", "detail": "bash.ws returned an unexpected test id"}
+    except Exception as exc:
+        return {"status": "error", "detail": f"could not reach bash.ws: {str(exc)[:200]}"}
+
+    # Step 2 — force the configured resolvers to query bash.ws. Each lookup may
+    # fail (NXDOMAIN/timeout); the server-side record of who asked is the point.
+    for index in range(1, probe_count + 1):
+        if should_stop and should_stop():
+            return {"status": "cancelled"}
+        try:
+            resolve(f"{index}.{test_id}.bash.ws")
+        except Exception:
+            pass
+
+    # Step 3 — read the aggregated result. The body is a JSON array on success,
+    # or a JSON object {"error": ...} when no resolvers were observed.
+    try:
+        res = get(f"{BASHWS_BASE}/dnsleak/test/{test_id}", params={"json": ""},
+                  timeout=15, headers=headers)
+        if getattr(res, "status_code", 200) != 200:
+            return {"status": "error", "detail": f"bash.ws result HTTP {res.status_code}"}
+        payload = res.json()
+    except Exception as exc:
+        return {"status": "error", "detail": f"could not read bash.ws result: {str(exc)[:200]}"}
+
+    if isinstance(payload, dict):
+        return {"status": "ok", "public_ip": None, "resolvers": [], "resolver_count": 0,
+                "distinct_asns": 0, "leak": None,
+                "conclusion": payload.get("error") or "No resolvers were observed.",
+                "note": ("bash.ws saw no resolver queries for this test — the probe "
+                         "lookups may have been blocked. Try again.")}
+    if not isinstance(payload, list):
+        return {"status": "error", "detail": "bash.ws returned an unexpected result shape"}
+
+    public_ip = None
+    resolvers: list[dict] = []
+    conclusion = None
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        etype = entry.get("type")
+        if etype == "ip":
+            public_ip = {"ip": entry.get("ip"), "country": entry.get("country_name"),
+                         "asn": entry.get("asn")}
+        elif etype == "dns":
+            resolvers.append({"ip": entry.get("ip"), "country": entry.get("country_name"),
+                              "asn": entry.get("asn")})
+        elif etype == "conclusion":
+            # bash.ws carries the human-readable verdict in the entry's ip field.
+            conclusion = entry.get("ip")
+
+    distinct_asns = len({r["asn"] for r in resolvers if r.get("asn")})
+
+    # Prefer bash.ws's own verdict; otherwise flag a leak when a resolver sits on
+    # a different network (ASN) than the exit IP.
+    leak = None
+    if conclusion:
+        lowered = conclusion.lower()
+        if "not leaking" in lowered or "no leak" in lowered:
+            leak = False
+        elif "leak" in lowered:
+            leak = True
+    if leak is None and public_ip and resolvers:
+        exit_asn = public_ip.get("asn")
+        leak = any(r.get("asn") and r["asn"] != exit_asn for r in resolvers)
+
+    return {
+        "status": "ok",
+        "public_ip": public_ip,
+        "resolvers": resolvers,
+        "resolver_count": len(resolvers),
+        "distinct_asns": distinct_asns,
+        "leak": leak,
+        "conclusion": conclusion or "",
+        "note": ("The DNS servers your traffic actually used, as seen by bash.ws. "
+                 "Resolvers on a different network than your exit IP can indicate a leak."),
+    }
