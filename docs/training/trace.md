@@ -17,10 +17,20 @@ It does not contact research sources. With Ollama, the target remains local.
 With a cloud model, the prompt is sent to that provider after permission.
 
 **Live Research** contacts supported public sources after showing exactly what
-will be shared. Domains/IPs can use WHOIS, DNS and certificate records;
-usernames can use URLScan; companies can use GLEIF. Email services are chosen
-individually, and breach sources are not enabled by default. Person and phone
-targets remain planning-only to avoid data-broker and reverse-phone disclosure.
+will be shared. Domains and IPs draw on WHOIS, DNS, certificate transparency,
+passive DNS and network-owner records; an IP additionally reports attack history
+(DShield) and known exposure (Shodan InternetDB), plus — when their keys are set
+— geolocation and privacy flags (IPinfo) and a reputation score (Criminal IP).
+Usernames can use URLScan; companies use the GLEIF legal-entity registry and can
+add U.S. court dockets from CourtListener (metadata only — never document text or
+PDFs) and, with a key, sanctions and watchlist screening. A separate **Exposure
+Check** asks which leak and dark-web indexes may receive the target:
+Ransomware.live and Ahmia are free, while Intelligence X and DeHashed need paid
+keys and stay metadata-only — DeHashed reports which breach databases a target
+appears in and never returns leaked passwords or hashes. Email services are
+chosen individually, breach sources are never enabled without explicit consent,
+and person and phone targets remain planning-only to avoid data-broker and
+reverse-phone disclosure.
 
 ## Read the result
 

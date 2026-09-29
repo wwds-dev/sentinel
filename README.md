@@ -113,6 +113,16 @@ be compared with the snapshot to explain interface, endpoint, port, handshake,
 and routing findings. Endpoint and port are checked for usable profile values,
 but the live peer endpoint is deliberately not queried or verified.
 
+Tunnel's **Your IP & DNS** group is always visible and independent of the check.
+**Local** reads your LAN and tunnel-interface addresses with no network contact;
+**Check public IP** shows your exit IP, its location and network owner, and any
+VPN/proxy/hosting flag (via IPinfo, or `ipapi.co` without a key); and **Run test**
+runs a real DNS-leak test through bash.ws, resolving probe hostnames with your
+configured resolvers and reporting which resolvers actually answered and whether
+any leave your tunnel's network. It exercises the real resolver path but is not
+proof of anonymity, and the local readout refreshes automatically after a
+connect or disconnect.
+
 Tunnel's **VPN Connection** brings a real tunnel up and down. Choosing a
 WireGuard or OpenVPN profile and clicking **Connect** or **Disconnect** first
 builds a target review (`services/vpn_execution.py`): the exact target and

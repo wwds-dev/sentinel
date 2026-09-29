@@ -9,7 +9,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|
 | 20 | OSINT Keys tab: add key-validation ping (HEAD request to each provider's API) so the tab can show green/red key health next to each Save Key button | feature | S | IDEA |
-| 21 | OSINT Keys tab: surface the BreachDirectory and IPinfo providers as live lookups inside Bloodhound (currently only email/domain/username/company dispatch) | feature | M | CONSIDERING |
+| 21 | OSINT Keys tab: surface the BreachDirectory provider as a live lookup inside Bloodhound (IPinfo and Criminal IP now run live as IP sources as of v2.002; BreachDirectory is the remaining unwired key) | feature | S | CONSIDERING |
 | 22 | OSINT Keys tab: Learning Centre topic explaining the ops-email strategy, HIBP vs BreachDirectory tradeoffs, and which keys to prioritise first | docs | S | IDEA |
 
 | # | Suggestion | Category | Effort | Status |
@@ -31,6 +31,9 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 
 | Suggestion | When |
 |---|---|
+| Live OSINT source expansion (v2.002): Shodan InternetDB, IPinfo and Criminal IP for IPs; CourtListener court dockets (metadata-only) for companies/orgs; DeHashed breach metadata for exposure — all key-gated where paid and metadata-only | Sep 2026 |
+| Tunnel "Your IP & DNS" readout (local/tunnel + public exit IP with VPN/hosting flags) and a real bash.ws DNS-leak test | Sep 2026 |
+| addy.io burner-alias minting in the OSINT Keys tab (user-triggered write) | Sep 2026 |
 | Saved Chats: agent filter and rename | Aug 2026 |
 | `authorize_request` / `record_request` guard applied to all 19 unguarded `ChatWorker` sites | Aug 2026 |
 | `FlowLayout` on 13 control rows — panels no longer crush when narrow | Aug 2026 |
