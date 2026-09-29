@@ -38,4 +38,5 @@ shows the version embedded when it was built.
 | version | date | summary |
 |---|---|---|
 | **v2.001** | 2026-09-22 | Introduced canonical release numbering and visible in-app build identity. |
+| **v2.002** | 2026-09-29 | Expanded live OSINT sources (Shodan InternetDB, IPinfo, Criminal IP for IPs; CourtListener court records; DeHashed breach exposure), a native Tunnel "Your IP & DNS" readout with a real bash.ws DNS-leak test, and an addy.io burner-alias mint helper in the OSINT Keys tab. |
 

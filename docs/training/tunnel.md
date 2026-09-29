@@ -94,6 +94,22 @@ useful clues, not proof of anonymity or a complete leak test. A VPN interface
 can be active while an application uses another route, and a configured DNS
 server list does not show every resolver an application might contact.
 
+### Your IP & DNS
+
+The **Your IP & DNS** group is separate from Check Connection and is always
+visible. **Local** reads your LAN address and any active tunnel interface with no
+network contact. **Check public IP** contacts an address service (and IPinfo, or
+`ipapi.co` without a key) to show your exit IP, its location and network owner,
+and whether that range is flagged as VPN/proxy/hosting — a quick way to confirm a
+tunnel changed your apparent location. **Run test** performs a real DNS-leak test
+through bash.ws: it resolves a set of probe hostnames using your configured
+resolvers, then reads back which resolvers actually answered and whether any sit
+on a different network than your exit IP. Unlike the configured-DNS list above,
+this exercises the resolver path traffic really takes — but it is still not proof
+of anonymity, and a per-application route can differ. After you connect or
+disconnect, the local readout refreshes automatically, and the public IP
+re-checks only if you already ran it this session.
+
 ### Reading the cards
 
 1. Check **Connection summary** for the high-level state.
