@@ -210,6 +210,108 @@ def test_intelx_search_reads_index_only(monkeypatch):
     assert result["summary"]["intelx_records"] == 1
 
 
+# ── DeHashed (key-gated, metadata only) ──────────────────────────────────────
+
+def test_dehashed_skipped_without_key(monkeypatch):
+    monkeypatch.delenv("DEHASHED_API_KEY", raising=False)
+    monkeypatch.setattr(
+        exposure_lookup.requests, "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call DeHashed")))
+    result = exposure_lookup.lookup(
+        "example.com", "Domain", selected_sources=("dehashed",))
+    assert result["dehashed"]["status"] == "skipped"
+    assert result["sources_skipped"] == [{"source": "DeHashed", "status": "skipped"}]
+    assert result["sources_contacted"] == []
+
+
+def test_dehashed_reports_breach_databases_but_never_credentials(monkeypatch):
+    monkeypatch.setenv("DEHASHED_API_KEY", "test-key")
+    sent = {}
+
+    def fake_post(url, json=None, headers=None, **kwargs):
+        sent["url"] = url
+        sent["json"] = json
+        sent["headers"] = headers
+        return _Response({
+            "total": 3,
+            "balance": 987,
+            "entries": [
+                {"id": "1", "email": "jane@example.com", "database_name": "BigLeak2019",
+                 "password": "hunter2", "hashed_password": "5f4dcc3b5aa", "hash_type": "md5",
+                 "ip_address": "203.0.113.9", "phone": "+15551234"},
+                {"id": "2", "email": "joe@example.com", "database_name": "BigLeak2019",
+                 "password": "letmein", "name": "Joe Example"},
+                {"id": "3", "username": "acct", "database_name": ["OtherDump"],
+                 "hashed_password": "deadbeef"},
+            ],
+        })
+
+    monkeypatch.setattr(exposure_lookup.requests, "post", fake_post)
+    result = exposure_lookup.lookup(
+        "example.com", "Domain", selected_sources=("dehashed",))
+
+    dh = result["dehashed"]
+    assert dh["status"] == "ok"
+    assert dh["total_records"] == 3
+    assert dh["credits_remaining"] == 987
+    assert dh["breach_count"] == 2
+    # Databases are counted, most records first.
+    assert dh["breach_databases"][0] == {"database": "BigLeak2019", "records": 2}
+    assert {"database": "OtherDump", "records": 1} in dh["breach_databases"]
+
+    # The domain query is sent unquoted; auth header carries the key.
+    assert sent["json"]["query"] == "domain:example.com"
+    assert sent["headers"]["Dehashed-Api-Key"] == "test-key"
+
+    # BOUNDARY: no leaked credential or per-record PII VALUE survives anywhere.
+    blob = str(result)
+    for forbidden in ("hunter2", "letmein", "5f4dcc3b5aa", "deadbeef", "md5",
+                      "203.0.113.9", "+15551234", "Joe Example", "jane@example.com"):
+        assert forbidden not in blob
+    # And the surfaced structure carries only breach names + counts — never the
+    # raw entries or any credential/PII field.
+    assert set(dh) == {"source", "status", "records_on_page", "total_records",
+                       "breach_count", "breach_databases", "credits_remaining", "note"}
+    assert all(set(item) == {"database", "records"} for item in dh["breach_databases"])
+    assert "entries" not in dh
+    assert result["summary"]["breach_databases"] == 2
+    assert result["summary"]["exposure_detected"] is True
+    assert result["sources_contacted"] == [{"source": "DeHashed", "status": "checked"}]
+
+
+def test_dehashed_email_target_uses_quoted_email_query(monkeypatch):
+    monkeypatch.setenv("DEHASHED_API_KEY", "test-key")
+    sent = {}
+    monkeypatch.setattr(
+        exposure_lookup.requests, "post",
+        lambda url, json=None, **k: sent.setdefault("json", json) or _Response(
+            {"entries": [], "total": 0, "balance": 5}))
+    exposure_lookup.lookup(
+        "jane@example.com", "Email", selected_sources=("dehashed",))
+    assert sent["json"]["query"] == 'email:"jane@example.com"'
+
+
+def test_dehashed_company_target_is_skipped(monkeypatch):
+    monkeypatch.setenv("DEHASHED_API_KEY", "test-key")
+    monkeypatch.setattr(
+        exposure_lookup.requests, "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no email/domain to search")))
+    result = exposure_lookup.lookup(
+        "Acme Corporation", "Company", selected_sources=("dehashed",))
+    assert result["dehashed"]["status"] == "skipped"
+    assert "not company names" in result["dehashed"]["reason"]
+
+
+def test_dehashed_rejected_key_is_a_clean_error(monkeypatch):
+    monkeypatch.setenv("DEHASHED_API_KEY", "test-key")
+    monkeypatch.setattr(exposure_lookup.requests, "post",
+                        lambda *a, **k: _Response(status_code=401))
+    result = exposure_lookup.lookup(
+        "example.com", "Domain", selected_sources=("dehashed",))
+    assert result["dehashed"]["status"] == "error"
+    assert "rejected the key" in result["dehashed"]["detail"]
+
+
 # ── orchestration ────────────────────────────────────────────────────────────
 
 def test_cancel_before_contact_touches_nothing(monkeypatch):

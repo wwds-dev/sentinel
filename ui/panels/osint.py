@@ -450,6 +450,7 @@ class OsintPanel(AgentPanel):
         "ransomware_live": "Ransomware.live",
         "ahmia": "Ahmia",
         "intelx": "Intelligence X",
+        "dehashed": "DeHashed",
     }
 
     def exposure_check(self) -> None:
@@ -499,7 +500,8 @@ class OsintPanel(AgentPanel):
 
     def _choose_exposure_sources(self, target: str, query_type: str) -> tuple[str, ...]:
         """Ask which dark-web / leak services may receive the target."""
-        from providers.exposure_lookup import INTELX_KEY
+        from providers.exposure_lookup import INTELX_KEY, dehashed_key
+        dehashed_available = bool(dehashed_key())
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Choose Exposure Check Sources")
@@ -527,9 +529,18 @@ class OsintPanel(AgentPanel):
         intelx.setChecked(bool(INTELX_KEY))
         if not INTELX_KEY:
             intelx.setToolTip("Set INTELX_API_KEY in .env to enable Intelligence X.")
+        dehashed = QCheckBox(
+            "DeHashed — which breach databases the target is in; metadata only, "
+            "no leaked passwords (paid API key required)"
+        )
+        dehashed.setEnabled(dehashed_available)
+        dehashed.setChecked(dehashed_available)
+        if not dehashed_available:
+            dehashed.setToolTip("Set DEHASHED_API_KEY in .env to enable DeHashed.")
         layout.addWidget(ransomware)
         layout.addWidget(ahmia)
         layout.addWidget(intelx)
+        layout.addWidget(dehashed)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -545,6 +556,8 @@ class OsintPanel(AgentPanel):
             selected.append("ahmia")
         if intelx.isChecked():
             selected.append("intelx")
+        if dehashed.isChecked():
+            selected.append("dehashed")
         if not selected:
             QMessageBox.information(
                 self, "No Sources Selected", "Select at least one exposure source."
@@ -601,6 +614,20 @@ class OsintPanel(AgentPanel):
                 "Attack reports (DShield)",
                 self._lookup_text(result.get("attack_reports")),
             ))
+            cards.append((
+                "Host exposure (Shodan InternetDB)",
+                self._lookup_text(result.get("host_exposure")),
+            ))
+            if "ip_details" in result:
+                cards.append((
+                    "IP details (IPinfo)",
+                    self._lookup_text(result.get("ip_details")),
+                ))
+            if "ip_reputation" in result:
+                cards.append((
+                    "IP reputation (Criminal IP)",
+                    self._lookup_text(result.get("ip_reputation")),
+                ))
         if result.get("type") == "domain":
             cards.extend([
                 ("Certificate transparency",
@@ -632,6 +659,11 @@ class OsintPanel(AgentPanel):
                     "Sanctions and watchlists (OpenSanctions)",
                     self._lookup_text(result.get("sanctions")),
                 ))
+            if "court_records" in result:
+                cards.append((
+                    "Court records (CourtListener)",
+                    self._lookup_text(result.get("court_records")),
+                ))
         elif result.get("type") == "exposure":
             summary_info = result.get("summary", {})
             if summary_info.get("on_ransomware_leak_site"):
@@ -656,6 +688,7 @@ class OsintPanel(AgentPanel):
                  self._lookup_text(result.get("ransomware_live"))),
                 ("Dark-web index (Ahmia)", self._lookup_text(result.get("ahmia"))),
                 ("Intelligence X", self._lookup_text(result.get("intelx"))),
+                ("Breach databases (DeHashed)", self._lookup_text(result.get("dehashed"))),
             ])
         raw = self._lookup_text(result)
         self.sections.show_sections(cards, raw=raw)

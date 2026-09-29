@@ -162,6 +162,7 @@ def test_organisation_targets_also_check_offshore_leaks(monkeypatch):
     heavy._run_providers("Acme Corporation", "Organisation")
     assert seen[-1]["offshore_leaks"] is True
     assert seen[-1]["sanctions"] is True       # skipped inside without a key
+    assert seen[-1]["court_records"] is True   # CourtListener, metadata-only
 
 
 @pytest.mark.parametrize("label,target", [
