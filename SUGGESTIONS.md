@@ -9,7 +9,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|
 | 20 | OSINT Keys tab: add key-validation ping (HEAD request to each provider's API) so the tab can show green/red key health next to each Save Key button | feature | S | IDEA |
-| 21 | OSINT Keys tab: surface the BreachDirectory provider as a live lookup inside Bloodhound (IPinfo and Criminal IP now run live as IP sources as of v2.002; BreachDirectory is the remaining unwired key) | feature | S | CONSIDERING |
+| 21 | Surface the BreachDirectory provider inside Bloodhound's email collection. It is already a live, keyless lookup in Trace's email path (`providers/email_lookup.py`); this is about adding it to Bloodhound, not wiring a key — BreachDirectory takes no key. | feature | S | CONSIDERING |
 | 22 | OSINT Keys tab: Learning Centre topic explaining the ops-email strategy, HIBP vs BreachDirectory tradeoffs, and which keys to prioritise first | docs | S | IDEA |
 
 | # | Suggestion | Category | Effort | Status |
