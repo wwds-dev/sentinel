@@ -189,6 +189,17 @@ The main runtime is organised around:
   The real connect path lives in `services/vpn_connection.py` and
   `services/openvpn_manager.py`
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Bug Spray, Tunnel, and Forge
+- `providers/` — the live OSINT source adapters Trace and Bloodhound call for
+  Live Research/collection: `domain_lookup.py` (WHOIS, DNS, Team Cymru IP-to-ASN,
+  Mnemonic passive DNS, crt.sh, Wayback Machine, and for IPs SANS DShield, Shodan
+  InternetDB, plus key-gated IPinfo and Criminal IP), `email_lookup.py`,
+  `username_lookup.py`, `whatsmyname.py`, `crypto_lookup.py` (Blockstream for
+  Bitcoin, Blockscout for Ethereum, both keyless), `company_lookup.py` (GLEIF, opt-in ICIJ
+  Offshore Leaks and CourtListener court dockets), `exposure_lookup.py`
+  (ransomware.live, Ahmia, key-gated Intelligence X and DeHashed), and
+  `alias_mint.py` (addy.io burner-alias minting, the one write-capable helper,
+  user-triggered only). Every source is metadata-only and self-skips without its
+  key when one is required.
 - `services/agent_catalog.py` — canonical built-in roster and metadata
 - `VERSION` and `services/app_version.py` — canonical public version and the
   exact development-build description shown by the app

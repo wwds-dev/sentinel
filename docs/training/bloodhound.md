@@ -6,7 +6,10 @@
 
 ## Investigation dossier
 
-Enter the target, target type, investigation scope and objective. **Quick Scan**
+Enter the target, target type, investigation scope and objective. Target type
+includes **Crypto Address** alongside Person, Username, Email, Domain/IP,
+Organisation and Phone Number; Auto-detect recognises a Bitcoin or Ethereum
+address before falling back to a username. **Quick Scan**
 requests a concise result; **Standard** balances coverage and length; **Deep
 Dive** asks for exhaustive treatment and usually needs a strong long-context
 model. An optional target image can contribute locally extracted EXIF metadata.
@@ -17,14 +20,17 @@ Profile, Risk & Red Flags, and Methodology & Tools. Threat and confidence scores
 are model-generated indicators, not factual measurements. Check cited sources
 and distinguish a shared name from a verified match.
 
-For domain, IP, organisation and email targets, Bloodhound first runs the same
-live public-source collection Trace uses and feeds those verified records to the
-model as facts: network, exposure and attack records for infrastructure; the
-GLEIF registry plus CourtListener court dockets, ICIJ Offshore Leaks and
-sanctions screening for organisations; and leak/dark-web exposure checks,
-including DeHashed breach
-metadata when its key is set. It only ever collects text metadata — it never
-downloads leaked material, court-document contents or file contents.
+For domain, IP, organisation, email and crypto-address targets, Bloodhound first
+runs live public-source collection and feeds those verified records to the
+model as facts: network, exposure and attack records for infrastructure (the
+same collection Trace uses); the GLEIF registry plus CourtListener court dockets,
+ICIJ Offshore Leaks and sanctions screening for organisations; leak/dark-web
+exposure checks, including DeHashed breach metadata when its key is set; and, for
+a Bitcoin or Ethereum address, on-chain balance, transaction counts and recent
+activity from Blockstream and Blockscout — no key needed, and the dossier is told
+that on-chain history shows what an address did, not who controls it. It only ever
+collects text metadata — it never downloads leaked material, court-document
+contents or file contents.
 
 ## File Discovery
 
