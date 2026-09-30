@@ -20,8 +20,9 @@ and distinguish a shared name from a verified match.
 For domain, IP, organisation and email targets, Bloodhound first runs the same
 live public-source collection Trace uses and feeds those verified records to the
 model as facts: network, exposure and attack records for infrastructure; the
-GLEIF registry plus CourtListener court dockets and sanctions screening for
-organisations; and leak/dark-web exposure checks, including DeHashed breach
+GLEIF registry plus CourtListener court dockets, ICIJ Offshore Leaks and
+sanctions screening for organisations; and leak/dark-web exposure checks,
+including DeHashed breach
 metadata when its key is set. It only ever collects text metadata — it never
 downloads leaked material, court-document contents or file contents.
 

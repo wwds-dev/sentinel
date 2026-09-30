@@ -1474,6 +1474,39 @@ class TestTracePanel:
         assert FakeLookupWorker.instances == []
         assert trace.status_label.text() == "Live Research cancelled before any lookup."
 
+    def test_ip_consent_names_every_key_gated_source(self, trace, monkeypatch):
+        """The IP consent text must disclose the key-gated IP sources that
+        domain_lookup.lookup() actually contacts. Regression: Shodan InternetDB
+        (always) and IPinfo / Criminal IP (when keyed) were contacted without
+        being named in the dialog the user approves."""
+        seen = {}
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: seen.update(text=a[2]) or QMessageBox.No),
+        )
+        monkeypatch.setenv("IPINFO_API_KEY", "tok")
+        monkeypatch.setenv("CRIMINALIP_API_KEY", "cip")
+        trace.type_box.setCurrentText("IP Address")
+        trace.target_input.setText("203.0.113.5")
+        trace.live_research()
+        assert "Shodan InternetDB" in seen["text"]
+        assert "IPinfo" in seen["text"]
+        assert "Criminal IP" in seen["text"]
+
+    def test_company_consent_names_courtlistener(self, trace, monkeypatch):
+        """Company Live Research always contacts CourtListener, so the consent
+        text (and the audit line built from it) must name it. Regression: the
+        target was POSTed to CourtListener without disclosure."""
+        seen = {}
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: seen.update(text=a[2]) or QMessageBox.No),
+        )
+        trace.type_box.setCurrentText("Company")
+        trace.target_input.setText("Acme Ltd")
+        trace.live_research()
+        assert "CourtListener" in seen["text"]
+
     def test_live_domain_research_tracks_sources_and_saves_results(
             self, trace, monkeypatch):
         trace.target_input.setText("example.com")

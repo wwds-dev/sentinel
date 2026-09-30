@@ -470,7 +470,11 @@ def _dehashed(terms: dict) -> dict:
         }
     kind = terms.get("kind")
     if kind == "email" and terms.get("address"):
-        query = f'email:"{terms["address"]}"'
+        # Strip characters that would break out of the quoted selector. The
+        # address is the user's own target, so removing stray quotes/backslashes
+        # is safe and keeps the query a single well-formed email selector.
+        safe_address = terms["address"].replace("\\", "").replace('"', "")
+        query = f'email:"{safe_address}"'
     elif kind in ("domain", "email") and terms.get("domain"):
         query = f'domain:{terms["domain"]}'
     else:

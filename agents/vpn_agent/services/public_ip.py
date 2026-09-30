@@ -70,8 +70,14 @@ def get_ip_details() -> dict:
     key = os.getenv("IPINFO_API_KEY", "").strip()
     try:
         if key:
+            # Send the token in the Authorization header, never the query
+            # string: a transport error's message embeds the request URL, and
+            # result["ip"] = f"Error: {e}" would then leak the key to the panel
+            # and the run log.
             response = requests.get(
-                IPINFO_SELF_URL, params={"token": key}, timeout=REQUEST_TIMEOUT
+                IPINFO_SELF_URL,
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=REQUEST_TIMEOUT,
             )
             response.raise_for_status()
             data = response.json()

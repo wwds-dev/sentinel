@@ -1,7 +1,7 @@
 # Sentinel versioning
 
 Sentinel uses a single public version in the form **`vMAJOR.SEQUENCE`**. The
-current release is **v2.001**. The checked-in [`VERSION`](../VERSION) file is
+current release is **v2.002**. The checked-in [`VERSION`](../VERSION) file is
 the only source of truth; the app sidebar, window title, thin launcher and
 self-contained macOS bundle all read that value.
 
