@@ -345,22 +345,36 @@ class OsintPanel(AgentPanel):
             sources = ", ".join(labels[source] for source in selected_sources)
         else:
             source_map = {
-                "IP Address": ("WHOIS, DNS, Team Cymru IP-to-ASN, SANS DShield, and "
-                               "Mnemonic passive DNS"),
+                "IP Address": ("WHOIS, DNS, Team Cymru IP-to-ASN, SANS DShield, "
+                               "Shodan InternetDB, and Mnemonic passive DNS"),
                 "Domain": ("WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, "
                            "crt.sh, and the Wayback Machine"),
                 "Username": "URLScan, GitHub, and Keybase",
-                "Company": "GLEIF Legal Entity Index",
+                "Company": "GLEIF Legal Entity Index and CourtListener court records",
             }
             sources = source_map[validation.query_type]
+            if validation.query_type == "IP Address":
+                # Mirror the key-gated IP sources that domain_lookup.lookup()
+                # contacts, so the consent text names every service that will
+                # actually receive the target IP.
+                import os
+
+                extra = []
+                if os.getenv("IPINFO_API_KEY", "").strip():
+                    extra.append("IPinfo")
+                if os.getenv("CRIMINALIP_API_KEY", "").strip():
+                    extra.append("Criminal IP")
+                if extra:
+                    sources += ", " + ", ".join(extra)
             if validation.query_type == "Company":
                 from providers.company_lookup import OPENSANCTIONS_KEY
 
                 # OpenSanctions needs a key for every call; without one it is
-                # neither named here nor contacted.
+                # neither named here nor contacted. CourtListener always runs.
                 if OPENSANCTIONS_KEY:
                     selected_sources = ("opensanctions",)
-                    sources = "GLEIF Legal Entity Index and OpenSanctions"
+                    sources = ("GLEIF Legal Entity Index, OpenSanctions, and "
+                               "CourtListener court records")
             consent = QMessageBox.question(
                 self,
                 "Confirm Live Research",

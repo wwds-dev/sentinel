@@ -12,7 +12,7 @@ A fast, lightweight open-source-intelligence assistant. Given a target (name, us
 | Query type | Auto-detect, Person, Username, Email, Domain, Company, Phone, or IP Address. Auto-detect records the resolved type in the activity trail. |
 | Model override | Optional provider/model change; the task recommendation is selected by default. |
 | Structure Query | Generate a model-based investigation plan without contacting research sources. |
-| Live Research | After explicit confirmation, query WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, crt.sh and the Wayback Machine for domains; WHOIS, DNS, IP-to-ASN, SANS DShield and passive DNS for IPs; URLScan, GitHub and Keybase for usernames; individually selected email services; or GLEIF for company legal-entity records. Person and phone targets remain local-only. |
+| Live Research | After explicit confirmation, query WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, crt.sh and the Wayback Machine for domains; WHOIS, DNS, IP-to-ASN, SANS DShield, Shodan InternetDB and passive DNS for IPs (plus IPinfo and Criminal IP when their keys are set); URLScan, GitHub and Keybase for usernames; individually selected email services; or GLEIF and CourtListener court dockets (plus OpenSanctions with a key) for companies. Person and phone targets remain local-only. |
 | Stop | Request cancellation; completed source results remain visible as a partial result. |
 
 ## Outputs
@@ -102,11 +102,11 @@ request guard, cost tracking, history, and run logger.
 | `agents/osint_agent.py` | `OSINTAgent` — system prompt + message builder. |
 | `ui/panels/osint.py` | Panel, workflow state, result presentation, and request lifecycle. |
 | `main.py` | Routing, authorization, Saved Searches, history, and provider execution. |
-| `providers/domain_lookup.py` | Consented live WHOIS, DNS, IP-to-ASN, passive DNS, DShield (IPs), certificate-transparency, and Wayback Machine snapshot collection for domains/IPs. |
+| `providers/domain_lookup.py` | Consented live WHOIS, DNS, IP-to-ASN, passive DNS, DShield and Shodan InternetDB (IPs), IPinfo and Criminal IP (IPs, key-gated), certificate-transparency, and Wayback Machine snapshot collection for domains/IPs. |
 | `providers/username_lookup.py` | Consented URLScan search plus GitHub and Keybase profile lookups for a username. |
 | `services/osint_catalog.py` | OSINT Framework catalogue: weekly cached download, filtering, and per-agent tool selection for the prompt. |
 | `providers/email_lookup.py` | Per-source EmailRep, Gravatar (hash only), HIBP, and BreachDirectory collection with breach services opt-in. |
-| `providers/company_lookup.py` | Consented company-name search against GLEIF's public legal-entity records. |
+| `providers/company_lookup.py` | Consented company-name search against GLEIF's public legal-entity records, ICIJ Offshore Leaks, CourtListener court dockets, and (key-gated) OpenSanctions screening. |
 
 ## Extend it
 - **Person/phone enrichment**: intentionally local-only. Do not add people-search, reverse-phone, or data-broker collectors without a new privacy review and explicit source-specific consent design.

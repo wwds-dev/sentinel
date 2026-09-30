@@ -37,6 +37,9 @@ Native mode is an encrypted way **into** your network (NAS, printer, router), no
 | Check Connection | Runs the local read-only diagnostic snapshot. No provider or model is used. |
 | Compare profile | Reads the companion VPN Agent profile list without selecting, creating, or changing a profile. The saved active profile is preselected when available. |
 | Include public IP and latency | Off by default. When enabled, a confirmation names `api.ipify.org` and `1.1.1.1` before either is contacted. |
+| Your IP & DNS → Local | Reads LAN and tunnel-interface addresses from `ifconfig` off the UI thread. No exit IP is fetched and no network is contacted. |
+| Your IP & DNS → Check public IP | Contacts an address service — IPinfo when `IPINFO_API_KEY` is set, otherwise `ipapi.co` — for the exit IP, location and network owner. A VPN/proxy/hosting flag appears only with an IPinfo key on a plan that returns it. Once run, it refreshes automatically after each connect/disconnect this session. |
+| Your IP & DNS → Run test | Runs a real DNS-leak test through `bash.ws`: resolves probe hostnames with the configured resolvers and reports which resolvers answered and whether any leave the tunnel's network. |
 | Safe Action Preview | Choose Connect, Disconnect, or Restart and inspect a non-executing plan for a WireGuard profile. OpenVPN, unknown protocols, and unsafe or missing interface names produce no command. |
 | Inspect config… | Choose one local WireGuard configuration for private-key-free routing and DNS inspection. No model, network request, or configuration change is involved. |
 | Ask Advisor / Build Config / Stop | LLM answer · offline render · cancel while active. Use the shared Help button for docs. |

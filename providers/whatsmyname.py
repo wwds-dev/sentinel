@@ -117,6 +117,16 @@ def _account_for(site: dict, username: str) -> str:
     return account
 
 
+def _as_int(value, default: int = 0) -> int:
+    """Coerce a WhatsMyName status code to int. A present-but-null e_code/m_code
+    (or any non-numeric value) would otherwise raise TypeError inside the
+    redirect check and be miscounted as a network failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def check_site(site: dict, username: str, session=None) -> dict:
     """Request one profile and classify it as found / missing / unclear."""
     http = session or requests
@@ -136,8 +146,8 @@ def check_site(site: dict, username: str, session=None) -> dict:
             # such user" with one. When neither signature is a redirect, a
             # redirect is only a moved URL (https, trailing slash): follow it.
             if (300 <= resp.status_code < 400
-                    and not 300 <= site.get("e_code", 0) < 400
-                    and not 300 <= site.get("m_code", 0) < 400):
+                    and not 300 <= _as_int(site.get("e_code")) < 400
+                    and not 300 <= _as_int(site.get("m_code")) < 400):
                 resp = http.get(url, headers=headers, timeout=REQUEST_TIMEOUT,
                                 allow_redirects=True)
         text = resp.text or ""

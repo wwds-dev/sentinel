@@ -136,13 +136,20 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
 
     # Step 2 — force the configured resolvers to query bash.ws. Each lookup may
     # fail (NXDOMAIN/timeout); the server-side record of who asked is the point.
-    for index in range(1, probe_count + 1):
-        if should_stop and should_stop():
-            return {"status": "cancelled"}
-        try:
-            resolve(f"{index}.{test_id}.bash.ws")
-        except Exception:
-            pass
+    # Bound each probe resolution so a single hung lookup cannot wedge the
+    # sweep; cancellation is still checked between the (blocking) resolutions.
+    previous_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(5)
+    try:
+        for index in range(1, probe_count + 1):
+            if should_stop and should_stop():
+                return {"status": "cancelled"}
+            try:
+                resolve(f"{index}.{test_id}.bash.ws")
+            except Exception:
+                pass
+    finally:
+        socket.setdefaulttimeout(previous_timeout)
 
     # Step 3 — read the aggregated result. The body is a JSON array on success,
     # or a JSON object {"error": ...} when no resolvers were observed.
@@ -194,7 +201,11 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
             leak = True
     if leak is None and public_ip and resolvers:
         exit_asn = public_ip.get("asn")
-        leak = any(r.get("asn") and r["asn"] != exit_asn for r in resolvers)
+        # Only compare networks when the exit IP's ASN is known. Without it,
+        # every resolver with an ASN would spuriously "differ" and flag a leak;
+        # leave the verdict unknown ("review resolvers") instead.
+        if exit_asn:
+            leak = any(r.get("asn") and r["asn"] != exit_asn for r in resolvers)
 
     return {
         "status": "ok",

@@ -314,9 +314,10 @@ def test_ipinfo_sends_the_key_when_present_and_surfaces_privacy_flags(monkeypatc
     monkeypatch.setenv("IPINFO_API_KEY", "tok_123")
     seen = {}
 
-    def fake_get(url, params=None, **kwargs):
+    def fake_get(url, **kwargs):
         seen["url"] = url
-        seen["params"] = params
+        seen["headers"] = kwargs.get("headers") or {}
+        seen["params"] = kwargs.get("params")
         return _Response({
             "ip": "192.0.2.1", "city": "Berlin", "region": "Berlin",
             "country": "DE", "org": "AS64500 Example Net",
@@ -327,30 +328,31 @@ def test_ipinfo_sends_the_key_when_present_and_surfaces_privacy_flags(monkeypatc
     monkeypatch.setattr(domain_lookup.requests, "get", fake_get)
     result = domain_lookup._ipinfo("192.0.2.1")
     assert seen["url"] == "https://ipinfo.io/192.0.2.1/json"
-    assert seen["params"] == {"token": "tok_123"}
+    # The token goes in the Authorization header, never the query string, so a
+    # transport error's message cannot leak it.
+    assert seen["headers"].get("Authorization") == "Bearer tok_123"
+    assert not seen["params"]
     assert result["country"] == "DE"
     assert result["org"] == "AS64500 Example Net"
     assert result["privacy_flags"] == ["vpn", "hosting"]
 
 
-def test_ipinfo_without_a_key_sends_no_token_and_omits_privacy(monkeypatch):
+def test_ipinfo_without_a_key_self_skips_without_a_request(monkeypatch):
     monkeypatch.undo()
     monkeypatch.delenv("IPINFO_API_KEY", raising=False)
-    seen = {}
+    called = []
 
-    def fake_get(url, params=None, **kwargs):
-        seen["params"] = params
-        return _Response({"ip": "192.0.2.1", "city": "Berlin", "country": "DE"})
-
-    monkeypatch.setattr(domain_lookup.requests, "get", fake_get)
+    monkeypatch.setattr(domain_lookup.requests, "get",
+                        lambda *a, **k: called.append(True) or _Response({}))
     result = domain_lookup._ipinfo("192.0.2.1")
-    assert seen["params"] == {}
-    assert "privacy_flags" not in result
-    assert result["city"] == "Berlin"
+    # No key: it must self-skip and make no anonymous OSINT request.
+    assert called == []
+    assert "IPINFO_API_KEY" in result["error"]
 
 
 def test_ipinfo_rate_limit_is_reported(monkeypatch):
     monkeypatch.undo()
+    monkeypatch.setenv("IPINFO_API_KEY", "tok_123")
     monkeypatch.setattr(domain_lookup.requests, "get",
                         lambda *a, **k: _Response({}, status_code=429))
     assert "rate limit" in domain_lookup._ipinfo("192.0.2.1")["error"]
@@ -358,6 +360,7 @@ def test_ipinfo_rate_limit_is_reported(monkeypatch):
 
 def test_ipinfo_reports_a_bogon_address_as_a_fact(monkeypatch):
     monkeypatch.undo()
+    monkeypatch.setenv("IPINFO_API_KEY", "tok_123")
     monkeypatch.setattr(domain_lookup.requests, "get",
                         lambda *a, **k: _Response({"ip": "10.0.0.1", "bogon": True}))
     result = domain_lookup._ipinfo("10.0.0.1")

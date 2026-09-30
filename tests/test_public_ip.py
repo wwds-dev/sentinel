@@ -52,9 +52,10 @@ def test_get_ip_details_uses_ipinfo_and_privacy_flags_when_key_present(monkeypat
     monkeypatch.setenv("IPINFO_API_KEY", "tok_123")
     seen = {}
 
-    def fake_get(url, params=None, **kwargs):
+    def fake_get(url, **kwargs):
         seen["url"] = url
-        seen["params"] = params
+        seen["headers"] = kwargs.get("headers") or {}
+        seen["params"] = kwargs.get("params")
         return _Response({
             "ip": "203.0.113.5", "city": "Berlin", "country": "DE",
             "org": "AS64500 Example", "timezone": "Europe/Berlin",
@@ -64,7 +65,10 @@ def test_get_ip_details_uses_ipinfo_and_privacy_flags_when_key_present(monkeypat
     monkeypatch.setattr(public_ip.requests, "get", fake_get)
     result = public_ip.get_ip_details()
     assert seen["url"] == public_ip.IPINFO_SELF_URL
-    assert seen["params"] == {"token": "tok_123"}
+    # Token in the Authorization header, not the query string, so a transport
+    # error cannot leak the key into result["ip"] / the run log.
+    assert seen["headers"].get("Authorization") == "Bearer tok_123"
+    assert not seen["params"]
     assert result["ip"] == "203.0.113.5"
     assert result["privacy_flags"] == ["vpn", "hosting"]
 

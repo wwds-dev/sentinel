@@ -551,12 +551,22 @@ class VpnPanel(AgentPanel):
         return "   ·   ".join(parts)
 
     def refresh_local_ip(self) -> None:
-        """Read local interface addresses synchronously — local only, no network."""
-        from agents.vpn_agent.services import public_ip
-        try:
-            self.local_ip_label.setText(self._format_local_ip(public_ip.get_local_addresses()))
-        except Exception as exc:
-            self.local_ip_label.setText(f"Could not read local addresses: {exc}"[:200])
+        """Refresh the local interface addresses off the UI thread.
+
+        Local only — the exit IP is not fetched here. Reading interfaces shells
+        out to ``ifconfig`` (up to a 5 s timeout), so it runs on a worker rather
+        than blocking the Qt event loop, like every other IO path in this panel.
+        """
+        if self._ip_worker is not None and self._ip_worker.isRunning():
+            return
+        worker = self.ip_worker_class(include_public=False)
+        worker.finished_signal.connect(self._on_ip_snapshot)
+        worker.error_signal.connect(self._on_local_ip_error)
+        self._ip_worker = worker
+        worker.start()
+
+    def _on_local_ip_error(self, error: str) -> None:
+        self.local_ip_label.setText(f"Could not read local addresses: {error}"[:200])
 
     def check_public_ip(self) -> None:
         """Fetch the public exit IP (and refresh the local view) off the UI thread."""
@@ -577,8 +587,12 @@ class VpnPanel(AgentPanel):
             self.local_ip_label.setText(self._format_local_ip(local))
         public = snapshot.get("public")
         if public is not None:
-            self._public_ip_fetched = True
             self.public_ip_label.setText(self._format_public_ip(public))
+            # Latch the session opt-in only on a genuine success, so a failed
+            # first check does not trigger silent auto-refetches after connect.
+            ip_value = str(public.get("ip") or "")
+            if ip_value and ip_value not in ("Unknown",) and not ip_value.startswith("Error:"):
+                self._public_ip_fetched = True
 
     def _on_ip_error(self, error: str) -> None:
         self.check_public_ip_btn.setEnabled(True)
@@ -727,12 +741,15 @@ class VpnPanel(AgentPanel):
                 "Connection state and traffic protection are not verified.")
         else:
             self.connection_status_label.setText(f"Failed: {result.get('error', 'unknown')}"[:300])
-        # The tunnel interface just appeared or went away — reflect it locally,
-        # and re-read the exit IP only if the operator already opted into that
-        # external check this session.
-        self.refresh_local_ip()
+        # The tunnel interface just appeared or went away. If the operator
+        # already opted into the external exit-IP check this session, refresh
+        # both halves together (check_public_ip also re-reads the local view);
+        # otherwise refresh only the local view. Calling both would race on the
+        # shared _ip_worker and drop the public refresh.
         if self._public_ip_fetched:
             self.check_public_ip()
+        else:
+            self.refresh_local_ip()
 
     def _on_connection_error(self, error: str) -> None:
         self.connect_btn.setEnabled(True)

@@ -98,10 +98,12 @@ server list does not show every resolver an application might contact.
 
 The **Your IP & DNS** group is separate from Check Connection and is always
 visible. **Local** reads your LAN address and any active tunnel interface with no
-network contact. **Check public IP** contacts an address service (and IPinfo, or
-`ipapi.co` without a key) to show your exit IP, its location and network owner,
-and whether that range is flagged as VPN/proxy/hosting — a quick way to confirm a
-tunnel changed your apparent location. **Run test** performs a real DNS-leak test
+network contact. **Check public IP** contacts an address service — IPinfo when
+an `IPINFO_API_KEY` is set, otherwise `ipapi.co` — to show your exit IP, its
+location and network owner. A VPN/proxy/hosting flag appears only with an IPinfo
+key on a plan that returns the privacy object; the keyless `ipapi.co` fallback
+does not report one. It is a quick way to confirm a tunnel changed your apparent
+location. **Run test** performs a real DNS-leak test
 through bash.ws: it resolves a set of probe hostnames using your configured
 resolvers, then reads back which resolvers actually answered and whether any sit
 on a different network than your exit IP. Unlike the configured-DNS list above,
