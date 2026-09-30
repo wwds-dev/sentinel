@@ -352,26 +352,27 @@ def _shodan_internetdb(ip: str) -> dict:
 def _ipinfo(ip: str) -> dict:
     """IPinfo: geolocation, network owner and (paid plans) VPN/proxy flags.
 
-    Reads IPINFO_API_KEY at call time. IPinfo refuses anonymous access (HTTP
-    403), so ``lookup`` only reaches here when a key is set; the keyless branch
-    remains for a direct call and reports the refusal plainly. The response
-    carries city/region/country and the org (ASN + name); the ``privacy`` object
-    with the VPN/proxy/Tor/hosting flags is a paid feature, surfaced only when
-    present.
+    Reads IPINFO_API_KEY at call time and self-skips without one, so a direct
+    call never performs an anonymous, unkeyed OSINT request. The token is sent
+    in the Authorization header, never the query string, so a transport error's
+    message cannot leak it. The response carries city/region/country and the org
+    (ASN + name); the ``privacy`` object with the VPN/proxy/Tor/hosting flags is
+    a paid feature, surfaced only when present.
     """
+    key = os.getenv("IPINFO_API_KEY", "").strip()
+    if not key:
+        return {"error": "IPinfo needs an IPINFO_API_KEY (anonymous access is refused)"}
     try:
-        key = os.getenv("IPINFO_API_KEY", "").strip()
         resp = requests.get(
             f"https://ipinfo.io/{ip}/json",
-            params={"token": key} if key else {},
             timeout=12,
-            headers={"User-Agent": "Sentinel-OSINT/2.0"},
+            headers={"User-Agent": "Sentinel-OSINT/2.0",
+                     "Authorization": f"Bearer {key}"},
         )
         if resp.status_code == 429:
             return {"error": "IPinfo rate limit reached; try again later"}
         if resp.status_code in (401, 403):
-            return {"error": ("IPinfo rejected the key" if key
-                              else "IPinfo needs an IPINFO_API_KEY (anonymous access is refused)")}
+            return {"error": "IPinfo rejected the key"}
         if resp.status_code != 200:
             return {"error": f"IPinfo HTTP {resp.status_code}"}
         data = resp.json()

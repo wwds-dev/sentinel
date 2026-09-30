@@ -2,7 +2,7 @@
 
 Sentinel is a local-first PySide6 desktop command centre for security, investigation, and controlled AI-assisted workflows. It supports local Ollama models and explicitly enabled cloud providers, records request usage and cost, and keeps each specialist workflow behind a clear panel and permission gate.
 
-**Current release: v2.001.** The canonical value lives in [`VERSION`](VERSION)
+**Current release: v2.002.** The canonical value lives in [`VERSION`](VERSION)
 and is shown beside **SENTINEL** in the app. See the
 [versioning policy](docs/versioning.md) for numbering and release steps.
 
@@ -115,8 +115,10 @@ but the live peer endpoint is deliberately not queried or verified.
 
 Tunnel's **Your IP & DNS** group is always visible and independent of the check.
 **Local** reads your LAN and tunnel-interface addresses with no network contact;
-**Check public IP** shows your exit IP, its location and network owner, and any
-VPN/proxy/hosting flag (via IPinfo, or `ipapi.co` without a key); and **Run test**
+**Check public IP** shows your exit IP, its location and network owner, and —
+only with an `IPINFO_API_KEY` on a plan that returns the privacy object — any
+VPN/proxy/hosting flag (the keyless `ipapi.co` fallback does not report one);
+and **Run test**
 runs a real DNS-leak test through bash.ws, resolving probe hostnames with your
 configured resolvers and reporting which resolvers actually answered and whether
 any leave your tunnel's network. It exercises the real resolver path but is not

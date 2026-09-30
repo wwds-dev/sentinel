@@ -4,7 +4,7 @@ Updated 2026-09-22. Sentinel is the security and intelligence hub inside the
 Lab workspace. This roadmap covers Sentinel only; Create & Publish, SONAR,
 Backup & Sync and Lab Hub keep their work in their own repositories.
 
-Current tracked release: **v2.001**. Sentinel uses a monotonic
+Current tracked release: **v2.002**. Sentinel uses a monotonic
 `vMAJOR.SEQUENCE` policy with one canonical `VERSION` file; see
 [`versioning.md`](versioning.md). The next release increment is kept as an open,
 numbered item in `TODO.md` so the Lab project monitor can surface it.

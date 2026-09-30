@@ -31,6 +31,19 @@ from ui.style import polish_combo_box
 from ui.widgets import MenuComboBox
 
 
+# Alias-mint workers whose settings dialog closed while a request was still in
+# flight are parked here so the QThread is not garbage-collected mid-request; a
+# worker removes itself via _discard_detached_worker when it finishes.
+_DETACHED_ALIAS_WORKERS = []
+
+
+def _discard_detached_worker(worker) -> None:
+    try:
+        _DETACHED_ALIAS_WORKERS.remove(worker)
+    except ValueError:
+        pass
+
+
 def shutdown_panels(app) -> None:
     """Stop panel work and join workers that provide a shutdown contract."""
     for panel in getattr(app, "panels", {}).values():
@@ -601,18 +614,19 @@ def show_settings(app):
         if worker is None or not worker.isRunning():
             return
         # The dialog is closing; its widgets are about to be destroyed. Drop the
-        # slots first so a late finish can't call into dead widgets, then join —
-        # a mint can block up to ~35s (account-details + POST), so wait briefly
-        # and fall back to terminate rather than freeze the close or let a live
-        # QThread be destroyed.
+        # slots first so a late finish can't call into dead widgets. Do NOT
+        # QThread.terminate() a thread blocked in an HTTP POST — Qt documents
+        # that as unsafe and it can abort the addy.io alias-creation request in
+        # an undefined state. Instead park the worker in a module-level registry
+        # so it is not garbage-collected while running, and let it end on its
+        # own within the request timeout (~35s max); it removes itself when done.
         for signal in (worker.finished_signal, worker.error_signal):
             try:
                 signal.disconnect()
             except (RuntimeError, TypeError):
                 pass
-        if not worker.wait(3000):
-            worker.terminate()
-            worker.wait(1000)
+        _DETACHED_ALIAS_WORKERS.append(worker)
+        worker.finished.connect(lambda w=worker: _discard_detached_worker(w))
 
     dialog.finished.connect(_join_alias_worker)
 

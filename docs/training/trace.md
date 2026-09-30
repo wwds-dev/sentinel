@@ -17,8 +17,9 @@ It does not contact research sources. With Ollama, the target remains local.
 With a cloud model, the prompt is sent to that provider after permission.
 
 **Live Research** contacts supported public sources after showing exactly what
-will be shared. Domains and IPs draw on WHOIS, DNS, certificate transparency,
-passive DNS and network-owner records; an IP additionally reports attack history
+will be shared. Domains and IPs draw on WHOIS, DNS, passive DNS and
+network-owner records, with certificate transparency (crt.sh) and the Wayback
+Machine added for domains only; an IP additionally reports attack history
 (DShield) and known exposure (Shodan InternetDB), plus — when their keys are set
 — geolocation and privacy flags (IPinfo) and a reputation score (Criminal IP).
 Usernames can use URLScan; companies use the GLEIF legal-entity registry and can

@@ -18,6 +18,23 @@ DNS_TEST_DOMAIN = "whoami.akamai.net"
 BASHWS_BASE = "https://bash.ws"
 _UA = "Sentinel-OSINT/2.0"
 
+# Per-probe resolution time limit, in seconds.
+PROBE_TIMEOUT = 5.0
+
+
+def _bounded_resolve(hostname: str) -> None:
+    """Resolve one probe name with a per-query time limit and no process-wide
+    state change. dnspython's ``lifetime`` bounds a single hung lookup without
+    the global ``socket.setdefaulttimeout`` mutation (which would race with any
+    concurrent socket work in other threads). The answer is discarded — bash.ws
+    only needs the configured resolvers to have asked."""
+    try:
+        dns.resolver.resolve(hostname, "A", lifetime=PROBE_TIMEOUT)
+    except Exception:
+        # NXDOMAIN / timeout / no-answer are all expected: the query was sent,
+        # which is the whole point of the probe.
+        pass
+
 # Public resolvers to verify against
 KNOWN_PUBLIC_RESOLVERS = {
     "8.8.8.8": "Google",
@@ -117,7 +134,7 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
     ``resolvers`` (list of {ip, country, asn}), ``resolver_count``,
     ``distinct_asns``, ``leak`` (bool or None), ``conclusion`` and ``note``.
     """
-    resolve = resolve or socket.gethostbyname
+    resolve = resolve or _bounded_resolve
     get = session_get or requests.get
     headers = {"User-Agent": _UA}
     probe_count = max(1, min(int(probe_count), 30))
@@ -136,6 +153,10 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
 
     # Step 2 — force the configured resolvers to query bash.ws. Each lookup may
     # fail (NXDOMAIN/timeout); the server-side record of who asked is the point.
+    # Each resolution is bounded by the resolver's own per-query timeout (see
+    # _bounded_resolve), so a single hung lookup cannot wedge the sweep and no
+    # process-wide socket state is touched. Cancellation is checked between the
+    # (blocking) resolutions.
     for index in range(1, probe_count + 1):
         if should_stop and should_stop():
             return {"status": "cancelled"}
@@ -188,13 +209,20 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
     leak = None
     if conclusion:
         lowered = conclusion.lower()
-        if "not leaking" in lowered or "no leak" in lowered:
+        # Check the negative phrasings first and broadly: a verdict like
+        # "No DNS leak found." must read as no-leak, not match the bare "leak".
+        if any(neg in lowered for neg in
+               ("not leaking", "no leak", "no dns leak", "not leak", "no leaks")):
             leak = False
         elif "leak" in lowered:
             leak = True
     if leak is None and public_ip and resolvers:
         exit_asn = public_ip.get("asn")
-        leak = any(r.get("asn") and r["asn"] != exit_asn for r in resolvers)
+        # Only compare networks when the exit IP's ASN is known. Without it,
+        # every resolver with an ASN would spuriously "differ" and flag a leak;
+        # leave the verdict unknown ("review resolvers") instead.
+        if exit_asn:
+            leak = any(r.get("asn") and r["asn"] != exit_asn for r in resolvers)
 
     return {
         "status": "ok",

@@ -23,12 +23,12 @@ and distinguish a shared name from a verified match.
 For domain, IP, organisation, email and crypto-address targets, Bloodhound first
 runs live public-source collection and feeds those verified records to the
 model as facts: network, exposure and attack records for infrastructure (the
-same collection Trace uses); the GLEIF registry plus CourtListener court dockets
-and sanctions screening for organisations; leak/dark-web exposure checks,
-including DeHashed breach metadata when its key is set; and, for a Bitcoin or
-Ethereum address, on-chain balance, transaction counts and recent activity from
-Blockstream and Blockscout — no key needed, and the dossier is told that
-on-chain history shows what an address did, not who controls it. It only ever
+same collection Trace uses); the GLEIF registry plus CourtListener court dockets,
+ICIJ Offshore Leaks and sanctions screening for organisations; leak/dark-web
+exposure checks, including DeHashed breach metadata when its key is set; and, for
+a Bitcoin or Ethereum address, on-chain balance, transaction counts and recent
+activity from Blockstream and Blockscout — no key needed, and the dossier is told
+that on-chain history shows what an address did, not who controls it. It only ever
 collects text metadata — it never downloads leaked material, court-document
 contents or file contents.
 
