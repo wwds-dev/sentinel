@@ -18,6 +18,23 @@ DNS_TEST_DOMAIN = "whoami.akamai.net"
 BASHWS_BASE = "https://bash.ws"
 _UA = "Sentinel-OSINT/2.0"
 
+# Per-probe resolution time limit, in seconds.
+PROBE_TIMEOUT = 5.0
+
+
+def _bounded_resolve(hostname: str) -> None:
+    """Resolve one probe name with a per-query time limit and no process-wide
+    state change. dnspython's ``lifetime`` bounds a single hung lookup without
+    the global ``socket.setdefaulttimeout`` mutation (which would race with any
+    concurrent socket work in other threads). The answer is discarded — bash.ws
+    only needs the configured resolvers to have asked."""
+    try:
+        dns.resolver.resolve(hostname, "A", lifetime=PROBE_TIMEOUT)
+    except Exception:
+        # NXDOMAIN / timeout / no-answer are all expected: the query was sent,
+        # which is the whole point of the probe.
+        pass
+
 # Public resolvers to verify against
 KNOWN_PUBLIC_RESOLVERS = {
     "8.8.8.8": "Google",
@@ -117,7 +134,7 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
     ``resolvers`` (list of {ip, country, asn}), ``resolver_count``,
     ``distinct_asns``, ``leak`` (bool or None), ``conclusion`` and ``note``.
     """
-    resolve = resolve or socket.gethostbyname
+    resolve = resolve or _bounded_resolve
     get = session_get or requests.get
     headers = {"User-Agent": _UA}
     probe_count = max(1, min(int(probe_count), 30))
@@ -136,20 +153,17 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
 
     # Step 2 — force the configured resolvers to query bash.ws. Each lookup may
     # fail (NXDOMAIN/timeout); the server-side record of who asked is the point.
-    # Bound each probe resolution so a single hung lookup cannot wedge the
-    # sweep; cancellation is still checked between the (blocking) resolutions.
-    previous_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(5)
-    try:
-        for index in range(1, probe_count + 1):
-            if should_stop and should_stop():
-                return {"status": "cancelled"}
-            try:
-                resolve(f"{index}.{test_id}.bash.ws")
-            except Exception:
-                pass
-    finally:
-        socket.setdefaulttimeout(previous_timeout)
+    # Each resolution is bounded by the resolver's own per-query timeout (see
+    # _bounded_resolve), so a single hung lookup cannot wedge the sweep and no
+    # process-wide socket state is touched. Cancellation is checked between the
+    # (blocking) resolutions.
+    for index in range(1, probe_count + 1):
+        if should_stop and should_stop():
+            return {"status": "cancelled"}
+        try:
+            resolve(f"{index}.{test_id}.bash.ws")
+        except Exception:
+            pass
 
     # Step 3 — read the aggregated result. The body is a JSON array on success,
     # or a JSON object {"error": ...} when no resolvers were observed.
