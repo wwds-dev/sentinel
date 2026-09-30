@@ -195,7 +195,10 @@ def run_dns_leak_test(*, probe_count: int = 12, should_stop=None,
     leak = None
     if conclusion:
         lowered = conclusion.lower()
-        if "not leaking" in lowered or "no leak" in lowered:
+        # Check the negative phrasings first and broadly: a verdict like
+        # "No DNS leak found." must read as no-leak, not match the bare "leak".
+        if any(neg in lowered for neg in
+               ("not leaking", "no leak", "no dns leak", "not leak", "no leaks")):
             leak = False
         elif "leak" in lowered:
             leak = True
