@@ -137,6 +137,7 @@ AGENT_SETUP_WIDGETS = {
     "vpn":         None,  # VpnPanel owns its boxes (phase 4)
 }
 
+from ui import app_identity, appkit_guard, tray
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker,
 )
@@ -4419,45 +4420,30 @@ WINDOW_SETTINGS_KEY = "mainWindow/geometry"
 def _activate_native_app():
     """Foreground the Python GUI process itself.
 
-    Qt's raise_()/activateWindow() only order windows within this app. macOS
-    will not let a background process take focus from whatever is frontmost
-    without -[NSApplication activateIgnoringOtherApps:], so handing off from a
-    second launch raised the window *behind* whatever the user was looking at,
-    which reads as the launch having done nothing.
-
-    Reached through the Objective-C runtime with ctypes rather than pyobjc:
-    this is the project's only AppKit call and pyobjc is not a dependency. The
-    previous version imported AppKit inside a try/except, so with that package
-    absent — it was never in requirements.txt — this silently did nothing.
+    The AppKit call this needs now lives with the rest of the project's
+    Objective-C in ui/app_identity.py, which was added to fix the name and icon
+    macOS shows for this process. It is the same ctypes call, moved rather than
+    rewritten, so a second copy of the runtime plumbing does not go stale here.
     """
-    if sys.platform != "darwin":
-        return
-    try:
-        import ctypes
-        import ctypes.util
+    app_identity.activate()
 
-        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-        objc.objc_getClass.restype = ctypes.c_void_p
-        objc.objc_getClass.argtypes = [ctypes.c_char_p]
-        objc.sel_registerName.restype = ctypes.c_void_p
-        objc.sel_registerName.argtypes = [ctypes.c_char_p]
 
-        # objc_msgSend needs one prototype per signature, so cast per call.
-        send_id = ctypes.cast(
-            objc.objc_msgSend,
-            ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p))
-        send_bool = ctypes.cast(
-            objc.objc_msgSend,
-            ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool))
+def _tray_status(window) -> str:
+    """The menu bar item's first line: what Sentinel is doing, and what it cost.
 
-        ns_app = send_id(objc.objc_getClass(b"NSApplication"),
-                         objc.sel_registerName(b"sharedApplication"))
-        if ns_app:
-            send_bool(ns_app,
-                      objc.sel_registerName(b"activateIgnoringOtherApps:"), True)
-    except Exception:
-        # Qt's activation request stays as the portable fallback.
-        pass
+    Read from the window rather than kept in step with it, so there is no second
+    copy of the session's state to go stale. ui/tray.py calls this each time the
+    menu opens.
+    """
+    worker = getattr(window, "chat_worker", None)
+    if worker is not None and worker.isRunning():
+        agent = BUILTIN_AGENTS.get(
+            window.pending_agent or getattr(window, "_current_agent", ""), {}
+        ).get("label", "")
+        activity = f"Working — {agent}" if agent else "Working"
+    else:
+        activity = "Idle"
+    return f"{activity}  ·  €{window.session_cost_total:.2f} this session"
 
 
 def _show_main_window(window):
@@ -4501,7 +4487,18 @@ def _hand_off_to_running_instance() -> bool:
 
 
 if __name__ == "__main__":
+    # Both before QApplication, and both for a reason. AppKit reads the name it
+    # titles the application menu with when the application object is created,
+    # which Qt does inside QApplication(); and the menu bar item's menu aborts
+    # the process on macOS 27 unless the clickCount guard is already in place.
+    app_identity.name_in_menu_bar("Sentinel")
+    appkit_guard.install()
+
     app = QApplication([])
+
+    # Qt does not set the Dock icon from setWindowIcon on macOS, so AppKit is
+    # asked directly, now that QApplication has made NSApp exist.
+    app_identity.set_dock_icon(RESOURCE_DIR / "assets" / "icon.icns")
 
     # Portable window preferences remain on the removable volume too.
     if is_portable():
@@ -4530,6 +4527,15 @@ if __name__ == "__main__":
         _show_main_window(window)
 
     instance_server.newConnection.connect(_raise_existing_window)
+
+    # The menu bar item. Quit goes through the window's close, not app.quit():
+    # closeEvent is what cancels an in-flight request and shuts the panels'
+    # background work down, and quitting around it leaves both running.
+    if tray.available():
+        menu_bar_item = tray.Tray(RESOURCE_DIR, lambda: _tray_status(window))
+        menu_bar_item.open_requested.connect(lambda: _show_main_window(window))
+        menu_bar_item.quit_requested.connect(window.close)
+        menu_bar_item.show()
 
     app.aboutToQuit.connect(
         lambda: None if getattr(window, "_portable_reset_committed", False)

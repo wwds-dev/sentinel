@@ -36,6 +36,13 @@ for pkg in ("google.genai", "tiktoken", "anthropic", "openai", "certifi"):
 # Read-only resources seeded into the writable user-data dir on first launch.
 datas += [
     ("VERSION", "."),
+    # Menu bar glyph and app icon, read at runtime from RESOURCE_DIR by
+    # ui/tray.py and ui/app_identity.py. BUNDLE's icon= below only stamps the
+    # icns into the bundle at build time; it does not put the file where the
+    # running app can open it.
+    ("assets/tray.png", "assets"),
+    ("assets/tray@2x.png", "assets"),
+    ("assets/icon.icns", "assets"),
     ("config", "config"),
     ("agents/vpn_agent/config/vpn_profiles.json", "agents/vpn_agent/config"),
     ("README.md", "."),

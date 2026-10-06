@@ -77,6 +77,15 @@ logged.
 
 Saved chats can be searched and filtered by agent. The two side rails split by what they carry rather than by left/right habit: the right rail is the live request inspector — Current Route, Cost, Budget, System, in that order, so the cards read top-to-bottom in the order a request actually happens — while API Keys and Actions (Cost history, Run log, Settings) sit in the left rail with the agent list, since those are global setup rather than per-request state. Settings controls registered agents, tools, pricing, and provider permissions.
 
+While Sentinel is open it also places an item in the macOS menu bar — a shield
+glyph that takes the menu bar's own colours. Its menu reads the current state
+off the running window: whether a request is in flight and which agent is
+running it, and what the session has cost so far. **Open Sentinel** brings the
+window forward; **Quit Sentinel** closes it the same way the window's own close
+does, so an in-flight request is cancelled and background work is shut down
+rather than left running. Closing the window still quits Sentinel: the menu bar
+item accompanies the app, and nothing hides to it.
+
 The in-app **Learning Centre** is available from **More (•••)**. It contains a
 guided Quick Start, full workspace and Settings reference, courses for all
 eight agents, privacy/cost guidance, troubleshooting, multi-agent workflows,
@@ -231,6 +240,24 @@ Development runs and the everyday thin launcher use the Lab project directory fo
 `./scripts/install_app.sh` installs the everyday thin launcher: a small compiled native shim (`scripts/thin_launcher.c`), not an AppleScript applet or a shell-script bundle. Launch Services starts the compiled executable; it forks a detached child that execs the project's own `.venv` Python against `main.py` while the parent returns immediately, so there is no persistent launchd job and no restart-on-exit policy — a quit or crash simply ends the process. It runs directly from this Lab checkout and uses this folder's `data/`, `config/`, and `.env`, exactly like `python main.py`.
 
 `./scripts/build_app.sh` creates a self-contained release in `dist.noindex/` but does not install it. A self-contained build uses `~/Library/Application Support/Sentinel/` when launched. On first launch it renames existing `Sentinel Fork` application-support data in place; it never takes data from the archived `Sentinel AI` app. Installing with `./scripts/build_app.sh --install` explicitly replaces the thin launcher, so use that option only when you intend to switch modes. Source and frozen modes do not otherwise merge their data.
+
+Launched either way, the GUI process is the project's own interpreter, and macOS
+reads an app's name and icon from the path of the executable a process is
+running — `.venv/bin/python`, which is not inside a bundle. Left alone, the menu
+beside the Apple logo is titled after the script and the Dock shows the generic
+Python icon. `ui/app_identity.py` fixes both from inside the process: it writes
+`CFBundleName` into the main bundle's info dictionary before `QApplication()`
+exists, and sets the Dock icon through AppKit afterwards. A frozen build already
+carries its own name and icon and is left untouched.
+
+The thin launcher is **not** the cause and does not need changing: a bundle whose
+executable execs the venv interpreter loses its identity with a `fork()` and
+with a plain `exec` alike, because the lookup follows the new executable's path
+rather than the process. One thing stays unfixed in both source modes — the name
+*under* the Dock icon, in the app switcher and in Force Quit still reads
+`python`. Launch Services takes that from the executable at launch and does not
+re-read it; only an interpreter living inside the bundle changes it, which is
+what the self-contained build does.
 
 Both launch modes read the same canonical `VERSION`. The live launcher shows
 the updated version on its next launch; packaged and portable copies keep the

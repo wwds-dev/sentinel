@@ -91,3 +91,56 @@ for extra in ["icon_64x64.png", "icon_64x64@2x.png", "icon_1024x1024.png", "icon
 icns_path = ASSETS / "icon.icns"
 subprocess.run(["iconutil", "-c", "icns", str(iconset_dir), "-o", str(icns_path)], check=True)
 print(f"Wrote {icns_path}")
+
+
+# ── menu bar glyph ───────────────────────────────────────────────────────────
+# The status item needs the same mark drawn differently: solid black on
+# transparent, no backdrop, no colour. macOS treats that as a template image
+# and recolours it for a light or dark menu bar and for the highlighted state
+# (ui/tray.py sets QIcon.setIsMask). Colour here would be thrown away, and a
+# partial alpha reads as a smudge rather than as detail.
+#
+# Drawn at 8x and downsampled, because ImageDraw has no antialiasing — the same
+# reason the app icon above is rendered once at 1024.
+TRAY_SIZES = {"tray.png": 18, "tray@2x.png": 36}
+SUPERSAMPLE = 8
+
+
+def draw_tray(size: int) -> Image.Image:
+    """The shield and eye at menu bar scale: silhouette, knocked-out eye, pupil."""
+    s = size * SUPERSAMPLE
+    glyph = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    pen = ImageDraw.Draw(glyph)
+
+    half = s * 0.38
+    top, shoulder, flank, tip = s * 0.06, s * 0.22, s * 0.66, s * 0.96
+    pen.polygon(
+        [
+            (s * 0.5, top),
+            (s * 0.5 + half, shoulder),
+            (s * 0.5 + half, flank),
+            (s * 0.5, tip),
+            (s * 0.5 - half, flank),
+            (s * 0.5 - half, shoulder),
+        ],
+        fill=(0, 0, 0, 255),
+    )
+
+    # Knocked out rather than drawn: ImageDraw writes pixels instead of
+    # blending, so a zero alpha clears the shield underneath.
+    eye_x, eye_y = s * 0.26, s * 0.15
+    pen.ellipse(
+        [s * 0.5 - eye_x, s * 0.44 - eye_y, s * 0.5 + eye_x, s * 0.44 + eye_y],
+        fill=(0, 0, 0, 0),
+    )
+    pupil = s * 0.085
+    pen.ellipse(
+        [s * 0.5 - pupil, s * 0.44 - pupil, s * 0.5 + pupil, s * 0.44 + pupil],
+        fill=(0, 0, 0, 255),
+    )
+    return glyph.resize((size, size), Image.LANCZOS)
+
+
+for name, px in TRAY_SIZES.items():
+    draw_tray(px).save(ASSETS / name)
+print(f"Wrote {', '.join(TRAY_SIZES)} to {ASSETS}")

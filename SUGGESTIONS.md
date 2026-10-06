@@ -11,6 +11,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | 20 | OSINT Keys tab: add key-validation ping (HEAD request to each provider's API) so the tab can show green/red key health next to each Save Key button | feature | S | IDEA |
 | 21 | Surface the BreachDirectory provider inside Bloodhound's email collection. It is already a live, keyless lookup in Trace's email path (`providers/email_lookup.py`); this is about adding it to Bloodhound, not wiring a key — BreachDirectory takes no key. | feature | S | CONSIDERING |
 | 22 | OSINT Keys tab: Learning Centre topic explaining the ops-email strategy, HIBP vs BreachDirectory tradeoffs, and which keys to prioritise first | docs | S | IDEA |
+| 23 | Close the last identity gap: the Dock, the app switcher and Force Quit still call the running app `python`, because Launch Services reads that from the executable at launch and `ui/app_identity.py` cannot reach it. Fixing it means the interpreter living inside `/Applications/Sentinel.app` — a copy or symlink of the venv Python with a `pyvenv.cfg` and `lib/` beside it — or making the frozen build the everyday install, which costs the live-checkout launch the thin launcher exists for | design | M | IDEA |
 
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|
