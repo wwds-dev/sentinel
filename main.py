@@ -140,8 +140,10 @@ AGENT_SETUP_WIDGETS = {
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker,
 )
-from ui.widgets import KeyValue, MenuComboBox, Meter, SectionView
-from ui.style import GLOBAL_STYLESHEET, polish_combo_box, polish_combo_boxes
+from ui.widgets import KeyValue, MenuComboBox, Meter, SectionView, ThemeDots
+from ui import vibe
+from ui.style import global_stylesheet, polish_combo_box, polish_combo_boxes
+from ui.theme import accent, recolour
 from ui.tooltips import seed_tooltips
 from ui.panels.base import PROVIDERS, build_provider_row, configure_model_controls
 from ui.panels.bug_bounty import BugBountyPanel
@@ -194,6 +196,9 @@ class GodAI(QWidget):
             self.load_json(TOOL_PROMPTS_FILE, {}), registry_tools
         )
         self.settings = self.load_json(SETTINGS_FILE, {})
+        # (widget, css) for the inline sheets that predate ui/style.py.
+        # apply_global_style repaints them with everything else.
+        self._inline_sheets: list[tuple[QWidget, str]] = []
 
         self.ollama = OllamaClient()
         self.openai = OpenAIClientWrapper()
@@ -1172,10 +1177,10 @@ class GodAI(QWidget):
         if is_recommended:
             combo.setStyleSheet("")
         else:
-            combo.setStyleSheet(
+            combo.setStyleSheet(recolour(
                 f"QComboBox {{ border: 1px solid {RECOMMENDED_COLOR}; }}"
                 "QComboBox:focus { border: 1px solid #3cff88; }"
-            )
+            ))
 
     def _recommendation_for(self, agent_key: str) -> dict | None:
         """Return {provider, model, reason} for an agent.
@@ -1365,6 +1370,11 @@ class GodAI(QWidget):
         brand_row.addWidget(fork_brand)
         brand_row.addWidget(self.version_label)
         brand_row.addStretch(1)
+        # The themes, as themselves. A picker also lives in Settings, which is
+        # where someone goes to *read* what the choice means; this is for
+        # changing your mind about it mid-session.
+        self.theme_dots = ThemeDots(on_change=self.apply_global_style)
+        brand_row.addWidget(self.theme_dots, 0, Qt.AlignVCenter)
         left_layout.addLayout(brand_row)
 
         # Inner scrollable container holds all the agent categories so they never
@@ -1422,7 +1432,7 @@ class GodAI(QWidget):
             metadata = BUILTIN_AGENTS[name]
             btn = QPushButton(f"{metadata['icon']}  {metadata['label']}")
             btn.setObjectName("AgentBtn")
-            btn.setStyleSheet(agent_btn_style)
+            self.themed_sheet(btn, agent_btn_style)
             btn.setCheckable(True)
             btn.setMinimumHeight(36)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1585,7 +1595,7 @@ class GodAI(QWidget):
         left_widget.setMinimumWidth(220)
         left_widget.setMaximumWidth(270)
 
-        left_widget.setStyleSheet("""
+        self.themed_sheet(left_widget, """
         QWidget#LeftPanel {
             background-color: #0f0f0f;
         }
@@ -2002,6 +2012,10 @@ class GodAI(QWidget):
             "Type your message here…  Enter to send · Shift+Enter for a new line"
         )
         self.input_box.setFixedHeight(140)
+        # The caret you compose against, with a cadence per theme, and the
+        # corner marks the blue theme puts around whatever has focus.
+        vibe.install_caret(self.input_box)
+        self.prompt_brackets = vibe.install_brackets(self.input_box)
         normal_layout.addWidget(self.input_box)
 
         self.send_btn = self.run_btn
@@ -2126,6 +2140,18 @@ class GodAI(QWidget):
         )
         self.output_box.hide()
         center_layout.addWidget(self.output_box, 1)
+
+        # The empty state belongs to the centre column, not to the output box:
+        # that box is hidden until something arrives, so a backdrop inside it
+        # would be invisible at exactly the moment it is meant to show. This
+        # sits behind the column's own children and comes through in the space
+        # under the prompt — the space that is empty because nothing has run.
+        self.output_backdrop = vibe.install_backdrop(
+            center_widget,
+            visible_while=lambda: not self.output_box.toPlainText().strip(),
+            heading="Nothing run yet",
+            subcopy="Results and conversation appear here once something runs.",
+        )
 
         self.load_provider_models()
 
@@ -2402,7 +2428,7 @@ class GodAI(QWidget):
         self.daily_budget_input.setFixedHeight(28)
 
         # ── VPN-Agent-inspired card stylesheet ──────────────────────────
-        right_widget.setStyleSheet("""
+        self.themed_sheet(right_widget, """
         QWidget#RightPanel {
             background-color: #0d0f0e;
         }
@@ -2556,8 +2582,33 @@ class GodAI(QWidget):
         except Exception as e:
             self.output_box.append(f"[Settings Save Error] {e}")   
 
+    def themed_sheet(self, widget, css: str) -> None:
+        """Apply `css` to `widget` under the current theme, and on every change.
+
+        A handful of sheets predate ui/style.py and still carry their own copy
+        of the accent. They stay authored in green, like the main sheet, and
+        are recoloured on the way in — registering them here is what makes a
+        theme switch repaint them instead of leaving one panel behind.
+        """
+        self._inline_sheets.append((widget, css))
+        widget.setStyleSheet(recolour(css))
+
     def apply_global_style(self):
-        self.setStyleSheet(GLOBAL_STYLESHEET)
+        self.setStyleSheet(global_stylesheet())
+        # The dots paint from `theme.current()`, so they also have to be told
+        # when the choice was made somewhere else — the Settings picker, or the
+        # restore when it is cancelled.
+        if hasattr(self, "theme_dots"):
+            self.theme_dots.update()
+        # The brackets belong to one theme, so a theme change is exactly when
+        # they have to appear or go.
+        if hasattr(self, "prompt_brackets"):
+            self.prompt_brackets.refresh()
+        for widget, css in self._inline_sheets:
+            try:
+                widget.setStyleSheet(recolour(css))
+            except RuntimeError:
+                pass    # the widget was deleted; the next rebuild re-registers it
 
     # ──────────────────────────────────────────────────────────────────
     # OP IDENTITY PANEL
@@ -2934,14 +2985,16 @@ class GodAI(QWidget):
                 f'<div class="body">{content or "&nbsp;"}</div></div>'
             )
         self.output_box.setHtml(
-            "<style>"
-            ".message{margin:4px 0 16px 0;padding:10px 12px;border-left:2px solid #2f3733;}"
-            ".message.user{border-left-color:#3cff88;background:#121714;}"
-            ".message.assistant{border-left-color:#65726b;}"
-            ".message.system{border-left-color:#9b8b52;background:#17160f;}"
-            ".meta{font-size:10px;color:#6f7b75;letter-spacing:.5px;margin-bottom:6px;}"
-            ".body{font-size:13px;color:#d8dedb;line-height:1.45;}"
-            "</style>" + "".join(blocks)
+            recolour(
+                "<style>"
+                ".message{margin:4px 0 16px 0;padding:10px 12px;border-left:2px solid #2f3733;}"
+                ".message.user{border-left-color:#3cff88;background:#121714;}"
+                ".message.assistant{border-left-color:#65726b;}"
+                ".message.system{border-left-color:#9b8b52;background:#17160f;}"
+                ".meta{font-size:10px;color:#6f7b75;letter-spacing:.5px;margin-bottom:6px;}"
+                ".body{font-size:13px;color:#d8dedb;line-height:1.45;}"
+                "</style>"
+            ) + "".join(blocks)
         )
         if follow_tail:
             self.output_box.moveCursor(QTextCursor.End)
@@ -4179,11 +4232,11 @@ class GodAI(QWidget):
                 if line.startswith("#### "):
                     html_lines.append(f'<h4 style="color:#e8e8e8;margin:10px 0 4px;">{line[5:]}</h4>')
                 elif line.startswith("### "):
-                    html_lines.append(f'<h3 style="color:#3cff88;margin:14px 0 6px;">{line[4:]}</h3>')
+                    html_lines.append(f'<h3 style="color:{accent()};margin:14px 0 6px;">{line[4:]}</h3>')
                 elif line.startswith("## "):
                     html_lines.append(f'<h2 style="color:#ffffff;border-bottom:1px solid #333;padding-bottom:4px;margin:18px 0 8px;">{line[3:]}</h2>')
                 elif line.startswith("# "):
-                    html_lines.append(f'<h1 style="color:#3cff88;font-size:20px;margin:0 0 4px;">{line[2:]}</h1>')
+                    html_lines.append(f'<h1 style="color:{accent()};font-size:20px;margin:0 0 4px;">{line[2:]}</h1>')
                 # Blockquote / warning
                 elif line.startswith("> "):
                     html_lines.append(f'<blockquote style="border-left:3px solid #f0a000;padding:6px 12px;margin:6px 0;background:#1e1a00;color:#f0c050;">{line[2:]}</blockquote>')

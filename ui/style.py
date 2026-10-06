@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate, QWidget,
 )
 
+from ui.theme import accent, recolour
+
 
 class SentinelComboDelegate(QStyledItemDelegate):
     """Paint the current popup choice like Chat without native checkmarks."""
@@ -22,9 +24,9 @@ class SentinelComboDelegate(QStyledItemDelegate):
     def initStyleOption(self, option, index) -> None:
         super().initStyleOption(option, index)
         if index.row() == self.combo.currentIndex():
-            green = QColor("#3cff88")
-            option.palette.setColor(QPalette.Text, green)
-            option.palette.setColor(QPalette.HighlightedText, green)
+            current = QColor(accent())
+            option.palette.setColor(QPalette.Text, current)
+            option.palette.setColor(QPalette.HighlightedText, current)
             option.font.setWeight(QFont.DemiBold)
 
     def paint(self, painter, option, index) -> None:
@@ -33,13 +35,16 @@ class SentinelComboDelegate(QStyledItemDelegate):
         current = index.row() == self.combo.currentIndex()
         hovered = bool(option.state & QStyle.State_MouseOver)
         if hovered and not current:
-            painter.fillRect(option.rect, QColor(60, 255, 136, 18))
+            wash = QColor(accent())
+            wash.setAlpha(18)
+            painter.fillRect(option.rect, wash)
 
         font = QFont(option.font)
         if current:
             font.setWeight(QFont.DemiBold)
         painter.setFont(font)
-        painter.setPen(QColor("#3cff88") if current else QColor("#d8dfdb"))
+        painter.setPen(QColor(accent()) if current
+                       else QColor(recolour("#d8dfdb")))
         painter.drawText(
             option.rect.adjusted(10, 0, -8, 0),
             Qt.AlignLeft | Qt.AlignVCenter,
@@ -93,8 +98,10 @@ def polish_combo_boxes(root: QWidget) -> None:
 # Palette: #0d0f0e page · #151816 card · #151816 input · #262d29 border
 # Accent: #3cff88 (Sentinel green) for active/focused/title states
 # Semantic: green (success) / red (danger) for primary actions
+# Phosphor: #00ff41 monospaced, editable fields only — what *you* typed
+# Themes:   authored in green; ui.theme turns the hue for the red theme
 
-GLOBAL_STYLESHEET = """
+_GREEN_STYLESHEET = """
 /* Type scale — four steps, two weights. 10/11/12/13px were four sizes that
    read as one, which is why nothing looked more important than anything else.
      display 22px/500   agent title
@@ -133,6 +140,38 @@ GLOBAL_STYLESHEET = """
         }
         QTextEdit:focus, QTextBrowser:focus, QLineEdit:focus, QComboBox:focus {
             border: 1px solid #3cff88;
+        }
+
+        /* ── Phosphor ──────────────────────────────────────────────── */
+        /* Text you typed is monospaced and lit; text the app wrote is not.
+           The `:!read-only` guard is the whole of that distinction — a
+           QTextEdit locked for a log, an EXIF dump or the output box falls
+           through to the rules above and keeps #e8ece9 in the UI face, and
+           QTextBrowser is never in scope. Selection inverts, the way a
+           terminal's does. Focus lights the field itself as well as the
+           glyphs, because phosphor on a dead panel reads as coloured rather
+           than as lit.
+
+           #00ff41 is hotter and more saturated than the #3cff88 accent on
+           purpose: the accent says "this is current", the phosphor says "you
+           wrote this", and the two must not be read as the same claim. The
+           red theme turns the pair together, so they stay the same distance
+           apart there. */
+        QLineEdit:!read-only, QTextEdit:!read-only,
+        QSpinBox, QDoubleSpinBox {
+            font-family: 'SF Mono', 'Menlo', 'JetBrains Mono', 'Consolas', monospace;
+            color: #00ff41;
+            selection-background-color: #00ff41;
+            selection-color: #0d0f0e;
+        }
+        /* #151816 with a tenth of #00ff41 mixed in, flattened to an opaque
+           value: a translucent green here would composite over the *card*
+           behind the field, not over the input surface, and the field would
+           come out lighter than the one beside it. */
+        QLineEdit:!read-only:focus, QTextEdit:!read-only:focus,
+        QSpinBox:focus, QDoubleSpinBox:focus {
+            background-color: #132f1a;
+            border: 1px solid rgba(0, 255, 65, 0.45);
         }
         QComboBox::drop-down {
             border: none;
@@ -746,11 +785,15 @@ GLOBAL_STYLESHEET = """
             background-color: #151816;
             border: 1px solid #262d29;
             border-radius: 10px;
-            color: #e8ece9;
+            font-family: 'SF Mono', 'Menlo', 'JetBrains Mono', 'Consolas', monospace;
+            color: #00ff41;
             font-size: 13px;
             padding: 12px;
         }
-        QTextEdit#PromptInput:focus { border: 1px solid #3d4842; }
+        QTextEdit#PromptInput:focus {
+            background-color: #132f1a;
+            border: 1px solid rgba(0, 255, 65, 0.45);
+        }
 
         QGroupBox#RightCard {
             background: transparent;
@@ -837,3 +880,12 @@ GLOBAL_STYLESHEET = """
         QPushButton#StopAction:disabled { color: #4a5450; border-color: #262d29; }
         QPushButton#StopAction:hover:enabled { border-color: #f85149; color: #f85149; }
 """
+
+
+def global_stylesheet(theme: str | None = None) -> str:
+    """The whole sheet under `theme`, defaulting to the saved one.
+
+    Called again on every theme change — ``GodAI.apply_global_style`` re-sets
+    it on the window, and Qt repolishes every child from there.
+    """
+    return recolour(_GREEN_STYLESHEET, theme)

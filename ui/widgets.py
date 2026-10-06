@@ -6,11 +6,14 @@ Moved verbatim out of main.py (see docs/refactor_plan.md, phase 1).
 minimum width, which pins an impossible minimum on a pane and makes Qt compress
 controls past their own minimums until the labels are chopped.
 """
-from PySide6.QtCore import Qt, QRect, QPoint, QSize, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import Qt, QRect, QPoint, QPointF, QSize, QTimer
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
                                QMenu, QPushButton, QScrollArea, QSizePolicy,
                                QVBoxLayout, QWidget)
+
+from ui import theme
+from ui.theme import accent
 
 
 class MenuComboBox(QComboBox):
@@ -53,7 +56,7 @@ class MenuComboBox(QComboBox):
         if self.itemData(index, self.COST_ROLE):
             marker = QColor("#f0c040")
         else:
-            marker = QColor("#3cff88") if index == self.currentIndex() else self.itemData(
+            marker = QColor(accent()) if index == self.currentIndex() else self.itemData(
                 index, Qt.ForegroundRole
             )
         if isinstance(marker, QColor) and marker.isValid():
@@ -407,7 +410,7 @@ class Bar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._fraction = 0.0
-        self._colour = QColor("#3cff88")
+        self._colour = QColor(accent())
         self.setFixedHeight(4)
         self.setMinimumWidth(40)
 
@@ -669,3 +672,127 @@ class KeyValue(QWidget):
         self.value.setToolTip(value)
         if tip:
             self.setToolTip(tip)
+
+class ThemeDots(QWidget):
+    """One dot per theme, in the header. Click one to wear it.
+
+    Each dot is painted in its own theme's accent, which is the whole
+    affordance: you are picking a colour by looking at it, not reading its
+    name. The current one carries a ring rather than being the only bright
+    dot — three dots where two are greyed out reads as two disabled controls.
+
+    `on_change` is what repaints the window; the widget does not reach for the
+    main window itself, so it can be dropped into any header.
+    """
+
+    DOT = 9             # diameter of a dot
+    RING = 4            # clearance around it for the current-theme ring
+    GAP = 8             # between slots
+
+    def __init__(self, on_change=None, parent=None):
+        super().__init__(parent)
+        self._on_change = on_change
+        self._hovered = -1
+        self._span = self.DOT + 2 * self.RING
+        count = len(theme.THEMES)
+        self.setFixedSize(count * self._span + (count - 1) * self.GAP, self._span)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName("Colour theme")
+        self._describe(-1)
+
+    # ── geometry ──────────────────────────────────────────────────────
+    def _centre(self, index: int) -> int:
+        return self._span // 2 + index * (self._span + self.GAP)
+
+    def _at(self, x: int) -> int:
+        """The dot under `x`, or -1. The whole slot is the target, not the 9px."""
+        for index in range(len(theme.THEMES)):
+            if abs(x - self._centre(index)) <= self._span // 2:
+                return index
+        return -1
+
+    def _describe(self, index: int) -> None:
+        if index < 0:
+            self.setToolTip("Colour theme — " + theme.LABELS[theme.current()])
+        else:
+            self.setToolTip(theme.LABELS[theme.THEMES[index]])
+
+    # ── painting ──────────────────────────────────────────────────────
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        current = theme.current()
+        middle = self.height() / 2
+
+        for index, name in enumerate(theme.THEMES):
+            colour = QColor(theme.accent(name))
+            centre = QPointF(self._centre(index), middle)
+
+            if name == current:
+                ring = QColor(colour)
+                ring.setAlpha(130)
+                painter.setPen(QPen(ring, 1.3))
+                painter.setBrush(Qt.NoBrush)
+                radius = self.DOT / 2 + self.RING - 1.4
+                painter.drawEllipse(centre, radius, radius)
+
+            fill = QColor(colour)
+            if name != current and index != self._hovered:
+                fill.setAlpha(140)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(fill)
+            painter.drawEllipse(centre, self.DOT / 2, self.DOT / 2)
+
+        if self.hasFocus():
+            outline = QColor(theme.accent())
+            outline.setAlpha(90)
+            painter.setPen(QPen(outline, 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 4, 4)
+
+    # ── interaction ───────────────────────────────────────────────────
+    def _choose(self, index: int) -> None:
+        name = theme.THEMES[index]
+        if name == theme.current():
+            return
+        theme.set_current(name)
+        self._describe(self._hovered)
+        if self._on_change is not None:
+            self._on_change()
+        self.update()
+
+    def mousePressEvent(self, event):
+        index = self._at(int(event.position().x()))
+        if index >= 0:
+            self._choose(index)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        index = self._at(int(event.position().x()))
+        if index != self._hovered:
+            self._hovered = index
+            self._describe(index)
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = -1
+        self._describe(-1)
+        self.update()
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event):
+        """Left and right step through the themes, applying as they go.
+
+        Switching is instant and reversible, so there is nothing to confirm —
+        stepping *is* the preview.
+        """
+        step = {Qt.Key_Left: -1, Qt.Key_Right: 1}.get(event.key())
+        if step is None:
+            super().keyPressEvent(event)
+            return
+        here = list(theme.THEMES).index(theme.current())
+        self._choose((here + step) % len(theme.THEMES))

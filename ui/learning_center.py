@@ -8,6 +8,8 @@ from pathlib import Path
 
 import markdown
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QUrl
+
+from ui.theme import accent, recolour
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -225,7 +227,7 @@ class LearningTopicDelegate(QStyledItemDelegate):
         text = str(index.data(Qt.DisplayRole) or "")
         rect = option.rect.adjusted(16, 0, -12, -6)
         painter.setFont(font)
-        painter.setPen(QColor("#3cff88"))
+        painter.setPen(QColor(accent()))
         painter.drawText(rect, Qt.AlignLeft | Qt.AlignBottom, text)
         rule_x = rect.left() + metrics.horizontalAdvance(text.upper()) + 10
         rule_y = rect.bottom() - metrics.descent() - metrics.xHeight() // 2
@@ -300,7 +302,7 @@ def build_learning_center(app) -> QDialog:
     browser.setSearchPaths([str(resource_root / "docs" / "training")])
     document = browser.document()
     document.setBaseUrl(QUrl.fromLocalFile(str(resource_root) + "/"))
-    document.setDefaultStyleSheet(LESSON_STYLESHEET)
+    document.setDefaultStyleSheet(recolour(LESSON_STYLESHEET))
     document.setDocumentMargin(22)
     fitter = _ImageFitter(browser)
     body.addWidget(browser, 1)

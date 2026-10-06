@@ -27,7 +27,9 @@ from services.openai_client import OpenAIClientWrapper
 from services.registry import Registry
 from services.runtime_paths import PortableRuntimeError, is_portable, user_data_base
 from services.validator import Validator
-from ui.style import polish_combo_box
+from ui.style import global_stylesheet, polish_combo_box
+from ui.theme import LABELS as THEME_LABELS, THEMES
+from ui.theme import current as current_theme, set_current as set_theme
 from ui.widgets import MenuComboBox
 
 
@@ -340,6 +342,42 @@ def show_settings(app):
     daily_input = QLineEdit(get_setting("daily_budget_eur", str(app.daily_budget_eur)))
     gl.addWidget(daily_input, 2, 1)
 
+    gl.addWidget(QLabel("Theme:"), 3, 0)
+    theme_box = QComboBox()
+    for key in THEMES:
+        theme_box.addItem(THEME_LABELS[key], key)
+    theme_opened_with = current_theme()
+    theme_box.setCurrentIndex(THEMES.index(theme_opened_with))
+    polish_combo_box(theme_box)
+    gl.addWidget(theme_box, 3, 1)
+
+    theme_note = QLabel(
+        "Repaints the whole window, typed text included. Status colour keeps "
+        "its meaning in both themes — a destructive button stays red, a model "
+        "that costs money stays amber, and an adapter reporting monitor mode "
+        "OK stays green."
+    )
+    theme_note.setWordWrap(True)
+    theme_note.setStyleSheet("font-size: 11px; color: #7d8983;")
+    gl.addWidget(theme_note, 4, 0, 1, 2)
+
+    def preview_theme(index: int) -> None:
+        """Repaint live, so the choice is made by looking rather than guessing.
+
+        This writes the setting immediately; Cancel puts the old one back.
+        """
+        set_theme(theme_box.itemData(index))
+        app.apply_global_style()
+        dialog.setStyleSheet(global_stylesheet())
+
+    def restore_theme() -> None:
+        if current_theme() != theme_opened_with:
+            set_theme(theme_opened_with)
+            app.apply_global_style()
+
+    theme_box.currentIndexChanged.connect(preview_theme)
+    dialog.rejected.connect(restore_theme)
+
     reset_heading = QLabel("Portable emergency reset")
     reset_heading.setStyleSheet("font-weight: 600; color: #ff6b6b;")
     reset_description = QLabel(
@@ -357,11 +395,11 @@ def show_settings(app):
     reset_heading.setVisible(is_portable())
     reset_description.setVisible(is_portable())
     emergency_reset_btn.setVisible(is_portable())
-    gl.addWidget(reset_heading, 3, 0, 1, 2)
-    gl.addWidget(reset_description, 4, 0, 1, 2)
-    gl.addWidget(emergency_reset_btn, 5, 0, 1, 2)
+    gl.addWidget(reset_heading, 5, 0, 1, 2)
+    gl.addWidget(reset_description, 6, 0, 1, 2)
+    gl.addWidget(emergency_reset_btn, 7, 0, 1, 2)
 
-    gl.setRowStretch(6, 1)
+    gl.setRowStretch(8, 1)
     tabs.addTab(general_tab, "General")
 
     # ── Tab 2: Agents ─────────────────────────────────────────────
