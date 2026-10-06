@@ -1343,8 +1343,8 @@ class GodAI(QWidget):
         brand_row.setContentsMargins(16, 6, 16, 12)
         brand_row.setSpacing(7)
 
-        fork_brand = QLabel("SENTINEL")
-        fork_brand.setStyleSheet(
+        brand = QLabel("SENTINEL")
+        brand.setStyleSheet(
             "color: #5d6862; font-family: Menlo, Monaco, monospace; "
             "font-size: 10px; font-weight: 500; letter-spacing: 1.8px; "
             "padding: 0;"
@@ -1356,9 +1356,9 @@ class GodAI(QWidget):
             "font-size: 9px; font-weight: 500; padding: 1px 0 0 0;"
         )
         version_details = build_description()
-        fork_brand.setToolTip(version_details)
+        brand.setToolTip(version_details)
         self.version_label.setToolTip(version_details)
-        brand_row.addWidget(fork_brand)
+        brand_row.addWidget(brand)
         brand_row.addWidget(self.version_label)
         brand_row.addStretch(1)
         # The themes, as themselves. A picker also lives in Settings, which is
