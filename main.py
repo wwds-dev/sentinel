@@ -113,13 +113,12 @@ README_FILE = RESOURCE_DIR / "README.md"
 # ── Per-agent recommended setup ──────────────────────────────────────────────
 # Single source of truth for "which provider + model is right for THIS agent".
 # Each panel pre-selects its entry on startup, and the recommended provider and
-# model are painted red in their dropdowns so the user can always see what the
-# recommendation was, even after switching to something else mid-session.
+# model wear a BEST FIT badge in their dropdowns so the user can always see what
+# the recommendation was, even after switching to something else mid-session.
 #
 # `provider` must match an item in that panel's provider box. `model` is matched
 # leniently (exact -> prefix -> substring) so a dated API id such as
 # "claude-sonnet-4-6-20260112" still resolves from "claude-sonnet-4-6".
-RECOMMENDED_COLOR = "#ff5555"
 
 AGENT_RECOMMENDATIONS = {
     key: as_dict(value) for key, value in RECOMMENDATION_OBJECTS.items()
@@ -141,7 +140,11 @@ from ui import app_identity, appkit_guard, tray
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker,
 )
-from ui.widgets import KeyValue, MenuComboBox, Meter, SectionView, ThemeDots
+from ui.widgets import (
+    BEST_FIT_BADGE, KeyValue, MenuComboBox, Meter, RECOMMENDED_ROLE,
+    RECOMMENDATION_BADGE_ROLE, RECOMMENDATION_REASON_ROLE, SectionView,
+    ThemeDots,
+)
 from ui import vibe
 from ui.style import global_stylesheet, polish_combo_box, polish_combo_boxes
 from ui.theme import accent, recolour
@@ -914,9 +917,9 @@ class GodAI(QWidget):
             return
 
         for i in range(combo.count()):
-            # Never overwrite the red recommendation marking.
-            if combo.itemData(i, Qt.ForegroundRole) is not None:
-                continue
+            # No longer has to skip the recommended entry: that marking is a
+            # role of its own now, so grey-for-too-big and BEST FIT can land on
+            # the same model without either one erasing the other.
             verdict = self.assess_local_model(combo.itemText(i))
             if verdict is None:
                 continue
@@ -1133,55 +1136,45 @@ class GodAI(QWidget):
         """Locate `wanted` in a model combo; see `find_model` for the rule."""
         return find_model([combo.itemText(i) for i in range(combo.count())], wanted)
 
-    def _paint_recommended_item(self, combo, index: int, tooltip: str) -> None:
-        """Colour one dropdown entry red + bold and clear any previous marking.
+    def _paint_recommended_item(self, combo, index: int, tooltip: str,
+                                *, badge: str = BEST_FIT_BADGE) -> None:
+        """Mark one dropdown entry as the best fit, clearing any previous one.
 
-        Only the item's colour and tooltip change — never its text — because the
-        panels read `currentText()` straight back as the provider/model name.
+        The marking is data, not a colour: `RECOMMENDED_ROLE` says *which*
+        entry it is and `SelectorMenu` decides what that looks like — an accent
+        BEST FIT pill, the same badge Imprint paints. It used to be a red
+        ForegroundRole, which no reader downstream could tell apart from the
+        grey `mark_oversized_models` paints on a model this machine cannot run,
+        and which the amber "costs money" dot covered up entirely on every
+        cloud provider.
+
+        Only the item's marking and tooltip change — never its text — because
+        the panels read `currentText()` straight back as the provider/model
+        name.
         """
         if combo is None:
             return
 
-        # The stock combo popup ignores per-item colour under some styles; an
-        # explicit QStyledItemDelegate makes ForegroundRole/FontRole take effect.
-        if not combo.property("_rec_delegate"):
-            from PySide6.QtWidgets import QStyledItemDelegate
-            combo.setItemDelegate(QStyledItemDelegate(combo))
-            combo.setProperty("_rec_delegate", True)
-
         default_font = combo.font()
         for i in range(combo.count()):
-            combo.setItemData(i, None, Qt.ForegroundRole)
+            # Only the entry that *was* recommended gets its tooltip cleared;
+            # mark_oversized_models owns the tooltip on the rest.
+            if combo.itemData(i, RECOMMENDED_ROLE):
+                combo.setItemData(i, "", Qt.ToolTipRole)
+            combo.setItemData(i, False, RECOMMENDED_ROLE)
+            combo.setItemData(i, None, RECOMMENDATION_REASON_ROLE)
+            combo.setItemData(i, None, RECOMMENDATION_BADGE_ROLE)
             combo.setItemData(i, default_font, Qt.FontRole)
-            combo.setItemData(i, "", Qt.ToolTipRole)
 
         if index < 0:
             return
 
         marked_font = QFont(default_font)
         marked_font.setBold(True)
-        combo.setItemData(index, QColor(RECOMMENDED_COLOR), Qt.ForegroundRole)
+        combo.setItemData(index, True, RECOMMENDED_ROLE)
+        combo.setItemData(index, tooltip, RECOMMENDATION_REASON_ROLE)
+        combo.setItemData(index, badge, RECOMMENDATION_BADGE_ROLE)
         combo.setItemData(index, marked_font, Qt.FontRole)
-        combo.setItemData(index, tooltip, Qt.ToolTipRole)
-
-    def _mark_deviation(self, combo, is_recommended: bool) -> None:
-        """Tint a combo's border red while it holds a non-recommended value.
-
-        The red dropdown entry is only visible once the list is open; this makes
-        the deviation legible at a glance with the panel closed. The focus rule
-        is repeated here because a widget-level stylesheet outranks the global
-        one and would otherwise drop the green focus ring.
-        """
-        if combo is None:
-            return
-
-        if is_recommended:
-            combo.setStyleSheet("")
-        else:
-            combo.setStyleSheet(recolour(
-                f"QComboBox {{ border: 1px solid {RECOMMENDED_COLOR}; }}"
-                "QComboBox:focus { border: 1px solid #3cff88; }"
-            ))
 
     def _recommendation_for(self, agent_key: str) -> dict | None:
         """Return {provider, model, reason} for an agent.
@@ -1200,10 +1193,14 @@ class GodAI(QWidget):
         return AGENT_RECOMMENDATIONS.get(agent_key)
 
     def refresh_recommendation_marks(self, agent_key: str) -> None:
-        """Re-apply the red marking for one agent's provider and model boxes.
+        """Re-apply the BEST FIT marking for one agent's provider and model.
 
-        Called after any model-list reload, since clearing a combo also drops the
-        per-item colour data.
+        Called after any model-list reload, since clearing a combo also drops
+        the per-item role data.
+
+        The closed control carries the same sentence as a tooltip. The badge is
+        only legible once the list is open, and "am I on the best fit?" is a
+        question worth being able to answer without opening anything.
         """
         rec = self._recommendation_for(agent_key)
         if not rec:
@@ -1212,7 +1209,7 @@ class GodAI(QWidget):
         provider_box, model_box = self.setup_widgets_for(agent_key)
         pretty = BUILTIN_AGENTS.get(agent_key, {}).get("label", agent_key)
         tooltip = (
-            f"Recommended for {pretty}: {rec['provider']} · {rec['model']}\n"
+            f"Best fit for {pretty}: {rec['provider']} · {rec['model']}\n"
             f"{rec['reason']}"
         )
 
@@ -1220,10 +1217,7 @@ class GodAI(QWidget):
             idx = provider_box.findText(rec["provider"])
             self._paint_recommended_item(provider_box, idx, tooltip)
             provider_box.setToolTip(
-                f"Selected provider: {provider_box.currentText()}."
-            )
-            self._mark_deviation(
-                provider_box, provider_box.currentText() == rec["provider"]
+                f"Selected provider: {provider_box.currentText()}.\n{tooltip}"
             )
 
         if model_box is not None:
@@ -1233,13 +1227,9 @@ class GodAI(QWidget):
                 provider_box.currentText() if provider_box is not None else ""
             )
             model_box.setToolTip(
-                f"Selected model: {selected_provider} · {model_box.currentText()}."
+                f"Selected model: {selected_provider} · "
+                f"{model_box.currentText()}.\n{tooltip}"
             )
-            self._mark_deviation(
-                model_box, idx >= 0 and model_box.currentIndex() == idx
-            )
-            # After the red marking, since _paint_recommended_item resets every
-            # item's colour and would otherwise wipe the grey.
             self.mark_oversized_models(model_box)
 
     def _on_recommended_provider_changed(self, agent_key: str) -> None:

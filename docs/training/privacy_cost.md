@@ -9,8 +9,10 @@ prompt local, but uses CPU, memory and battery and may be slower or less capable
 A cloud provider receives the request over the internet, may retain or process
 it under its own terms, and can charge the associated account.
 
-Amber provider/model styling means “potentially paid cloud route.” It does not
-mean the provider has credit, the model is available, or the final price is known.
+An amber provider/model control means “potentially paid cloud route is
+selected”; in the open dropdown, the hover text on each cloud entry says the
+same thing. Neither means the provider has credit, the model is available, or
+that the final price is known.
 
 ## Before approving cloud use
 

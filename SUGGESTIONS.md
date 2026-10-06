@@ -46,7 +46,8 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Key `_pending_requests` by request id instead of agent name — two runs of the same agent no longer clobber each other's context | Sep 2026 |
 | Kimi prompt caching modelled in the pricing table — cached input billed at ~20% of the base rate ($0.19/1M) | Sep 2026 |
 | Auto-route button on every agent panel, applying the router's recommendation directly | Sep 2026 |
-| Paid-route highlighting — any non-Ollama provider/model marked amber on the dropdown | Sep 2026 |
+| Paid-route highlighting — any non-Ollama provider/model marked amber on the dropdown. The per-entry amber dot was withdrawn in Oct 2026 when it turned out to be covering the recommendation marker; the amber control and the per-entry hover text remain | Sep 2026 |
+| BEST FIT badge on the recommended provider/model entry, matching Imprint, replacing the red entry colour | Oct 2026 |
 | Chat composer overhaul — Enter-to-send/Shift+Enter, taller input, per-message timestamps, "Conversation" relabeling | Sep 2026 |
 | Learning Centre foundation — searchable Quick Start, Chat, agent workflows and advanced-tools lessons | Sep 2026 |
 | Exhaustive Learning Centre — workspace/Settings reference, seven agent courses, privacy, troubleshooting, expanded workflows and nine current screenshots | Sep 2026 |

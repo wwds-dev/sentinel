@@ -7,8 +7,9 @@
 1. Choose **Chat** in the left sidebar.
 2. Select **General Chat** and type a simple question.
 3. Press **Auto-route** to see the recommended provider and model.
-4. Check the route before sending. Ollama is local; amber selections use a
-   cloud provider and may cost money.
+4. Check the route before sending. Ollama is local; an amber selection uses
+   a cloud provider and may cost money. The **BEST FIT** badge in the
+   dropdown is what Sentinel would have chosen.
 5. Press **Enter** to send. Use **Shift+Enter** when you want a new line.
 6. Read the answer in the scrollable conversation. Each message has a local
    date and time.

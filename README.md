@@ -54,7 +54,7 @@ Only enable a paid provider when you intend to use it. Sentinel checks provider 
 
 ## Using the app
 
-Choose an agent from the left sidebar. Chat uses the shared centre workspace; each specialist has its own panel with the inputs and actions relevant to that workflow. Provider and model controls remain explicit, and the recommended selection is highlighted where available.
+Choose an agent from the left sidebar. Chat uses the shared centre workspace; each specialist has its own panel with the inputs and actions relevant to that workflow. Provider and model controls remain explicit, and the recommended choice carries a **BEST FIT** badge in the dropdown, next to the entry itself, with the reason on hover.
 
 Chat's Tool selector changes its system guidance:
 
@@ -71,9 +71,9 @@ message with a role and a timestamp (`YOU · 31 Aug 2026 · 10:15`).
 Every agent, Chat included, has an **Auto-route** button next to its run
 controls: it asks the router for a recommended provider and model for the
 current input and applies the choice directly. Any provider or model other
-than Ollama is marked as a paid selection (an amber marker on the dropdown),
-so a cloud route is visible before you run it, not only after the cost is
-logged.
+than Ollama is a paid selection: the control turns amber while one is
+selected, and every cloud entry says so on hover, so a cloud route is visible
+before you run it, not only after the cost is logged.
 
 Saved chats can be searched and filtered by agent. The two side rails split by what they carry rather than by left/right habit: the right rail is the live request inspector — Current Route, Cost, Budget, System, in that order, so the cards read top-to-bottom in the order a request actually happens — while API Keys and Actions (Cost history, Run log, Settings) sit in the left rail with the agent list, since those are global setup rather than per-request state. Settings controls registered agents, tools, pricing, and provider permissions.
 

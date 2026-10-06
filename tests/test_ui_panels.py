@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QAbstractItemView, QLabel, QMessageBox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from main import AGENT_SETUP_WIDGETS
 from ui.host import AgentHost
 from ui.panels.base import PROVIDERS, AgentPanel, build_provider_row
 
@@ -238,17 +239,17 @@ class TestRecommendationsStillReachThePanels:
     @pytest.mark.parametrize("agent", PANEL_AGENTS)
     def test_the_recommended_model_is_still_marked_after_a_reload(
             self, win, agent):
-        # Clearing a combo drops every item's colour, so the marking has to be
-        # re-applied after each load — the reason the loader and the marker are
-        # both wired to the provider box.
-        from PySide6.QtCore import Qt
+        # Clearing a combo drops every item's role data, so the marking has to
+        # be re-applied after each load — the reason the loader and the marker
+        # are both wired to the provider box.
+        from ui.widgets import RECOMMENDED_ROLE
         import main
         model_box = win.setup_widgets_for(agent)[1]
         win.load_models_for(agent)
         win.refresh_recommendation_marks(agent)
         idx = win._find_model_index(model_box, main.AGENT_RECOMMENDATIONS[agent]["model"])
         assert idx >= 0
-        assert model_box.itemData(idx, Qt.ForegroundRole) is not None
+        assert model_box.itemData(idx, RECOMMENDED_ROLE) is True
 
     def test_trace_models_come_from_the_client_not_the_live_api(self, win):
         # conftest serves KNOWN_MODELS; the panels reach it through
@@ -441,6 +442,113 @@ class TestLoadModelsInto:
                             lambda *a, **k: noted.append(a))
         assert win.models_for_provider("qwen") == []
         assert noted == []
+
+
+class TestBestFitIsPresentedAsABadge:
+    """How the app advises, and how that stays distinct from everything else.
+
+    The recommendation used to be a red ForegroundRole, and lost every
+    argument it was in: the amber "costs money" dot painted over it on every
+    cloud provider, and `mark_oversized_models` — which also writes
+    ForegroundRole — could neither see it nor be seen by it. It is a role of
+    its own now, rendered as the accent BEST FIT pill Imprint uses.
+    """
+
+    # Every agent with a provider/model pair, Sentry included — it is not in
+    # PANEL_AGENTS, and a new agent that silently misses the marking is
+    # exactly what this class exists to catch.
+    ALL_AGENTS = sorted(set(PANEL_AGENTS) | set(AGENT_SETUP_WIDGETS))
+
+    @pytest.mark.parametrize("agent", ALL_AGENTS)
+    def test_each_agent_marks_exactly_one_best_fit_per_selector(self, win, agent):
+        from ui.widgets import BEST_FIT_BADGE, RECOMMENDED_ROLE, \
+            RECOMMENDATION_BADGE_ROLE, RECOMMENDATION_REASON_ROLE
+
+        win.refresh_recommendation_marks(agent)
+        for combo in win.setup_widgets_for(agent):
+            assert combo is not None, agent
+            marked = [i for i in range(combo.count())
+                      if combo.itemData(i, RECOMMENDED_ROLE)]
+            assert len(marked) == 1, f"{agent}: {marked}"
+            index = marked[0]
+            assert combo.itemData(index, RECOMMENDATION_REASON_ROLE)
+            assert combo.itemData(index, RECOMMENDATION_BADGE_ROLE) == \
+                BEST_FIT_BADGE
+
+    @pytest.mark.parametrize("agent", ALL_AGENTS)
+    def test_the_best_fit_entry_reaches_the_menu_as_a_badge(self, win, agent):
+        from ui.widgets import BEST_FIT_BADGE, RECOMMENDED_ROLE
+
+        win.refresh_recommendation_marks(agent)
+        provider_box, model_box = win.setup_widgets_for(agent)
+
+        best_model = next(
+            model_box.itemText(i) for i in range(model_box.count())
+            if model_box.itemData(i, RECOMMENDED_ROLE)
+        )
+        badges = model_box.buildMenu().bestFitBadges()
+        assert {a.text(): b for a, b in badges.items()} == {
+            best_model: BEST_FIT_BADGE
+        }
+
+        # The provider badge lands inside whichever submenu holds that
+        # provider, not on the "Cloud providers" row that opens it.
+        recommended = next(
+            provider_box.itemText(i) for i in range(provider_box.count())
+            if provider_box.itemData(i, RECOMMENDED_ROLE)
+        )
+        provider_menu = provider_box.buildMenu()
+        assert not provider_menu.bestFitBadges()
+        found = {
+            action.text(): badge
+            for group in provider_menu.actions() if group.menu() is not None
+            for action, badge in group.menu().bestFitBadges().items()
+        }
+        assert found == {recommended: BEST_FIT_BADGE}
+
+    def test_a_badge_is_given_room_rather_than_landing_on_a_label(self, win):
+        """Qt sizes a menu to its widest label and knows nothing about the
+        pill painted over it, so the room has to be asked for explicitly."""
+        win.refresh_recommendation_marks("chat")
+        model_box = win.model_box
+        bare = model_box.buildMenu()
+        bare._badges.clear()
+        assert model_box.buildMenu().minimumWidth() > bare.sizeHint().width()
+
+    def test_no_entry_still_wears_the_amber_cost_dot(self, win):
+        """Two dots in two colours was the whole problem: every cloud provider
+        wore one, and it sat on top of the recommendation marker. Cost moved to
+        the hover text and to the closed control, which turns amber."""
+        win.provider_box.setCurrentText("deepseek")
+        win.load_provider_models()
+        win.refresh_recommendation_marks("chat")
+
+        menu = win.provider_box.buildMenu()
+        cloud = next(a.menu() for a in menu.actions()
+                     if a.text() == "Cloud providers")
+        unselected = [a for a in cloud.actions()
+                      if a.text() != win.provider_box.currentText()]
+        assert unselected
+        assert all(a.icon().isNull() for a in unselected)
+        assert all("costs money" in a.toolTip() for a in cloud.actions())
+        assert win.provider_box.property("paidSelection") is True
+
+    def test_a_model_can_be_both_too_big_and_the_best_fit(self, win, monkeypatch):
+        """ForegroundRole could only hold one of the two, so whichever ran
+        second silently lost. They are different roles now."""
+        from ui.widgets import RECOMMENDED_ROLE
+
+        win.provider_box.setCurrentText("ollama")
+        win.load_provider_models()
+        win.refresh_recommendation_marks("chat")
+        marked = next(i for i in range(win.model_box.count())
+                      if win.model_box.itemData(i, RECOMMENDED_ROLE))
+        monkeypatch.setattr(win, "assess_local_model", lambda name: {
+            "level": "too_big", "message": "needs 64 GB of RAM"})
+
+        win.mark_oversized_models(win.model_box)
+        assert win.model_box.itemData(marked, RECOMMENDED_ROLE) is True
+        assert win.model_box.itemData(marked, Qt.ForegroundRole) is not None
 
 
 class TestAgentHostProtocol:
@@ -693,12 +801,17 @@ class TestWorkspaceLayoutRegressions:
         ]
 
     def test_closed_model_tooltip_describes_the_selected_route(self, win):
+        """Closed, the control still answers both "where am I?" and "where
+        should I be?" — the BEST FIT badge is only legible with the list open.
+        """
         provider = win.provider_box
         model = win.model_box
         win.refresh_recommendation_marks("chat")
-        assert model.toolTip() == (
+        first, _, rest = model.toolTip().partition("\n")
+        assert first == (
             f"Selected model: {provider.currentText()} · {model.currentText()}."
         )
+        assert rest.startswith("Best fit for ")
 
     def test_simple_selectors_keep_the_menu_style_without_fake_hierarchy(self, win):
         combo = win.osint_panel.type_box

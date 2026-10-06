@@ -11,7 +11,8 @@
 | Auto-route | Applies Sentinel's recommendation using task, privacy, availability and cost preferences. Review the result before running. |
 | Main action | Send, Investigate, Analyse, Ask Advisor or another agent-specific operation. |
 | Stop | Requests cancellation of the active worker. Partial results may remain. |
-| Paid marker | Amber identifies a route that may charge through a cloud API. It is a warning, not a price quote. |
+| Best fit | A **BEST FIT** badge on one entry per dropdown is Sentinel's recommendation for this agent. Hover for the reason. It is advice; the entry you pick is the one that runs. |
+| Paid marker | The control turns amber while a route that may charge through a cloud API is selected, and cloud entries say so on hover. It is a warning, not a price quote. |
 
 ## Menus and guidance
 

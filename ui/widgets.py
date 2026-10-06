@@ -7,13 +7,112 @@ minimum width, which pins an impossible minimum on a pane and makes Qt compress
 controls past their own minimums until the labels are chopped.
 """
 from PySide6.QtCore import Qt, QRect, QPoint, QPointF, QSize, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QIcon, QPainter, QPen,
+                           QPixmap)
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
                                QMenu, QPushButton, QScrollArea, QSizePolicy,
                                QVBoxLayout, QWidget)
 
 from ui import theme
 from ui.theme import accent
+
+
+# Semantic item roles for the recommendation system, shared with main.py.
+#
+# A recommendation is data, not a colour. It used to be a red ForegroundRole,
+# which left every reader downstream guessing: `mark_oversized_models` paints a
+# model this machine cannot run grey, also through ForegroundRole, so it had to
+# skip any item that already carried a colour — recommended or not — and the
+# two markings quietly cancelled each other out. The role below says which
+# entry is the best fit; `SelectorMenu` decides what that looks like.
+RECOMMENDED_ROLE = int(Qt.UserRole) + 101
+RECOMMENDATION_REASON_ROLE = int(Qt.UserRole) + 102
+RECOMMENDATION_BADGE_ROLE = int(Qt.UserRole) + 105
+
+#: What the badge says when a recommendation does not name its own wording.
+BEST_FIT_BADGE = "BEST FIT"
+
+
+class SelectorMenu(QMenu):
+    """A selector popup that can mark one of its entries as the best fit.
+
+    Qt gives a menu row an icon, a label and a shortcut column, and no way to
+    put a pill between them, so the badge is drawn over the finished menu:
+    `actionGeometry` reports where each row landed and the pill goes in the
+    right-hand margin `reserveBadgeRoom` keeps clear. Painting on top is also
+    what keeps hover, keyboard navigation and the stylesheet working untouched
+    — nothing about the row itself changes.
+    """
+
+    BADGE_HEIGHT = 18
+    BADGE_INSET = 9       # label inset inside the pill
+    BADGE_MARGIN = 10     # pill to the row's right edge
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._badges: dict = {}
+
+    def markBestFit(self, action, text: str = BEST_FIT_BADGE) -> None:  # noqa: N802
+        """Give one of this menu's actions a best-fit pill."""
+        self._badges[action] = text or BEST_FIT_BADGE
+
+    def bestFitBadges(self) -> dict:  # noqa: N802
+        """{QAction: badge text} — what this menu will paint. For tests."""
+        return dict(self._badges)
+
+    def _badge_font(self) -> QFont:
+        font = QFont(self.font())
+        font.setPointSizeF(max(8.0, font.pointSizeF() - 2.0))
+        font.setWeight(QFont.DemiBold)
+        return font
+
+    def _badge_width(self, text: str) -> int:
+        return (QFontMetrics(self._badge_font()).horizontalAdvance(text)
+                + self.BADGE_INSET * 2)
+
+    def reserveBadgeRoom(self) -> None:  # noqa: N802
+        """Widen the menu so a pill can never land on top of a label.
+
+        Reserved on every row, not just the marked one: Qt sizes a menu to its
+        widest entry, so taking the width out of that one row's label is what
+        would push the elision somewhere unpredictable.
+        """
+        if not self._badges:
+            return
+        extra = max(self._badge_width(text) for text in self._badges.values())
+        self.setMinimumWidth(max(
+            self.minimumWidth(),
+            self.sizeHint().width() + extra + self.BADGE_MARGIN,
+        ))
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().paintEvent(event)
+        if not self._badges:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setFont(self._badge_font())
+        tone = QColor(accent())
+        fill = QColor(tone)
+        fill.setAlpha(22)
+        edge = QColor(tone)
+        edge.setAlpha(90)
+
+        for action, text in self._badges.items():
+            row = self.actionGeometry(action)
+            if row.isEmpty():
+                continue
+            width = self._badge_width(text)
+            pill = QRect(row.right() - self.BADGE_MARGIN - width,
+                         row.center().y() - self.BADGE_HEIGHT // 2,
+                         width, self.BADGE_HEIGHT)
+            painter.setPen(QPen(edge, 1))
+            painter.setBrush(fill)
+            painter.drawRoundedRect(pill, 8, 8)
+            painter.setPen(tone)
+            painter.drawText(pill, Qt.AlignCenter, text)
+        painter.end()
 
 
 class MenuComboBox(QComboBox):
@@ -45,20 +144,20 @@ class MenuComboBox(QComboBox):
     def menuMode(self) -> str:
         return self._menu_mode
 
-    def _add_choice(self, menu: QMenu, index: int) -> None:
+    def _add_choice(self, menu: SelectorMenu, index: int) -> None:
         action = menu.addAction(self.itemText(index))
         action.setEnabled(bool(self.model().flags(self.model().index(index, 0)) & Qt.ItemIsEnabled))
 
-        # Carry the recommendation/warning metadata that used to be painted by
-        # the combo's item delegate into the QMenu.  The current choice wins the
-        # marker (green); a different recommendation remains red; hardware
-        # warnings retain their muted dot and tooltip.
-        if self.itemData(index, self.COST_ROLE):
-            marker = QColor("#f0c040")
-        else:
-            marker = QColor(accent()) if index == self.currentIndex() else self.itemData(
-                index, Qt.ForegroundRole
-            )
+        # A dot answers "where am I?" — the current choice, and a muted warning
+        # on hardware this machine cannot run. What the app *advises* is a
+        # separate question and gets the pill instead, because a second dot in
+        # a second colour made the two indistinguishable at a glance: every
+        # cloud provider wore an amber "costs money" dot, which sat on top of
+        # the recommendation marker and hid it completely. Cost now stays on
+        # the closed control, which turns amber while a paid route is selected.
+        marker = QColor(accent()) if index == self.currentIndex() else self.itemData(
+            index, Qt.ForegroundRole
+        )
         if isinstance(marker, QColor) and marker.isValid():
             pixmap = QPixmap(10, 10)
             pixmap.fill(Qt.transparent)
@@ -70,6 +169,13 @@ class MenuComboBox(QComboBox):
             painter.end()
             action.setIcon(QIcon(pixmap))
 
+        if self.itemData(index, RECOMMENDED_ROLE):
+            menu.markBestFit(
+                action,
+                str(self.itemData(index, RECOMMENDATION_BADGE_ROLE)
+                    or BEST_FIT_BADGE),
+            )
+
         item_font = self.itemData(index, Qt.FontRole)
         if isinstance(item_font, QFont):
             action.setFont(item_font)
@@ -77,17 +183,26 @@ class MenuComboBox(QComboBox):
             current_font = QFont(self.font())
             current_font.setWeight(QFont.DemiBold)
             action.setFont(current_font)
-        tip = self.itemData(index, Qt.ToolTipRole)
-        if tip:
-            action.setToolTip(str(tip))
-            action.setStatusTip(str(tip))
+        # The amber dot was the only place a cloud route announced its cost.
+        # Hover keeps that fact without spending the dot on it — and the two
+        # provider submenus already say which group is which.
+        notes = [str(note) for note in (
+            self.itemData(index, RECOMMENDATION_REASON_ROLE),
+            self.itemData(index, Qt.ToolTipRole),
+        ) if note]
+        if self.itemData(index, self.COST_ROLE):
+            notes.append("Cloud route — this one costs money.")
+        if notes:
+            tip = "\n".join(notes)
+            action.setToolTip(tip)
+            action.setStatusTip(tip)
         action.triggered.connect(
             lambda _checked=False, selected=index: self.setCurrentIndex(selected)
         )
 
-    def buildMenu(self) -> QMenu:
+    def buildMenu(self) -> SelectorMenu:
         """Build a fresh menu from the live combo model (also useful in tests)."""
-        menu = QMenu(self)
+        menu = SelectorMenu(self)
         menu.setObjectName("SelectorMenu")
         menu.setMinimumWidth(max(220, self.width()))
 
@@ -100,8 +215,12 @@ class MenuComboBox(QComboBox):
             current = menu.addAction(f"Current · {self.currentText()}")
             current.setEnabled(False)
             menu.addSeparator()
-            local = menu.addMenu("Local providers")
-            cloud = menu.addMenu("Cloud providers")
+            local = SelectorMenu(menu)
+            local.setTitle("Local providers")
+            cloud = SelectorMenu(menu)
+            cloud.setTitle("Cloud providers")
+            menu.addMenu(local)
+            menu.addMenu(cloud)
             local.setMinimumWidth(menu.minimumWidth())
             cloud.setMinimumWidth(menu.minimumWidth())
             for index in range(self.count()):
@@ -111,6 +230,8 @@ class MenuComboBox(QComboBox):
                 local.menuAction().setVisible(False)
             if not cloud.actions():
                 cloud.menuAction().setVisible(False)
+            local.reserveBadgeRoom()
+            cloud.reserveBadgeRoom()
         elif self._menu_mode == self.MODEL:
             # Opening the model control already supplies all the context the
             # user needs. A redundant "Available models" submenu only added a
@@ -121,6 +242,7 @@ class MenuComboBox(QComboBox):
         else:
             for index in range(self.count()):
                 self._add_choice(menu, index)
+        menu.reserveBadgeRoom()
         return menu
 
     def showPopup(self) -> None:

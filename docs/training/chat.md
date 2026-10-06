@@ -28,7 +28,8 @@ be treated as permanent.
 ## Routing and privacy
 
 **Auto-route** proposes a provider and model. Ollama runs locally. Cloud
-providers are marked amber, require permission, and may incur a charge. Never
+providers live under **Cloud providers** in the dropdown, turn the control
+amber once selected, require permission, and may incur a charge. Never
 include passwords, API keys or unnecessary personal data in a cloud request.
 
 ## Writing effective requests
