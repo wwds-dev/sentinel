@@ -75,6 +75,9 @@ sleep 1
 
 rm -rf "$INSTALLED"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+# "Sentinel Fork" is the name the app shipped under before 2026-09-12, not a
+# spelling of the product. It appears here only as something to migrate away
+# from, so it stays literal.
 LEGACY_INSTALLED="/Applications/Sentinel Fork.app"
 if [ -d "$LEGACY_INSTALLED" ]; then
     "$LSREG" -u "$LEGACY_INSTALLED" 2>/dev/null || true

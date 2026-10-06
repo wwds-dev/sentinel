@@ -63,6 +63,8 @@ touch "${DIST_DIR}/.metadata_never_index"
 # source history is sufficient; these bundles are reproducible build artifacts
 # and otherwise reappear as duplicate apps in Tahoe's Spotlight Apps launcher.
 LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+# "Sentinel AI" and "Sentinel Fork" are names this app shipped under before,
+# listed so their stale bundles get cleaned up — not spellings of the product.
 for stale_name in "Sentinel.app" "Sentinel AI.app" "Sentinel Fork.app"; do
     stale_app="${LEGACY_DIST}/${stale_name}"
     if [ -d "$stale_app" ]; then

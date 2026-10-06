@@ -10,7 +10,7 @@ From the canonical source checkout, run:
 ./scripts/build_portable.sh "/Volumes/YOUR_DRIVE/Sentinel Portable"
 ```
 
-The folder contains `Sentinel.app`, `.sentinel-portable`, `Start Sentinel.command`, and `Sentinel Data`. Re-running the command replaces only the generated app and support files. It preserves the complete data folder, including settings, history, logs and `.env`. The builder copies `.env.example` only; it never copies the source checkout's real `.env`. An existing `Sentinel Fork Data` folder is renamed in place on first launch.
+The folder contains `Sentinel.app`, `.sentinel-portable`, `Start Sentinel.command`, and `Sentinel Data`. Re-running the command replaces only the generated app and support files. It preserves the complete data folder, including settings, history, logs and `.env`. The builder copies `.env.example` only; it never copies the source checkout's real `.env`. An existing `Sentinel Fork Data` folder — the name the app shipped under before 2026-09-12 — is renamed in place on first launch.
 
 ## Storage and compatibility
 

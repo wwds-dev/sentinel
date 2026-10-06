@@ -122,7 +122,7 @@ def pytest_configure(config):
     writable database is redirected.
     """
     global _TEST_ROOT
-    _TEST_ROOT = Path(tempfile.mkdtemp(prefix="sentinel-fork-tests-"))
+    _TEST_ROOT = Path(tempfile.mkdtemp(prefix="sentinel-tests-"))
 
     from services import database
 

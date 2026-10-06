@@ -1,4 +1,4 @@
-# Sentinel Fork — honesty audit and remediation
+# Sentinel — honesty audit and remediation
 
 _Audit date: 2026-09-21 · Scope: does every agent/tool really do what it claims,
 or only appear to? Method: per-subsystem claim-vs-code verification with an

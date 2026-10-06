@@ -224,10 +224,10 @@ The main runtime is organised around:
   installed by `scripts/install_app.sh`; execs the project's own `.venv`
   Python against `main.py` with no persistent launchd job
 - `output/` — gitignored, generated-only. Currently holds leftover files from
-  before this fork was narrowed to the security roster (`launch_assets/` has a
-  KDP listing, an ARC outreach email and a BookTok pitch — publishing-agent
-  output, not something this Sentinel builds). Safe to clear; nothing in this
-  repo reads from it.
+  before the project was narrowed to the security roster (`launch_assets/` has
+  a KDP listing, an ARC outreach email and a BookTok pitch — publishing-agent
+  output, not something Sentinel builds). Safe to clear; nothing in this repo
+  reads from it.
 
 Built-in agents come from the canonical catalog. Forge-generated agents use the dynamic registry and remain separate from the built-in roster.
 

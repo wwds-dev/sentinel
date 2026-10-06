@@ -57,7 +57,8 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Budget card spend meters with editing kept in Settings | Sep 2026 |
 | Structured result cards for Trace, Bloodhound, Beacon, Bug Spray and Forge | Sep 2026 |
 | Chat Projects grouping, assignment and spend attribution | Sep 2026 |
-| Sentinel product rename and legacy Sentinel Fork data migration, without touching Sentinel AI | Sep 2026 |
+| Sentinel product rename and migration of the legacy `Sentinel Fork` application data, without touching Sentinel AI | Sep 2026 |
+| Finished the rename: the checkout `sentinel_fork` and the GitHub repository `sentinel-ai-fork` both became `sentinel`. Only the legacy data-migration strings still say "Fork", because they name what is migrated from | Oct 2026 |
 | Native one-shot thin launcher (`scripts/thin_launcher.c`), replacing the AppleScript/launchctl applet | 2026-09-15 |
 | Inspector no longer clips at the narrowest sidebar width | 2026-09-15 |
 

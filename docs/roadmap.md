@@ -12,9 +12,10 @@ numbered item in `TODO.md` so the Lab project monitor can surface it.
 ## V2 — released
 
 V2 establishes the seven-agent product: Chat, Trace, Bloodhound, Beacon, Bug
-Spray, Tunnel and Forge. The old `sentinel_fork` repository key remains stable
-for paths and Lab automation, but the public product and installed application
-are named **Sentinel**.
+Spray, Tunnel and Forge. The product, the installed application, the repository
+and the checkout directory are all named **Sentinel**; the `sentinel_fork`
+checkout and the `sentinel-ai-fork` GitHub repository were renamed to match on
+2026-10-06.
 
 Delivered:
 
@@ -26,8 +27,10 @@ Delivered:
 - Beacon adapter preflight and a documented two-interface workflow;
 - Tunnel connection checks, profile comparison, safe action previews and
   private-key-free WireGuard configuration inspection;
-- source, packaged and USB-portable runtime paths with safe legacy
-  `Sentinel Fork` migration that never reads or overwrites `Sentinel AI`;
+- source, packaged and USB-portable runtime paths with safe migration of the
+  legacy `Sentinel Fork` application data — the old application name, kept
+  literal because it names what is migrated *from* — that never reads or
+  overwrites `Sentinel AI`;
 - an in-app Learning Centre with a reproducible nine-image screenshot set.
 
 Release verification: 556 Sentinel tests, the complete nested VPN Agent suite

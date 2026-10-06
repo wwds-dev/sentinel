@@ -9,10 +9,15 @@ from pathlib import Path
 from typing import Mapping
 
 APP_NAME = "Sentinel"
-LEGACY_APP_NAMES = ("Sentinel Fork",)
 PORTABLE_ENV = "SENTINEL_PORTABLE_ROOT"
 PORTABLE_MARKER = ".sentinel-portable"
 PORTABLE_DATA_DIR = "Sentinel Data"
+
+# Names the app used to ship under. They are not spellings of the product any
+# more — they are the directories an older install left on disk, and they are
+# only ever read, never written, so renaming them here would orphan that data
+# rather than tidy anything up. The product itself is `APP_NAME` everywhere.
+LEGACY_APP_NAMES = ("Sentinel Fork",)
 LEGACY_PORTABLE_DATA_DIRS = ("Sentinel Fork Data",)
 MIN_PORTABLE_FREE_BYTES = 256 * 1024 * 1024
 

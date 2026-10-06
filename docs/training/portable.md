@@ -20,7 +20,7 @@ The result contains the app, a portable marker, a launcher and the persistent da
 
 Open **Start Sentinel.command**. The launcher checks that the drive still exists, is writable and has enough free space. Directly opening the app also recognizes the adjacent marker. Clear errors replace silent fallback when the volume is read-only, missing or nearly full.
 
-To update, run the same build command against the same destination. It replaces the generated app but preserves `Sentinel Data`. Existing `Sentinel Fork Data` is renamed in place on first launch. Back up the entire data folder before an important upgrade.
+To update, run the same build command against the same destination. It replaces the generated app but preserves `Sentinel Data`. Existing `Sentinel Fork Data` — the name the app shipped under before 2026-09-12 — is renamed in place on first launch. Back up the entire data folder before an important upgrade.
 
 Quit Sentinel and wait for scans, model requests and saves to finish. Then eject the volume in Finder before unplugging it. Unsafe removal can corrupt SQLite history or settings.
 
