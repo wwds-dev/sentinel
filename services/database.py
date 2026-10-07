@@ -160,6 +160,7 @@ def init_db() -> None:
     if is_new:
         _migrate_from_json(conn)
     _seed_missing_pricing(conn)
+    _apply_scheduled_price_changes(conn)
     _seed_cached_input_pricing(conn)
     _correct_stale_pricing(conn)
     _seed_default_agents(conn)
@@ -387,6 +388,39 @@ def _correct_stale_pricing(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# Gemini 3.8 Flash is on an introductory price until the end of 2026 and
+# doubles on 2027-01-01 (ai.google.dev pricing page, read 2026-10-07).
+GEMINI_38_FLASH_INTRO = (0.75, 3.75)
+GEMINI_38_FLASH_LIST = (1.50, 7.50)
+GEMINI_38_FLASH_PRICE_CHANGE = "2027-01-01"
+
+
+def _gemini_38_flash_rate(today=None) -> tuple[float, float]:
+    from datetime import date
+
+    today = today or date.today()
+    if today.isoformat() >= GEMINI_38_FLASH_PRICE_CHANGE:
+        return GEMINI_38_FLASH_LIST
+    return GEMINI_38_FLASH_INTRO
+
+
+def _apply_scheduled_price_changes(conn: sqlite3.Connection, today=None) -> None:
+    """Move a row to its announced new price once the date arrives.
+
+    Only a row still holding the introductory rate is changed, so a price
+    the user typed into Settings → Pricing is left alone.
+    """
+    if _gemini_38_flash_rate(today) != GEMINI_38_FLASH_LIST:
+        return
+    conn.execute(
+        "UPDATE pricing SET input_per_1m_usd = ?, output_per_1m_usd = ? "
+        "WHERE backend = 'gemini' AND model = 'gemini-3.8-flash' "
+        "AND input_per_1m_usd = ? AND output_per_1m_usd = ?",
+        (*GEMINI_38_FLASH_LIST, *GEMINI_38_FLASH_INTRO),
+    )
+    conn.commit()
+
+
 def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
     """Insert default pricing rows that may not exist yet (e.g. new providers)."""
     # Anthropic list prices per 1M tokens, from the official pricing table.
@@ -394,6 +428,10 @@ def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
     # charged — seeding those at 15/75 overstated every estimate threefold.
     defaults = [
         ("anthropic", "claude-fable-5",            10.00,  50.00),
+        # Opus 5.5 is cheaper than Opus 5 (4/20 against 5/25); checked on
+        # platform.claude.com's pricing page on 2026-10-07.
+        ("anthropic", "claude-opus-5-5",            4.00,  20.00),
+        ("anthropic", "claude-sonnet-5-5",          2.00,  10.00),
         ("anthropic", "claude-opus-5",              5.00,  25.00),
         ("anthropic", "claude-sonnet-5",            2.00,  10.00),
         ("anthropic", "claude-opus-4-8",            5.00,  25.00),
@@ -421,6 +459,15 @@ def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
         ("openai", "gpt-image-1.5",                 5.00,  32.00),
         ("openai", "gpt-image-1",                   5.00,  40.00),
         ("openai", "gpt-image-1-mini",              2.00,   8.00),
+        # From developers.openai.com/api/docs/pricing (2026-10-07). gpt-5.5
+        # charges 10/45 for a prompt over 272K tokens; the estimate uses the
+        # standard rate.
+        ("openai", "gpt-5.5",                       5.00,  30.00),
+        ("openai", "gpt-5.4-mini",                  0.75,   4.50),
+        # From ai.google.dev/gemini-api/docs/pricing (2026-10-07).
+        # 3.1 Pro charges 4/18 above 200K tokens of prompt.
+        ("gemini", "gemini-3.1-pro-preview",        2.00,  12.00),
+        ("gemini", "gemini-3.8-flash", *_gemini_38_flash_rate()),
     ]
     for backend, model, inp, out in defaults:
         conn.execute(

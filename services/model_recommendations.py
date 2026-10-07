@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 from services.provider_catalog import provider_metadata
 
@@ -117,6 +117,10 @@ MODEL_CATALOG: tuple[ModelProfile, ...] = (
     ModelProfile("openai", "gpt-4o", _caps(reasoning=3, coding=2, vision=True, tool_use=True, context_window=128_000, cost=3, latency=2), 3),
     ModelProfile("openai", "gpt-4.1-mini", _caps(reasoning=2, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=1, latency=1), 2, 0.40, 1.60),
     ModelProfile("openai", "gpt-4.1", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=3, latency=2), 3, 2.0, 8.0),
+    # Added 2026-10-07 from a live listing and the providers' own pricing
+    # pages. Context windows are the documented ones.
+    ModelProfile("openai", "gpt-5.5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_050_000, cost=3, latency=2), 3, 5.0, 30.0),
+    ModelProfile("openai", "gpt-5.4-mini", _caps(reasoning=2, coding=2, vision=True, tool_use=True, context_window=400_000, cost=1, latency=1), 2, 0.75, 4.5),
     ModelProfile("openai", "gpt-image-1.5", _caps(text=False, image_generation=True, context_window=4_000, cost=3, latency=3), 3, 5.0, 32.0),
     ModelProfile("deepseek", "deepseek-flash", _caps(reasoning=2, coding=2, tool_use=True, context_window=128_000, cost=1, latency=1), 2),
     ModelProfile("deepseek", "deepseek-v4-pro", _caps(reasoning=3, coding=3, tool_use=True, context_window=128_000, cost=2, latency=2), 3),
@@ -124,8 +128,13 @@ MODEL_CATALOG: tuple[ModelProfile, ...] = (
     ModelProfile("kimi", "kimi-k2.7-code", _caps(reasoning=3, coding=3, tool_use=True, context_window=256_000, cost=2, latency=2), 3, 0.95, 4.0),
     ModelProfile("kimi", "kimi-k2.7-code-highspeed", _caps(reasoning=2, coding=3, tool_use=True, context_window=256_000, cost=3, latency=1), 3, 1.9, 8.0),
     ModelProfile("kimi", "kimi-k2.6", _caps(reasoning=2, coding=2, tool_use=True, context_window=256_000, cost=1, latency=1), 2, 0.95, 4.0),
+    ModelProfile("gemini", "gemini-3.1-pro-preview", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_048_576, cost=2, latency=2), 3, 2.0, 12.0),
+    # Introductory rate; doubles to 1.50/7.50 on 2027-01-01 (see database.py).
+    ModelProfile("gemini", "gemini-3.8-flash", _caps(reasoning=2, coding=2, vision=True, tool_use=True, context_window=1_048_576, cost=1, latency=1), 2, 0.75, 3.75),
     ModelProfile("gemini", "gemini-2.5-flash", _caps(reasoning=2, coding=2, vision=True, tool_use=True, context_window=1_000_000, cost=1, latency=1), 2),
     ModelProfile("gemini", "gemini-2.5-pro", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=3, latency=3), 3),
+    ModelProfile("anthropic", "claude-opus-5-5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=3, latency=3), 3, 4.0, 20.0),
+    ModelProfile("anthropic", "claude-sonnet-5-5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=2, latency=2), 3, 2.0, 10.0),
     ModelProfile("anthropic", "claude-opus-5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=3, latency=3), 3, 5.0, 25.0),
     ModelProfile("anthropic", "claude-sonnet-5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=2, latency=2), 3, 2.0, 10.0),
     ModelProfile("anthropic", "claude-sonnet-4-6", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=2, latency=2), 3, 3.0, 15.0),
@@ -250,25 +259,67 @@ def _available(model: ModelProfile, available: Mapping[str, Sequence[str]] | Non
     return model.model in models or any(item.startswith(model.model) or model.model.startswith(item) for item in models)
 
 
-def _superseded(profiles: Sequence[ModelProfile]) -> set[tuple[str, str]]:
-    """(provider, model) pairs with a newer release of the same family present.
+# ── Value: never pay more for the same fit ──────────────────────────────────
+# A newer model is not automatically the right one, and neither is a more
+# expensive one. The router scores how well each model fits *this* request;
+# every model within FIT_MARGIN of the best score counts as fit, and the
+# cheapest of those wins. A local model costs nothing; a cloud model with no
+# known price sorts after every priced one, because a missing price must never
+# be read as free.
+#
+# The margin is 0 except when the user asked for cost first. The capability
+# ratings above are 1-3 buckets, and on those a 10% margin rated a local 30B
+# model as interchangeable with Claude Opus for code. Until the ratings are
+# fine enough to say "good enough for this request", price only decides
+# between models that rate the same.
+FIT_MARGIN = {"balanced": 0.0, "cost": 0.25, "speed": 0.0, "privacy": 0.0, "quality": 0.0}
 
-    A tie-break only: two models that score the same used to be ordered by
-    name, so "claude-sonnet-4-6" beat "claude-sonnet-5" and an adopted
-    "claude-sonnet-5-5" could never win against the model it succeeds.
+# (provider, model) -> (input, output) USD per 1M, or None. Set by the app
+# from the pricing table the user edits in Settings → Pricing; the catalog's
+# own figures are the fallback.
+PriceLookup = Callable[[str, str], "tuple[float, float] | None"]
+_PRICE_LOOKUP: PriceLookup | None = None
+
+
+def set_price_lookup(lookup: PriceLookup | None) -> None:
+    global _PRICE_LOOKUP
+    _PRICE_LOOKUP = lookup
+
+
+def blended_price(profile: ModelProfile, prices: PriceLookup | None = None) -> float | None:
+    """USD per 1M tokens for a typical request (3 parts input to 1 output).
+
+    0.0 for a local model; None when a cloud model's price is unknown. A
+    stored price of zero for a cloud model counts as unknown too: a free tier
+    that was written into a price table is not what an API key gets billed.
     """
-    from services.model_watch import family_version  # avoids an import cycle
+    if profile.capabilities.local or provider_metadata(profile.provider).pricing_status == "free_local":
+        return 0.0
+    lookup = prices if prices is not None else _PRICE_LOOKUP
+    pair = None
+    if lookup is not None:
+        try:
+            pair = lookup(profile.provider, profile.model)
+        except Exception:
+            pair = None
+    if pair is None and profile.input_per_1m_usd is not None and profile.output_per_1m_usd is not None:
+        pair = (profile.input_per_1m_usd, profile.output_per_1m_usd)
+    if pair is None or (not pair[0] and not pair[1]):
+        return None
+    return (3 * float(pair[0]) + float(pair[1])) / 4
 
-    newest: dict[tuple[str, str], tuple[int, ...]] = {}
-    split = {}
-    for p in profiles:
-        family, version = family_version(p.model)
-        split[(p.provider, p.model)] = (family, version)
-        key = (p.provider, family)
-        if key not in newest or version > newest[key]:
-            newest[key] = version
-    return {pair for pair, (family, version) in split.items()
-            if version < newest[(pair[0], family)]}
+
+def _price_key(profile: ModelProfile, prices: PriceLookup | None) -> tuple[bool, float]:
+    price = blended_price(profile, prices)
+    return (price is None, price or 0.0)
+
+
+def _describe_price(price: float | None) -> str:
+    if price is None:
+        return "price unknown"
+    if price == 0:
+        return "free (local)"
+    return f"${price:.2f} per 1M tokens blended"
 
 
 def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_tokens: int = 0,
@@ -276,7 +327,8 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
                   available_models: Mapping[str, Sequence[str]] | None = None,
                   enabled_providers: Iterable[str] | None = None,
                   manual_provider: str | None = None, manual_model: str | None = None,
-                  candidates: Sequence[ModelProfile] | None = None) -> RouteDecision:
+                  candidates: Sequence[ModelProfile] | None = None,
+                  prices: PriceLookup | None = None) -> RouteDecision:
     """Pick a provider/model for one request.
 
     `candidates` replaces the catalog for this call only; model_watch uses it
@@ -292,15 +344,30 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
         if manual_provider in enabled and match and _compatible(match, request, prefs) and _available(match, available_models):
             return RouteDecision(request.task, manual_provider, manual_model, "Manual provider/model override retained; it satisfies this request.", manual=True)
     eligible = [m for m in profiles if m.provider in enabled and _compatible(m, request, prefs) and _available(m, available_models)]
-    superseded = _superseded(eligible)
-    ranked = sorted((RouteCandidate(m.provider, m.model, _score(m, request, prefs)) for m in eligible),
-                    key=lambda c: (-c.score, (c.provider, c.model) in superseded, c.provider, c.model))
-    if not ranked:
+    if not eligible:
         raise RuntimeError(f"No available model satisfies task '{request.task}' and the current privacy/provider constraints.")
-    primary = ranked[0]
-    fallback = tuple(item for item in ranked[1:] if (item.provider, item.model) != (primary.provider, primary.model))[:3]
-    preference = prefs.priority if prefs.priority != "balanced" else "capability fit"
-    reason = f"Detected {request.task}; selected the highest-scoring compatible route for {preference}."
+    scores = {(m.provider, m.model): _score(m, request, prefs) for m in eligible}
+    best_score = max(scores.values())
+    margin = FIT_MARGIN.get(prefs.priority, FIT_MARGIN["balanced"])
+    fit = [m for m in eligible if scores[(m.provider, m.model)] >= best_score * (1 - margin)]
+    chosen = min(fit, key=lambda m: (_price_key(m, prices), -scores[(m.provider, m.model)], m.provider, m.model))
+    top = min(eligible, key=lambda m: (-scores[(m.provider, m.model)], _price_key(m, prices), m.provider, m.model))
+    rest = sorted((m for m in eligible if m is not chosen),
+                  key=lambda m: (-scores[(m.provider, m.model)], _price_key(m, prices), m.provider, m.model))
+    primary = RouteCandidate(chosen.provider, chosen.model, scores[(chosen.provider, chosen.model)])
+    fallback = tuple(RouteCandidate(m.provider, m.model, scores[(m.provider, m.model)]) for m in rest)[:3]
+    price = _describe_price(blended_price(chosen, prices))
+    if scores[(chosen.provider, chosen.model)] == best_score:
+        reason = (f"Detected {request.task}; {chosen.model} is the best fit for it"
+                  + (f" and the cheapest of the {len(fit)} that fit it equally"
+                     if len(fit) > 1 and not margin else
+                     f" and the cheapest of the {len(fit)} within {margin:.0%} of that fit"
+                     if len(fit) > 1 else "")
+                  + f" ({price}).")
+    else:
+        reason = (f"Detected {request.task}; {chosen.model} fits it within {margin:.0%} of the "
+                  f"best fit ({top.model}, {_describe_price(blended_price(top, prices))}) "
+                  f"and is the cheapest of the {len(fit)} that do ({price}).")
     if manual_provider or manual_model:
         reason += " The manual choice was unavailable or incompatible, so automatic fallback was used."
     return RouteDecision(request.task, primary.provider, primary.model, reason, fallback)
@@ -316,7 +383,9 @@ class Recommendation:
 
 AGENT_RECOMMENDATIONS = {
     "osint": Recommendation("deepseek", "deepseek-flash", "Capability baseline for frequent structured research."),
-    "osint_heavy": Recommendation("anthropic", "claude-opus-5", "Capability baseline for deep long-context synthesis."),
+    # Opus 5.5 rates the same as Opus 5, holds 1M tokens of context instead
+    # of 200K, and costs 4/20 instead of 5/25: the same fit for less.
+    "osint_heavy": Recommendation("anthropic", "claude-opus-5-5", "Same rating as Opus 5 with 5x the context, at a lower price; for deep long-context synthesis."),
     "wifi": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for technical reasoning."),
     "bug_bounty": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for security and coding analysis."),
     "manager": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for code and specification generation."),

@@ -78,7 +78,7 @@ from services.app_version import DISPLAY_VERSION, build_description
 from services.model_recommendations import (
     AGENT_RECOMMENDATIONS as RECOMMENDATION_OBJECTS,
     TASK_RECOMMENDATIONS, as_dict, find_model, resolve_available_model,
-    RoutingPreferences, route_request, pricing_metadata,
+    RoutingPreferences, route_request, pricing_metadata, set_price_lookup,
 )
 from services.model_watch import ModelWatch
 
@@ -167,7 +167,7 @@ from ui.workers import (
 )
 from ui.model_updates import ModelReviewDialog, ModelUpdatesCard
 from ui.widgets import (
-    BEST_FIT_BADGE, KeyValue, MenuComboBox, Meter, NEW_MODEL_ROLE, RECOMMENDED_ROLE,
+    BEST_FIT_BADGE, KeyValue, ScreenCard, MenuComboBox, Meter, NEW_MODEL_ROLE, RECOMMENDED_ROLE,
     RECOMMENDATION_BADGE_ROLE, RECOMMENDATION_REASON_ROLE, SectionView,
     ThemeDots,
 )
@@ -238,7 +238,9 @@ class GodAI(QWidget):
         self.anthropic = AnthropicClientWrapper()
         self.qwen = QwenClientWrapper()
         # Adopted models must be registered before any panel asks the router
-        # for its recommendation, so this precedes build_ui.
+        # for its recommendation, so this precedes build_ui — and prices before
+        # that, because an adopted model wins a BEST FIT only on a known price.
+        self.refresh_price_lookup()
         self.model_watch = ModelWatch(MODEL_WATCH_FILE)
         try:
             self.model_watch.install()
@@ -538,7 +540,34 @@ class GodAI(QWidget):
         return _show_run_log(self)
     def show_settings(self):
         from ui.dialogs import show_settings as _show_settings
-        return _show_settings(self)
+        try:
+            return _show_settings(self)
+        finally:
+            # Settings → Pricing may have changed a rate the router weighs.
+            self.refresh_price_lookup()
+
+    def refresh_price_lookup(self) -> None:
+        """Hand the router the pricing table, as Settings → Pricing has it.
+
+        Read once here rather than per lookup: the router asks for a price
+        for every candidate on every route, and the table changes only when
+        the user edits it.
+        """
+        try:
+            table = UsageTracker().load_pricing()
+        except Exception as exc:
+            print(f"[pricing] router keeps catalog prices only: {exc}")
+            set_price_lookup(None)
+            return
+
+        def lookup(provider: str, model: str):
+            row = table.get(provider, {}).get(model)
+            if not isinstance(row, dict):
+                return None
+            return (row.get("input_per_1m_usd") or 0.0,
+                    row.get("output_per_1m_usd") or 0.0)
+
+        set_price_lookup(lookup)
     def update_live_cost_estimate(self):
         if not hasattr(self, "live_estimate_label"):
             return
@@ -903,6 +932,7 @@ class GodAI(QWidget):
         self.recommendation_label.setText(f"{rec['provider']} · {rec['model']}")
         if hasattr(self, "routing_rows"):
             self.routing_rows["Suggested"].set(rec["provider"], rec["reason"])
+            self._show_route_screen(rec["provider"])
             self.routing_rows["Model"].set(rec["model"], rec["reason"])
             self.routing_rows["Mode"].set(rec.get("mode", "—"), rec["reason"])
             # RouteDecision.as_dict() deliberately serialises nested metadata,
@@ -1166,9 +1196,50 @@ class GodAI(QWidget):
     def refresh_model_updates_card(self) -> None:
         if not hasattr(self, "model_updates_card"):
             return
+        from services.model_watch import assess
+
         watch = self.model_watch
+        pending = watch.pending()
+        summaries = {}
+        for item in pending:
+            try:
+                summaries[(item.provider, item.model)] = assess(
+                    item.provider, item.model).summary
+            except Exception:
+                pass
         self.model_updates_card.show_state(
-            watch.last_scan, watch.last_notes, watch.pending())
+            watch.last_scan, watch.last_notes, pending, summaries)
+
+    def update_selected_models(self, marked) -> None:
+        """Adopt exactly the models marked on the card, then report what moved."""
+        from services.model_watch import assess
+
+        card = self.model_updates_card
+        card.set_updating(True)
+        adopted, moved, failed = [], [], []
+        try:
+            for provider, model in marked:
+                try:
+                    assessment = assess(provider, model)
+                    self.model_watch.adopt(assessment)
+                except Exception as exc:
+                    failed.append(model)
+                    self._note_failure(f"model update: {provider} · {model}", exc)
+                    continue
+                adopted.append(assessment)
+                moved += [m.key for m in assessment.agent_moves if m.key not in moved]
+            if adopted:
+                self._apply_adoptions(moved)
+        finally:
+            card.set_updating(False)
+            self.refresh_model_updates_card()
+
+        labels = [BUILTIN_AGENTS.get(key, {}).get("label", key) for key in moved]
+        message = f"Updated {len(adopted)} model{'s' if len(adopted) != 1 else ''}"
+        message += f"; BEST FIT moved for {', '.join(labels)}." if labels else "."
+        if failed:
+            message += f" Could not update: {', '.join(failed)}."
+        self._set_chat_status(message)
 
     def show_model_review(self) -> None:
         labels = {key: meta.get("label", key) for key, meta in BUILTIN_AGENTS.items()}
@@ -1178,15 +1249,24 @@ class GodAI(QWidget):
         self.refresh_model_updates_card()
 
     def _on_model_decided(self, action: str, assessment) -> None:
-        """Carry an Adopt or Dismiss through to every dropdown and BEST FIT."""
+        """Carry an Adopt or Dismiss from the Review dialog everywhere."""
         if action == "adopt":
-            sync_agent_recommendations()
-            # An agent whose BEST FIT moved is switched to it, the same way a
-            # panel opens on its recommendation at startup.
-            for move in assessment.agent_moves:
-                self.apply_agent_recommendation(move.key)
-        self._reload_all_model_lists()
+            self._apply_adoptions([m.key for m in assessment.agent_moves])
+        else:
+            self._reload_all_model_lists()
         self.refresh_model_updates_card()
+
+    def _apply_adoptions(self, moved_agents) -> None:
+        """Re-derive recommendations and put adopted models in every dropdown.
+
+        An agent whose BEST FIT moved is switched to it, the same way a panel
+        opens on its recommendation at startup; every other panel keeps the
+        selection it had.
+        """
+        sync_agent_recommendations()
+        self._reload_all_model_lists()
+        for agent_key in moved_agents:
+            self.apply_agent_recommendation(agent_key)
 
     def _reload_all_model_lists(self) -> None:
         """Repopulate every model dropdown and re-apply its BEST FIT marking.
@@ -1720,7 +1800,7 @@ class GodAI(QWidget):
         self.left_utility_container.setObjectName("LeftUtilities")
         self.left_utility_layout = QVBoxLayout(self.left_utility_container)
         self.left_utility_layout.setContentsMargins(12, 4, 12, 0)
-        self.left_utility_layout.setSpacing(4)
+        self.left_utility_layout.setSpacing(10)
         left_layout.addWidget(self.left_utility_container)
 
         left_widget.setMinimumWidth(220)
@@ -2339,7 +2419,7 @@ class GodAI(QWidget):
         cards_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         cards_layout = QVBoxLayout(cards_container)
         cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setSpacing(8)
+        cards_layout.setSpacing(10)
 
         inspector_heading = QLabel("INSPECTOR")
         inspector_heading.setObjectName("RailHeading")
@@ -2349,11 +2429,8 @@ class GodAI(QWidget):
         cards_layout.addWidget(inspector_heading)
 
         # ── Card 1: System ──────────────────────────────────────────────
-        system_card = QGroupBox("SYSTEM")
-        system_card.setObjectName("RightCard")
-        system_layout = QVBoxLayout(system_card)
-        system_layout.setContentsMargins(0, 4, 0, 8)
-        system_layout.setSpacing(8)
+        system_card = ScreenCard("SYSTEM")
+        system_layout = system_card.body
 
         # Figures, not sentences: every one of these is "x of y", so it is drawn
         # as a proportion. "Used: 11.3 GB · Free: 9.4 GB" cannot be read at a
@@ -2375,14 +2452,15 @@ class GodAI(QWidget):
             "Detailed realtime monitoring is not available yet; live summary "
             "metrics above refresh every second."
         )
+        self.realtime_monitor_btn.setObjectName("ScreenKey")
         system_layout.addWidget(self.realtime_monitor_btn)
+        system_card.set_status("live", "ok", "Refreshes every second.")
+        self.system_screen = system_card
 
         # ── Card 2: Routing & Recommendation ────────────────────────────
-        routing_card = QGroupBox("CURRENT ROUTE")
-        routing_card.setObjectName("RightCard")
-        routing_layout = QVBoxLayout(routing_card)
-        routing_layout.setContentsMargins(0, 4, 0, 8)
-        routing_layout.setSpacing(7)
+        routing_card = ScreenCard("CURRENT ROUTE")
+        self.route_screen = routing_card
+        routing_layout = routing_card.body
 
         # Rows, not prose. The reasoning sentence became the tooltip — it is
         # an explanation you want occasionally, not four wrapped lines you read
@@ -2405,16 +2483,17 @@ class GodAI(QWidget):
         self.recommendation_label.hide()
 
         # ── Card 3: Cost ────────────────────────────────────────────────
-        cost_card = QGroupBox("COST")
-        cost_card.setObjectName("RightCard")
-        cost_layout = QVBoxLayout(cost_card)
-        cost_layout.setContentsMargins(10, 6, 10, 10)
-        cost_layout.setSpacing(6)
+        cost_card = ScreenCard("COST")
+        cost_card.set_status("EUR", "ok")
+        cost_layout = cost_card.body
 
         self.cost_rows = {
-            "estimate": KeyValue("Live estimate", "€0.00 · 0 tok"),
-            "last": KeyValue("Last request", "€0.00"),
-            "session": KeyValue("This session", "€0.00"),
+            # Short keys: in the screens' monospace face a long key leaves the
+            # value no room, and "Live estimate" elided its own figure.
+            "estimate": KeyValue("Estimate", "€0.00 · 0 tok",
+                                 "Live estimate for the prompt being typed"),
+            "last": KeyValue("Last", "€0.00", "Last request"),
+            "session": KeyValue("Session", "€0.00", "Spent this session"),
             "today": KeyValue("Today", "€0.00"),
             "requests": KeyValue("Requests", "0"),
         }
@@ -2430,11 +2509,9 @@ class GodAI(QWidget):
         self.request_count_label = QLabel(); self.request_count_label.hide()
 
         # ── Card 4: Budget ──────────────────────────────────────────────
-        budget_card = QGroupBox("BUDGET")
-        budget_card.setObjectName("RightCard")
-        budget_layout = QVBoxLayout(budget_card)
-        budget_layout.setContentsMargins(0, 4, 0, 8)
-        budget_layout.setSpacing(8)
+        budget_card = ScreenCard("BUDGET")
+        self.budget_screen = budget_card
+        budget_layout = budget_card.body
 
         # Spend is "x of y" too, and the one figure worth seeing without reading.
         self.budget_meters = {
@@ -2463,30 +2540,31 @@ class GodAI(QWidget):
         budget_layout.addWidget(self.edit_budget_btn)
 
         # ── Card 5: Quick Actions ───────────────────────────────────────
-        actions_card = QGroupBox("ACTIONS", cards_container)
-        actions_card.setObjectName("RightCard")
-        actions_layout = QVBoxLayout(actions_card)
-        actions_layout.setContentsMargins(10, 6, 10, 10)
-        actions_layout.setSpacing(6)
+        actions_card = ScreenCard("ACTIONS")
+        actions_layout = actions_card.body
 
-        self.cost_history_btn = QPushButton("Cost history")
+        # Three soft keys in one row, not three stacked full-width buttons:
+        # the same three actions in a third of the height.
+        actions_card.set_status("", "off")
+        soft_keys = QHBoxLayout()
+        soft_keys.setContentsMargins(0, 1, 0, 0)
+        soft_keys.setSpacing(6)
+        self.cost_history_btn = QPushButton("Costs")
+        self.cost_history_btn.setAccessibleName("Cost history")
         self.cost_history_btn.clicked.connect(self.show_cost_history)
-        actions_layout.addWidget(self.cost_history_btn)
-
         self.run_log_btn = QPushButton("Run log")
         self.run_log_btn.clicked.connect(self.show_run_log)
-        actions_layout.addWidget(self.run_log_btn)
-
         self.settings_btn = QPushButton("Settings")
         self.settings_btn.clicked.connect(self.show_settings)
-        actions_layout.addWidget(self.settings_btn)
+        for key in (self.cost_history_btn, self.run_log_btn, self.settings_btn):
+            key.setObjectName("ScreenKey")
+            key.setCursor(Qt.PointingHandCursor)
+            soft_keys.addWidget(key, 1)
+        actions_layout.addLayout(soft_keys)
 
         # ── Card 6: API Keys ────────────────────────────────────────────
-        keys_card = QGroupBox("API KEYS")
-        keys_card.setObjectName("RightCard")
-        keys_layout = QVBoxLayout(keys_card)
-        keys_layout.setContentsMargins(10, 6, 10, 10)
-        keys_layout.setSpacing(4)
+        keys_card = ScreenCard("API KEYS")
+        keys_layout = keys_card.body
 
         # A tick and a cross in every row is five pieces of punctuation saying
         # what one word says. Present or absent, stated plainly, coloured.
@@ -2507,6 +2585,11 @@ class GodAI(QWidget):
             row.setToolTip(f"{name} API key {'found' if ready else 'not set'} in .env")
             self.key_rows[name] = row
             keys_layout.addWidget(row)
+        ready_count = sum(
+            1 for row in self.key_rows.values() if row.value.text() == "ready")
+        keys_card.set_status(
+            f"{ready_count}/{len(self.key_rows)}", "ok" if ready_count else "off",
+            f"{ready_count} of {len(self.key_rows)} cloud providers have a key.")
 
         # the old labels, still written to by the settings dialog
         self.openai_key_label = QLabel(); self.openai_key_label.hide()
@@ -2526,6 +2609,7 @@ class GodAI(QWidget):
         self.model_updates_card = ModelUpdatesCard()
         self.model_updates_card.check_requested.connect(self.start_model_scan)
         self.model_updates_card.review_requested.connect(self.show_model_review)
+        self.model_updates_card.update_requested.connect(self.update_selected_models)
         self.left_utility_layout.addWidget(self.model_updates_card)
         self.left_utility_layout.addWidget(actions_card)
 
@@ -2555,7 +2639,7 @@ class GodAI(QWidget):
             self.run_log_btn,
             self.settings_btn,
         ]:
-            w.setFixedHeight(30)
+            w.setFixedHeight(28)
             w.setMinimumWidth(0)
             w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -2845,6 +2929,7 @@ class GodAI(QWidget):
         if not cost_label:
             cost_label = pricing_metadata(rec["provider"], rec["model"]).compact
         self.routing_rows["Suggested"].set(rec["provider"], reason)
+        self._show_route_screen(rec["provider"])
         self.routing_rows["Model"].set(rec["model"], reason)
         self.routing_rows["Mode"].set(rec.get("mode", "—"), reason)
         self.routing_rows["Cost"].set(cost_label, reason)
@@ -2927,6 +3012,7 @@ class GodAI(QWidget):
             )
         if hasattr(self, "routing_rows"):
             self.routing_rows["Suggested"].set(decision.provider, decision.reason)
+            self._show_route_screen(decision.provider)
             self.routing_rows["Model"].set(decision.model, decision.reason)
             self.routing_rows["Mode"].set(decision.mode, decision.reason)
             pricing = getattr(decision, "pricing", None) or pricing_metadata(
@@ -3773,6 +3859,11 @@ class GodAI(QWidget):
             f"{stats['swap_used_gb']:.1f} of {stats['swap_total_gb']:.1f} GB",
         )
 
+        if hasattr(self, "system_screen"):
+            levels = {stats["ram_level"], stats["cpu_level"], stats["swap_level"]}
+            self.system_screen.set_light(
+                "alert" if "red" in levels else "warn" if "yellow" in levels else "ok")
+
         if stats["battery_percent"] is None:
             self.resource_meters["BATT"].set_unavailable()
         else:
@@ -3782,6 +3873,14 @@ class GodAI(QWidget):
                 stats["battery_level"],
                 stats["battery_note"],
             )
+
+    def _show_route_screen(self, provider: str) -> None:
+        """Header of CURRENT ROUTE: local or cloud, amber when it costs money."""
+        if not hasattr(self, "route_screen"):
+            return
+        cloud = str(provider).strip().lower() in CLOUD_PROVIDERS
+        self.route_screen.set_status("cloud" if cloud else "local",
+                                     "warn" if cloud else "ok")
 
     def update_usage_labels(self):
         today_total = self.usage_tracker.get_today_total()
@@ -3797,7 +3896,9 @@ class GodAI(QWidget):
             self.cost_rows["session"].set(f"€{self.session_cost_total:.2f}")
             self.cost_rows["today"].set(f"€{today_total:.2f}")
             self.cost_rows["requests"].set(
-                f"{today_requests} today · {self.session_request_count} session")
+                f"{today_requests} · {self.session_request_count}",
+                f"{today_requests} requests today, "
+                f"{self.session_request_count} this session")
 
         # keep your existing labels
         self.session_cost_label.setText(f"Session Cost: €{self.session_cost_total:.2f}")
@@ -3811,6 +3912,7 @@ class GodAI(QWidget):
         daily_remaining = self.daily_budget_eur - today_total
 
         if hasattr(self, "budget_meters"):
+            worst = 0.0
             # Filled by what is spent, not what is left: a bar that empties as
             # you spend reads as progress towards something good.
             for key, spent, cap in (
@@ -3826,6 +3928,12 @@ class GodAI(QWidget):
                     level,
                     f"€{remaining:.2f} left of the €{cap:.2f} {key.lower()} cap",
                 )
+                worst = max(worst, fraction)
+            if hasattr(self, "budget_screen"):
+                self.budget_screen.set_status(
+                    f"{worst:.0%} used",
+                    "alert" if worst >= 0.9 else "warn" if worst >= 0.6 else "ok",
+                    "The fuller of the session and daily caps.")
 
     def start_resource_timer(self):
         self.resource_timer = QTimer(self)

@@ -68,34 +68,47 @@ The **MODEL UPDATES** card in the left rail does both:
 - At every start, and whenever you press **Check now**, Sentinel asks each
   provider that has a key for its list of models. Listing is free and sends
   no prompt. Providers are asked one after another, never all at once.
-- **New models** counts the models that appeared since the last check. The
-  very first check only reports genuine successors, such as a newer
-  `claude-sonnet` than the one Sentinel recommends. It ignores the dozens of
-  older ids a provider still lists. When several releases of one model
-  family turn up together, only the newest counts.
+- The header shows how many models are new (**7 new**, amber light), and
+  each new model is a row in the card. The very first check only reports
+  models that are newer than anything Sentinel already rates, not the dozens
+  of older ids a provider still lists; when several releases of one model
+  line turn up together, only the newest is shown. "New" decides what is
+  worth telling you about, nothing more.
 - New models wear a grey **NEW** badge in their model dropdown until you
   review them.
-- **Review** opens each new model with an assessment. Sentinel rates it like
-  the newest model of the same family it already knows and says where it
-  would become the best fit.
+- **Review details** opens each new model with an assessment.
 
-For each model you choose:
+## Updating models
 
-- **Adopt.** The router can rank it from now on. Every agent whose BEST FIT
-  is an older release of the same family moves to it, and that agent's panel
-  switches to it straight away. Chat's own recommendation is recalculated on
-  every request, so it picks the new model up wherever it scores highest.
-- **Dismiss.** It stops being listed as new. It stays selectable in the
-  dropdown.
+Click a model's row to select it: the row takes a background colour. Click
+it again to clear it. **Update N** then brings in exactly the selected
+models, and nothing else.
 
-Adopting never changes an agent's pick to a model of a *different* family.
-Those picks are deliberate (a cheap model for frequent research, for
-example), and a rating copied from a sibling is not evidence that a
-different model would do the job better. A model with no known sibling is
-added to the dropdowns but never chosen as BEST FIT automatically.
+Bringing a model in (**Update** on the card, or **Adopt** in the review)
+does two things:
 
-A new model has no price in Sentinel yet. Until you add one in **Settings →
-Pricing**, cost estimates for it use that provider's default rate.
+- The router can rank it. With **Auto-route** on, every request — Chat and
+  every agent — is assessed on its own, and the new model is chosen for a
+  request only when it fits that request best. When several models fit
+  equally well, the cheapest wins.
+- An agent's BEST FIT moves to it only when it is **better value than the
+  current pick**: rated at least as well for that agent's work *and* known
+  to cost less. Being newer counts for nothing, and neither does being more
+  expensive. For now this is only judged within the current pick's own
+  model line (a cheaper `claude-sonnet` against `claude-sonnet`), because
+  Sentinel's capability ratings are too coarse to compare different lines
+  fairly.
+
+A new model is rated like the newest model of its line that Sentinel
+already knows, and it has **no price** until you enter one in **Settings →
+Pricing**. An unknown price never wins: an unpriced model can be selected by
+hand and can win a request it fits better than anything else, but it is
+never chosen on cost. Cost estimates for it use the provider's default rate
+in the meantime. A model with no known sibling is offered in the dropdowns
+but never ranked.
+
+**Dismiss** in the review stops a model being listed as new. It stays
+selectable in the dropdown.
 
 ## What a check cannot see
 

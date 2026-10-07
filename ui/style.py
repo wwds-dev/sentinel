@@ -815,6 +815,69 @@ _GREEN_STYLESHEET = """
             letter-spacing: 2px;
         }
 
+        /* ── Sidebar screens (ui.widgets.ScreenCard) ──────────────────
+           Every rail tile is a small screen: a header strip with a status
+           light, then a dark readout. One header height, one 10px gutter and
+           one monospace face, so rows line up across every tile. */
+        QGroupBox#Screen {
+            background-color: #080a09;
+            border: 1px solid #262d29;
+            border-radius: 6px;
+            margin: 0;
+            padding: 0;
+        }
+        QWidget#ScreenHead {
+            background-color: #121614;
+            border: none;
+            border-bottom: 1px solid #1e2421;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
+        }
+        QWidget#ScreenBody { background: transparent; }
+        QFrame#ScreenDivider { background-color: #1a201d; border: none; margin: 3px 0; }
+        QLabel#ScreenTitle {
+            color: #a8b3ad;
+            font-family: Menlo, Monaco, monospace;
+            font-size: 10px;
+            letter-spacing: 1.5px;
+            background: transparent;
+        }
+        QLabel#ScreenStatus {
+            color: #5d6862;
+            font-family: Menlo, Monaco, monospace;
+            font-size: 10px;
+            background: transparent;
+        }
+        QLabel#ScreenLight { border-radius: 3px; background-color: #3a423e; }
+        QLabel#ScreenLight[light="ok"] { background-color: #3cff88; }
+        QLabel#ScreenLight[light="warn"] { background-color: #f0c040; }
+        QLabel#ScreenLight[light="alert"] { background-color: #f85149; }
+        QGroupBox#Screen QLabel#KVKey,
+        QGroupBox#Screen QLabel#MeterCaption {
+            color: #7d8983;
+            font-family: Menlo, Monaco, monospace;
+            font-size: 12px;
+        }
+        QGroupBox#Screen QLabel#MeterValue {
+            color: #e8ece9;
+            font-family: Menlo, Monaco, monospace;
+            font-size: 12px;
+            font-weight: 400;
+        }
+        QGroupBox#Screen QPushButton#RailLink { padding: 4px 0 0 0; }
+        QPushButton#ScreenKey {
+            background-color: #101311;
+            border: 1px solid #262d29;
+            border-radius: 4px;
+            color: #a8b3ad;
+            font-family: Menlo, Monaco, monospace;
+            font-size: 11px;
+            padding: 0 1px;
+        }
+        QPushButton#ScreenKey:hover { border-color: #3cff88; color: #e8ece9; }
+        QPushButton#ScreenKey:pressed { background-color: #0a0c0b; }
+        QPushButton#ScreenKey:disabled { color: #4a5450; border-color: #1a201d; }
+
         QLabel#KVKey {
             color: #7d8983;
             font-size: 12px;
@@ -834,6 +897,39 @@ _GREEN_STYLESHEET = """
             text-align: left;
         }
         QPushButton#RailLink:hover { color: #3cff88; }
+
+        /* Model Updates: a new model is a row you mark, then Update adopts
+           the marked ones. Marked reads as selected, not as recommended —
+           the accent wash is faint, and BEST FIT keeps the pill. */
+        QPushButton#ModelPick {
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+            color: #a8b3ad;
+            font-family: Menlo, Monaco, monospace;
+            font-size: 12px;
+            padding: 0 6px;
+            text-align: left;
+        }
+        QPushButton#ModelPick:hover { background-color: #121614; color: #e8ece9; }
+        QPushButton#ModelPick:checked {
+            background-color: rgba(60, 255, 136, 0.10);
+            color: #3cff88;
+        }
+        QScrollArea#ModelPickList, QScrollArea#ModelPickList > QWidget > QWidget {
+            background: transparent;
+        }
+        QPushButton#ModelUpdateAction {
+            background-color: #3cff88;
+            border: none;
+            border-radius: 5px;
+            color: #06301a;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 5px 10px;
+        }
+        QPushButton#ModelUpdateAction:hover { background-color: #5cffa0; }
+        QPushButton#ModelUpdateAction:disabled { background-color: #1a201d; color: #5d6862; }
 
         QLabel#KVValueOn {
             color: #3cff88;

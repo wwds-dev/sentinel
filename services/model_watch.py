@@ -17,9 +17,11 @@ This module closes that gap in three steps, none of which sends a prompt:
    `claude-sonnet`, say), not the forty legacy ids an OpenAI listing carries.
    After that, every id that was not there last time is new.
 3. **Assess, then adopt on request.** `infer_profile` rates a new model like
-   its nearest catalog sibling; `assess` says where that would make it the
-   best fit. Nothing moves until the user adopts it. Adopting registers the
-   profile with the router and moves BEST FIT for the agents `assess` named.
+   its nearest catalog sibling; `assess` says where it would be the better
+   value. Being newer counts for nothing: it must rate higher, or rate the
+   same at a known lower price. Nothing moves until the user adopts it.
+   Adopting registers the profile with the router and moves BEST FIT where
+   `beats` says it wins.
 
 A model with no sibling to be rated against is still offered in the
 dropdowns, but it is never ranked: a guessed capability profile winning BEST
@@ -247,7 +249,11 @@ class Assessment:
             return ("Added to the dropdowns only. With nothing to rate it against, "
                     "it is never picked as BEST FIT automatically.")
         if not self.moves:
-            return "Would not be BEST FIT anywhere; current picks rate the same or better."
+            if mr.blended_price(self.inferred.profile) is None:
+                return ("Not BEST FIT anywhere yet: it rates no higher than current "
+                        "picks and has no price, and an unknown price never wins. "
+                        "Add its price in Settings → Pricing to have it weighed on cost.")
+            return "Would not be BEST FIT anywhere; current picks are as good for less, or better."
         agents = [m for m in self.moves if m.scope == "agent"]
         chat = [m for m in self.moves if m.scope == "chat"]
         parts = []
@@ -263,6 +269,36 @@ CHAT_TASKS = {
     "general": "General Chat", "writing": "Writing", "coding": "Coding",
     "summarize": "Summarize",
 }
+
+
+def beats(candidate: ModelProfile, current: ModelProfile | None, agent: str) -> str:
+    """Why `candidate` is better value than `current` for an agent, or "".
+
+    Better value means: rated at least as well for the agent's kind of work
+    *and* known to cost less. Both prices must be known; an unknown price
+    never wins and never loses a pick. A higher rating alone does not move a
+    pick, because a new model's rating is copied from its sibling, and if the
+    sibling did not displace the current pick, a copy of it should not. And
+    only within the current pick's own model line; see the comment below.
+    """
+    if current is None:
+        return ""
+    # Only within one model line (claude-sonnet against claude-sonnet). The
+    # ratings are 1-3 buckets, on which Sonnet and Opus are both a 3, so a
+    # cheaper Sonnet would "rate the same" as Opus and take its pick. Across
+    # lines a fair comparison needs finer ratings than the catalog has.
+    if (candidate.provider != current.provider
+            or family_version(candidate.model)[0] != family_version(current.model)[0]):
+        return ""
+    new_score, old_score = _score(candidate, agent), _score(current, agent)
+    if new_score is None or old_score is None or new_score < old_score:
+        return ""
+    new_price, old_price = mr.blended_price(candidate), mr.blended_price(current)
+    if new_price is None or old_price is None or new_price >= old_price:
+        return ""
+    return (f"rates {'higher' if new_score > old_score else 'the same'} for this "
+            f"work and costs less: ${new_price:.2f} against ${old_price:.2f} "
+            "per 1M tokens blended")
 
 
 def _score(profile: ModelProfile, agent: str) -> int | None:
@@ -285,17 +321,18 @@ def assess(provider: str, model: str) -> Assessment:
     candidate = inferred.profile
     moves: list[Move] = []
 
-    # An agent's BEST FIT moves only to a newer release of the model it
-    # already uses. A score comparison would overturn deliberate picks: Trace
-    # recommends deepseek-flash for cost, and gemini-2.5-pro already outscores
-    # it today. A rating copied from a sibling says nothing new about quality;
-    # the version number is the only thing a scan genuinely learned.
+    # Newer is not better by itself, and neither is pricier. An agent's BEST
+    # FIT moves only when the new model rates higher for that agent's work,
+    # or rates the same and is known to cost less (`beats`). A copied rating
+    # is never higher than its sibling's, so in practice a new model wins on
+    # a known lower price; one with no price yet wins nowhere, and the review
+    # says to add its price in Settings → Pricing.
     for agent, rec in mr.AGENT_RECOMMENDATIONS.items():
-        cur_family, cur_version = family_version(rec.model)
-        if (rec.provider == provider and cur_family == family
-                and version > cur_version and _score(candidate, agent) is not None):
-            moves.append(Move("agent", agent, f"{rec.provider} · {rec.model}",
-                              f"newer {family} release than {rec.model}"))
+        current = next((p for p in profiles
+                        if (p.provider, p.model) == (rec.provider, rec.model)), None)
+        verdict = beats(candidate, current, agent)
+        if verdict:
+            moves.append(Move("agent", agent, f"{rec.provider} · {rec.model}", verdict))
 
     with_candidate = profiles + (candidate,)
     for task, tool in CHAT_TASKS.items():
@@ -476,7 +513,6 @@ class ModelWatch:
         self.state["adopted"][key] = {
             "adopted_at": (today or date.today()).isoformat(),
             "sibling": assessment.inferred.sibling,
-            "best_fit_for": [m.key for m in assessment.agent_moves],
         }
         self.save()
         install_adoption(assessment.provider, assessment.model,
@@ -494,25 +530,27 @@ class ModelWatch:
 
 
 def install_adoption(provider: str, model: str, info: Mapping) -> None:
-    """Register an adopted model with the router and move its BEST FITs.
+    """Register an adopted model with the router; move a BEST FIT where it wins.
 
-    Re-rated from its sibling every time rather than stored, so a catalog
-    update to the sibling carries over. Once Sentinel ships the model in
-    MODEL_CATALOG itself, the shipped profile wins (see `catalog()`).
+    Re-rated and re-assessed every time rather than stored, so a price added
+    in Settings → Pricing, or a change to its sibling, is weighed at the next
+    start. Once Sentinel ships the model in MODEL_CATALOG itself, the shipped
+    profile wins (see `catalog()`).
     """
     inferred = infer_profile(provider, model, mr.MODEL_CATALOG)
     if not inferred.rankable:
         return
     mr.register_profile(inferred.profile)
-    for agent in info.get("best_fit_for", ()):
-        current = mr.AGENT_RECOMMENDATIONS.get(agent)
-        if current is None:
-            continue
-        mr.AGENT_RECOMMENDATIONS[agent] = Recommendation(
-            provider, model,
-            f"Adopted {info.get('adopted_at', '')}: newer than {current.model}, "
-            f"rated like {inferred.sibling}.",
-        )
+    profiles = mr.catalog()
+    for agent, current_rec in list(mr.AGENT_RECOMMENDATIONS.items()):
+        current = next((p for p in profiles if (p.provider, p.model)
+                        == (current_rec.provider, current_rec.model)), None)
+        verdict = beats(inferred.profile, current, agent)
+        if verdict:
+            mr.AGENT_RECOMMENDATIONS[agent] = Recommendation(
+                provider, model,
+                f"Adopted {info.get('adopted_at', '')}: {verdict} than {current_rec.model}.",
+            )
 
 
 def known_models(client_classes: Mapping[str, type],

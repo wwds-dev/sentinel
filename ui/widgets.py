@@ -6,12 +6,12 @@ Moved verbatim out of main.py (see docs/refactor_plan.md, phase 1).
 minimum width, which pins an impossible minimum on a pane and makes Qt compress
 controls past their own minimums until the labels are chopped.
 """
-from PySide6.QtCore import Qt, QRect, QPoint, QPointF, QSize, QTimer
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QSize, QTimer
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QIcon, QPainter, QPen,
                            QPixmap)
-from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
-                               QMenu, QPushButton, QScrollArea, QSizePolicy,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel,
+                               QLayout, QMenu, QPushButton, QScrollArea,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from ui import theme
 from ui.theme import accent
@@ -547,12 +547,16 @@ class Bar(QWidget):
     """
 
     TRACK = QColor("#242424")
+    SEGMENT_TRACK = QColor("#1a201d")
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, segments: int = 0):
         super().__init__(parent)
         self._fraction = 0.0
         self._colour = QColor(accent())
-        self.setFixedHeight(4)
+        # segments > 0 draws an LCD-style row of blocks (the sidebar screens);
+        # 0 keeps the plain rounded bar.
+        self._segments = segments
+        self.setFixedHeight(6 if segments else 4)
         self.setMinimumWidth(40)
 
     def set(self, fraction: float, colour: str) -> None:
@@ -564,6 +568,9 @@ class Bar(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
+        if self._segments:
+            self._paint_segments(painter)
+            return
         radius = self.height() / 2
         painter.setBrush(self.TRACK)
         painter.drawRoundedRect(self.rect(), radius, radius)
@@ -572,6 +579,17 @@ class Bar(QWidget):
             painter.setBrush(self._colour)
             painter.drawRoundedRect(QRect(0, 0, max(filled, self.height()),
                                           self.height()), radius, radius)
+
+
+    def _paint_segments(self, painter: QPainter) -> None:
+        """Blocks lit up to the fraction; a block is lit once it is half full."""
+        count, gap = self._segments, 2
+        width = (self.width() - gap * (count - 1)) / count
+        lit = int(round(self._fraction * count))
+        for index in range(count):
+            x = index * (width + gap)
+            painter.setBrush(self._colour if index < lit else self.SEGMENT_TRACK)
+            painter.drawRoundedRect(QRectF(x, 0, width, self.height()), 1, 1)
 
 
 class Meter(QWidget):
@@ -583,7 +601,7 @@ class Meter(QWidget):
 
     LEVEL_COLOURS = {
         "green": "#3cff88",
-        "yellow": "#e3b341",
+        "yellow": "#f0c040",
         "red": "#f85149",
         "muted": "#5a5a5a",
     }
@@ -600,7 +618,7 @@ class Meter(QWidget):
 
         self.caption = QLabel(caption)
         self.caption.setObjectName("MeterCaption")
-        self.bar = Bar()
+        self.bar = Bar(segments=20)
         self.value = QLabel("—")
         self.value.setObjectName("MeterValue")
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -813,6 +831,84 @@ class KeyValue(QWidget):
         self.value.setToolTip(value)
         if tip:
             self.setToolTip(tip)
+
+class ScreenCard(QGroupBox):
+    """A sidebar tile drawn as a small screen.
+
+    A header strip — status light, title, a short status on the right — over
+    a dark readout body. Every tile in both rails is one of these, so they
+    share one header height, one inner gutter and one right edge for values;
+    the rails used to be flat sections whose rows each set their own
+    margins, and nothing lined up across them.
+
+    Still a QGroupBox, so anything that finds the rail's sections by type and
+    `title()` keeps working; the box's own title is left empty and the header
+    strip shows it instead, because QGroupBox draws its title over the frame
+    and a screen's title belongs inside it.
+    """
+
+    LIGHTS = ("ok", "warn", "alert", "off")
+
+    def __init__(self, title: str, parent=None):
+        super().__init__("", parent)
+        self._screen_title = title
+        self.setObjectName("Screen")
+        self.setAccessibleName(title)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(1, 1, 1, 1)
+        outer.setSpacing(0)
+
+        self.head = QWidget()
+        self.head.setObjectName("ScreenHead")
+        self.head.setAttribute(Qt.WA_StyledBackground, True)
+        self.head.setFixedHeight(24)
+        head = QHBoxLayout(self.head)
+        head.setContentsMargins(10, 0, 10, 0)
+        head.setSpacing(7)
+        self.light = QLabel()
+        self.light.setObjectName("ScreenLight")
+        self.light.setFixedSize(6, 6)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("ScreenTitle")
+        self.status = QLabel("")
+        self.status.setObjectName("ScreenStatus")
+        self.status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        head.addWidget(self.light)
+        head.addWidget(self.title_label)
+        head.addStretch(1)
+        head.addWidget(self.status)
+        outer.addWidget(self.head)
+
+        content = QWidget()
+        content.setObjectName("ScreenBody")
+        self.body = QVBoxLayout(content)
+        self.body.setContentsMargins(10, 7, 10, 9)
+        self.body.setSpacing(3)
+        outer.addWidget(content)
+        self.set_light("ok")
+
+    def title(self) -> str:  # noqa: D401 - Qt naming
+        return self._screen_title
+
+    def set_status(self, text: str, light: str | None = None, tip: str = "") -> None:
+        self.status.setText(text)
+        if tip:
+            self.status.setToolTip(tip)
+        if light:
+            self.set_light(light)
+
+    def set_light(self, light: str) -> None:
+        """ok (accent), warn (amber), alert (red) or off (grey)."""
+        light = light if light in self.LIGHTS else "off"
+        if self.light.property("light") == light:
+            return
+        self.light.setProperty("light", light)
+        self.light.style().unpolish(self.light)
+        self.light.style().polish(self.light)
+
+    def light_state(self) -> str:
+        return str(self.light.property("light") or "")
+
 
 class ThemeDots(QWidget):
     """One dot per theme, in the header. Click one to wear it.
