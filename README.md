@@ -38,7 +38,7 @@ pip install -r requirements-dev.txt
 python main.py
 ```
 
-API keys are read from the process environment or the project `.env` file in development. Supported provider variables include:
+API keys are read from the process environment or from a `.env` file: the project's own when Sentinel runs from this checkout (`python main.py` or the installed thin launcher), `~/Library/Application Support/Sentinel/.env` for a packaged build, and `Sentinel Data/.env` in portable mode. Copy `.env.example` there, paste each key after its `=`, and restart. AI provider keys are read once, at startup. Step by step, with where to create each key: the Learning Centre lesson [API keys and new models](docs/training/api_keys.md). Supported provider variables include:
 
 ```text
 OPENAI_API_KEY
@@ -75,7 +75,23 @@ than Ollama is a paid selection: the control turns amber while one is
 selected, and every cloud entry says so on hover, so a cloud route is visible
 before you run it, not only after the cost is logged.
 
-Saved chats can be searched and filtered by agent. The two side rails split by what they carry rather than by left/right habit: the right rail is the live request inspector — Current Route, Cost, Budget, System, in that order, so the cards read top-to-bottom in the order a request actually happens — while API Keys and Actions (Cost history, Run log, Settings) sit in the left rail with the agent list, since those are global setup rather than per-request state. Settings controls registered agents, tools, pricing, and provider permissions.
+Saved chats can be searched and filtered by agent. The two side rails split by what they carry rather than by left/right habit: the right rail is the live request inspector — Current Route, Cost, Budget, System, in that order, so the cards read top-to-bottom in the order a request actually happens — while API Keys, Model Updates and Actions (Cost history, Run log, Settings) sit in the left rail with the agent list, since those are global setup rather than per-request state. **Model Updates** asks every provider with a key for its live model list at each start (or on **Check now**), counts the models that appeared since the last check, and opens a review that says where each would become the best fit; **Adopt** lets the router rank it and moves BEST FIT for agents whose pick is an older release of the same family (`services/model_watch.py`). Settings controls registered agents, tools, pricing, and provider permissions.
+
+Three dots beside **SENTINEL** and the version pick the colour theme —
+**Green (Matrix)**, **Red** or **Blue (Cyberpunk)** — and each dot is painted in
+its own theme's accent, with a ring on the current one. **Settings → General →
+Theme** offers the same choice with an explanation; it repaints live while the
+dialog is open, and **Cancel** puts the previous theme back. The whole window is
+one stylesheet authored in green and hue-rotated for the other two
+(`ui/theme.py`), confined to the app's own greens, so semantic colour keeps its
+meaning in every theme: a destructive button stays red, a paid route stays
+amber, an informational badge stays blue, and Beacon's adapter "monitor mode OK"
+stays green. Each theme also carries a small, bounded "vibe" (`ui/vibe.py`): a
+faint moving texture in the empty Chat transcript — rain for green, a hex dump
+for red, a receding grid for blue — that stops the moment there is something to
+read; an underscore caret in the multi-line composer whose blink cadence differs
+per theme (single-line fields keep the native caret); and, under the blue theme
+only, HUD corner brackets around the focused composer.
 
 While Sentinel is open it also places an item in the macOS menu bar — a shield
 glyph that takes the menu bar's own colours. Its menu reads the current state
@@ -198,6 +214,14 @@ The main runtime is organised around:
   The real connect path lives in `services/vpn_connection.py` and
   `services/openvpn_manager.py`
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Bug Spray, Tunnel, and Forge
+- `ui/theme.py` and `ui/vibe.py` — the three colour themes (one green
+  stylesheet, hue-rotated) and the per-theme caret, empty-transcript backdrop
+  and blue-theme focus brackets; `ThemeDots` in `ui/widgets.py` is the picker
+  in the brand row
+- `ui/tray.py` — the menu bar item; `ui/app_identity.py` — the app-menu name
+  and Dock icon when running from source; `ui/appkit_guard.py` — the macOS 27
+  `-[NSEvent clickCount]` guard (ported from Lab Hub) that must be installed
+  before any tray menu can open
 - `providers/` — the live OSINT source adapters Trace and Bloodhound call for
   Live Research/collection: `domain_lookup.py` (WHOIS, DNS, Team Cymru IP-to-ASN,
   Mnemonic passive DNS, crt.sh, Wayback Machine, and for IPs SANS DShield, Shodan
@@ -219,7 +243,9 @@ The main runtime is organised around:
 - `config/tool_prompts.json` — Chat tool instructions
 - `data/sentinel.db` — local application data
 - `assets/` — `icon.icns` and its source PNG for the macOS app bundle; used by
-  `scripts/install_app.sh`, `scripts/build_app.sh`, and `Sentinel.spec`
+  `scripts/install_app.sh`, `scripts/build_app.sh`, and `Sentinel.spec`. Also
+  `tray.png` / `tray@2x.png`, the menu bar template glyph drawn by
+  `scripts/make_icon.py` and bundled by `Sentinel.spec`
 - `scripts/thin_launcher.c` — the native one-shot launcher compiled and
   installed by `scripts/install_app.sh`; execs the project's own `.venv`
   Python against `main.py` with no persistent launchd job
@@ -257,7 +283,13 @@ rather than the process. One thing stays unfixed in both source modes — the na
 *under* the Dock icon, in the app switcher and in Force Quit still reads
 `python`. Launch Services takes that from the executable at launch and does not
 re-read it; only an interpreter living inside the bundle changes it, which is
-what the self-contained build does.
+what the self-contained build does. The same gap leaves a second Sentinel tile
+in the Dock: Launch Services keeps the launcher's bundle registered as running
+after it hands off to Python, so a windowless tile reading *Running in
+Background* sits beside the real one. It is one process, not two instances, and
+since `app_identity.py` it wears the same name and icon, so the pair looks
+identical. Both symptoms and their candidate fixes are tracked as
+[SUGGESTIONS #23](SUGGESTIONS.md).
 
 Both launch modes read the same canonical `VERSION`. The live launcher shows
 the updated version on its next launch; packaged and portable copies keep the

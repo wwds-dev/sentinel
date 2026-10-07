@@ -80,6 +80,7 @@ from services.model_recommendations import (
     TASK_RECOMMENDATIONS, as_dict, find_model, resolve_available_model,
     RoutingPreferences, route_request, pricing_metadata,
 )
+from services.model_watch import ModelWatch
 
 
 # Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
@@ -98,6 +99,8 @@ def load_budget_setting(settings: dict, key: str, default: float) -> float:
         return float(fallback)
 DATA_DIR = BASE_DIR / "data"
 CHATS_DIR = DATA_DIR / "chats"
+# What the model scan has seen, and which new models were adopted or dismissed.
+MODEL_WATCH_FILE = DATA_DIR / "model_watch.json"
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
 ALL_AGENTS_FILTER = "All agents"
@@ -124,6 +127,28 @@ AGENT_RECOMMENDATIONS = {
     key: as_dict(value) for key, value in RECOMMENDATION_OBJECTS.items()
 }
 
+
+def sync_agent_recommendations() -> None:
+    """Re-derive the dicts above after an adopted model moved a BEST FIT.
+
+    Updated in place: the panels hold a reference to this dict, not a copy.
+    """
+    AGENT_RECOMMENDATIONS.update(
+        {key: as_dict(value) for key, value in RECOMMENDATION_OBJECTS.items()}
+    )
+
+
+# The cloud clients a model scan asks, by provider key. Ollama is left out:
+# its list is what is installed on this machine, not what a provider released.
+CLOUD_CLIENT_CLASSES = {
+    "anthropic": AnthropicClientWrapper,
+    "deepseek": DeepSeekClientWrapper,
+    "gemini": GeminiClientWrapper,
+    "kimi": KimiClientWrapper,
+    "openai": OpenAIClientWrapper,
+    "qwen": QwenClientWrapper,
+}
+
 # agent key -> (provider box attribute, model box attribute)
 AGENT_SETUP_WIDGETS = {
     "chat":        ("provider_box",             "model_box"),
@@ -138,10 +163,11 @@ AGENT_SETUP_WIDGETS = {
 
 from ui import app_identity, appkit_guard, tray
 from ui.workers import (
-    ChatWorker, SubprocessWorker, ModelPullWorker,
+    ChatWorker, SubprocessWorker, ModelPullWorker, ModelScanWorker,
 )
+from ui.model_updates import ModelReviewDialog, ModelUpdatesCard
 from ui.widgets import (
-    BEST_FIT_BADGE, KeyValue, MenuComboBox, Meter, RECOMMENDED_ROLE,
+    BEST_FIT_BADGE, KeyValue, MenuComboBox, Meter, NEW_MODEL_ROLE, RECOMMENDED_ROLE,
     RECOMMENDATION_BADGE_ROLE, RECOMMENDATION_REASON_ROLE, SectionView,
     ThemeDots,
 )
@@ -211,6 +237,15 @@ class GodAI(QWidget):
         self.gemini = GeminiClientWrapper()
         self.anthropic = AnthropicClientWrapper()
         self.qwen = QwenClientWrapper()
+        # Adopted models must be registered before any panel asks the router
+        # for its recommendation, so this precedes build_ui.
+        self.model_watch = ModelWatch(MODEL_WATCH_FILE)
+        try:
+            self.model_watch.install()
+        except Exception as exc:
+            print(f"[model watch] could not re-apply adopted models: {exc}")
+        sync_agent_recommendations()
+        self.model_scan_worker: Optional[ModelScanWorker] = None
         self.monitor = ResourceMonitor()
         self.history = HistoryStore()
         self.report_exporter = ReportExporter()
@@ -298,6 +333,10 @@ class GodAI(QWidget):
         self.start_resource_timer()
         self.select_agent("chat")
         polish_combo_boxes(self)
+        self.refresh_model_updates_card()
+        # Every start, but after the window is up: the scan is network-bound
+        # and the first paint should not wait for six providers to answer.
+        QTimer.singleShot(4000, self.start_model_scan)
 
     def _polish_tab_widgets(self):
         """Disable text elision and enable scroll buttons on every QTabWidget
@@ -1044,11 +1083,17 @@ class GodAI(QWidget):
         if client is None:
             return []
         try:
-            return list(client.list_models())
+            models = list(client.list_models())
         except Exception as exc:
             if context:
                 self._note_failure(f"{context}: load models", exc, widget)
             return []
+        # An adopted model stays selectable even when the live listing failed
+        # and the client fell back to its KNOWN_MODELS.
+        watch = getattr(self, "model_watch", None)
+        if watch is not None:
+            models += [m for m in watch.adopted_models(provider) if m not in models]
+        return models
 
     # ── The provider/model pair every agent panel owns ───────────────────────
     # One implementation, six panels. Each used to inline the same seven-branch
@@ -1067,9 +1112,104 @@ class GodAI(QWidget):
             model_box.addItem(
                 "(no local models)" if provider == "ollama" else "(unavailable)"
             )
+        self._mark_new_models(provider, model_box)
         polish_combo_box(provider_box)
         polish_combo_box(model_box)
         self._mark_paid_route_choices(provider_box, model_box)
+
+    def _mark_new_models(self, provider: str, model_box) -> None:
+        """Badge the models a scan found that nobody has reviewed yet."""
+        watch = getattr(self, "model_watch", None)
+        if watch is None or model_box is None:
+            return
+        for index in range(model_box.count()):
+            model_box.setItemData(
+                index, watch.is_pending(provider, model_box.itemText(index)),
+                NEW_MODEL_ROLE,
+            )
+
+    # ── Model updates: scan, report, adopt ───────────────────────────────────
+
+    def start_model_scan(self) -> None:
+        """List every provider's models in the background (startup and Check now)."""
+        if self.model_scan_worker is not None and self.model_scan_worker.isRunning():
+            return
+        self.model_updates_card.set_checking(True)
+        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES)
+        worker.finished_signal.connect(self._on_model_scan_finished)
+        worker.error_signal.connect(self._on_model_scan_error)
+        self.model_scan_worker = worker
+        worker.start()
+
+    def _on_model_scan_finished(self, listings) -> None:
+        from services.model_watch import known_models
+
+        self.model_updates_card.set_checking(False)
+        try:
+            summary = self.model_watch.record_scan(
+                listings, known_models(CLOUD_CLIENT_CLASSES))
+        except Exception as exc:
+            self._note_failure("model scan: record", exc)
+            return
+        self.refresh_model_updates_card()
+        if summary.found:
+            names = ", ".join(f"{n.provider} · {n.model}" for n in summary.found[:3])
+            more = f" and {len(summary.found) - 3} more" if len(summary.found) > 3 else ""
+            self._set_chat_status(f"New model available: {names}{more}. "
+                                  "See Model Updates in the left rail.")
+            self._reload_all_model_lists()
+
+    def _on_model_scan_error(self, message: str) -> None:
+        self.model_updates_card.set_checking(False)
+        self._note_failure("model scan", RuntimeError(message))
+
+    def refresh_model_updates_card(self) -> None:
+        if not hasattr(self, "model_updates_card"):
+            return
+        watch = self.model_watch
+        self.model_updates_card.show_state(
+            watch.last_scan, watch.last_notes, watch.pending())
+
+    def show_model_review(self) -> None:
+        labels = {key: meta.get("label", key) for key, meta in BUILTIN_AGENTS.items()}
+        dialog = ModelReviewDialog(self.model_watch, labels,
+                                   self._on_model_decided, self)
+        dialog.exec()
+        self.refresh_model_updates_card()
+
+    def _on_model_decided(self, action: str, assessment) -> None:
+        """Carry an Adopt or Dismiss through to every dropdown and BEST FIT."""
+        if action == "adopt":
+            sync_agent_recommendations()
+            # An agent whose BEST FIT moved is switched to it, the same way a
+            # panel opens on its recommendation at startup.
+            for move in assessment.agent_moves:
+                self.apply_agent_recommendation(move.key)
+        self._reload_all_model_lists()
+        self.refresh_model_updates_card()
+
+    def _reload_all_model_lists(self) -> None:
+        """Repopulate every model dropdown and re-apply its BEST FIT marking.
+
+        Reloading resets each box's selection to its loader's default, so the
+        current choice is put back afterwards wherever it still exists.
+        """
+        for agent_key in list(self._model_loaders):
+            _provider_box, model_box = self.setup_widgets_for(agent_key)
+            kept = model_box.currentText() if model_box is not None else ""
+            self.load_models_for(agent_key)
+            if model_box is not None and kept:
+                index = model_box.findText(kept)
+                if index >= 0:
+                    model_box.setCurrentIndex(index)
+            self.refresh_recommendation_marks(agent_key)
+        if hasattr(self, "model_box"):
+            kept = self.model_box.currentText()
+            self.load_provider_models()
+            index = self.model_box.findText(kept)
+            if index >= 0:
+                self.model_box.setCurrentIndex(index)
+            self.refresh_recommendation_marks("chat")
 
     def setup_widgets_for(self, agent_key: str):
         """One agent's provider and model boxes, wherever they now live.
@@ -1757,7 +1897,7 @@ class GodAI(QWidget):
         self.active_project_box = MenuComboBox()
         self.active_project_box.setObjectName("ProjectPick")
         self.active_project_box.addItem(NO_ACTIVE_PROJECT, None)
-        self.active_project_box.setMinimumWidth(120)
+        self._fit_project_box()
         self.active_project_box.setToolTip(
             "New Chat responses are filed in this project."
         )
@@ -2383,6 +2523,10 @@ class GodAI(QWidget):
         cards_layout.addWidget(budget_card)
         cards_layout.addWidget(system_card)
         self.left_utility_layout.addWidget(keys_card)
+        self.model_updates_card = ModelUpdatesCard()
+        self.model_updates_card.check_requested.connect(self.start_model_scan)
+        self.model_updates_card.review_requested.connect(self.show_model_review)
+        self.left_utility_layout.addWidget(self.model_updates_card)
         self.left_utility_layout.addWidget(actions_card)
 
         cards_layout.addStretch()
@@ -2537,6 +2681,7 @@ class GodAI(QWidget):
                 ]
 
             self.model_box.addItems(models)
+            self._mark_new_models(provider, self.model_box)
 
             if previous_model:
                 idx = self.model_box.findText(previous_model)
@@ -3739,6 +3884,7 @@ class GodAI(QWidget):
             active_index = self._combo_index_for_data(box, self.active_project_id)
             box.setCurrentIndex(max(0, active_index))
             box.blockSignals(False)
+            self._fit_project_box()
 
         if hasattr(self, "history_project_filter"):
             box = self.history_project_filter
@@ -3752,6 +3898,18 @@ class GodAI(QWidget):
             wanted_index = self._combo_index_for_data(box, wanted)
             box.setCurrentIndex(max(0, wanted_index))
             box.blockSignals(False)
+
+    # Wide enough for the longest project name, up to a cap. A fixed 120px
+    # floor clipped even "No project": the run bar's other controls expand,
+    # so the layout held this box at its minimum, and the stylesheet spends
+    # 38px of that on padding and the arrow.
+    PROJECT_BOX_MAX_WIDTH = 260
+
+    def _fit_project_box(self) -> None:
+        box = self.active_project_box
+        polish_combo_box(box)  # re-reads the longest name into the size hint
+        box.ensurePolished()
+        box.setMinimumWidth(min(self.PROJECT_BOX_MAX_WIDTH, box.sizeHint().width()))
 
     def _set_active_project(self, project_id: str | None) -> None:
         project_id = project_id if project_id in getattr(

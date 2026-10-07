@@ -46,6 +46,7 @@ class LearningTopic:
 LEARNING_CURRICULUM = (
     ("Foundations", (
         LearningTopic("Start here", "quick_start.md", "A guided first run through Sentinel."),
+        LearningTopic("API keys & new models", "api_keys.md", "Add provider keys and adopt newly released models."),
         LearningTopic("Workspace tour", "workspace.md", "Navigation, work area, history and Inspector."),
         LearningTopic("Controls & settings", "controls_settings.md", "Every shared control and setting."),
         LearningTopic("Portable USB mode", "portable.md", "Build, use, update and safely eject a portable copy."),

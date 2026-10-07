@@ -32,6 +32,12 @@ RECOMMENDATION_BADGE_ROLE = int(Qt.UserRole) + 105
 #: What the badge says when a recommendation does not name its own wording.
 BEST_FIT_BADGE = "BEST FIT"
 
+# A model a scan found that nobody has reviewed yet (services/model_watch.py).
+# It gets a muted NEW pill: advice is the accent BEST FIT pill's job, and two
+# accent pills in one list would be two recommendations.
+NEW_MODEL_ROLE = int(Qt.UserRole) + 106
+NEW_MODEL_BADGE = "NEW"
+
 
 class SelectorMenu(QMenu):
     """A selector popup that can mark one of its entries as the best fit.
@@ -51,14 +57,26 @@ class SelectorMenu(QMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._badges: dict = {}
+        self._muted: set = set()
 
     def markBestFit(self, action, text: str = BEST_FIT_BADGE) -> None:  # noqa: N802
         """Give one of this menu's actions a best-fit pill."""
         self._badges[action] = text or BEST_FIT_BADGE
+        self._muted.discard(action)
+
+    def markNew(self, action) -> None:  # noqa: N802
+        """Give an action a muted NEW pill, unless it is already the best fit."""
+        if action not in self._badges:
+            self._badges[action] = NEW_MODEL_BADGE
+            self._muted.add(action)
 
     def bestFitBadges(self) -> dict:  # noqa: N802
-        """{QAction: badge text} — what this menu will paint. For tests."""
-        return dict(self._badges)
+        """{QAction: badge text} for the best-fit pills only. For tests."""
+        return {a: t for a, t in self._badges.items() if a not in self._muted}
+
+    def newBadges(self) -> list:  # noqa: N802
+        """The actions wearing a NEW pill. For tests."""
+        return [a for a in self._badges if a in self._muted]
 
     def _badge_font(self) -> QFont:
         font = QFont(self.font())
@@ -93,16 +111,15 @@ class SelectorMenu(QMenu):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setFont(self._badge_font())
-        tone = QColor(accent())
-        fill = QColor(tone)
-        fill.setAlpha(22)
-        edge = QColor(tone)
-        edge.setAlpha(90)
-
         for action, text in self._badges.items():
             row = self.actionGeometry(action)
             if row.isEmpty():
                 continue
+            tone = QColor("#a8b3ad") if action in self._muted else QColor(accent())
+            fill = QColor(tone)
+            fill.setAlpha(22)
+            edge = QColor(tone)
+            edge.setAlpha(90)
             width = self._badge_width(text)
             pill = QRect(row.right() - self.BADGE_MARGIN - width,
                          row.center().y() - self.BADGE_HEIGHT // 2,
@@ -175,6 +192,8 @@ class MenuComboBox(QComboBox):
                 str(self.itemData(index, RECOMMENDATION_BADGE_ROLE)
                     or BEST_FIT_BADGE),
             )
+        elif self.itemData(index, NEW_MODEL_ROLE):
+            menu.markNew(action)
 
         item_font = self.itemData(index, Qt.FontRole)
         if isinstance(item_font, QFont):

@@ -26,6 +26,10 @@ Settings.
 - **EUR/USD rate** converts provider USD pricing into displayed euro estimates.
 - **Default session budget** limits accumulated spend until the app/session is reset.
 - **Default daily budget** limits recorded spending for the day.
+- **Theme** chooses Green (Matrix), Red or Blue (Cyberpunk), the same choice as
+  the three dots beside SENTINEL. The window repaints as you change it so you
+  can judge by looking; **Cancel** restores the theme you opened with. Status
+  colours keep their meaning in every theme.
 
 Budgets are guardrails, not bank controls. Provider-side usage can differ from
 estimates, and cancelled requests may still incur a charge.

@@ -584,3 +584,28 @@ class SentryWatchWorker(QThread):
             })
         except Exception as exc:
             self.error_signal.emit(str(exc))
+
+
+class ModelScanWorker(QThread):
+    """Ask every provider with a key for its live model list.
+
+    One provider after another inside this one thread, never in parallel:
+    the listing calls are free, but a burst of connections is what the home
+    router refuses (see services/model_watch.py). Only the network half runs
+    here; folding the result into the watch's state happens back on the UI
+    thread, so an Adopt click can never race a scan writing the same file.
+    """
+    finished_signal = Signal(object)   # list[services.model_watch.ProviderListing]
+    error_signal = Signal(str)
+
+    def __init__(self, client_classes):
+        super().__init__()
+        self._client_classes = dict(client_classes)
+
+    def run(self):
+        try:
+            from services.model_watch import list_live
+
+            self.finished_signal.emit(list_live(self._client_classes))
+        except Exception as e:
+            self.error_signal.emit(str(e))

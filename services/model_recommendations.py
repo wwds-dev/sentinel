@@ -137,6 +137,28 @@ MODEL_CATALOG: tuple[ModelProfile, ...] = (
 )
 
 
+# Models the user adopted after a scan found them (services/model_watch.py).
+# Kept apart from MODEL_CATALOG so that tuple stays exactly what the code ships
+# with; everything that ranks or prices a model reads `catalog()` instead.
+_ADOPTED_PROFILES: dict[tuple[str, str], ModelProfile] = {}
+
+
+def catalog() -> tuple[ModelProfile, ...]:
+    """The shipped catalog plus any adopted models, shipped entries first."""
+    shipped = {(m.provider, m.model) for m in MODEL_CATALOG}
+    extra = tuple(p for key, p in _ADOPTED_PROFILES.items() if key not in shipped)
+    return MODEL_CATALOG + extra
+
+
+def register_profile(profile: ModelProfile) -> None:
+    """Let the router rank and price an adopted model from now on."""
+    _ADOPTED_PROFILES[(profile.provider, profile.model)] = profile
+
+
+def unregister_profile(provider: str, model: str) -> None:
+    _ADOPTED_PROFILES.pop((provider, model), None)
+
+
 def pricing_metadata(provider: str, model: str) -> PricingMetadata:
     """Resolve display-safe billing metadata without treating missing data as free."""
     provider_info = provider_metadata(provider)
@@ -145,7 +167,7 @@ def pricing_metadata(provider: str, model: str) -> PricingMetadata:
     if provider_info.pricing_status == "unknown":
         return PricingMetadata("unknown", "Unknown")
     profile = next(
-        (item for item in MODEL_CATALOG
+        (item for item in catalog()
          if item.provider == provider and item.model == model),
         None,
     )
@@ -228,20 +250,51 @@ def _available(model: ModelProfile, available: Mapping[str, Sequence[str]] | Non
     return model.model in models or any(item.startswith(model.model) or model.model.startswith(item) for item in models)
 
 
+def _superseded(profiles: Sequence[ModelProfile]) -> set[tuple[str, str]]:
+    """(provider, model) pairs with a newer release of the same family present.
+
+    A tie-break only: two models that score the same used to be ordered by
+    name, so "claude-sonnet-4-6" beat "claude-sonnet-5" and an adopted
+    "claude-sonnet-5-5" could never win against the model it succeeds.
+    """
+    from services.model_watch import family_version  # avoids an import cycle
+
+    newest: dict[tuple[str, str], tuple[int, ...]] = {}
+    split = {}
+    for p in profiles:
+        family, version = family_version(p.model)
+        split[(p.provider, p.model)] = (family, version)
+        key = (p.provider, family)
+        if key not in newest or version > newest[key]:
+            newest[key] = version
+    return {pair for pair, (family, version) in split.items()
+            if version < newest[(pair[0], family)]}
+
+
 def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_tokens: int = 0,
                   preferences: RoutingPreferences | None = None,
                   available_models: Mapping[str, Sequence[str]] | None = None,
                   enabled_providers: Iterable[str] | None = None,
-                  manual_provider: str | None = None, manual_model: str | None = None) -> RouteDecision:
+                  manual_provider: str | None = None, manual_model: str | None = None,
+                  candidates: Sequence[ModelProfile] | None = None) -> RouteDecision:
+    """Pick a provider/model for one request.
+
+    `candidates` replaces the catalog for this call only; model_watch uses it
+    to ask "where would this route if that model were adopted?" without
+    adopting it.
+    """
     request = classify_request(prompt, agent=agent, tool=tool, context_tokens=context_tokens)
     prefs = preferences or RoutingPreferences()
-    enabled = set(enabled_providers) if enabled_providers is not None else {m.provider for m in MODEL_CATALOG}
+    profiles = tuple(candidates) if candidates is not None else catalog()
+    enabled = set(enabled_providers) if enabled_providers is not None else {m.provider for m in profiles}
     if manual_provider and manual_model:
-        match = next((m for m in MODEL_CATALOG if m.provider == manual_provider and m.model == manual_model), None)
+        match = next((m for m in profiles if m.provider == manual_provider and m.model == manual_model), None)
         if manual_provider in enabled and match and _compatible(match, request, prefs) and _available(match, available_models):
             return RouteDecision(request.task, manual_provider, manual_model, "Manual provider/model override retained; it satisfies this request.", manual=True)
-    eligible = [m for m in MODEL_CATALOG if m.provider in enabled and _compatible(m, request, prefs) and _available(m, available_models)]
-    ranked = sorted((RouteCandidate(m.provider, m.model, _score(m, request, prefs)) for m in eligible), key=lambda c: (-c.score, c.provider, c.model))
+    eligible = [m for m in profiles if m.provider in enabled and _compatible(m, request, prefs) and _available(m, available_models)]
+    superseded = _superseded(eligible)
+    ranked = sorted((RouteCandidate(m.provider, m.model, _score(m, request, prefs)) for m in eligible),
+                    key=lambda c: (-c.score, (c.provider, c.model) in superseded, c.provider, c.model))
     if not ranked:
         raise RuntimeError(f"No available model satisfies task '{request.task}' and the current privacy/provider constraints.")
     primary = ranked[0]

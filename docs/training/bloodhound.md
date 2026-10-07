@@ -9,8 +9,9 @@
 Enter the target, target type, investigation scope and objective. Target type
 includes **Crypto Address** alongside Person, Username, Email, Domain/IP,
 Organisation and Phone Number; Auto-detect recognises a Bitcoin or Ethereum
-address before falling back to a username. **Quick Scan**
-requests a concise result; **Standard** balances coverage and length; **Deep
+address, an email, an IPv4 or IPv6 address (even written with a port, `/CIDR`,
+brackets or a scheme) and a domain before falling back to a username. **Quick Scan**
+requests a concise result; **Standard Investigation** balances coverage and length; **Deep
 Dive** asks for exhaustive treatment and usually needs a strong long-context
 model. An optional target image can contribute locally extracted EXIF metadata.
 Attaching an image does not prove identity, location or ownership.

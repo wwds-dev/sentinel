@@ -5,7 +5,7 @@
 | Symptom | What it usually means | What to do |
 |---|---|---|
 | Provider is not enabled | Sentinel has no permission for that API | Review the route and enable the provider only if you intend to send the data |
-| API key missing | No credential was detected | Add the correct key through the documented setup, restart, and check API readiness |
+| API key missing | No credential was detected | Add the key as described in [API keys and new models](api_keys.md), quit and restart Sentinel, then check the API KEYS card |
 | Insufficient balance / HTTP 402 | The provider account cannot fund the request | Add provider credit or deliberately choose another route; never assume Auto-route changes providers silently |
 | Budget exceeded | A Sentinel cap blocked the request | Review Cost history, then change the cap only if the spend is intended |
 | Ollama unavailable | The local service is stopped or the model is absent | Start Ollama, install/select an available model, then refresh models |
@@ -14,6 +14,7 @@
 | File discovery permission error | The current local/SSH account cannot read a folder | Choose an accessible folder or correct account permissions outside Sentinel |
 | Unknown SSH host key | The machine is not trusted in `known_hosts` | Verify the fingerprint independently before adding it with normal SSH tools |
 | Stop appears ineffective | A provider/process may already be finishing | Wait briefly and check Run log; cancellation cannot recall data already sent |
+| Two Sentinel icons in the Dock, one marked *Running in Background* | The launcher's bundle stays registered after it starts Sentinel; it is one running app, not two copies | Use the tile with the window. This is a known issue, tracked as SUGGESTIONS #23 |
 | Portable volume unavailable/read-only/low-space | The USB drive was ejected, mounted without write access, or has under 256 MiB free | Stop, reconnect or repair the volume, free space, then restart; Sentinel will not redirect portable data elsewhere |
 | Emergency Reset is missing | Sentinel is running from the Lab checkout or a normal installed build | The reset is intentionally shown only in a marked portable distribution |
 | Emergency Reset was cancelled | The exact phrase or second confirmation was not accepted | Nothing was erased; repeat only after backing up anything you need |

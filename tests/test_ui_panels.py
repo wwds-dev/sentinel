@@ -688,7 +688,7 @@ class TestWorkspaceLayoutRegressions:
             widget = win.left_utility_layout.itemAt(index).widget()
             if isinstance(widget, QGroupBox):
                 left_order.append(widget.title())
-        assert left_order == ["API KEYS", "ACTIONS"]
+        assert left_order == ["API KEYS", "MODEL UPDATES", "ACTIONS"]
 
     def test_all_sidebar_sections_remain_visible_after_redistribution(self, win):
         from PySide6.QtWidgets import QGroupBox
@@ -699,7 +699,8 @@ class TestWorkspaceLayoutRegressions:
                 if not group.isHidden():
                     titles.add(group.title())
         assert titles == {
-            "CURRENT ROUTE", "COST", "BUDGET", "SYSTEM", "API KEYS", "ACTIONS"
+            "CURRENT ROUTE", "COST", "BUDGET", "SYSTEM", "API KEYS",
+            "MODEL UPDATES", "ACTIONS",
         }
 
     def test_right_inspector_order_tracks_request_lifecycle(self, win):

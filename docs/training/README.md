@@ -13,6 +13,7 @@ troubleshooting and combined-agent workflows. Open it from Sentinel's
 ### Foundations
 
 - [Quick Start](quick_start.md)
+- [API keys and new models](api_keys.md)
 - [Workspace tour](workspace.md)
 - [Controls and settings](controls_settings.md)
 - [Portable USB mode](portable.md)

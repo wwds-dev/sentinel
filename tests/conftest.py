@@ -76,6 +76,9 @@ def _isolated_settings_file():
         shutil.copyfile(main.SETTINGS_FILE, copy)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(main, "SETTINGS_FILE", copy)
+        # The model watch too: a real data folder's adopted models would move
+        # recommendations the tests assert on, and a scan would write to it.
+        patch.setattr(main, "MODEL_WATCH_FILE", _TEST_ROOT / "data" / "model_watch.json")
         yield
 
 
