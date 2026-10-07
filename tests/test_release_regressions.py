@@ -175,20 +175,35 @@ def test_installer_migrates_only_sentinel_fork_identity():
     assert 'Application Support/Sentinel AI' not in installer
 
 
-def test_thin_launcher_is_native_one_shot_without_a_persistent_job():
+def test_launcher_runs_python_inside_the_bundle_without_a_persistent_job():
+    """The bundle's executable *is* the interpreter, so the process is named
+    Sentinel everywhere macOS shows one. Exec'ing .venv/bin/python — the
+    fork-and-exec shim this replaced — made it "python" in Activity Monitor,
+    the Dock, Cmd-Tab and Force Quit."""
     installer = (ROOT / "scripts" / "install_app.sh").read_text(encoding="utf-8")
-    launcher = (ROOT / "scripts" / "thin_launcher.c").read_text(encoding="utf-8")
+    launcher = (ROOT / "scripts" / "app_launcher.c").read_text(encoding="utf-8")
 
     assert "xcrun clang" in installer
-    assert "CFBundleExecutable" in installer
-    assert "SentinelLauncher" in installer
+    assert 'CFBundleExecutable -string "${APP_NAME}"' in installer
+    assert "-lpython" in installer
     assert "launchctl submit" not in installer
-    assert "fork()" in launcher
-    assert "setsid()" in launcher
-    assert "execl(" in launcher
+    assert "Py_InitializeFromConfig" in launcher
+    assert "Py_RunMain" in launcher
+    assert re.search(r"\bexec[lv]p?e?\(", launcher) is None
+    assert "fork(" not in launcher
     assert "launchctl" not in launcher
-    assert 'pkill -f "${INSTALLED}/Contents/MacOS/applet"' in installer
+    # A running copy is asked to quit, never killed: closeEvent must run.
+    assert "pkill" not in installer
+    assert "terminate" in installer
     assert "com\\.netrunner3000\\.sentinel\\.launch\\." in installer
+
+
+def test_launcher_source_matches_imprints_copy():
+    """One source, two apps. Skipped when Imprint is not checked out beside it."""
+    other = ROOT.parent / "imprint" / "scripts" / "app_launcher.c"
+    if not other.is_file():
+        pytest.skip("imprint checkout not present")
+    assert (ROOT / "scripts" / "app_launcher.c").read_bytes() == other.read_bytes()
 
 
 def test_sidebar_uses_final_product_name():

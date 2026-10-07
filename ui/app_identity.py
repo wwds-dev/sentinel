@@ -1,20 +1,20 @@
-"""What macOS shows for Sentinel when it runs from a checkout, not a bundle.
+"""What macOS shows for Sentinel when it runs as a plain `python main.py`.
 
-A frozen `.app` carries its name and icon in its `Info.plist`. Sentinel normally
-runs as `python main.py` — typed in a terminal, or through the thin launcher in
-`/Applications`, which execs the project's interpreter. macOS resolves an app's
-identity from the path of the executable the process is running, and
-`.venv/bin/python` is not inside a bundle, so there is nothing to read: the menu
-next to the Apple logo is titled after the script, and the Dock shows the
-generic interpreter icon.
+The installed app does not need this. `/Applications/Sentinel.app` runs the
+interpreter inside its own executable (`scripts/app_launcher.c`), so macOS
+already reads Sentinel's name and icon from the bundle — and so does the frozen
+build. A run from a terminal is different: the process is `.venv/bin/python`,
+which is not inside a bundle, so there is nothing to read — the menu next to
+the Apple logo is titled after the script, and the Dock shows the generic
+interpreter icon. This module fixes those two from inside the process, and
+leaves a real bundle's own answer alone.
 
 Measured rather than assumed, because the fix is not where it looks like it is:
 
-* The **fork in the launcher is not the cause.** A bundle whose executable execs
-  the venv interpreter loses its identity either way — with `fork()` and with a
-  plain `exec` — because the lookup follows the new executable's path, not the
-  process. `__CFBundleIdentifier` is still in the environment and is not used.
-  So this is fixed in the process, and `scripts/thin_launcher.c` is left alone.
+* The **identity follows the executable's path**, not the process: a bundle
+  whose executable execs the venv interpreter loses it with `fork()` and with
+  a plain `exec` alike, and `__CFBundleIdentifier` in the environment is not
+  used. That is why the installed app runs Python in-process instead.
 * The **menu bar title** comes from `CFBundleName` in the main bundle's info
   dictionary, which CoreFoundation hands out as an `NSMutableDictionary`.
   Writing the name into it is enough, and it has to happen **before**
@@ -25,12 +25,12 @@ Measured rather than assumed, because the fix is not where it looks like it is:
   fingerprinting the icon's TIFF representation, which does not change), so it
   is set directly, after `QApplication()` has made `NSApp` exist.
 
-What this cannot fix: the name *under* the Dock icon, in the app switcher and in
-Force Quit is `NSRunningApplication`'s `localizedName`, which Launch Services
-took from the executable at launch and does not re-read. `-[NSProcessInfo
-setProcessName:]` is accepted and changes nothing there. Only an interpreter
-living inside the bundle changes it — which is what the frozen build in
-`Sentinel.spec` already does.
+What this cannot fix for a terminal run: the name *under* the Dock icon, in the
+app switcher, in Force Quit and in Activity Monitor is `NSRunningApplication`'s
+`localizedName`, which Launch Services took from the executable at launch and
+does not re-read. `-[NSProcessInfo setProcessName:]` is accepted and changes
+nothing there. Only an interpreter living inside the bundle changes it — which
+is what `scripts/app_launcher.c` and the frozen build in `Sentinel.spec` do.
 
 Reached through the Objective-C runtime with ctypes rather than pyobjc, which is
 not a dependency. Every call answers False rather than raising: an app that

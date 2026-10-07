@@ -246,9 +246,9 @@ The main runtime is organised around:
   `scripts/install_app.sh`, `scripts/build_app.sh`, and `Sentinel.spec`. Also
   `tray.png` / `tray@2x.png`, the menu bar template glyph drawn by
   `scripts/make_icon.py` and bundled by `Sentinel.spec`
-- `scripts/thin_launcher.c` — the native one-shot launcher compiled and
-  installed by `scripts/install_app.sh`; execs the project's own `.venv`
-  Python against `main.py` with no persistent launchd job
+- `scripts/app_launcher.c` — the app's executable, compiled by
+  `scripts/install_app.sh` against the venv's libpython; runs `main.py` with
+  the interpreter inside the bundle, so the process is named Sentinel
 - `output/` — gitignored, generated-only. Currently holds leftover files from
   before the project was narrowed to the security roster (`launch_assets/` has
   a KDP listing, an ARC outreach email and a BookTok pitch — publishing-agent
@@ -263,33 +263,25 @@ Development runs and the everyday thin launcher use the Lab project directory fo
 
 ### macOS launch modes
 
-`./scripts/install_app.sh` installs the everyday thin launcher: a small compiled native shim (`scripts/thin_launcher.c`), not an AppleScript applet or a shell-script bundle. Launch Services starts the compiled executable; it forks a detached child that execs the project's own `.venv` Python against `main.py` while the parent returns immediately, so there is no persistent launchd job and no restart-on-exit policy — a quit or crash simply ends the process. It runs directly from this Lab checkout and uses this folder's `data/`, `config/`, and `.env`, exactly like `python main.py`.
+`./scripts/install_app.sh` installs the everyday live launcher. The bundle's executable, `Contents/MacOS/Sentinel`, is `scripts/app_launcher.c` compiled against the libpython the project's `.venv` was made from: Launch Services starts it, and it runs `main.py` with the venv's packages *in its own process* — nothing is exec'd and nothing is left behind, so a quit or crash simply ends the app. It runs directly from this Lab checkout and uses this folder's `data/`, `config/`, and `.env`, exactly like `python main.py`. Because the interpreter is linked rather than started, re-run the script after rebuilding the venv on a new Python minor version; patch upgrades need nothing. It quits a running Sentinel before replacing the bundle, through the app's own Quit, never by killing it.
 
 `./scripts/build_app.sh` creates a self-contained release in `dist.noindex/` but does not install it. A self-contained build uses `~/Library/Application Support/Sentinel/` when launched. On first launch it renames existing `Sentinel Fork` application-support data in place; it never takes data from the archived `Sentinel AI` app. Installing with `./scripts/build_app.sh --install` explicitly replaces the thin launcher, so use that option only when you intend to switch modes. Source and frozen modes do not otherwise merge their data.
 
-Launched either way, the GUI process is the project's own interpreter, and macOS
-reads an app's name and icon from the path of the executable a process is
-running — `.venv/bin/python`, which is not inside a bundle. Left alone, the menu
-beside the Apple logo is titled after the script and the Dock shows the generic
-Python icon. `ui/app_identity.py` fixes both from inside the process: it writes
-`CFBundleName` into the main bundle's info dictionary before `QApplication()`
-exists, and sets the Dock icon through AppKit afterwards. A frozen build already
-carries its own name and icon and is left untouched.
+macOS names a process after the executable it is running, which is why the
+interpreter runs inside the bundle rather than being handed off. The fork-and-exec
+shim this replaced (`thin_launcher.c`, until 2026-10-07) exec'd `.venv/bin/python`:
+the Dock, the app switcher, Force Quit and Activity Monitor all said `python`, and
+Launch Services kept the exited launcher's bundle as a second, windowless Dock tile.
+Neither is fixable from inside a process that is running `.venv/bin/python` — the
+name is read from the executable at launch and never re-read. Python workers the
+app starts through `sys.executable` come back through the same executable, so they
+are named Sentinel too.
 
-The thin launcher is **not** the cause and does not need changing: a bundle whose
-executable execs the venv interpreter loses its identity with a `fork()` and
-with a plain `exec` alike, because the lookup follows the new executable's path
-rather than the process. One thing stays unfixed in both source modes — the name
-*under* the Dock icon, in the app switcher and in Force Quit still reads
-`python`. Launch Services takes that from the executable at launch and does not
-re-read it; only an interpreter living inside the bundle changes it, which is
-what the self-contained build does. The same gap leaves a second Sentinel tile
-in the Dock: Launch Services keeps the launcher's bundle registered as running
-after it hands off to Python, so a windowless tile reading *Running in
-Background* sits beside the real one. It is one process, not two instances, and
-since `app_identity.py` it wears the same name and icon, so the pair looks
-identical. Both symptoms and their candidate fixes are tracked as
-[SUGGESTIONS #23](SUGGESTIONS.md).
+A plain `python main.py` from a terminal is still the venv's interpreter, so there
+`ui/app_identity.py` does what it can from inside the process: it titles the menu
+beside the Apple logo (writing `CFBundleName` before `QApplication()` exists) and
+sets the Dock icon through AppKit. In the installed app and the frozen build it
+leaves the bundle's own name and icon alone.
 
 Both launch modes read the same canonical `VERSION`. The live launcher shows
 the updated version on its next launch; packaged and portable copies keep the

@@ -16,8 +16,18 @@
 # Data lives in the project (data/, config/, .env) exactly as it does when you
 # run `python main.py` by hand, so the app and the terminal share one state.
 #
-# Built as a small native launcher rather than a shell-script bundle or a
-# blocking AppleScript applet. The installed bundle is ad-hoc signed locally.
+# The bundle's executable is scripts/app_launcher.c, compiled here against the
+# venv's own libpython: Python runs *inside* Contents/MacOS/Sentinel rather than
+# being handed off to .venv/bin/python. macOS names a process after the
+# executable it runs, so that is the only way Sentinel is called Sentinel in
+# Activity Monitor, the Dock, Cmd-Tab and Force Quit — the fork-and-exec shim it
+# replaced (thin_launcher.c, 2026-09-15 to 2026-10-07) showed "python" in all
+# four. The same source is in imprint/scripts/; keep the copies identical.
+# The installed bundle is ad-hoc signed locally.
+#
+# Because the interpreter is linked, not exec'd, re-run this after the venv is
+# rebuilt on a different Python minor version (3.11 -> 3.12). Patch upgrades
+# need nothing: the link goes through uv's minor-version directory.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,16 +52,31 @@ trap 'rm -rf "$STAGE"' EXIT
 APP_DIR="$STAGE/${APP_NAME}.app"
 
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+# Link against the base interpreter the venv was made from: `home` in
+# pyvenv.cfg is uv's minor-version directory (cpython-3.11-…), which uv moves
+# forward on a patch upgrade, so the rpath goes through it rather than through
+# the exact patch release libpython names itself after.
+PY_HOME="$(sed -n 's/^home = //p' "$PROJECT_ROOT/.venv/pyvenv.cfg")"
+PY_LIBDIR="$(dirname "$PY_HOME")/lib"
+PY_INCLUDE="$("$PY" -c "import sysconfig; print(sysconfig.get_config_var('INCLUDEPY'))")"
+PY_LDVERSION="$("$PY" -c "import sysconfig; print(sysconfig.get_config_var('LDVERSION'))")"
+EXE="$APP_DIR/Contents/MacOS/${APP_NAME}"
 xcrun clang -std=c11 -Wall -Wextra -Werror \
-    "$PROJECT_ROOT/scripts/thin_launcher.c" \
-    -o "$APP_DIR/Contents/MacOS/SentinelLauncher"
+    -DAPP_NAME="\"${APP_NAME}\"" -DLOG_PATH="\"/tmp/sentinel-launch.log\"" \
+    -I"$PY_INCLUDE" "$PROJECT_ROOT/scripts/app_launcher.c" \
+    -L"$PY_LIBDIR" -lpython"$PY_LDVERSION" -Wl,-rpath,"$PY_LIBDIR" \
+    -o "$EXE"
+LINKED="$(otool -L "$EXE" | awk '/libpython/ {print $1; exit}')"
+install_name_tool -change "$LINKED" "@rpath/libpython${PY_LDVERSION}.dylib" "$EXE"
+
 cp "$PROJECT_ROOT/assets/icon.icns" "$APP_DIR/Contents/Resources/icon.icns"
 printf '%s\n' "$PROJECT_ROOT" > "$APP_DIR/Contents/Resources/project_root.txt"
 
 defaults write "$APP_DIR/Contents/Info" CFBundleName -string "${APP_NAME}"
 defaults write "$APP_DIR/Contents/Info" CFBundleDisplayName -string "${APP_NAME}"
 defaults write "$APP_DIR/Contents/Info" CFBundleIdentifier -string "com.netrunner3000.sentinel"
-defaults write "$APP_DIR/Contents/Info" CFBundleExecutable -string "SentinelLauncher"
+defaults write "$APP_DIR/Contents/Info" CFBundleExecutable -string "${APP_NAME}"
 defaults write "$APP_DIR/Contents/Info" CFBundleIconFile -string "icon.icns"
 defaults write "$APP_DIR/Contents/Info" CFBundlePackageType -string "APPL"
 defaults write "$APP_DIR/Contents/Info" CFBundleGetInfoString -string "${APP_NAME} ${APP_VERSION}"
@@ -62,9 +87,25 @@ defaults write "$APP_DIR/Contents/Info" LSUIElement -bool false
 plutil -convert xml1 "$APP_DIR/Contents/Info.plist"
 printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
 
-# Stop a running copy so Launch Services picks up the new bundle.
-pkill -f "${PROJECT_ROOT}/main.py" 2>/dev/null || true
-pkill -f "${INSTALLED}/Contents/MacOS/applet" 2>/dev/null || true
+# Quit a running copy so Launch Services picks up the new bundle — asked to
+# quit, the way its own Quit does, never killed: closeEvent is where in-flight
+# requests are cancelled and background work is shut down, and a SIGTERM skips
+# it. Matches this bundle's process (any launcher generation, including the
+# legacy `applet`) and a run of main.py, whose window may belong to "python".
+RUNNING="${PROJECT_ROOT}/main.py|${INSTALLED}/Contents/MacOS/"
+for pid in $(pgrep -f "$RUNNING" || true); do
+    osascript -l JavaScript -e "ObjC.import('AppKit');
+        const app = \$.NSRunningApplication.runningApplicationWithProcessIdentifier(${pid});
+        app.isNil() ? false : app.terminate" >/dev/null 2>&1 || true
+done
+for _ in $(seq 1 40); do
+    pgrep -f "$RUNNING" >/dev/null || break
+    sleep 0.5
+done
+if pgrep -f "$RUNNING" >/dev/null; then
+    echo "Error: ${APP_NAME} did not quit within 20 seconds. Quit it, then re-run." >&2
+    exit 1
+fi
 
 # Clean up jobs created by the faulty launchctl-based installer. The prefix is
 # unique to Sentinel and no new installation creates such a job.
