@@ -304,6 +304,20 @@ def show_run_log(app):
     dialog.exec()
 
 
+def _scrolling(page: QWidget) -> QScrollArea:
+    """Wrap a settings tab so it scrolls instead of growing the dialog.
+
+    A QTabWidget is as tall as its tallest tab. A tab whose rows grow with the
+    data (Pricing has one per priced model) would otherwise push the whole
+    Settings dialog past the bottom of the screen, every other tab with it.
+    """
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.NoFrame)
+    area.setWidget(page)
+    return area
+
+
 def show_settings(app):
     dialog = QDialog(app)
     dialog.setWindowTitle("Settings")
@@ -400,7 +414,7 @@ def show_settings(app):
     gl.addWidget(emergency_reset_btn, 7, 0, 1, 2)
 
     gl.setRowStretch(8, 1)
-    tabs.addTab(general_tab, "General")
+    tabs.addTab(_scrolling(general_tab), "General")
 
     # ── Tab 2: Agents ─────────────────────────────────────────────
     agents_tab = QWidget()
@@ -429,7 +443,7 @@ def show_settings(app):
 
     al.addLayout(agents_grid)
     al.addStretch()
-    tabs.addTab(agents_tab, "Agents")
+    tabs.addTab(_scrolling(agents_tab), "Agents")
 
     # ── Tab 3: Tools ──────────────────────────────────────────────
     tools_tab = QWidget()
@@ -456,7 +470,7 @@ def show_settings(app):
 
     tl.addLayout(tools_grid)
     tl.addStretch()
-    tabs.addTab(tools_tab, "Tools")
+    tabs.addTab(_scrolling(tools_tab), "Tools")
 
     # ── Tab 4: Pricing ────────────────────────────────────────────
     pricing_tab = QWidget()
@@ -502,7 +516,7 @@ def show_settings(app):
 
     pl.addLayout(pricing_grid)
     pl.addStretch()
-    tabs.addTab(pricing_tab, "Pricing")
+    tabs.addTab(_scrolling(pricing_tab), "Pricing")
 
     # ── Tab 5: OSINT Keys ─────────────────────────────────────────
     env_path = user_data_base() / ".env"
