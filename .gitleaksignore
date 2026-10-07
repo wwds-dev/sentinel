@@ -11,3 +11,4 @@
 # comments quoted the offending line verbatim.
 7e22d19b299c8a83e4e4c465d60c96a5a6b89eb5:.gitleaksignore:generic-api-key:2
 9e85a0328e31013b92df17442b2a9b7d7733924e:tests/test_vpn_execution.py:generic-api-key:17
+9446a3c1af6c6c6c84d086ff058719c4b1aa4e4a:services/database.py:generic-api-key:416
