@@ -321,29 +321,40 @@ def assess(provider: str, model: str) -> Assessment:
     candidate = inferred.profile
     moves: list[Move] = []
 
-    # Newer is not better by itself, and neither is pricier. An agent's BEST
-    # FIT moves only when the new model rates higher for that agent's work,
-    # or rates the same and is known to cost less (`beats`). A copied rating
-    # is never higher than its sibling's, so in practice a new model wins on
-    # a known lower price; one with no price yet wins nowhere, and the review
-    # says to add its price in Settings → Pricing.
-    for agent, rec in mr.AGENT_RECOMMENDATIONS.items():
-        current = next((p for p in profiles
-                        if (p.provider, p.model) == (rec.provider, rec.model)), None)
-        verdict = beats(candidate, current, agent)
-        if verdict:
-            moves.append(Move("agent", agent, f"{rec.provider} · {rec.model}", verdict))
+    if mr.ratings_loaded():
+        # With public ratings, an agent's pick is whatever the router chooses
+        # for that agent's kind of work, so ask it twice: with and without the
+        # new model. It wins only by being good enough and cheaper (see
+        # RATING_MARGIN); an unrated or unpriced model wins nothing.
+        before = mr.derive_agent_recommendations()
+        after = mr.derive_agent_recommendations(candidates=profiles + (candidate,))
+        for agent, rec in after.items():
+            if (rec.provider, rec.model) == (provider, model) and agent in before:
+                old = before[agent]
+                moves.append(Move("agent", agent, f"{old.provider} · {old.model}", rec.reason))
+    else:
+        # Without ratings: same model line, same rating, known lower price.
+        for agent, rec in mr.AGENT_RECOMMENDATIONS.items():
+            current = next((p for p in profiles
+                            if (p.provider, p.model) == (rec.provider, rec.model)), None)
+            verdict = beats(candidate, current, agent)
+            if verdict:
+                moves.append(Move("agent", agent, f"{rec.provider} · {rec.model}", verdict))
 
     with_candidate = profiles + (candidate,)
+    enabled = mr._RECOMMENDATION_CONTEXT["enabled_providers"]
     for task, tool in CHAT_TASKS.items():
         try:
-            before = route_request("", tool=tool, candidates=profiles)
-            after = route_request("", tool=tool, candidates=with_candidate)
+            before_route = route_request("", tool=tool, candidates=profiles,
+                                         enabled_providers=enabled)
+            after_route = route_request("", tool=tool, candidates=with_candidate,
+                                        enabled_providers=enabled)
         except RuntimeError:
             continue
-        if (after.provider, after.model) == (provider, model):
-            moves.append(Move("chat", task, f"{before.provider} · {before.model}",
-                              "highest-scoring route for this Chat tool"))
+        if (after_route.provider, after_route.model) == (provider, model):
+            moves.append(Move("chat", task,
+                              f"{before_route.provider} · {before_route.model}",
+                              after_route.reason))
 
     return Assessment(provider, model, inferred, tuple(moves))
 
@@ -541,6 +552,8 @@ def install_adoption(provider: str, model: str, info: Mapping) -> None:
     if not inferred.rankable:
         return
     mr.register_profile(inferred.profile)
+    if mr.ratings_loaded():
+        return          # the app re-derives every pick from the router instead
     profiles = mr.catalog()
     for agent, current_rec in list(mr.AGENT_RECOMMENDATIONS.items()):
         current = next((p for p in profiles if (p.provider, p.model)

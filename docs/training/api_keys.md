@@ -85,27 +85,56 @@ it again to clear it. **Update N** then brings in exactly the selected
 models, and nothing else.
 
 Bringing a model in (**Update** on the card, or **Adopt** in the review)
-does two things:
+lets the router rank it. Whether it is then chosen is decided the same way
+as for every other model, below.
 
-- The router can rank it. With **Auto-route** on, every request — Chat and
-  every agent — is assessed on its own, and the new model is chosen for a
-  request only when it fits that request best. When several models fit
-  equally well, the cheapest wins.
-- An agent's BEST FIT moves to it only when it is **better value than the
-  current pick**: rated at least as well for that agent's work *and* known
-  to cost less. Being newer counts for nothing, and neither does being more
-  expensive. For now this is only judged within the current pick's own
-  model line (a cheaper `claude-sonnet` against `claude-sonnet`), because
-  Sentinel's capability ratings are too coarse to compare different lines
-  fairly.
+## How Sentinel chooses a model
 
-A new model is rated like the newest model of its line that Sentinel
-already knows, and it has **no price** until you enter one in **Settings →
-Pricing**. An unknown price never wins: an unpriced model can be selected by
-hand and can win a request it fits better than anything else, but it is
-never chosen on cost. Cost estimates for it use the provider's default rate
-in the meantime. A model with no known sibling is offered in the dropdowns
-but never ranked.
+Being newer counts for nothing, and neither does being more expensive.
+With **Auto-route** on, every request — Chat and every agent — is assessed
+on its own:
+
+1. Sentinel works out what kind of work the request is: coding, writing,
+   reasoning, research or long documents, vision, or general.
+2. It looks up how each usable model rates **for that kind of work** on the
+   public LMArena leaderboard, where people compare two models' answers
+   without knowing which is which.
+3. Every model rated within **20 points** of the best one counts as good
+   enough. 20 points is roughly a 53/47 split when the two meet head to
+   head. Then **the cheapest of those wins**, using the prices in
+   **Settings → Pricing**.
+
+So a model that rates only a few points below the best for coding, at a
+fifth of the price, is chosen for coding, and the reason is shown on the
+route. With **Quality first** the best-rated model wins regardless of
+price; with **Cost first** the margin widens to 50 points.
+
+Each agent's **BEST FIT** badge is the same assessment, made for that
+agent's kind of work over the providers you have keys for. It moves on its
+own when the ratings, the prices or the available models change. Your
+current selection in a panel is never changed behind your back; only the
+badge moves.
+
+What is never assumed:
+
+- **An unknown price never wins.** A cloud model without a price, or with a
+  price of zero, is not treated as cheap. Add its price in **Settings →
+  Pricing** and it is weighed like the rest.
+- **An unrated model is not chosen over rated ones**, because nothing shows
+  it is good enough. That includes your local Ollama models: the
+  leaderboard rates full models, not the copy on this Mac. They still win
+  in **Local only** mode and with **Privacy first**, where Sentinel's own
+  scoring decides.
+- **Ratings at a higher effort setting are not borrowed.** When the
+  leaderboard only rates a model's "high" or "max" setting, Sentinel uses
+  the lowest of those, since it calls the model with its default settings.
+
+The ratings come from LMArena's public dataset (CC BY 4.0). They refresh
+at most once a day during the startup check, in the background. Hugging
+Face, which hosts them, limits how fast anyone may ask, so a refresh can
+stop part-way; whatever did not arrive keeps its previous copy, and a copy
+shipped with Sentinel covers the first start. **Ratings** in the MODEL
+UPDATES card says which copy is in use and when it was published.
 
 **Dismiss** in the review stops a model being listed as new. It stays
 selectable in the dropdown.

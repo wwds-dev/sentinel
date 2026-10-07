@@ -11,7 +11,8 @@
 | Auto-route | Applies Sentinel's recommendation using task, privacy, availability and cost preferences. Review the result before running. |
 | Main action | Send, Investigate, Analyse, Ask Advisor or another agent-specific operation. |
 | Stop | Requests cancellation of the active worker. Partial results may remain. |
-| Best fit | A **BEST FIT** badge on one entry per dropdown is Sentinel's recommendation for this agent. Hover for the reason. It is advice; the entry you pick is the one that runs. |
+| Best fit | A **BEST FIT** badge on one entry per dropdown is Sentinel's recommendation for this agent: the cheapest model rated good enough for this agent's kind of work (see [API keys and new models](api_keys.md)). Hover for the reason, including the ratings and prices compared. It is advice; the entry you pick is the one that runs, and the badge moving never changes your selection. |
+| NEW | A grey **NEW** badge marks a model a provider released since Sentinel last looked. It disappears once you update or dismiss it in **Model Updates**. |
 | Paid marker | The control turns amber while a route that may charge through a cloud API is selected, and cloud entries say so on hover. It is a warning, not a price quote. |
 
 ## Menus and guidance
@@ -20,6 +21,21 @@
 **Inspector** shows live operational information. The **•••** menu opens the
 Learning Centre, app documentation, model guide, Cost history, Run log and
 Settings.
+
+Chat's **Options** menu holds **Execution mode** (Local only, Hybrid allowed,
+Cloud only), **Paid provider access** (which cloud providers Chat may use) and
+**Routing priority**, which sets how much quality Auto-route may trade for
+price:
+
+| Routing priority | What wins |
+|---|---|
+| Balanced | The cheapest model rated within 20 points of the best for the kind of work. The default. |
+| Cost first | The cheapest within 50 points. |
+| Quality first | The best-rated model, whatever it costs. |
+| Speed first | Sentinel's own scoring, weighted towards fast models. |
+| Privacy first | Sentinel's own scoring, weighted towards local models. |
+
+The priority also decides every agent's BEST FIT badge.
 
 ## Settings — General
 

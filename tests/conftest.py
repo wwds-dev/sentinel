@@ -56,6 +56,15 @@ def _offline_model_lists():
         ):
             patch.setattr(client, "list_models", known)
         patch.setattr(OllamaClient, "model_details", lambda self: {})
+        # A test with a live event loop can let the startup scan fire; it must
+        # not reach Hugging Face for ratings.
+        from services import benchmarks
+
+        def _no_network(url):
+            raise RuntimeError("no network in tests")
+
+        patch.setattr(benchmarks, "_get_json", _no_network)
+        patch.setattr(benchmarks, "is_stale", lambda *a, **k: False)
         patch.setattr(OllamaClient, "loaded_models", lambda self: [])
         yield
 
@@ -79,6 +88,10 @@ def _isolated_settings_file():
         # The model watch too: a real data folder's adopted models would move
         # recommendations the tests assert on, and a scan would write to it.
         patch.setattr(main, "MODEL_WATCH_FILE", _TEST_ROOT / "data" / "model_watch.json")
+        # No ratings unless a test loads them: which picks they produce
+        # depends on which keys the real .env holds.
+        patch.setattr(main, "RATINGS_CACHE_FILE", _TEST_ROOT / "data" / "lmarena_ratings.json")
+        patch.setattr(main, "RATINGS_SNAPSHOT_FILE", _TEST_ROOT / "no_snapshot.json")
         yield
 
 

@@ -37,6 +37,9 @@ build/
 data/chats/*.json
 data/logs/*.jsonl
 data/usage_log.json
+# What this machine's model scan has seen and decided, and its ratings cache
+data/model_watch.json
+data/lmarena_ratings.json
 
 # Nested companion project (its own git repo, moved in under the sentinel family)
 

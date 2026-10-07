@@ -79,8 +79,11 @@ from services.model_recommendations import (
     AGENT_RECOMMENDATIONS as RECOMMENDATION_OBJECTS,
     TASK_RECOMMENDATIONS, as_dict, find_model, resolve_available_model,
     RoutingPreferences, route_request, pricing_metadata, set_price_lookup,
+    set_rating_lookup, set_recommendation_context, derive_agent_recommendations,
+    ratings_loaded, MODEL_CATALOG,
 )
 from services.model_watch import ModelWatch
+from services import benchmarks
 
 
 # Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
@@ -101,6 +104,10 @@ DATA_DIR = BASE_DIR / "data"
 CHATS_DIR = DATA_DIR / "chats"
 # What the model scan has seen, and which new models were adopted or dismissed.
 MODEL_WATCH_FILE = DATA_DIR / "model_watch.json"
+# Public per-task model ratings (services/benchmarks.py): the last fetch, and
+# the snapshot shipped with the code that stands in until the first one.
+RATINGS_CACHE_FILE = DATA_DIR / "lmarena_ratings.json"
+RATINGS_SNAPSHOT_FILE = benchmarks.SNAPSHOT_FILE
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
 ALL_AGENTS_FILTER = "All agents"
@@ -137,6 +144,15 @@ def sync_agent_recommendations() -> None:
         {key: as_dict(value) for key, value in RECOMMENDATION_OBJECTS.items()}
     )
 
+
+# Options → Routing priority: menu label -> RoutingPreferences.priority.
+ROUTING_PRIORITIES = {
+    "Balanced (cheapest within 20 points)": "balanced",
+    "Cost first (cheapest within 50 points)": "cost",
+    "Quality first (best rated)": "quality",
+    "Speed first": "speed",
+    "Privacy first (local where possible)": "privacy",
+}
 
 # The cloud clients a model scan asks, by provider key. Ollama is left out:
 # its list is what is installed on this machine, not what a provider released.
@@ -241,12 +257,13 @@ class GodAI(QWidget):
         # for its recommendation, so this precedes build_ui — and prices before
         # that, because an adopted model wins a BEST FIT only on a known price.
         self.refresh_price_lookup()
+        self.load_ratings()
         self.model_watch = ModelWatch(MODEL_WATCH_FILE)
         try:
             self.model_watch.install()
         except Exception as exc:
             print(f"[model watch] could not re-apply adopted models: {exc}")
-        sync_agent_recommendations()
+        self.refresh_agent_recommendations()
         self.model_scan_worker: Optional[ModelScanWorker] = None
         self.monitor = ResourceMonitor()
         self.history = HistoryStore()
@@ -543,8 +560,11 @@ class GodAI(QWidget):
         try:
             return _show_settings(self)
         finally:
-            # Settings → Pricing may have changed a rate the router weighs.
+            # Settings → Pricing may have changed a rate the router weighs,
+            # and with it which model is the best value for an agent.
             self.refresh_price_lookup()
+            self.refresh_agent_recommendations()
+            self._remark_all_recommendations()
 
     def refresh_price_lookup(self) -> None:
         """Hand the router the pricing table, as Settings → Pricing has it.
@@ -1165,22 +1185,31 @@ class GodAI(QWidget):
         if self.model_scan_worker is not None and self.model_scan_worker.isRunning():
             return
         self.model_updates_card.set_checking(True)
-        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES)
+        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES, RATINGS_CACHE_FILE)
         worker.finished_signal.connect(self._on_model_scan_finished)
         worker.error_signal.connect(self._on_model_scan_error)
         self.model_scan_worker = worker
         worker.start()
 
-    def _on_model_scan_finished(self, listings) -> None:
+    def _on_model_scan_finished(self, listings, ratings=None) -> None:
         from services.model_watch import known_models
 
         self.model_updates_card.set_checking(False)
+        if isinstance(ratings, benchmarks.RatingTable) and ratings:
+            self.ratings = ratings
+            set_rating_lookup(ratings.rating)
+        elif isinstance(ratings, str):
+            print(f"[ratings] kept {self.ratings.origin} ratings: {ratings}")
         try:
             summary = self.model_watch.record_scan(
                 listings, known_models(CLOUD_CLIENT_CLASSES))
         except Exception as exc:
             self._note_failure("model scan: record", exc)
             return
+        # A fresh listing or fresh ratings can change the best value for an
+        # agent; move the badges, never the user's current selections.
+        self.refresh_agent_recommendations()
+        self._remark_all_recommendations()
         self.refresh_model_updates_card()
         if summary.found:
             names = ", ".join(f"{n.provider} · {n.model}" for n in summary.found[:3])
@@ -1209,6 +1238,70 @@ class GodAI(QWidget):
                 pass
         self.model_updates_card.show_state(
             watch.last_scan, watch.last_notes, pending, summaries)
+        ratings = getattr(self, "ratings", None)
+        if ratings:
+            self.model_updates_card.set_ratings(
+                f"{benchmarks.SOURCE} {ratings.published[5:] or '?'}",
+                ratings.describe() + "\nAgents' BEST FIT and every auto-routed request "
+                "use them: the cheapest model rated within 20 points of the best "
+                "for that kind of work.")
+        else:
+            self.model_updates_card.set_ratings(
+                "none", "No ratings loaded; models are ranked on Sentinel's own "
+                "coarse scores until a check fetches them.")
+
+    # ── Ratings and the picks derived from them ─────────────────────────────
+
+    def load_ratings(self) -> None:
+        """Hand the router the per-task ratings: cached fetch, else snapshot."""
+        try:
+            self.ratings = benchmarks.load(RATINGS_CACHE_FILE, RATINGS_SNAPSHOT_FILE)
+        except Exception as exc:
+            print(f"[ratings] none loaded: {exc}")
+            self.ratings = benchmarks.RatingTable()
+        set_rating_lookup(self.ratings.rating if self.ratings else None)
+
+    def _usable_providers(self) -> set[str]:
+        """Ollama plus every cloud provider with a key: what a pick may use."""
+        usable = {"ollama"}
+        for provider, cls in CLOUD_CLIENT_CLASSES.items():
+            try:
+                if cls.key_available():
+                    usable.add(provider)
+            except Exception:
+                pass
+        return usable
+
+    def refresh_agent_recommendations(self) -> None:
+        """Re-derive every agent's BEST FIT from the router.
+
+        Each agent is assessed like a request of its own kind — rated for that
+        kind of work, cheapest among the good-enough — over the providers the
+        user has keys for and the models those providers listed at the last
+        scan. Without ratings the hand-picked baseline (and any adoption that
+        beat it) stands.
+        """
+        enabled = self._usable_providers()
+        seen = getattr(getattr(self, "model_watch", None), "state", {}).get("seen", {})
+        available = {
+            provider: list(seen.get(provider) or
+                           [m.model for m in MODEL_CATALOG if m.provider == provider])
+            for provider in enabled
+        }
+        set_recommendation_context(enabled, available, self._routing_preferences())
+        if ratings_loaded():
+            derived = derive_agent_recommendations()
+            RECOMMENDATION_OBJECTS.clear()
+            RECOMMENDATION_OBJECTS.update(derived)
+        sync_agent_recommendations()
+
+    def _remark_all_recommendations(self) -> None:
+        """Move every BEST FIT badge to the current pick, keeping selections."""
+        for agent_key in list(AGENT_RECOMMENDATIONS) + ["chat"]:
+            try:
+                self.refresh_recommendation_marks(agent_key)
+            except Exception as exc:
+                self._note_failure(f"{agent_key}: best fit", exc)
 
     def update_selected_models(self, marked) -> None:
         """Adopt exactly the models marked on the card, then report what moved."""
@@ -1263,7 +1356,7 @@ class GodAI(QWidget):
         opens on its recommendation at startup; every other panel keeps the
         selection it had.
         """
-        sync_agent_recommendations()
+        self.refresh_agent_recommendations()
         self._reload_all_model_lists()
         for agent_key in moved_agents:
             self.apply_agent_recommendation(agent_key)
@@ -2068,6 +2161,17 @@ class GodAI(QWidget):
         self.execution_mode_box.addItems(["Local only", "Hybrid allowed", "Cloud only"])
         self.execution_mode_box.hide()
 
+        # How much quality may be traded for price: the margin within which
+        # a cheaper rated model counts as good enough (RATING_MARGIN).
+        self.routing_priority_box = MenuComboBox(self)
+        self.routing_priority_box.addItems(list(ROUTING_PRIORITIES))
+        saved_priority = str(self.settings.get("routing_priority", "balanced")).lower()
+        for label, key in ROUTING_PRIORITIES.items():
+            if key == saved_priority:
+                self.routing_priority_box.setCurrentText(label)
+        self.routing_priority_box.currentTextChanged.connect(self._routing_priority_changed)
+        self.routing_priority_box.hide()
+
         self.allow_openai_checkbox = QCheckBox("OpenAI", self)
         self.allow_deepseek_checkbox = QCheckBox("DeepSeek", self)
         self.allow_kimi_checkbox = QCheckBox("Kimi", self)
@@ -2159,6 +2263,7 @@ class GodAI(QWidget):
 
         add_combo_submenu("Command", self.command_box)
         add_combo_submenu("Execution mode", self.execution_mode_box)
+        add_combo_submenu("Routing priority", self.routing_priority_box)
 
         provider_menu = self.runbar_menu.addMenu("Paid provider access")
         for box in (self.allow_openai_checkbox, self.allow_deepseek_checkbox,
@@ -2783,6 +2888,18 @@ class GodAI(QWidget):
         # leaves Ollama painted as paid until the next successful refresh.
         self.update_live_cost_estimate()
         self._mark_paid_route_choices(self.provider_box, self.model_box)
+
+    def _routing_priority_changed(self, label: str) -> None:
+        self.settings["routing_priority"] = ROUTING_PRIORITIES.get(label, "balanced")
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.settings, f, indent=2)
+        except Exception as e:
+            self._note_failure("routing priority: save", e)
+        # Only the badges follow; an agent panel keeps what the user selected.
+        self.refresh_agent_recommendations()
+        self._remark_all_recommendations()
+        self.update_recommendation_label()
 
     def save_provider_model_preference(self):
         if not hasattr(self, "provider_box") or not hasattr(self, "model_box"):

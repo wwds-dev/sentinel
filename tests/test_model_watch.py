@@ -412,3 +412,32 @@ def test_the_shipped_catalog_knows_the_current_releases():
                  ("gemini", "gemini-3.1-pro-preview"), ("gemini", "gemini-3.8-flash")]:
         assert pair in shipped
         assert mr.pricing_metadata(*pair).input_per_1m_usd is not None
+
+
+def test_routing_priority_is_a_menu_choice_that_is_saved(win):
+    saved = win.settings.get("routing_priority")
+    try:
+        win.routing_priority_box.setCurrentText("Quality first (best rated)")
+        assert win.settings["routing_priority"] == "quality"
+        assert win._routing_preferences().priority == "quality"
+        menu_titles = {a.text() for a in win.runbar_menu.actions()}
+        assert "Routing priority" in menu_titles
+    finally:
+        win.routing_priority_box.setCurrentText("Balanced (cheapest within 20 points)")
+        if saved is None:
+            win.settings.pop("routing_priority", None)
+
+
+def test_the_card_credits_the_ratings_it_uses(win, monkeypatch, clean_router):
+    import main
+    from services import benchmarks
+
+    monkeypatch.setattr(main, "RATINGS_SNAPSHOT_FILE", benchmarks.SNAPSHOT_FILE)
+    win.load_ratings()
+    try:
+        win.refresh_model_updates_card()
+        row = win.model_updates_card.ratings_row
+        assert row.value.text().startswith("LMArena ")
+        assert "CC BY 4.0" in row.toolTip()
+    finally:
+        mr.set_rating_lookup(None)

@@ -76,6 +76,9 @@ class ModelUpdatesCard(ScreenCard):
 
         self.last_row = KeyValue("Last check", "never")
         layout.addWidget(self.last_row)
+        # Where the quality judgement comes from, credited as its licence asks.
+        self.ratings_row = KeyValue("Ratings", "none")
+        layout.addWidget(self.ratings_row)
         # How many are new is the header's status ("7 new"); a second row
         # saying the same number was one row of agents less in the rail.
         self.divider = QFrame()
@@ -163,6 +166,9 @@ class ModelUpdatesCard(ScreenCard):
             self.update_requested.emit(marked)
 
     # -- state ----------------------------------------------------------------
+
+    def set_ratings(self, text: str, tip: str) -> None:
+        self.ratings_row.set(text, tip)
 
     def set_checking(self, checking: bool) -> None:
         self.check_btn.setEnabled(not checking)

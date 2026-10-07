@@ -11,9 +11,18 @@ Only one agent is active at a time. The selected row is highlighted. **History**
 opens saved conversations; Trace has its own **Saved searches** area. Selecting
 saved work restores it but does not automatically rerun a request.
 
-The lower utilities show API readiness and shortcuts to Cost history, Run log
-and Settings. “Ready” means a key was detected; it does not guarantee account
-credit, provider availability or permission for the current request.
+Below them sit three small screens. Every sidebar tile is drawn the same way:
+a header strip with a status light and a short status on the right, then
+aligned readouts. Green means fine, amber means look at it, red means act.
+
+- **API Keys** shows which cloud providers have a key (**4/6** in the header).
+  “Ready” means a key was detected; it does not guarantee account credit,
+  provider availability or permission for the current request. See
+  [API keys and new models](api_keys.md).
+- **Model Updates** shows when providers were last checked, which ratings are
+  in use, and any new models as rows. Click rows to select them, then
+  **Update** to bring exactly those in.
+- **Actions** opens Costs, Run log and Settings.
 
 At the top of the sidebar, beside **SENTINEL** and the version number, three
 coloured dots choose the colour theme: green (Matrix), red, or blue
@@ -34,10 +43,12 @@ advanced choices until needed; they do not disable work already entered.
 
 ## Inspector
 
-**Current Route** shows the provider/model intended for the next request.
-**Cost** shows the latest and session totals. **Budget** compares spending with
-your caps. **System** shows device load, which is particularly useful for local
-models. Values can change while a request is running.
+**Current Route** shows the provider/model intended for the next request; its
+light turns amber when that route is a paid cloud service. **Cost** shows the
+latest and session totals. **Budget** compares spending with your caps; its
+light turns amber at 60% of a cap and red at 90%. **System** shows device load,
+which is particularly useful for local models, as segmented meters. Values can
+change while a request is running.
 
 ## Menu bar item
 

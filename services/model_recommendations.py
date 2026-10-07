@@ -84,6 +84,7 @@ class RouteDecision:
     reason: str
     fallbacks: tuple[RouteCandidate, ...] = ()
     manual: bool = False
+    basis: str = "score"          # "rating" when public ratings decided it
 
     @property
     def mode(self) -> str:
@@ -309,6 +310,73 @@ def blended_price(profile: ModelProfile, prices: PriceLookup | None = None) -> f
     return (3 * float(pair[0]) + float(pair[1])) / 4
 
 
+# ── Ratings: is a cheaper model good enough for this request? ───────────────
+# With public per-task ratings (services/benchmarks.py) the router can answer
+# the question the 1-3 buckets could not. Every model rated within
+# RATING_MARGIN points of the best-rated one *for this kind of work* is good
+# enough, and the cheapest of those wins. 20 points is about a 53/47 split
+# when two models meet head to head. An unrated model is not considered when
+# rated ones exist, because nothing shows it is good enough. Privacy first
+# keeps the old score, which is what prefers the local models.
+RATING_MARGIN = {"balanced": 20, "cost": 50, "speed": 20, "quality": 0}
+SIMPLE_TASK_MARGIN = 50           # "a quick answer": lean harder on price
+
+RatingLookup = Callable[[str, str, str], object]
+_RATING_LOOKUP: RatingLookup | None = None
+
+
+def set_rating_lookup(lookup: RatingLookup | None) -> None:
+    global _RATING_LOOKUP
+    _RATING_LOOKUP = lookup
+
+
+def _rate(lookup: RatingLookup, profile: ModelProfile, task: str):
+    try:
+        return lookup(profile.provider, profile.model, task)
+    except Exception:
+        return None
+
+
+def _route_by_rating(request: RequestProfile, prefs: RoutingPreferences,
+                     eligible: list[ModelProfile], rated: dict,
+                     prices: PriceLookup | None) -> RouteDecision:
+    key = lambda m: (m.provider, m.model)  # noqa: E731
+    margin = RATING_MARGIN[prefs.priority]
+    if request.task == "simple" and prefs.priority != "quality":
+        margin = max(margin, SIMPLE_TASK_MARGIN)
+    best = max(r.score for r in rated.values())
+    pool = [m for m in eligible if key(m) in rated]
+    fit = [m for m in pool if rated[key(m)].score >= best - margin]
+    chosen = min(fit, key=lambda m: (_price_key(m, prices), -rated[key(m)].score, m.provider, m.model))
+    top = max(pool, key=lambda m: (rated[key(m)].score, [-x for x in _price_key(m, prices)]))
+    rest = sorted((m for m in pool if m is not chosen),
+                  key=lambda m: (-rated[key(m)].score, _price_key(m, prices), m.provider, m.model))
+    rating = rated[key(chosen)]
+    price = _describe_price(blended_price(chosen, prices))
+    source = "LMArena"
+    if chosen is top:
+        reason = (f"Detected {request.task}; {chosen.model} rates highest for "
+                  f"{rating.label} on {source} ({rating.score:.0f})"
+                  + (f" and is the cheapest of the {len(fit)} within {margin} points"
+                     if len(fit) > 1 else "")
+                  + f" ({price}).")
+    else:
+        top_rating = rated[key(top)]
+        reason = (f"Detected {request.task}; {chosen.model} rates {rating.score:.0f} for "
+                  f"{rating.label} on {source}, within {margin} points of the best "
+                  f"({top.model}, {top_rating.score:.0f}, "
+                  f"{_describe_price(blended_price(top, prices))}), and is the "
+                  f"cheapest of the {len(fit)} that are ({price}).")
+    unrated = len(eligible) - len(pool)
+    if unrated:
+        reason += (f" {unrated} unrated model{'s were' if unrated != 1 else ' was'} "
+                   "not considered.")
+    fallback = tuple(RouteCandidate(m.provider, m.model, round(rated[key(m)].score))
+                     for m in rest)[:3]
+    return RouteDecision(request.task, chosen.provider, chosen.model, reason, fallback,
+                         basis="rating")
+
+
 def _price_key(profile: ModelProfile, prices: PriceLookup | None) -> tuple[bool, float]:
     price = blended_price(profile, prices)
     return (price is None, price or 0.0)
@@ -328,7 +396,8 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
                   enabled_providers: Iterable[str] | None = None,
                   manual_provider: str | None = None, manual_model: str | None = None,
                   candidates: Sequence[ModelProfile] | None = None,
-                  prices: PriceLookup | None = None) -> RouteDecision:
+                  prices: PriceLookup | None = None,
+                  ratings: RatingLookup | None = None) -> RouteDecision:
     """Pick a provider/model for one request.
 
     `candidates` replaces the catalog for this call only; model_watch uses it
@@ -346,6 +415,19 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
     eligible = [m for m in profiles if m.provider in enabled and _compatible(m, request, prefs) and _available(m, available_models)]
     if not eligible:
         raise RuntimeError(f"No available model satisfies task '{request.task}' and the current privacy/provider constraints.")
+    lookup = ratings if ratings is not None else _RATING_LOOKUP
+    if lookup is not None and prefs.priority in RATING_MARGIN:
+        rated = {(m.provider, m.model): r for m in eligible
+                 if (r := _rate(lookup, m, request.task)) is not None}
+        if rated:
+            decision = _route_by_rating(request, prefs, eligible, rated, prices)
+            if manual_provider or manual_model:
+                decision = RouteDecision(
+                    decision.task, decision.provider, decision.model,
+                    decision.reason + " The manual choice was unavailable or "
+                    "incompatible, so automatic fallback was used.",
+                    decision.fallbacks, basis="rating")
+            return decision
     scores = {(m.provider, m.model): _score(m, request, prefs) for m in eligible}
     best_score = max(scores.values())
     margin = FIT_MARGIN.get(prefs.priority, FIT_MARGIN["balanced"])
@@ -392,6 +474,62 @@ AGENT_RECOMMENDATIONS = {
     "vpn": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for configuration reasoning."),
     "sentry": Recommendation("anthropic", "claude-sonnet-5", "Capability baseline for network-anomaly interpretation."),
 }
+# The hand-picked baseline. When ratings are loaded the app derives each
+# agent's pick from the router instead (`derive_agent_recommendations`), and
+# falls back to these only for an agent the ratings cannot place.
+STATIC_AGENT_RECOMMENDATIONS = dict(AGENT_RECOMMENDATIONS)
+
+
+# What the user can actually use, set by the app whenever it derives the
+# recommendations, so an assessment of a new model (model_watch.assess) is
+# made against the same providers the real picks were.
+_RECOMMENDATION_CONTEXT: dict = {"enabled_providers": None, "available_models": None,
+                                 "preferences": None}
+
+
+def set_recommendation_context(enabled_providers: Iterable[str] | None,
+                               available_models: Mapping[str, Sequence[str]] | None,
+                               preferences: "RoutingPreferences | None" = None) -> None:
+    _RECOMMENDATION_CONTEXT["enabled_providers"] = (
+        set(enabled_providers) if enabled_providers is not None else None)
+    _RECOMMENDATION_CONTEXT["available_models"] = available_models
+    _RECOMMENDATION_CONTEXT["preferences"] = preferences
+
+
+def ratings_loaded() -> bool:
+    return _RATING_LOOKUP is not None
+
+
+def derive_agent_recommendations(*, enabled_providers: Iterable[str] | None = None,
+                                 available_models: Mapping[str, Sequence[str]] | None = None,
+                                 candidates: Sequence[ModelProfile] | None = None,
+                                 ) -> dict[str, "Recommendation"]:
+    """Each agent's BEST FIT, assessed like a request of that agent's kind.
+
+    The same router a real request goes through, with the providers the
+    user can actually use. Where the ratings cannot place an agent's work,
+    the hand-picked baseline stands.
+    """
+    derived = {}
+    if enabled_providers is None:
+        enabled_providers = _RECOMMENDATION_CONTEXT["enabled_providers"]
+        available_models = _RECOMMENDATION_CONTEXT["available_models"]
+    enabled = set(enabled_providers) if enabled_providers is not None else None
+    for agent, baseline in STATIC_AGENT_RECOMMENDATIONS.items():
+        try:
+            decision = route_request("", agent=agent, enabled_providers=enabled,
+                                     available_models=available_models,
+                                     candidates=candidates,
+                                     preferences=_RECOMMENDATION_CONTEXT["preferences"])
+        except RuntimeError:
+            decision = None
+        if decision is not None and decision.basis == "rating":
+            derived[agent] = Recommendation(decision.provider, decision.model, decision.reason)
+        else:
+            derived[agent] = baseline
+    return derived
+
+
 TASK_RECOMMENDATIONS = {
     "general": Recommendation("ollama", "deepseek-r1:8b", "Private local baseline for general chat."),
     "writing": Recommendation("openai", "gpt-4.1-mini", "Fast text-capable writing baseline."),

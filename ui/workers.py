@@ -587,25 +587,39 @@ class SentryWatchWorker(QThread):
 
 
 class ModelScanWorker(QThread):
-    """Ask every provider with a key for its live model list.
+    """Ask every provider with a key for its live model list, then refresh
+    the public model ratings if the cached copy is more than a day old.
 
-    One provider after another inside this one thread, never in parallel:
-    the listing calls are free, but a burst of connections is what the home
-    router refuses (see services/model_watch.py). Only the network half runs
-    here; folding the result into the watch's state happens back on the UI
-    thread, so an Adopt click can never race a scan writing the same file.
+    One request after another inside this one thread, never in parallel:
+    the calls are free, but a burst of connections is what the home router
+    refuses (see services/model_watch.py). Only the network half runs here;
+    folding the result into the watch's state happens back on the UI thread,
+    so an Update click can never race a scan writing the same file.
     """
-    finished_signal = Signal(object)   # list[services.model_watch.ProviderListing]
+    # listings, then a RatingTable (fresh), a str (why not), or None (fresh enough)
+    finished_signal = Signal(object, object)
     error_signal = Signal(str)
 
-    def __init__(self, client_classes):
+    def __init__(self, client_classes, ratings_cache=None):
         super().__init__()
         self._client_classes = dict(client_classes)
+        self._ratings_cache = ratings_cache
 
     def run(self):
         try:
             from services.model_watch import list_live
 
-            self.finished_signal.emit(list_live(self._client_classes))
+            listings = list_live(self._client_classes)
         except Exception as e:
             self.error_signal.emit(str(e))
+            return
+        ratings = None
+        if self._ratings_cache is not None:
+            from services import benchmarks
+
+            if benchmarks.is_stale(self._ratings_cache):
+                try:
+                    ratings = benchmarks.refresh(self._ratings_cache)
+                except Exception as e:      # the service is often "loading"
+                    ratings = str(e)
+        self.finished_signal.emit(listings, ratings)
