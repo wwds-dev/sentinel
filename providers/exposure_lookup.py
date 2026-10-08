@@ -37,6 +37,13 @@ Key-gated (set in .env):
                        names. The free password/hash lookup endpoint is never
                        called.
 
+  • Snusbase         → SNUSBASE_API_KEY — breach databases holding an email or
+                       domain, with a record count each. Asked through its
+                       count-only endpoint, so no leaked record is downloaded.
+  • LeakCheck        → LEAKCHECK_API_KEY — breaches holding an email or domain,
+                       with the breach date and which kinds of data leaked. Same
+                       metadata-only rule.
+
 Returns a normalised dict suitable for direct injection into an LLM prompt and
 for the Trace / Bloodhound result cards. Mirrors the shape of the other
 ``providers`` modules: per-source payloads plus ``sources_contacted`` /
@@ -62,6 +69,14 @@ def dehashed_key() -> str:
     writes it into the environment) takes effect without an app restart."""
     return os.getenv("DEHASHED_API_KEY", "").strip()
 
+def snusbase_key() -> str:
+    return os.getenv("SNUSBASE_API_KEY", "").strip()
+
+
+def leakcheck_key() -> str:
+    return os.getenv("LEAKCHECK_API_KEY", "").strip()
+
+
 _UA = "Sentinel-OSINT/2.0"
 # Ahmia serves its result page to browsers; a bare client UA is bounced to the
 # home page. A plain desktop UA is honest about being an automated read and
@@ -71,7 +86,8 @@ _BROWSER_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-DEFAULT_SOURCES = ("ransomware_live", "ahmia", "intelx", "dehashed")
+DEFAULT_SOURCES = ("ransomware_live", "ahmia", "intelx", "dehashed",
+                   "snusbase", "leakcheck")
 
 # Intelligence X media codes → readable labels (from the IntelX SDK).
 _INTELX_MEDIA = {
@@ -540,6 +556,168 @@ def _dehashed(terms: dict) -> dict:
         return {"source": "dehashed", "status": "error", "detail": str(exc)[:200]}
 
 
+# ── Snusbase and LeakCheck ────────────────────────────────────────────────────
+#
+# Both return the leaked records themselves. Sentinel keeps the rule it set for
+# DeHashed: a record is reduced to the breach it came from and the NAMES of the
+# fields it holds, inside this function, before anything is returned. No value
+# from a record — no password, hash, IP or name — leaves these functions.
+
+# Field names that are safe to report as "what kind of data leaked". Anything
+# else is reported as "other" so an odd field name cannot carry a value.
+_FIELD_NAMES = {
+    "email", "username", "password", "hash", "salt", "lastip", "ip", "name",
+    "first_name", "last_name", "phone", "address", "dob", "birthdate", "city",
+    "country", "zip", "company", "gender", "url", "created", "uid", "origin",
+}
+
+
+def _field_kinds(names) -> list[str]:
+    kinds = set()
+    for name in names or []:
+        label = str(name).strip().lower()
+        kinds.add(label if label in _FIELD_NAMES else "other")
+    return sorted(kinds)
+
+
+def _breach_selector(terms: dict, source: str):
+    kind = terms.get("kind")
+    if kind == "email" and terms.get("address"):
+        return "email", terms["address"]
+    if kind in ("domain", "email") and terms.get("domain"):
+        return "domain", terms["domain"]
+    return None, f"{source} searches emails and domains, not company names."
+
+
+def _snusbase(terms: dict) -> dict:
+    """Snusbase: how many records each breach database holds for an email or domain.
+
+    Uses ``/data/count``, which answers with a row count per database and no
+    records at all, so no leaked password, hash or name is ever downloaded —
+    a stronger guarantee than dropping values after a ``/data/search``.
+    """
+    key = snusbase_key()
+    if not key:
+        return {"source": "snusbase", "status": "skipped",
+                "reason": "SNUSBASE_API_KEY not set — Snusbase is a paid service; "
+                          "add a key on Settings → OSINT Keys to enable it."}
+    kind, term = _breach_selector(terms, "Snusbase")
+    if kind is None:
+        return {"source": "snusbase", "status": "skipped", "reason": term}
+    try:
+        resp = requests.post(
+            "https://api.snusbase.com/data/count",
+            json={"terms": [term], "types": ["email" if kind == "email" else "_domain"],
+                  "wildcard": False},
+            timeout=20,
+            headers={"Auth": key, "Content-Type": "application/json", "User-Agent": _UA},
+        )
+        if resp.status_code == 401:
+            return {"source": "snusbase", "status": "error",
+                    "detail": "Snusbase rejected the key (check it and that the plan is active)"}
+        if resp.status_code == 429:
+            return {"source": "snusbase", "status": "error",
+                    "detail": "Snusbase limit reached (2,048 searches per 12 hours); try later"}
+        if resp.status_code != 200:
+            return {"source": "snusbase", "status": "error", "code": resp.status_code}
+        body = resp.json() if resp.content else {}
+        results = (body or {}).get("results") or {}
+        databases = []
+        for name, count in results.items() if isinstance(results, dict) else []:
+            # A count per database is all this endpoint returns; anything else
+            # in that slot is ignored rather than passed on.
+            if isinstance(count, int) and count > 0:
+                databases.append({"database": str(name), "records": count})
+        databases.sort(key=lambda item: item["records"], reverse=True)
+        return {
+            "source": "snusbase", "status": "ok",
+            "breach_count": len(databases),
+            "total_records": sum(d["records"] for d in databases),
+            "breach_databases": databases[:50],
+            "note": ("Breach databases holding the target, with a record count each. "
+                     "Sentinel asks Snusbase for counts only, so no leaked record is "
+                     "ever downloaded."),
+        }
+    except requests.exceptions.Timeout:
+        return {"source": "snusbase", "status": "error", "detail": "request timed out (>20 s)"}
+    except Exception as exc:
+        return {"source": "snusbase", "status": "error",
+                "detail": f"unexpected response: {type(exc).__name__}"}
+
+
+def _leakcheck(terms: dict) -> dict:
+    """LeakCheck v2: breaches holding an email or domain, with dates. Metadata only."""
+    key = leakcheck_key()
+    if not key:
+        return {"source": "leakcheck", "status": "skipped",
+                "reason": "LEAKCHECK_API_KEY not set — LeakCheck's API is a paid plan; "
+                          "add a key on Settings → OSINT Keys to enable it."}
+    kind, term = _breach_selector(terms, "LeakCheck")
+    if kind is None:
+        return {"source": "leakcheck", "status": "skipped", "reason": term}
+    try:
+        resp = requests.get(
+            f"https://leakcheck.io/api/v2/query/{quote(term, safe='@.')}",
+            params={"type": kind, "limit": 1000},
+            timeout=20,
+            headers={"X-API-Key": key, "Accept": "application/json", "User-Agent": _UA},
+        )
+        # LeakCheck's own codes: 400 also covers a bad key, 403 means no active
+        # plan or the plan's quota is spent, 429 is the 3-per-second throttle.
+        if resp.status_code in (400, 401):
+            detail = ""
+            try:
+                detail = str((resp.json() or {}).get("error") or "")
+            except ValueError:
+                pass
+            return {"source": "leakcheck", "status": "error",
+                    "detail": f"LeakCheck rejected the key or query{': ' + detail if detail else ''}"[:200]}
+        if resp.status_code == 403:
+            return {"source": "leakcheck", "status": "error",
+                    "detail": "LeakCheck refused: no active plan, or its quota is used up"}
+        if resp.status_code == 429:
+            return {"source": "leakcheck", "status": "error",
+                    "detail": "LeakCheck rate limit reached; try again in a moment"}
+        if resp.status_code != 200:
+            return {"source": "leakcheck", "status": "error", "code": resp.status_code}
+        body = resp.json() or {}
+        if body.get("success") is False:
+            return {"source": "leakcheck", "status": "error",
+                    "detail": str(body.get("error") or "LeakCheck refused the query")[:200]}
+        breaches: dict[str, dict] = {}
+        for row in body.get("result") or []:
+            if not isinstance(row, dict):
+                continue
+            src = row.get("source") or {}
+            name = str(src.get("name") or "Unknown source")
+            entry = breaches.setdefault(name, {
+                "breach": name, "date": src.get("breach_date"), "records": 0,
+                "unverified": bool(src.get("unverified")),
+                "compilation": bool(src.get("compilation")), "fields": set()})
+            entry["records"] += 1
+            entry["fields"].update(row.get("fields") or [])
+        listed = []
+        for entry in breaches.values():
+            entry["leaked_fields"] = _field_kinds(entry.pop("fields"))
+            listed.append(entry)
+        listed.sort(key=lambda item: item["records"], reverse=True)
+        return {
+            "source": "leakcheck", "status": "ok",
+            "found": body.get("found", sum(e["records"] for e in listed)),
+            "breach_count": len(listed),
+            "breaches": listed[:50],
+            "quota_remaining": body.get("quota"),
+            "note": ("Breaches holding the target, when they happened and which kinds of "
+                     "data leaked. Metadata only — Sentinel drops every leaked value unread. "
+                     "A compilation is a re-packaged mix of older leaks."),
+        }
+    except requests.exceptions.Timeout:
+        return {"source": "leakcheck", "status": "error", "detail": "request timed out (>20 s)"}
+    except Exception as exc:
+        return {"source": "leakcheck", "status": "error",
+                "detail": f"unexpected response: {type(exc).__name__}"}
+
+
 # ── public interface ──────────────────────────────────────────────────────────
 
 def lookup(target: str, target_type: str = "", *, selected_sources=None,
@@ -577,6 +755,10 @@ def lookup(target: str, target_type: str = "", *, selected_sources=None,
          lambda: _intelx(terms["intelx_term"], should_stop=should_stop)),
         ("dehashed", "DeHashed", "dehashed",
          lambda: _dehashed(terms)),
+        ("snusbase", "Snusbase", "snusbase",
+         lambda: _snusbase(terms)),
+        ("leakcheck", "LeakCheck", "leakcheck",
+         lambda: _leakcheck(terms)),
     ]
 
     for key, label, result_key, call in source_calls:
@@ -607,19 +789,26 @@ def lookup(target: str, target_type: str = "", *, selected_sources=None,
     darkweb_hits = ah.get("result_count", 0) if ah.get("status") == "ok" else 0
     intelx_hits = ix.get("total", 0) if ix.get("status") == "ok" else 0
     dehashed_breaches = dh.get("breach_count", 0) if dh.get("status") == "ok" else 0
+    sb = result.get("snusbase", {})
+    lc = result.get("leakcheck", {})
+    snusbase_breaches = sb.get("breach_count", 0) if sb.get("status") == "ok" else 0
+    leakcheck_breaches = lc.get("breach_count", 0) if lc.get("status") == "ok" else 0
 
     result["summary"] = {
         # A direct victim/domain match is a strong claim; a bare listing, an Ahmia
         # index hit, an IntelX record or a DeHashed breach hit is a lead to
         # review, not proof of a fresh breach.
         "exposure_detected": bool(ransomware_total or darkweb_hits or intelx_hits
-                                  or dehashed_breaches),
+                                  or dehashed_breaches or snusbase_breaches
+                                  or leakcheck_breaches),
         "on_ransomware_leak_site": ransomware_direct > 0,
         "ransomware_victim_matches": ransomware_direct,
         "ransomware_listings": ransomware_total,
         "darkweb_index_hits": darkweb_hits,
         "intelx_records": intelx_hits,
         "breach_databases": dehashed_breaches,
+        "snusbase_breaches": snusbase_breaches,
+        "leakcheck_breaches": leakcheck_breaches,
         "sources_queried": len(result["sources_contacted"]),
     }
     return result

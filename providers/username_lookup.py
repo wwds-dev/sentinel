@@ -17,6 +17,7 @@ Opt-in (``whatsmyname=True``, used by Bloodhound's Deep Dive):
                                 from this machine; see providers/whatsmyname.py
 """
 
+import os
 from datetime import datetime, timezone
 
 import requests
@@ -24,6 +25,16 @@ import requests
 from providers import whatsmyname as _wmn
 
 HEADERS = {"User-Agent": "Sentinel-OSINT/2.0"}
+
+
+def _urlscan_headers() -> dict:
+    """Anonymous by default; with a saved URLSCAN_API_KEY the search runs on
+    your account's larger quota. The key goes in a header, never the URL."""
+    headers = {"User-Agent": "Sentinel-OSINT/2.0"}
+    key = os.getenv("URLSCAN_API_KEY", "").strip()
+    if key:
+        headers["API-Key"] = key
+    return headers
 
 
 def _github(username: str) -> dict:
@@ -139,7 +150,7 @@ def lookup(username: str, *, whatsmyname: bool = False, on_progress=None,
                 "size": 30,
             },
             timeout=10,
-            headers={"User-Agent": "Sentinel-OSINT/2.0"},
+            headers=_urlscan_headers(),
         )
 
         if resp.status_code == 200:
@@ -174,9 +185,13 @@ def lookup(username: str, *, whatsmyname: bool = False, on_progress=None,
 
         elif resp.status_code == 429:
             result["error"] = (
+                "urlscan.io rate limit reached. Your key's daily search quota is used up."
+                if os.getenv("URLSCAN_API_KEY", "").strip() else
                 "urlscan.io rate limit reached (~100 req/day without API key). "
-                "Register at https://urlscan.io for a free key."
+                "Save a free key on Settings → OSINT Keys to raise it."
             )
+        elif resp.status_code in (401, 403):
+            result["error"] = "urlscan.io rejected the URLSCAN_API_KEY"
         else:
             result["error"] = f"urlscan.io returned HTTP {resp.status_code}"
 

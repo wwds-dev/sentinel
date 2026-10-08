@@ -92,7 +92,20 @@ def test_explanation_names_agents_and_key():
     text = osint_keys.explain("ahmia")
     assert ".onion" in text and "Trace" in text and "Bloodhound" in text
     assert "No key needed" in text
-    assert "No agent uses" in osint_keys.explain("virustotal")
+    assert "Skipped until a key is saved" in osint_keys.explain("virustotal")
+
+
+def test_a_row_with_no_agent_says_so(monkeypatch):
+    monkeypatch.setitem(osint_keys.OSINT_TOOL_INFO, "placeholder", {
+        "about": "x", "agents": {}, "key": osint_keys.KEY_UNREAD})
+    assert "No agent uses" in osint_keys.explain("placeholder")
+
+
+def test_every_key_on_the_tab_does_something():
+    """The tab once listed twelve keys nothing read. A new row needs its code."""
+    unread = [tool for tool, info in osint_keys.OSINT_TOOL_INFO.items()
+              if info["key"] == osint_keys.KEY_UNREAD or not info["agents"]]
+    assert unread == []
 
 
 # ── The tab ───────────────────────────────────────────────────────────

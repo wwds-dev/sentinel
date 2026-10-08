@@ -56,9 +56,9 @@ written to the same `.env` and work without a restart.
 Each row says who uses the key. A filled chip, such as **Trace**, means the
 service is part of that agent's default run. An outlined chip means it is an
 extra: the agent works without it and uses it once the key is saved or you
-tick it. **key unused** and **no agent yet** mark keys no part of Sentinel
-reads today, so there is no point paying for those. Leave **Explain on hover**
-on and hover a service's name for what it does and what its key changes.
+tick it. Leave **Explain on hover** on and hover a service's name for what it
+does and what its key changes. A key the service rejects shows up as an error
+on that source's card in Trace, naming the service.
 
 Never paste a key into a chat message, a report or a screenshot, and never
 commit `.env` to git.

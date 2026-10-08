@@ -1650,6 +1650,79 @@ class TestTracePanel:
         assert "IPinfo" in seen["text"]
         assert "Criminal IP" in seen["text"]
 
+    def test_domain_consent_names_every_keyed_threat_intel_source(self, trace, monkeypatch):
+        """A saved key adds a service to the lookup, so it must join the consent text."""
+        from providers import intel_sources
+
+        seen = {}
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: seen.update(text=a[2]) or QMessageBox.No),
+        )
+        for source in intel_sources.SOURCES:
+            monkeypatch.setenv(source.env, "k")
+        trace.type_box.setCurrentText("Domain")
+        trace.target_input.setText("example.com")
+        trace.live_research()
+        for source in intel_sources.SOURCES:
+            if "domain" in source.kinds:
+                assert source.label in seen["text"], source.label
+        assert "AbuseIPDB" not in seen["text"]     # an IP-only source
+
+        trace.type_box.setCurrentText("IP Address")
+        trace.target_input.setText("203.0.113.5")
+        trace.live_research()
+        for label in ("AbuseIPDB", "GreyNoise", "VirusTotal", "AlienVault OTX",
+                      "Shodan", "Censys"):
+            assert label in seen["text"], label
+        assert "SecurityTrails" not in seen["text"]
+
+    def test_exposure_and_email_pickers_offer_the_new_paid_sources(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QCheckBox, QDialog
+
+        boxes = {}
+
+        def fake_exec(dialog):
+            for box in dialog.findChildren(QCheckBox):
+                boxes[box.text().split(" —")[0]] = box
+            return QDialog.Accepted
+
+        monkeypatch.setattr(QDialog, "exec", fake_exec)
+        assert trace._choose_exposure_sources("example.com", "Domain") == (
+            "ransomware_live", "ahmia")
+        assert not boxes["Snusbase"].isEnabled() and not boxes["LeakCheck"].isEnabled()
+
+        monkeypatch.setenv("SNUSBASE_API_KEY", "k")
+        monkeypatch.setenv("LEAKCHECK_API_KEY", "k")
+        assert trace._choose_exposure_sources("example.com", "Domain") == (
+            "ransomware_live", "ahmia", "snusbase", "leakcheck")
+
+        assert "hunter" not in trace._choose_email_sources("a@example.com")
+        assert not boxes["Hunter"].isEnabled()
+        monkeypatch.setenv("HUNTER_API_KEY", "k")
+        assert "hunter" in trace._choose_email_sources("a@example.com")
+
+    def test_trace_shows_a_card_per_keyed_source_that_answered(self, trace, monkeypatch):
+        shown = {}
+        monkeypatch.setattr(trace.sections, "show_sections",
+                            lambda cards, raw=None: shown.update(cards=cards))
+        trace._show_lookup_result({
+            "type": "ip", "query": "203.0.113.5", "sources_contacted": [],
+            "abuse_reports": {"abuse_confidence": 87}, "shodan_host": {"ports": [22]},
+        }, save=False)
+        titles = [card[0] for card in shown["cards"]]
+        assert "Abuse reports (AbuseIPDB)" in titles
+        assert "Host services and banners (Shodan)" in titles
+        assert "Security vendor verdicts (VirusTotal)" not in titles
+
+        trace._show_lookup_result({
+            "type": "exposure", "query": "example.com", "sources_contacted": [],
+            "summary": {}, "snusbase": {"status": "ok"}, "leakcheck": {"status": "ok"},
+        }, save=False)
+        titles = [card[0] for card in shown["cards"]]
+        assert "Breach databases (Snusbase)" in titles
+        assert "Breaches and leaked data types (LeakCheck)" in titles
+
     def test_company_consent_names_courtlistener(self, trace, monkeypatch):
         """Company Live Research always contacts CourtListener, so the consent
         text (and the audit line built from it) must name it. Regression: the

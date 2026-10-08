@@ -771,8 +771,7 @@ def show_settings(app):
 
     legend = QLabel(
         "<b>Used by:</b> a filled chip is essential for that agent and runs by "
-        "default. An outlined chip is an extra the agent can work without. "
-        "<i>key unused</i> means no part of Sentinel reads that key yet."
+        "default. An outlined chip is an extra the agent can work without."
     )
     legend.setWordWrap(True)
     legend.setStyleSheet("color: #888; font-size: 11px;")
@@ -859,7 +858,8 @@ def show_settings(app):
 
         key_edit = QLineEdit(env_values.get(env_key, "") if env_key else "")
         key_edit.setEchoMode(QLineEdit.Password)
-        key_edit.setPlaceholderText(env_key)
+        key_edit.setPlaceholderText(
+            osint_keys.OSINT_TOOL_INFO.get(tool_id, {}).get("key_hint") or env_key)
         key_edit.setMinimumWidth(160)
         eye_btn = QPushButton("👁")
         eye_btn.setCheckable(True)

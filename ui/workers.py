@@ -102,7 +102,7 @@ class ExposureLookupWorker(QThread):
 
     The Intelligence X poll and the ransomware.live/Ahmia calls together take a
     few seconds, so this must not run on the interface thread. ``sources`` is the
-    subset of {"ransomware_live", "ahmia", "intelx", "dehashed"} the user approved.
+    subset of exposure_lookup.DEFAULT_SOURCES the user approved.
     """
 
     progress_signal = Signal(str, str)

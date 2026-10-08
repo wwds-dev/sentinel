@@ -44,9 +44,14 @@ Before the model is called, Bloodhound collects real public-source data for the
 target: WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, crt.sh and the
 Wayback Machine for domains (for IPs: SANS DShield attack history and Shodan
 InternetDB exposure instead of crt.sh and Wayback, plus IPinfo geolocation and
-Criminal IP reputation when their keys are set); EmailRep, Gravatar (by address
-hash), HIBP (with a key) and BreachDirectory for emails, plus DeHashed breach
-metadata when its key is set; URLScan, GitHub and Keybase for usernames; GLEIF,
+Criminal IP reputation when their keys are set). Each saved threat-intelligence
+key adds its source: AbuseIPDB, GreyNoise, VirusTotal, AlienVault OTX, Shodan and
+Censys for IPs; VirusTotal, OTX, SecurityTrails, DomainTools, Shodan DNS, URLScan
+and Hunter (email pattern and role addresses only) for domains. EmailRep,
+Gravatar (by address hash), HIBP (with a key), BreachDirectory and Hunter's
+mail-server check (with a key) for emails, plus DeHashed, Snusbase and LeakCheck
+breach metadata when their keys are set — breach names, counts and kinds of
+leaked data, never the leaked values; URLScan, GitHub and Keybase for usernames; GLEIF,
 ICIJ Offshore Leaks, CourtListener court dockets and (with a key) OpenSanctions
 screening for organisations. Phone and person-name targets
 contact nothing. The prompt treats Keybase's signed proofs as the strongest

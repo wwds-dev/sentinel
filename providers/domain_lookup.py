@@ -24,6 +24,11 @@ Key-gated (set in .env), IP only:
   • Criminal IP   → CRIMINALIP_API_KEY — reputation score, VPN/proxy/Tor/hosting
                     flags, open ports and the network owner. Credit-metered; this
                     source is skipped unless a key is set.
+
+Key-gated threat intelligence (providers/intel_sources.py), each contacted only
+once its key is saved: AbuseIPDB, GreyNoise, VirusTotal, AlienVault OTX, Shodan
+and Censys for IPs; VirusTotal, OTX, SecurityTrails, DomainTools, Shodan DNS,
+URLScan and Hunter for domains. ``keyed_labels`` names them for consent text.
 """
 
 import ipaddress
@@ -34,6 +39,7 @@ import requests
 from dotenv import load_dotenv
 from urllib.parse import urlsplit
 
+from providers import intel_sources
 from services.runtime_paths import user_data_base
 
 load_dotenv(user_data_base() / ".env", override=False)
@@ -463,6 +469,22 @@ def _criminalip(ip: str) -> dict:
 
 # ── public interface ──────────────────────────────────────────────────────────
 
+def keyed_labels(target: str) -> list[str]:
+    """The key-gated services a lookup of ``target`` would contact right now.
+
+    Trace's consent prompt names these, so the list it shows and the list the
+    lookup runs come from the same place.
+    """
+    is_ip = _is_ip(_normalize(target))
+    labels = []
+    if is_ip and os.getenv("IPINFO_API_KEY", "").strip():
+        labels.append("IPinfo")
+    if is_ip and os.getenv("CRIMINALIP_API_KEY", "").strip():
+        labels.append("Criminal IP")
+    labels += [s.label for s in intel_sources.configured("ip" if is_ip else "domain")]
+    return labels
+
+
 def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
     """
     Return a normalised OSINT dict for a domain or IP address.
@@ -501,6 +523,9 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
     if not is_ip:
         sources.append(("Certificate transparency (crt.sh)", "certificates", _crtsh))
         sources.append(("Wayback Machine", "archive", _wayback))
+    for keyed in intel_sources.configured("ip" if is_ip else "domain"):
+        sources.append((keyed.label, keyed.result_key,
+                        lambda t, k=keyed: intel_sources.call(k, t)))
 
     for label, key, source_lookup in sources:
         if should_stop and should_stop():

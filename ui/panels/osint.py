@@ -341,6 +341,7 @@ class OsintPanel(AgentPanel):
                 "gravatar": "Gravatar",
                 "hibp": "Have I Been Pwned",
                 "breachdirectory": "BreachDirectory",
+                "hunter": "Hunter",
             }
             sources = ", ".join(labels[source] for source in selected_sources)
         else:
@@ -353,17 +354,13 @@ class OsintPanel(AgentPanel):
                 "Company": "GLEIF Legal Entity Index and CourtListener court records",
             }
             sources = source_map[validation.query_type]
-            if validation.query_type == "IP Address":
-                # Mirror the key-gated IP sources that domain_lookup.lookup()
-                # contacts, so the consent text names every service that will
-                # actually receive the target IP.
-                import os
+            if validation.query_type in {"IP Address", "Domain"}:
+                # Name every key-gated service domain_lookup.lookup() will
+                # contact, from the same list it runs, so the consent text and
+                # the lookup cannot disagree.
+                from providers.domain_lookup import keyed_labels
 
-                extra = []
-                if os.getenv("IPINFO_API_KEY", "").strip():
-                    extra.append("IPinfo")
-                if os.getenv("CRIMINALIP_API_KEY", "").strip():
-                    extra.append("Criminal IP")
+                extra = keyed_labels(target)
                 if extra:
                     sources += ", " + ", ".join(extra)
             if validation.query_type == "Company":
@@ -433,10 +430,21 @@ class OsintPanel(AgentPanel):
         hibp = QCheckBox("Have I Been Pwned — breach and paste records (API key required)")
         hibp.setEnabled(bool(HIBP_KEY))
         breach = QCheckBox("BreachDirectory — open breach-index search")
+        from providers.intel_sources import key as _key
+
+        hunter_key = bool(_key("HUNTER_API_KEY"))
+        hunter = QCheckBox(
+            "Hunter — can the address receive mail; disposable or webmail (API key required)"
+        )
+        hunter.setEnabled(hunter_key)
+        hunter.setChecked(hunter_key)
+        if not hunter_key:
+            hunter.setToolTip("Save HUNTER_API_KEY on Settings → OSINT Keys to enable Hunter.")
         layout.addWidget(emailrep)
         layout.addWidget(gravatar)
         layout.addWidget(hibp)
         layout.addWidget(breach)
+        layout.addWidget(hunter)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -453,6 +461,8 @@ class OsintPanel(AgentPanel):
             selected.append("hibp")
         if breach.isChecked():
             selected.append("breachdirectory")
+        if hunter.isChecked():
+            selected.append("hunter")
         if not selected:
             QMessageBox.information(
                 self, "No Sources Selected", "Select at least one email research source."
@@ -465,6 +475,8 @@ class OsintPanel(AgentPanel):
         "ahmia": "Ahmia",
         "intelx": "Intelligence X",
         "dehashed": "DeHashed",
+        "snusbase": "Snusbase",
+        "leakcheck": "LeakCheck",
     }
 
     def exposure_check(self) -> None:
@@ -551,10 +563,32 @@ class OsintPanel(AgentPanel):
         dehashed.setChecked(dehashed_available)
         if not dehashed_available:
             dehashed.setToolTip("Set DEHASHED_API_KEY in .env to enable DeHashed.")
+        from providers.exposure_lookup import leakcheck_key, snusbase_key
+
+        snusbase_available = bool(snusbase_key())
+        snusbase = QCheckBox(
+            "Snusbase — which breach databases the target is in; metadata only, "
+            "no leaked passwords (paid API key required)"
+        )
+        snusbase.setEnabled(snusbase_available)
+        snusbase.setChecked(snusbase_available)
+        if not snusbase_available:
+            snusbase.setToolTip("Save SNUSBASE_API_KEY on Settings → OSINT Keys to enable Snusbase.")
+        leakcheck_available = bool(leakcheck_key())
+        leakcheck = QCheckBox(
+            "LeakCheck — which breaches the target is in and what kind of data leaked; "
+            "metadata only (paid API key required)"
+        )
+        leakcheck.setEnabled(leakcheck_available)
+        leakcheck.setChecked(leakcheck_available)
+        if not leakcheck_available:
+            leakcheck.setToolTip("Save LEAKCHECK_API_KEY on Settings → OSINT Keys to enable LeakCheck.")
         layout.addWidget(ransomware)
         layout.addWidget(ahmia)
         layout.addWidget(intelx)
         layout.addWidget(dehashed)
+        layout.addWidget(snusbase)
+        layout.addWidget(leakcheck)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -572,6 +606,10 @@ class OsintPanel(AgentPanel):
             selected.append("intelx")
         if dehashed.isChecked():
             selected.append("dehashed")
+        if snusbase.isChecked():
+            selected.append("snusbase")
+        if leakcheck.isChecked():
+            selected.append("leakcheck")
         if not selected:
             QMessageBox.information(
                 self, "No Sources Selected", "Select at least one exposure source."
@@ -648,6 +686,12 @@ class OsintPanel(AgentPanel):
                  self._lookup_text(result.get("certificates"))),
                 ("Web archive", self._lookup_text(result.get("archive"))),
             ])
+        if result.get("type") in {"domain", "ip"}:
+            from providers.intel_sources import SOURCES as KEYED_SOURCES
+
+            for keyed in KEYED_SOURCES:
+                if keyed.result_key in result:
+                    cards.append((keyed.card, self._lookup_text(result[keyed.result_key])))
         elif result.get("type") == "username":
             cards.extend([
                 ("URLScan findings", self._lookup_text(result.get("urlscan"))),
@@ -663,6 +707,9 @@ class OsintPanel(AgentPanel):
                 ("Have I Been Pwned", self._lookup_text(result.get("hibp"))),
                 ("BreachDirectory", self._lookup_text(result.get("breachdirectory"))),
             ])
+            if "hunter" in result:
+                cards.append(("Mail server check (Hunter)",
+                              self._lookup_text(result.get("hunter"))))
         elif result.get("type") == "company":
             cards.append((
                 "Legal entity records",
@@ -704,6 +751,10 @@ class OsintPanel(AgentPanel):
                 ("Intelligence X", self._lookup_text(result.get("intelx"))),
                 ("Breach databases (DeHashed)", self._lookup_text(result.get("dehashed"))),
             ])
+            for key, title in (("snusbase", "Breach databases (Snusbase)"),
+                               ("leakcheck", "Breaches and leaked data types (LeakCheck)")):
+                if key in result:
+                    cards.append((title, self._lookup_text(result.get(key))))
         raw = self._lookup_text(result)
         self.sections.show_sections(cards, raw=raw)
         self.sections.setVisible(True)

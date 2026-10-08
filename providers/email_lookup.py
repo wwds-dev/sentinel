@@ -10,6 +10,8 @@ Zero-cost stack:
 
 Key-gated (set in .env):
   • haveibeenpwned     → HIBP_API_KEY  — breach names, data classes, pastes ($3.50/mo)
+  • Hunter verifier    → HUNTER_API_KEY — can the address receive mail; disposable,
+                         webmail or catch-all domain (providers/intel_sources.py)
 
 Returns a normalised dict suitable for direct injection into an LLM prompt.
 """
@@ -183,6 +185,22 @@ def _emailrep(email: str) -> dict:
         return {"error": str(exc)[:300]}
 
 
+def _hunter(email: str) -> dict:
+    """Hunter email verifier. Requires HUNTER_API_KEY; skipped without one."""
+    from providers import intel_sources
+
+    if not intel_sources.key("HUNTER_API_KEY"):
+        return {"source": "hunter", "status": "skipped",
+                "reason": "HUNTER_API_KEY not set — add it on Settings → OSINT Keys."}
+    payload = intel_sources.hunter_verify(email)
+    if payload.get("error"):
+        return {"source": "hunter", "status": "error", "detail": payload["error"]}
+    return {"source": "hunter", "status": "ok", **payload}
+
+
+DEFAULT_SOURCES = ("emailrep", "hibp", "breachdirectory", "gravatar", "hunter")
+
+
 def lookup(email: str, *, selected_sources=None, on_progress=None,
            should_stop=None) -> dict:
     """
@@ -204,14 +222,13 @@ def lookup(email: str, *, selected_sources=None, on_progress=None,
         result["error"] = "Invalid email format — skipping live lookup."
         return result
 
-    selected = set(
-        selected_sources or {"emailrep", "hibp", "breachdirectory", "gravatar"}
-    )
+    selected = set(selected_sources or DEFAULT_SOURCES)
     source_calls = [
         ("emailrep", "EmailRep", _emailrep),
         ("gravatar", "Gravatar", _gravatar),
         ("hibp", "Have I Been Pwned", _hibp),
         ("breachdirectory", "BreachDirectory", _breachdirectory),
+        ("hunter", "Hunter", _hunter),
     ]
     for key, label, source_lookup in source_calls:
         if key not in selected:

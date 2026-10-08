@@ -95,6 +95,37 @@ def _isolated_settings_file():
         yield
 
 
+# Every key a lookup source switches on. The app loads the real .env, so with
+# the operator's keys present a lookup test would quietly call VirusTotal,
+# Shodan and the rest for example.com — it did, once, before this fixture.
+OSINT_SOURCE_KEYS = (
+    "URLSCAN_API_KEY", "VIRUSTOTAL_API_KEY", "OTX_API_KEY", "IPINFO_API_KEY",
+    "ABUSEIPDB_API_KEY", "GREYNOISE_API_KEY", "CENSYS_API_KEY", "CENSYS_ORG_ID",
+    "CRIMINALIP_API_KEY", "SECURITYTRAILS_API_KEY", "HUNTER_API_KEY",
+    "ADDYIO_API_KEY", "HIBP_API_KEY", "SHODAN_API_KEY", "DEHASHED_API_KEY",
+    "SNUSBASE_API_KEY", "LEAKCHECK_API_KEY", "INTELX_API_KEY",
+    "DOMAINTOOLS_API_KEY", "DOMAINTOOLS_API_USERNAME", "COURTLISTENER_API_KEY",
+    "OPENSANCTIONS_API_KEY",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_osint_keys_for_the_session():
+    """Session scope too, so the module-scoped windows are built keyless."""
+    with pytest.MonkeyPatch.context() as patch:
+        for name in OSINT_SOURCE_KEYS:
+            patch.delenv(name, raising=False)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_osint_keys(monkeypatch):
+    """Per test as well: Save Key writes os.environ, and a test that sets a key
+    must not hand it to the next one."""
+    for name in OSINT_SOURCE_KEYS:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_tunnel_audit():
     """Point Tunnel's audit log at _TEST_ROOT instead of data/logs/.

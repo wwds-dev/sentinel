@@ -16,7 +16,7 @@ Roles, per agent:
 Key states:
   KEY_NONE     — the service needs no key, and the tab shows no key field.
   KEY_NEEDED   — the source is skipped until a key is saved.
-  KEY_OPTIONAL — the source runs without a key; a key only lifts a limit.
+  KEY_OPTIONAL — the source runs without a key; a key adds data or lifts a limit.
   KEY_UNREAD   — nothing in Sentinel reads this key yet. Saving one does no harm
                  and does nothing until a provider uses it.
 """
@@ -37,7 +37,7 @@ USER_LABELS = {ALIAS_BUTTON: "Alias button"}
 KEY_STATE_TEXT = {
     KEY_NONE: "No key needed.",
     KEY_NEEDED: "Skipped until a key is saved.",
-    KEY_OPTIONAL: "Works without a key; a key only raises the rate limit.",
+    KEY_OPTIONAL: "Works without a key; saving one adds more.",
     KEY_UNREAD: "No part of Sentinel reads this key yet, so saving one changes nothing for now.",
 }
 
@@ -55,23 +55,25 @@ OSINT_TOOL_INFO = {
     },
     "urlscan": {
         "about": "An archive of real browser scans of public web pages. Trace and "
-                 "Bloodhound search it for a username's footprint, anonymously, "
-                 "at about 100 searches a day.",
+                 "Bloodhound search it for a username's footprint. With a key, "
+                 "domain lookups also list the recent public scans of the domain.",
         "agents": {TRACE: ESSENTIAL, BLOODHOUND: ESSENTIAL},
-        "key": KEY_UNREAD,
+        "key": KEY_OPTIONAL,
+        "note": "Without a key, searches are anonymous and capped at about 100 a day.",
     },
     "virustotal": {
-        "about": "Checks files, URLs, domains and IPs against dozens of antivirus "
-                 "engines and reputation feeds.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "Verdicts from dozens of antivirus engines and reputation feeds for "
+                 "an IP address or domain, plus community votes and categories.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
+        "note": "The free key allows 4 lookups a minute and 500 a day.",
     },
     "otx": {
-        "about": "AlienVault Open Threat Exchange: community-shared indicators of "
-                 "compromise, such as malicious IPs, domains and file hashes, "
-                 "grouped into threat reports.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "AlienVault Open Threat Exchange: community threat reports, called "
+                 "pulses, that name an IP address or domain, with malware families "
+                 "and adversaries where known.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
     },
     "ipinfo": {
         "about": "Where an IP address is and who runs its network. Paid plans add "
@@ -82,38 +84,46 @@ OSINT_TOOL_INFO = {
     },
     "abuseipdb": {
         "about": "Community reports of abusive IP addresses, such as brute forcing, "
-                 "spam and port scanning, with a confidence score.",
-        "agents": {},
-        "key": KEY_UNREAD,
+                 "spam and port scanning, with a 0 to 100 confidence score.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
     },
     "greynoise": {
-        "about": "Separates internet background noise, such as mass scanners and "
-                 "crawlers, from activity aimed at you.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "Says whether an IP address is mass-scanning the whole internet, "
+                 "or is a known benign service such as a CDN, so you can tell "
+                 "background noise from activity aimed at you.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
     },
     "censys": {
-        "about": "A search engine over continuous scans of internet-facing hosts: "
-                 "open services, TLS certificates and the software behind them.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "A search engine over continuous scans of internet-facing hosts. "
+                 "For an IP address: its open services, the software behind them "
+                 "and its certificates.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
     },
     "criminalip": {
         "about": "IP reputation score, VPN, proxy, Tor and hosting flags, open "
                  "ports and the network owner. Each lookup spends credits.",
         "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
         "key": KEY_NEEDED,
+        "key_hint": "Platform personal access token",
+        "note": ("Use a Censys Platform personal access token. The free account allows "
+                 "100 lookups a month. Paid organisations also set CENSYS_ORG_ID in .env."),
     },
     "securitytrails": {
-        "about": "Historical DNS and WHOIS records, subdomains and related domains.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "Current DNS records of a domain, when each was first seen, and "
+                 "how many subdomains SecurityTrails knows about.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
+        "note": "The free plan allows 50 lookups a month; each domain lookup uses one.",
     },
     "hunter": {
-        "about": "Finds the professional email addresses published for a company "
-                 "domain, and checks whether an address can receive mail.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "A company domain's email pattern and its role addresses, such as "
+                 "security@, plus a mail-server check for an email address. Sentinel "
+                 "reports how many named people's addresses Hunter knows, never who.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
     },
     "addyio": {
         "about": "Anonymous email forwarding. Sentinel uses it only for the Mint "
@@ -136,11 +146,14 @@ OSINT_TOOL_INFO = {
         "key": KEY_NEEDED,
     },
     "shodan": {
-        "about": "A search engine for internet-connected devices and their open "
-                 "ports. Sentinel uses only Shodan's free InternetDB lookup, which "
-                 "needs no key.",
+        "about": "A search engine for internet-connected devices. Without a key, "
+                 "Sentinel uses Shodan's free InternetDB summary of open ports and "
+                 "known vulnerabilities. With a key, IP lookups get the full host "
+                 "record with service banners, and domain lookups list the "
+                 "subdomains Shodan has seen.",
         "agents": {TRACE: ESSENTIAL, BLOODHOUND: ESSENTIAL},
-        "key": KEY_UNREAD,
+        "key": KEY_OPTIONAL,
+        "note": "A domain lookup with a key spends one Shodan query credit.",
     },
     "dehashed": {
         "about": "Breach database search. Sentinel reads only which breaches contain "
@@ -150,14 +163,18 @@ OSINT_TOOL_INFO = {
         "key": KEY_NEEDED,
     },
     "snusbase": {
-        "about": "Breach database search by email, username, IP address or hash.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "Breach database search. Sentinel reports which breaches hold an "
+                 "email or domain, how many records and what kinds of data leaked, "
+                 "never the leaked values.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
     },
     "leakcheck": {
-        "about": "Breach and leak search by email, username or domain.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "Breach and leak search. Sentinel reports which breaches hold an "
+                 "email or domain, when they happened and what kinds of data leaked, "
+                 "never the leaked values.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
     },
     "ransomware_live": {
         "about": "Tracks the victims ransomware gangs post on their leak sites. "
@@ -180,15 +197,20 @@ OSINT_TOOL_INFO = {
         "key": KEY_NEEDED,
     },
     "domaintools": {
-        "about": "Commercial WHOIS history, passive DNS and domain risk scoring.",
-        "agents": {},
-        "key": KEY_UNREAD,
+        "about": "Commercial domain intelligence: the domain's registration profile "
+                 "and DomainTools' risk score for it.",
+        "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
+        "key": KEY_NEEDED,
+        "key_hint": "username:api_key",
+        "note": ("Save it as username:api_key so each request is signed and the key "
+                 "itself is never sent. Each product is used only if your plan has it."),
     },
     "courtlistener": {
         "about": "The Free Law Project's archive of U.S. court dockets. Sentinel "
                  "reports that a case exists, never its filings.",
         "agents": {TRACE: ESSENTIAL, BLOODHOUND: ESSENTIAL},
         "key": KEY_OPTIONAL,
+        "note": "A key only raises the rate limit.",
     },
     "opensanctions": {
         "about": "Sanctions lists, politically exposed persons and other watchlists "
