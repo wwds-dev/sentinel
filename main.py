@@ -57,7 +57,7 @@ from services.qwen_client import QwenClientWrapper
 from services.resource_monitor import ResourceMonitor
 from services.history_store import HistoryStore
 from services.report_exporter import ReportExporter
-from services.usage_tracker import UsageTracker
+from services.usage_tracker import UsageTracker, estimate_prompt_tokens
 from services.database import init_db, get_setting, save_setting, get_connection
 from services.registry import Registry
 from services.validator import Validator
@@ -83,6 +83,7 @@ from services.model_recommendations import (
     ratings_loaded, MODEL_CATALOG,
 )
 from services.model_watch import ModelWatch
+from services.price_resolution import table_lookup
 from services import benchmarks
 
 
@@ -519,7 +520,7 @@ class GodAI(QWidget):
         estimated at zero and sailed straight past the budget gate in
         Validator.validate() no matter how expensive the model was.
         """
-        approx_input_tokens = max(1, int(len(prompt) / 4))
+        approx_input_tokens = estimate_prompt_tokens(prompt)
         approx_output_tokens = max(250, int(approx_input_tokens * 1.2))
         approx_total_tokens = approx_input_tokens + approx_output_tokens
 
@@ -571,7 +572,9 @@ class GodAI(QWidget):
 
         Read once here rather than per lookup: the router asks for a price
         for every candidate on every route, and the table changes only when
-        the user edits it.
+        the user edits it. The lookup resolves a model the way the bill does
+        (services/price_resolution.py), so a route is weighed at the price it
+        will be charged.
         """
         try:
             table = UsageTracker().load_pricing()
@@ -579,15 +582,7 @@ class GodAI(QWidget):
             print(f"[pricing] router keeps catalog prices only: {exc}")
             set_price_lookup(None)
             return
-
-        def lookup(provider: str, model: str):
-            row = table.get(provider, {}).get(model)
-            if not isinstance(row, dict):
-                return None
-            return (row.get("input_per_1m_usd") or 0.0,
-                    row.get("output_per_1m_usd") or 0.0)
-
-        set_price_lookup(lookup)
+        set_price_lookup(table_lookup(table))
     def update_live_cost_estimate(self):
         if not hasattr(self, "live_estimate_label"):
             return
@@ -3113,8 +3108,12 @@ class GodAI(QWidget):
         available = {provider: self.models_for_provider(provider) for provider in sorted(enabled)}
         manual_provider = self.provider_box.currentText() if keep_manual and hasattr(self, "provider_box") else None
         manual_model = self.model_box.currentText() if keep_manual and hasattr(self, "model_box") else None
+        # The prompt's size, measured as estimate_chat_cost measures it, is
+        # what drops models whose context window cannot hold it and switches
+        # a prompt over 100K tokens to long_context.
         return route_request(
             prompt, agent=agent, tool=tool,
+            context_tokens=estimate_prompt_tokens(prompt),
             preferences=self._routing_preferences(),
             available_models=available, enabled_providers=enabled,
             manual_provider=manual_provider, manual_model=manual_model,

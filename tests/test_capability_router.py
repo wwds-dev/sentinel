@@ -106,3 +106,58 @@ def test_unknown_provider_pricing_is_not_guessed():
     pricing = pricing_metadata("customer-hosted-gateway", "private-model")
     assert pricing.status == "unknown"
     assert pricing.compact == "UNKNOWN"
+
+
+# ── Words, not substrings ────────────────────────────────────────────────────
+# Each of these once imposed a hard requirement from a word inside another
+# word: "draw" in "withdraw" left gpt-image-1.5 as the only eligible model,
+# "script" in "transcript" and "code" in "postcode" required coding.
+
+@pytest.mark.parametrize("prompt, task", [
+    ("withdraw the claim and rewrite the email", "writing"),
+    ("summarize this transcript", "summarize"),
+    ("what's the postcode", "general"),
+    ("improve this paragraph", "general"),                # "prove"
+    ("explain photosynthesis", "general"),                # "photo"
+    ("list resources for learning Rust", "general"),      # "sources"
+    ("draw conclusions from this report", "general"),
+    ("make a list of images in this folder", "general"),
+    ("create a caption for this image", "general"),
+])
+def test_a_keyword_inside_another_word_is_not_that_keyword(prompt, task):
+    request = classify_request(prompt)
+    assert request.task == task
+    assert request.required == frozenset({"text"})
+
+
+def test_withdraw_no_longer_routes_to_the_image_model():
+    decision = route_request("withdraw the claim and rewrite the email", available_models=ALL)
+    assert decision.task == "writing"
+    assert decision.model != IMAGE_MODEL
+
+
+@pytest.mark.parametrize("prompt, task, capability", [
+    ("Draw a cat wearing a hat", "image_generation", "image_generation"),
+    ("draw me a lighthouse at dusk", "image_generation", "image_generation"),
+    ("Design a logo for my bakery", "image_generation", "image_generation"),
+    ("Generate an image", "image_generation", "image_generation"),
+    ("Can you help with debugging this traceback?", "coding", "coding"),
+    ("Refactor these functions", "coding", "coding"),
+    ("Look at the attached image", "vision", "vision"),
+    ("Investigate this domain", "research", "tool_use"),
+    ("Prove that the sum is finite", "reasoning", "reasoning"),
+])
+def test_the_whole_words_and_their_forms_still_match(prompt, task, capability):
+    request = classify_request(prompt)
+    assert request.task == task
+    assert capability in request.required
+
+
+def test_summarize_is_read_before_coding():
+    assert classify_request("summarize this script").task == "summarize"
+    assert classify_request("summarise the code review").task == "summarize"
+
+
+def test_an_agent_key_with_an_underscore_still_names_its_kind_of_work():
+    # `\b` would treat osint_heavy as one word and lose "osint".
+    assert classify_request("", agent="osint_heavy").required == frozenset({"text", "tool_use"})

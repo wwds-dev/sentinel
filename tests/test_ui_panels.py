@@ -366,6 +366,49 @@ class TestRecommendationsStillReachThePanels:
             win.auto_recommend_checkbox.setChecked(previous_auto)
 
 
+    def test_the_route_is_given_the_prompt_size_the_cost_estimate_uses(
+            self, win, monkeypatch):
+        """route_for_request never passed context_tokens, so the router's
+        context-window check and its >100K long_context switch never fired
+        from the app."""
+        import main
+        from services.usage_tracker import estimate_prompt_tokens
+
+        seen = {}
+        real = main.route_request
+
+        def spy(prompt, **kwargs):
+            seen.update(kwargs)
+            return real(prompt, **kwargs)
+
+        monkeypatch.setattr(main, "route_request", spy)
+        prompt = "word " * 10_000
+        win.route_for_request(prompt, keep_manual=False)
+        assert seen["context_tokens"] == estimate_prompt_tokens(prompt) == 12_500
+
+    def test_a_prompt_no_enabled_model_can_hold_is_refused_not_truncated(
+            self, win, monkeypatch):
+        monkeypatch.setattr(win, "_enabled_provider_names", lambda: {"ollama"})
+        assert win.route_for_request("Summarize this transcript",
+                                     keep_manual=False).provider == "ollama"
+        # ~200K tokens, more than any local model's window holds.
+        with pytest.raises(RuntimeError, match="No available model"):
+            win.route_for_request("Summarize this transcript. " + "x" * 800_000,
+                                  keep_manual=False)
+
+    def test_a_long_prompt_routes_to_a_model_that_can_hold_it(self, win, monkeypatch):
+        from services.model_recommendations import MODEL_CATALOG, RoutingPreferences
+
+        monkeypatch.setattr(win, "_enabled_provider_names", lambda: {"ollama", "gemini"})
+        monkeypatch.setattr(win, "_routing_preferences", lambda: RoutingPreferences())
+        decision = win.route_for_request("Summarize this transcript. " + "x" * 2_400_000,
+                                         keep_manual=False)
+        window = next(p.capabilities.context_window for p in MODEL_CATALOG
+                      if (p.provider, p.model) == (decision.provider, decision.model))
+        assert decision.task == "long_context"
+        assert window >= 600_000
+
+
 class TestModelLoaderRegistry:
 
     @pytest.mark.parametrize("agent", PANEL_AGENTS + ["chat"])

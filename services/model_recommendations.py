@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -39,6 +40,7 @@ class PricingMetadata:
     label: str
     input_per_1m_usd: float | None = None
     output_per_1m_usd: float | None = None
+    source: str = "exact"         # "default" when billed at the provider default
 
     @property
     def compact(self) -> str:
@@ -51,6 +53,7 @@ class PricingMetadata:
         return (
             f"PAID · ${self.input_per_1m_usd:g}/${self.output_per_1m_usd:g} "
             "per 1M in/out"
+            + (" (provider default)" if self.source == "default" else "")
         )
 
 
@@ -140,7 +143,8 @@ MODEL_CATALOG: tuple[ModelProfile, ...] = (
     ModelProfile("anthropic", "claude-sonnet-5", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=2, latency=2), 3, 2.0, 10.0),
     ModelProfile("anthropic", "claude-sonnet-4-6", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=200_000, cost=2, latency=2), 3, 3.0, 15.0),
     ModelProfile("anthropic", "claude-haiku-4-5-20251001", _caps(reasoning=2, coding=2, vision=True, tool_use=True, context_window=200_000, cost=1, latency=1), 2, 1.0, 5.0),
-    ModelProfile("qwen", "qwen3.8-max", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=2, latency=2), 3, 1.65, 4.951),
+    # The Singapore rate, which is the endpoint services/qwen_client.py calls.
+    ModelProfile("qwen", "qwen3.8-max", _caps(reasoning=3, coding=3, vision=True, tool_use=True, context_window=1_000_000, cost=2, latency=2), 3, 2.0, 6.0),
     ModelProfile("qwen", "qwen3-max", _caps(reasoning=3, coding=3, tool_use=True, context_window=256_000, cost=2, latency=2), 3),
     ModelProfile("qwen", "qwen-plus", _caps(reasoning=2, coding=2, tool_use=True, context_window=128_000, cost=1, latency=1), 2),
     ModelProfile("qwen", "qwen-flash", _caps(reasoning=1, coding=1, tool_use=True, context_window=128_000, cost=1, latency=1), 1),
@@ -170,7 +174,12 @@ def unregister_profile(provider: str, model: str) -> None:
 
 
 def pricing_metadata(provider: str, model: str) -> PricingMetadata:
-    """Resolve display-safe billing metadata without treating missing data as free."""
+    """Resolve display-safe billing metadata without treating missing data as free.
+
+    The figures are the ones the bill would use (`model_price`), so the Cost
+    readout and the bill cannot disagree; a model billed at its provider's
+    default row says so.
+    """
     provider_info = provider_metadata(provider)
     if provider_info.pricing_status == "free_local":
         return PricingMetadata("free_local", "Free / Local", 0.0, 0.0)
@@ -180,12 +189,11 @@ def pricing_metadata(provider: str, model: str) -> PricingMetadata:
         (item for item in catalog()
          if item.provider == provider and item.model == model),
         None,
-    )
-    if profile is None:
+    ) or ModelProfile(provider, model, ModelCapabilities())
+    price = model_price(profile)
+    if price is None:
         return PricingMetadata("paid", "Paid")
-    return PricingMetadata(
-        "paid", "Paid", profile.input_per_1m_usd, profile.output_per_1m_usd,
-    )
+    return PricingMetadata("paid", "Paid", price[0], price[1], price.source)
 
 
 AGENT_HINTS = {
@@ -193,6 +201,47 @@ AGENT_HINTS = {
     "bug_bounty": "coding", "manager": "coding", "vpn": "coding",
     "sentry": "coding",
 }
+
+
+def _words(*phrases: str) -> re.Pattern:
+    """Any of `phrases` (regex fragments) as whole words.
+
+    A substring test matched "draw" inside "withdraw", "code" inside
+    "postcode" and "script" inside "transcript", and each of those imposed a
+    hard capability requirement on the route. The boundary is "not a letter
+    or digit" rather than `\\b` because `\\b` treats `_` as a letter, and the
+    text includes the agent key: osint_heavy must still read as osint.
+    """
+    return re.compile(r"(?<![a-z0-9])(?:" + "|".join(phrases) + r")(?![a-z0-9])")
+
+
+# A word between the verb and the picture noun; a preposition there means the
+# picture is not what is being made ("make a list of images", "create a
+# caption for this image").
+_GAP = r"(?:\s+(?!(?:of|for|from|in|about|with|on)\b)[\w-]+){0,3}?"
+_IMAGE_NOUN = (r"(?:image|picture|illustration|drawing|painting|logo|icon|"
+               r"poster|artwork|sketch|wallpaper)s?")
+_IMAGE_REQUEST = _words(
+    rf"(?:generate|create|make|draw|paint|render|design|produce){_GAP}\s+{_IMAGE_NOUN}",
+    r"text-to-image",
+    r"(?:draw|paint|sketch|illustrate)\s+(?:me|us)",
+    # "draw a cat", but not "draw a conclusion" or "draw the line".
+    r"(?:draw|paint|sketch)\s+(?:an?|the|some|my|our)\s+"
+    r"(?!(?:conclusion|line|distinction|comparison|parallel|inference|lesson|"
+    r"blank|breath|attention)s?\b)[a-z]+",
+)
+_VISION = _words(r"attached image", r"screenshots?", r"photos?", r"photographs?",
+                 r"what is in this image", r"analy[sz]e this image")
+_SUMMARIZE = _words(r"summari[sz](?:e|es|ed|ing)", r"long document", r"transcripts?")
+_CODING = _words(r"debug\w*", r"tracebacks?", r"refactor\w*", r"code(?:s|base)?",
+                 r"functions?", r"class(?:es)?", r"scripts?", r"scripting",
+                 r"bug bounty", r"wifi", r"vpn")
+_REASONING = _words(r"prove[sn]?", r"deep reasoning", r"step by step",
+                    r"complex analysis", r"evaluate trade-?offs")
+_RESEARCH = _words(r"research\w*", r"osint", r"investigat\w*", r"sources", r"dossiers?")
+_SIMPLE = _words(r"cheap\w*", r"lowest cost", r"simple", r"quick answer")
+_WRITING = _words(r"(?:re)?writ(?:e|es|ing|ten)", r"e-?mails?", r"polish(?:ed|ing)?")
+_LONG = _words(r"long")
 
 
 def classify_request(prompt: str, *, agent: str = "chat", tool: str = "", context_tokens: int = 0) -> RequestProfile:
@@ -203,21 +252,23 @@ def classify_request(prompt: str, *, agent: str = "chat", tool: str = "", contex
     tool_task = {"writing": "writing", "rewrite": "writing", "coding": "coding", "summarize": "summarize", "general chat": "general"}.get(tool.lower())
     if tool_task:
         task = tool_task
-    if any(word in text for word in ("generate an image", "create an image", "draw ", "illustrate", "text-to-image")):
+    if _IMAGE_REQUEST.search(text):
         return RequestProfile("image_generation", frozenset({"image_generation"}), context_tokens, 2)
-    if any(word in text for word in ("attached image", "screenshot", "photo", "what is in this image", "analyze this image", "analyse this image")):
+    if _VISION.search(text):
         task, required = "vision", {"text", "vision"}
-    elif any(word in text for word in ("debug", "traceback", "refactor", "code", "function", "class ", "script", "bug bounty", "wifi", "vpn")):
+    # Before coding: "summarize this transcript" is a summary, whatever the
+    # transcript is of.
+    elif _SUMMARIZE.search(text):
+        task = "long_context" if context_tokens > 100_000 or _LONG.search(text) else "summarize"
+    elif _CODING.search(text):
         task, required, complexity = "coding", {"text", "coding"}, 2
-    elif any(word in text for word in ("prove", "deep reasoning", "step by step", "complex analysis", "evaluate tradeoffs", "evaluate trade-offs")):
+    elif _REASONING.search(text):
         task, required, complexity = "reasoning", {"text", "reasoning"}, 3
-    elif any(word in text for word in ("research", "osint", "investigate", "sources", "dossier")):
+    elif _RESEARCH.search(text):
         task, required, complexity = "research", {"text", "tool_use"}, 2
-    elif any(word in text for word in ("summarize", "summarise", "long document", "transcript")):
-        task = "long_context" if context_tokens > 100_000 or "long" in text else "summarize"
-    elif any(word in text for word in ("cheap", "lowest cost", "simple", "quick answer")):
+    elif _SIMPLE.search(text):
         task = "simple"
-    elif any(word in text for word in ("write", "rewrite", "email", "polish")):
+    elif _WRITING.search(text):
         task = "writing"
     if context_tokens > 0:
         task = "long_context" if context_tokens > 100_000 else task
@@ -275,9 +326,23 @@ def _available(model: ModelProfile, available: Mapping[str, Sequence[str]] | Non
 # between models that rate the same.
 FIT_MARGIN = {"balanced": 0.0, "cost": 0.25, "speed": 0.0, "privacy": 0.0, "quality": 0.0}
 
-# (provider, model) -> (input, output) USD per 1M, or None. Set by the app
-# from the pricing table the user edits in Settings → Pricing; the catalog's
-# own figures are the fallback.
+class Price(tuple):
+    """(input, output) USD per 1M tokens, and which pricing row it came from.
+
+    `source` is "exact", "alias" or "default" (services/price_resolution.py).
+    A lookup may return a plain pair; that counts as exact.
+    """
+
+    def __new__(cls, input_usd, output_usd, source: str = "exact"):
+        price = super().__new__(cls, (float(input_usd), float(output_usd)))
+        price.source = source
+        return price
+
+
+# (provider, model) -> (input, output) USD per 1M, or None. The app installs
+# `price_resolution.table_lookup` over the pricing table the user edits in
+# Settings → Pricing, which resolves a model exactly as the bill does; the
+# catalog's own figures are the fallback.
 PriceLookup = Callable[[str, str], "tuple[float, float] | None"]
 _PRICE_LOOKUP: PriceLookup | None = None
 
@@ -287,15 +352,17 @@ def set_price_lookup(lookup: PriceLookup | None) -> None:
     _PRICE_LOOKUP = lookup
 
 
-def blended_price(profile: ModelProfile, prices: PriceLookup | None = None) -> float | None:
-    """USD per 1M tokens for a typical request (3 parts input to 1 output).
+def _is_local(profile: ModelProfile) -> bool:
+    return (profile.capabilities.local
+            or provider_metadata(profile.provider).pricing_status == "free_local")
 
-    0.0 for a local model; None when a cloud model's price is unknown. A
-    stored price of zero for a cloud model counts as unknown too: a free tier
-    that was written into a price table is not what an API key gets billed.
+
+def model_price(profile: ModelProfile, prices: PriceLookup | None = None) -> Price | None:
+    """What a cloud model is billed per 1M tokens, or None when unknown.
+
+    A stored rate of zero on either side counts as unknown: a free tier that
+    was written into a price table is not what an API key gets billed.
     """
-    if profile.capabilities.local or provider_metadata(profile.provider).pricing_status == "free_local":
-        return 0.0
     lookup = prices if prices is not None else _PRICE_LOOKUP
     pair = None
     if lookup is not None:
@@ -305,9 +372,39 @@ def blended_price(profile: ModelProfile, prices: PriceLookup | None = None) -> f
             pair = None
     if pair is None and profile.input_per_1m_usd is not None and profile.output_per_1m_usd is not None:
         pair = (profile.input_per_1m_usd, profile.output_per_1m_usd)
-    if pair is None or (not pair[0] and not pair[1]):
+    if pair is None:
         return None
-    return (3 * float(pair[0]) + float(pair[1])) / 4
+    try:
+        price = pair if isinstance(pair, Price) else Price(pair[0], pair[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if price[0] <= 0 or price[1] <= 0:
+        return None
+    return price
+
+
+def price_source(profile: ModelProfile, prices: PriceLookup | None = None) -> str:
+    """"local", "exact", "alias", "default" (the provider's), or "unknown"."""
+    if _is_local(profile):
+        return "local"
+    price = model_price(profile, prices)
+    return "unknown" if price is None else price.source
+
+
+def blended_price(profile: ModelProfile, prices: PriceLookup | None = None) -> float | None:
+    """USD per 1M tokens for a typical request (3 parts input to 1 output).
+
+    0.0 for a local model; None when a cloud model's price is unknown. A model
+    without a row of its own is priced at its provider's default, as the bill
+    prices it; that row holds the provider's dearest current rate, so it is an
+    upper bound and never makes the model look cheaper than it is.
+    """
+    if _is_local(profile):
+        return 0.0
+    price = model_price(profile, prices)
+    if price is None:
+        return None
+    return (3 * price[0] + price[1]) / 4
 
 
 # ── Ratings: is a cheaper model good enough for this request? ───────────────
@@ -352,7 +449,7 @@ def _route_by_rating(request: RequestProfile, prefs: RoutingPreferences,
     rest = sorted((m for m in pool if m is not chosen),
                   key=lambda m: (-rated[key(m)].score, _price_key(m, prices), m.provider, m.model))
     rating = rated[key(chosen)]
-    price = _describe_price(blended_price(chosen, prices))
+    price = _describe_price(chosen, prices)
     source = "LMArena"
     if chosen is top:
         reason = (f"Detected {request.task}; {chosen.model} rates highest for "
@@ -365,7 +462,7 @@ def _route_by_rating(request: RequestProfile, prefs: RoutingPreferences,
         reason = (f"Detected {request.task}; {chosen.model} rates {rating.score:.0f} for "
                   f"{rating.label} on {source}, within {margin} points of the best "
                   f"({top.model}, {top_rating.score:.0f}, "
-                  f"{_describe_price(blended_price(top, prices))}), and is the "
+                  f"{_describe_price(top, prices)}), and is the "
                   f"cheapest of the {len(fit)} that are ({price}).")
     unrated = len(eligible) - len(pool)
     if unrated:
@@ -382,11 +479,14 @@ def _price_key(profile: ModelProfile, prices: PriceLookup | None) -> tuple[bool,
     return (price is None, price or 0.0)
 
 
-def _describe_price(price: float | None) -> str:
+def _describe_price(profile: ModelProfile, prices: PriceLookup | None) -> str:
+    price = blended_price(profile, prices)
     if price is None:
         return "price unknown"
     if price == 0:
         return "free (local)"
+    if price_source(profile, prices) == "default":
+        return f"${price:.2f} per 1M tokens blended, its provider's default rate"
     return f"${price:.2f} per 1M tokens blended"
 
 
@@ -438,7 +538,7 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
                   key=lambda m: (-scores[(m.provider, m.model)], _price_key(m, prices), m.provider, m.model))
     primary = RouteCandidate(chosen.provider, chosen.model, scores[(chosen.provider, chosen.model)])
     fallback = tuple(RouteCandidate(m.provider, m.model, scores[(m.provider, m.model)]) for m in rest)[:3]
-    price = _describe_price(blended_price(chosen, prices))
+    price = _describe_price(chosen, prices)
     if scores[(chosen.provider, chosen.model)] == best_score:
         reason = (f"Detected {request.task}; {chosen.model} is the best fit for it"
                   + (f" and the cheapest of the {len(fit)} that fit it equally"
@@ -448,7 +548,7 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
                   + f" ({price}).")
     else:
         reason = (f"Detected {request.task}; {chosen.model} fits it within {margin:.0%} of the "
-                  f"best fit ({top.model}, {_describe_price(blended_price(top, prices))}) "
+                  f"best fit ({top.model}, {_describe_price(top, prices)}) "
                   f"and is the cheapest of the {len(fit)} that do ({price}).")
     if manual_provider or manual_model:
         reason += " The manual choice was unavailable or incompatible, so automatic fallback was used."

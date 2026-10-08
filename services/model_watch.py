@@ -249,10 +249,11 @@ class Assessment:
             return ("Added to the dropdowns only. With nothing to rate it against, "
                     "it is never picked as BEST FIT automatically.")
         if not self.moves:
-            if mr.blended_price(self.inferred.profile) is None:
+            if mr.price_source(self.inferred.profile) in {"unknown", "default"}:
                 return ("Not BEST FIT anywhere yet: it rates no higher than current "
-                        "picks and has no price, and an unknown price never wins. "
-                        "Add its price in Settings → Pricing to have it weighed on cost.")
+                        "picks and has no price of its own, so it is weighed at its "
+                        "provider's default rate, the dearest one. Add its price in "
+                        "Settings → Pricing to have it weighed on its own cost.")
             return "Would not be BEST FIT anywhere; current picks are as good for less, or better."
         agents = [m for m in self.moves if m.scope == "agent"]
         chat = [m for m in self.moves if m.scope == "chat"]

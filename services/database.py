@@ -163,6 +163,7 @@ def init_db() -> None:
     _apply_scheduled_price_changes(conn)
     _seed_cached_input_pricing(conn)
     _correct_stale_pricing(conn)
+    _correct_pricing_2026_10(conn)
     _seed_default_agents(conn)
     _seed_default_tools(conn)
     _retire_moved_agents(conn)
@@ -388,6 +389,94 @@ def _correct_stale_pricing(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# Each provider's `default` row bills every model that has no row of its own
+# (services/price_resolution.py), so it holds the provider's dearest current
+# rate: a model the table does not know yet is over-estimated against the
+# budget caps, never under. These are the same figures Imprint ships. Sources
+# are the provider pages cited beside each model's own rows below.
+DEFAULT_PRICES = {
+    "anthropic": (10.00, 50.00),   # Claude Fable 5.1
+    "openai":    (10.00, 50.00),   # gpt-6-astra; the -pro and o1 rows that
+                                   # cost more have rows of their own
+    "gemini":    (4.00, 18.00),    # Gemini 3.1 Pro, prompts over 200K
+    "deepseek":  (1.32, 3.96),     # deepseek-v4-pro, peak hours
+    "kimi":      (3.00, 15.00),    # kimi-k3
+    "qwen":      (2.00, 6.00),     # qwen3.8-max, Singapore
+}
+
+
+# (backend, model, (old input, old output, old cached or None),
+#                  (new input, new output, new cached or None))
+# Rows shipped at a wrong or stale rate before 2026-10-08. Only a row still
+# holding exactly the old value is touched, so a rate edited in Settings →
+# Pricing is the user's. An old cached rate of None is not checked, and a new
+# one of None leaves the column alone.
+PRICING_CORRECTIONS_2026_10 = [
+    # Defaults become the provider's dearest current rate (DEFAULT_PRICES).
+    # Before this, gemini-2.5-flash/-pro billed at the Gemini default of 0/0,
+    # gpt-4o at gpt-4o-mini's rate (~1/16), deepseek-v4-pro at the retired
+    # deepseek-chat rate (~1/11) and claude-fable-5-1 at Sonnet 4.6's (~1/3).
+    ("openai", "default", (0.15, 0.60, None), (*DEFAULT_PRICES["openai"], None)),
+    ("anthropic", "default", (3.00, 15.00, None), (*DEFAULT_PRICES["anthropic"], None)),
+    ("deepseek", "default", (0.14, 0.28, None), (*DEFAULT_PRICES["deepseek"], None)),
+    ("gemini", "default", (0.0, 0.0, None), (*DEFAULT_PRICES["gemini"], None)),
+    ("kimi", "default", (0.95, 4.00, 0.19), (*DEFAULT_PRICES["kimi"], 0.30)),
+    # Singapore, not Frankfurt: the client's default endpoint is dashscope-intl.
+    ("qwen", "default", (1.65, 4.951, None), (*DEFAULT_PRICES["qwen"], None)),
+    ("qwen", "qwen3.8-max", (1.65, 4.951, None), (2.00, 6.00, None)),
+    ("qwen", "qwen3-max", (1.65, 4.951, None), (1.20, 6.00, None)),
+]
+
+
+def _correct_pricing_2026_10(conn: sqlite3.Connection) -> None:
+    """One-time repair of rows shipped at a stale rate (see the list above).
+
+    config/pricing.json is read only into a new database, and
+    _seed_missing_pricing only ever INSERT OR IGNOREs, so a corrected price
+    never reaches a database that already holds the old row. Also: a shipped
+    model holding a 0/0 placeholder takes its seeded rate (a zero was never a
+    free-tier declaration here), and the retired gemini-1.5 rows, seeded at
+    0/0, are removed. Guarded by a settings flag.
+    """
+    flag = conn.execute(
+        "SELECT value FROM settings WHERE key = 'pricing_correction_2026_10'"
+    ).fetchone()
+    if flag:
+        return
+    for backend, model, old, new in PRICING_CORRECTIONS_2026_10:
+        old_in, old_out, old_cached = old
+        new_in, new_out, new_cached = new
+        sets, params = ["input_per_1m_usd = ?", "output_per_1m_usd = ?"], [new_in, new_out]
+        if new_cached is not None:
+            sets.append("cached_input_per_1m_usd = ?")
+            params.append(new_cached)
+        query = (f"UPDATE pricing SET {', '.join(sets)} WHERE backend = ? AND model = ? "
+                 "AND abs(input_per_1m_usd - ?) < 1e-9 "
+                 "AND abs(output_per_1m_usd - ?) < 1e-9")
+        params += [backend, model, old_in, old_out]
+        if old_cached is not None:
+            query += " AND abs(cached_input_per_1m_usd - ?) < 1e-9"
+            params.append(old_cached)
+        conn.execute(query, params)
+    for backend, model, inp, out in _seeded_prices():
+        conn.execute(
+            "UPDATE pricing SET input_per_1m_usd = ?, output_per_1m_usd = ? "
+            "WHERE backend = ? AND model = ? "
+            "AND input_per_1m_usd = 0 AND output_per_1m_usd = 0",
+            (inp, out, backend, model),
+        )
+    conn.execute(
+        "DELETE FROM pricing WHERE backend = 'gemini' "
+        "AND model IN ('gemini-1.5-flash', 'gemini-1.5-pro') "
+        "AND input_per_1m_usd = 0 AND output_per_1m_usd = 0"
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) "
+        "VALUES ('pricing_correction_2026_10', 'done')"
+    )
+    conn.commit()
+
+
 # Gemini 3.8 Flash is on an introductory price until the end of 2026 and
 # doubles on 2027-01-01 (ai.google.dev pricing page, read 2026-10-07).
 GEMINI_38_FLASH_INTRO = (0.75, 3.75)
@@ -421,12 +510,14 @@ def _apply_scheduled_price_changes(conn: sqlite3.Connection, today=None) -> None
     conn.commit()
 
 
-def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
-    """Insert default pricing rows that may not exist yet (e.g. new providers)."""
+def _seeded_prices() -> list[tuple[str, str, float, float]]:
+    """(backend, model, input, output) USD per 1M for every shipped row."""
     # Anthropic list prices per 1M tokens, from the official pricing table.
     # Note the Opus 4.5-and-later tier is 5/25, NOT the 15/75 that Opus 4/4.1
     # charged — seeding those at 15/75 overstated every estimate threefold.
-    defaults = [
+    return [
+        # From platform.claude.com/docs/en/about-claude/pricing (2026-10-08).
+        ("anthropic", "claude-fable-5-1",          10.00,  50.00),
         ("anthropic", "claude-fable-5",            10.00,  50.00),
         # Opus 5.5 is cheaper than Opus 5 (4/20 against 5/25); checked on
         # platform.claude.com's pricing page on 2026-10-07.
@@ -446,12 +537,20 @@ def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
         ("anthropic", "claude-3-5-haiku-20241022",  0.80,   4.00),
         ("anthropic", "claude-3-opus-20240229",    15.00,  75.00),
         ("anthropic", "claude-3-haiku-20240307",    0.25,   1.25),
-        ("anthropic", "default",                    3.00,  15.00),
-        # Qwen via Alibaba Model Studio. Pricing is regional — these are the
-        # Frankfurt/EU rates (Singapore is dearer at 2.00 / 6.00).
-        ("qwen", "qwen3.8-max",                     1.65,   4.951),
-        ("qwen", "qwen3-max",                       1.65,   4.951),
-        ("qwen", "default",                         1.65,   4.951),
+        ("anthropic", "default",           *DEFAULT_PRICES["anthropic"]),
+        # Qwen via Alibaba Model Studio. Pricing is regional; these are the
+        # Singapore (international) rates, because dashscope-intl is the
+        # endpoint services/qwen_client.py calls. From
+        # alibabacloud.com/help/en/model-studio/model-pricing (2026-10-08).
+        # The first input-length tier: qwen3-max is 2.40/12.00 over 32K and
+        # 3.00/15.00 over 128K; qwen-plus 1.20/3.60 and qwen-flash 0.25/2.00
+        # over 256K. qwen-plus is the non-thinking rate, which is how the
+        # client calls it.
+        ("qwen", "qwen3.8-max",                     2.00,   6.00),
+        ("qwen", "qwen3-max",                       1.20,   6.00),
+        ("qwen", "qwen-plus",                       0.40,   1.20),
+        ("qwen", "qwen-flash",                      0.05,   0.40),
+        ("qwen", "default",                    *DEFAULT_PRICES["qwen"]),
         # OpenAI image models: text input and image output per 1M tokens,
         # from the official pricing page (2026-09-28). A text prompt bills
         # only text-input tokens; the image comes back as output tokens.
@@ -464,12 +563,48 @@ def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
         # standard rate.
         ("openai", "gpt-5.5",                       5.00,  30.00),
         ("openai", "gpt-5.4-mini",                  0.75,   4.50),
+        # From developers.openai.com/api/docs/pricing (2026-10-08). The dated
+        # gpt-4o-2024-05-13 bills dearer than the gpt-4o alias it shares a
+        # name with, so it needs its own row. The -pro, o1 and gpt-4-0613
+        # rows cost more than the provider default and would otherwise be
+        # under-billed at it.
+        ("openai", "gpt-4o",                        2.50,  10.00),
+        ("openai", "gpt-4o-2024-05-13",             5.00,  15.00),
+        ("openai", "gpt-5.5-pro",                  30.00, 180.00),
+        ("openai", "gpt-5.4-pro",                  30.00, 180.00),
+        ("openai", "gpt-5.2-pro",                  21.00, 168.00),
+        ("openai", "gpt-5-pro",                    15.00, 120.00),
+        ("openai", "o1-pro",                      150.00, 600.00),
+        ("openai", "o3-pro",                       20.00,  80.00),
+        ("openai", "o1",                           15.00,  60.00),
+        ("openai", "gpt-4-0613",                   30.00,  60.00),
+        ("openai", "default",              *DEFAULT_PRICES["openai"]),
         # From ai.google.dev/gemini-api/docs/pricing (2026-10-07).
         # 3.1 Pro charges 4/18 above 200K tokens of prompt.
         ("gemini", "gemini-3.1-pro-preview",        2.00,  12.00),
         ("gemini", "gemini-3.8-flash", *_gemini_38_flash_rate()),
+        # Same page, checked 2026-10-08. 2.5 Pro charges 2.50/15.00 above
+        # 200K tokens of prompt.
+        ("gemini", "gemini-2.5-flash",              0.30,   2.50),
+        ("gemini", "gemini-2.5-pro",                1.25,  10.00),
+        ("gemini", "default",              *DEFAULT_PRICES["gemini"]),
+        # From api-docs.deepseek.com/quick_start/pricing (2026-10-08),
+        # cache-miss input. DeepSeek bills half these rates off-peak; the
+        # peak rate is seeded so the budget caps never undercount. The two
+        # retired V4-Flash names are still accepted and billed as Flash.
+        ("deepseek", "deepseek-flash",              0.30,   1.20),
+        ("deepseek", "deepseek-v4-pro",             1.32,   3.96),
+        ("deepseek", "deepseek-v4-flash",           0.30,   1.20),
+        ("deepseek", "deepseek-v4-flash-vision-exp", 0.30,  1.20),
+        ("deepseek", "default",          *DEFAULT_PRICES["deepseek"]),
+        # From platform.kimi.ai/docs/pricing/chat (2026-10-08).
+        ("kimi", "default",                  *DEFAULT_PRICES["kimi"]),
     ]
-    for backend, model, inp, out in defaults:
+
+
+def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
+    """Insert default pricing rows that may not exist yet (e.g. new providers)."""
+    for backend, model, inp, out in _seeded_prices():
         conn.execute(
             "INSERT OR IGNORE INTO pricing (backend, model, input_per_1m_usd, output_per_1m_usd) VALUES (?,?,?,?)",
             (backend, model, inp, out),
@@ -485,7 +620,7 @@ def _seed_cached_input_pricing(conn: sqlite3.Connection) -> None:
     price; that row follows the existing high-speed 2x multiplier.
     """
     rates = {
-        "default": 0.19,
+        "default": 0.30,
         "kimi-k2.7-code": 0.19,
         "kimi-k2.7-code-highspeed": 0.38,
         "kimi-k2.6": 0.16,

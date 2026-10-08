@@ -1,11 +1,22 @@
 from datetime import datetime
 from services.database import get_connection
+from services.price_resolution import resolve_price_row
 from services.provider_catalog import CLOUD_PROVIDERS
+
+
+def estimate_prompt_tokens(text: str) -> int:
+    """About four characters to a token, and never zero.
+
+    The one estimate the pre-flight cost check and the router's
+    context-window filter share, so a prompt is measured the same way when it
+    is priced as when it is matched to a model that can hold it.
+    """
+    return max(1, len(text) // 4)
 
 
 class UsageTracker:
     def estimate_tokens(self, prompt_text: str, response_text: str) -> tuple[int, int]:
-        return max(1, len(prompt_text) // 4), max(1, len(response_text) // 4)
+        return estimate_prompt_tokens(prompt_text), estimate_prompt_tokens(response_text)
 
     def normalize_usage(self, usage: dict | None, prompt_text: str, response_text: str) -> tuple[int, int, str]:
         if not usage:
@@ -88,13 +99,10 @@ class UsageTracker:
             eur_row = conn.execute("SELECT value FROM settings WHERE key = 'eur_per_usd'").fetchone()
             eur_per_usd = float(eur_row["value"]) if eur_row else 0.92
 
-            row = conn.execute(
-                "SELECT input_per_1m_usd, cached_input_per_1m_usd, "
-                "output_per_1m_usd FROM pricing "
-                "WHERE backend = ? AND model IN (?, 'default') "
-                "ORDER BY CASE model WHEN ? THEN 0 ELSE 1 END LIMIT 1",
-                (backend, model, model)
-            ).fetchone()
+            # Exact row, else the row of the model this one is a dated
+            # snapshot or alias of, else the provider default — the same
+            # resolution the router prices candidates with.
+            row, _source = resolve_price_row(conn, backend, model)
 
         if not row:
             return 0.0
@@ -102,9 +110,8 @@ class UsageTracker:
         total_input = max(0, int(input_tokens))
         cached_input = min(max(0, int(cached_input_tokens)), total_input)
         uncached_input = total_input - cached_input
-        cached_rate = row["cached_input_per_1m_usd"]
-        if cached_rate is None:
-            cached_rate = row["input_per_1m_usd"]
+        # No cached rate, or zero, means unknown: bill the slice at full rate.
+        cached_rate = row["cached_input_per_1m_usd"] or row["input_per_1m_usd"]
         input_usd = (
             (uncached_input / 1_000_000) * row["input_per_1m_usd"]
             + (cached_input / 1_000_000) * cached_rate

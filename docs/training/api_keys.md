@@ -124,9 +124,15 @@ badge moves.
 
 What is never assumed:
 
-- **An unknown price never wins.** A cloud model without a price, or with a
-  price of zero, is not treated as cheap. Add its price in **Settings →
-  Pricing** and it is weighed like the rest.
+- **An unknown price never wins.** A cloud model without a price of its
+  own is weighed — and billed — at its provider's **default** rate, which is
+  that provider's dearest current price, so it is never the cheap one by
+  accident. A price of zero counts as unknown, not free. Add its price in
+  **Settings → Pricing** and it is weighed like the rest.
+- **A prompt is only sent to a model that can hold it.** Sentinel estimates
+  the prompt's size (about four characters to a token, the same estimate
+  the cost check uses) and skips every model whose context window is
+  smaller. Over 100K tokens the request is treated as long-document work.
 - **An unrated model is not chosen over rated ones**, because nothing shows
   it is good enough. That includes your local Ollama models: the
   leaderboard rates full models, not the copy on this Mac. They still win

@@ -70,6 +70,14 @@ Update them when provider prices change. Cached input can be cheaper when a
 provider reuses recent context. Incorrect values produce incorrect estimates,
 not changes to the provider's invoice.
 
+A model is priced from its own row; a dated snapshot such as
+`gpt-4o-2024-08-06` uses the row of the model it is a snapshot of; anything
+else uses its provider's **default** row. Each default is set to that
+provider's dearest current rate, so a model Sentinel has no price for is
+over-estimated against your budgets, never under. A rate of zero means
+unknown, not free. The estimate before a request, the recorded cost after it
+and the price Auto-route weighs all come from the same row.
+
 ## Logs
 
 **Cost history** filters recorded requests and exports CSV. **Run log** shows
