@@ -2976,7 +2976,9 @@ class GodAI(QWidget):
         ("intelx",         "IntelligenceX",       "Dark Web", "Paid",       "https://intelx.io/",                            "INTELX_API_KEY"),
         ("domaintools",    "DomainTools",         "Domain",   "Paid",       "https://www.domaintools.com/",                  "DOMAINTOOLS_API_KEY"),
         ("courtlistener",  "CourtListener",       "Legal",    "Free",       "https://www.courtlistener.com/register/",       "COURTLISTENER_API_KEY"),
+        ("opensanctions",  "OpenSanctions",       "Legal",    "Free",       "https://www.opensanctions.org/api/",            "OPENSANCTIONS_API_KEY"),
     ]
+    # What each one does and which agents use it: services/osint_keys.py.
 
     def select_agent(self, agent_name):
         self.agent_box.setCurrentText(agent_name)

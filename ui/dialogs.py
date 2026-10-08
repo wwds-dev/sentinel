@@ -6,10 +6,11 @@ parent and to read the handful of members it needs — and shows the dialog. The
 bodies are moved verbatim; only the receiver was renamed from `self` to `app`.
 """
 
+import html
 import json
 import os
 
-from PySide6.QtCore import QPropertyAnimation, QTimer, QUrl
+from PySide6.QtCore import QPropertyAnimation, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from services.anthropic_client import AnthropicClientWrapper
 from services.database import get_connection, get_setting, save_setting
+from services import osint_keys
 from services.deepseek_client import DeepSeekClientWrapper
 from services.gemini_client import GeminiClientWrapper
 from services.kimi_client import KimiClientWrapper
@@ -318,10 +320,57 @@ def _scrolling(page: QWidget) -> QScrollArea:
     return area
 
 
+_CHIP_ESSENTIAL = (
+    "background: #1f7a4d; color: white; border: 1px solid #1f7a4d; "
+    "border-radius: 6px; padding: 1px 6px; font-size: 10px;"
+)
+_CHIP_EXTRA = (
+    "background: transparent; color: #9aa5a0; border: 1px solid #5b6662; "
+    "border-radius: 6px; padding: 1px 6px; font-size: 10px;"
+)
+
+
+def _used_by_cell(tool_id: str) -> QWidget:
+    """One chip per agent that uses the service: filled = essential, outlined = extra."""
+    cell = QWidget()
+    cell.setFixedWidth(_USED_BY_WIDTH)
+    row = QHBoxLayout(cell)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(3)
+    info = osint_keys.OSINT_TOOL_INFO.get(tool_id, {"agents": {}, "key": None})
+    for user, role in info["agents"].items():
+        chip = QLabel(osint_keys.user_label(user))
+        chip.setObjectName(f"UsedBy_{user}_{role}")
+        chip.setStyleSheet(_CHIP_ESSENTIAL if role == osint_keys.ESSENTIAL else _CHIP_EXTRA)
+        row.addWidget(chip)
+    if not info["agents"]:
+        none = QLabel("no agent yet")
+        none.setStyleSheet("color: #6b7280; font-size: 10px; font-style: italic;")
+        row.addWidget(none)
+    elif info["key"] == osint_keys.KEY_UNREAD:
+        unread = QLabel("key unused")
+        unread.setStyleSheet("color: #6b7280; font-size: 10px; font-style: italic;")
+        row.addWidget(unread)
+    row.addStretch()
+    return cell
+
+
+_USED_BY_WIDTH = 250
+
+
 def show_settings(app):
     dialog = QDialog(app)
     dialog.setWindowTitle("Settings")
-    dialog.resize(940, 600)
+    # Wide enough for an OSINT Keys row (name, category, cost, used-by chips,
+    # signup, key field, Save Key) without a horizontal scroll bar; never wider
+    # or taller than the screen it opens on.
+    width, height = 1120, 600
+    screen = (app.screen() if hasattr(app, "screen") else None) or QApplication.primaryScreen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        width = min(width, available.width() - 40)
+        height = min(height, available.height() - 40)
+    dialog.resize(width, height)
 
     outer = QVBoxLayout(dialog)
     tabs = QTabWidget()
@@ -712,7 +761,22 @@ def show_settings(app):
         filter_group.addButton(chip)
         filter_row.addWidget(chip)
     filter_row.addStretch()
+    hover_help = QCheckBox("Explain on hover")
+    hover_help.setToolTip(
+        "Hover a service's name for what it does, which agents use it and "
+        "what its key changes.")
+    hover_help.setChecked(get_setting("osint_hover_help", "1") != "0")
+    filter_row.addWidget(hover_help)
     ol.addLayout(filter_row)
+
+    legend = QLabel(
+        "<b>Used by:</b> a filled chip is essential for that agent and runs by "
+        "default. An outlined chip is an extra the agent can work without. "
+        "<i>key unused</i> means no part of Sentinel reads that key yet."
+    )
+    legend.setWordWrap(True)
+    legend.setStyleSheet("color: #888; font-size: 11px;")
+    ol.addWidget(legend)
 
     # Tool rows
     category_colors = {
@@ -726,6 +790,7 @@ def show_settings(app):
     rows_layout.setSpacing(4)
 
     osint_rows = []          # (frame, category, cost)
+    hover_targets = []       # (widget, explanation) the hover switch governs
     osint_checks = {}        # tool_id -> QCheckBox
     fade_anims = []          # keep QPropertyAnimation objects alive
 
@@ -751,10 +816,13 @@ def show_settings(app):
 
         name_lbl = QLabel(display)
         name_lbl.setStyleSheet("font-weight: bold;")
-        name_lbl.setMinimumWidth(120)
+        name_lbl.setFixedWidth(130)
+        hover_targets.append((name_lbl, osint_keys.explain(tool_id)))
         rl.addWidget(name_lbl)
 
         cat_lbl = QLabel(category)
+        cat_lbl.setFixedWidth(64)
+        cat_lbl.setAlignment(Qt.AlignCenter)
         cat_lbl.setStyleSheet(
             f"background: {category_colors.get(category, '#555')}; color: white; "
             "border-radius: 6px; padding: 1px 6px; font-size: 10px;"
@@ -763,11 +831,15 @@ def show_settings(app):
 
         is_free = cost.strip().lower() == "free"
         cost_lbl = QLabel(cost)
-        cost_lbl.setMinimumWidth(60)
+        cost_lbl.setFixedWidth(64)
         cost_lbl.setStyleSheet(
             f"color: {'#3cff88' if is_free else '#ffaa00'}; font-size: 11px;"
         )
         rl.addWidget(cost_lbl)
+
+        used_by = _used_by_cell(tool_id)
+        hover_targets.append((used_by, osint_keys.explain(tool_id)))
+        rl.addWidget(used_by)
 
         rl.addStretch()
 
@@ -860,6 +932,17 @@ def show_settings(app):
             frame.setVisible(show)
 
     filter_group.buttonClicked.connect(apply_osint_filter)
+
+    def apply_hover_help(on):
+        # Rich text, so Qt wraps the tooltip instead of drawing one long line.
+        for widget, text in hover_targets:
+            widget.setToolTip(
+                "<p>" + html.escape(text).replace("\n", "<br>") + "</p>" if on else "")
+
+    hover_help.toggled.connect(apply_hover_help)
+    hover_help.toggled.connect(
+        lambda on: save_setting("osint_hover_help", "1" if on else "0"))
+    apply_hover_help(hover_help.isChecked())
 
     update_reg_summary()
     tabs.addTab(osint_tab, "OSINT Keys")
