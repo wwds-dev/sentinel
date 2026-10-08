@@ -20,7 +20,6 @@ skipped for want of a key do not affect it.
 
 from __future__ import annotations
 
-import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -30,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
 
+from services import settings_store  # noqa: E402
 from services.runtime_paths import user_data_base  # noqa: E402
 
 load_dotenv(user_data_base() / ".env")
@@ -67,11 +67,9 @@ def recommended_models() -> dict[str, dict[str, list[str]]]:
         if spec.get("recommended_model"):
             wanted[spec["recommended_provider"]][spec["recommended_model"]].append(
                 f"tool {tool}")
-    settings_file = user_data_base() / "config" / "settings.json"
-    try:
-        settings = json.loads(settings_file.read_text())
-    except (OSError, ValueError):
-        settings = {}
+    base = user_data_base()
+    settings = settings_store.load_settings(
+        settings_store.defaults_path(base), settings_store.override_path(base))
     for key, model in settings.items():
         if key.startswith("default_model_") and model:
             wanted[key.removeprefix("default_model_")][model].append(

@@ -19,10 +19,13 @@ it. Proposed V3 features get tests when their behavior is specified and built.
   Test each in its own repository/environment, then test the Sentinel integration
   seam. Do not conflate companion-app behavior with Sentinel's narrower panels.
 - Tests should use disposable databases, files, profiles and credentials. The
-  present suite redirects SQLite but a baseline run changed tracked
-  `config/settings.json` (`default_model_ollama`); isolate **all** writable
-  configuration before expanding the suite, and assert the worktree and real
-  user settings remain unchanged after testing. Automated
+  present suite redirects SQLite, and since 2026-10-09 Chat's saved settings
+  too: a baseline run once changed tracked `config/settings.json`
+  (`default_model_ollama`). The app now writes picks only to the git-ignored
+  `data/settings.local.json`, the suite redirects both files, and
+  `tests/conftest.py` fails the run if either real file changes. Isolate the
+  rest of the writable configuration the same way before expanding the suite.
+  Automated
   runs never contact paid models, public research services, arbitrary websites,
   Wi-Fi targets or a VPN server. Mock at the provider/process boundary; a
   separately labelled, opt-in acceptance pass may use owned lab resources.

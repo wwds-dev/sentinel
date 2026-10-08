@@ -241,6 +241,15 @@ The main runtime is organised around:
 - `services/*_client.py` — local and cloud model clients
 - `services/usage_tracker.py` and `services/run_logger.py` — cost and request lifecycle records
 - `config/tool_prompts.json` — Chat tool instructions
+- `config/settings.json` — the shipped settings defaults (each provider's Chat
+  model). Tracked and bundled; the app never writes it.
+- `data/settings.local.json` — this machine's own picks (the Chat model chosen
+  per provider, the routing priority), laid over those defaults on every read
+  and ignored by git (`services/settings_store.py`). A checkout uses its own
+  `data/`; a self-contained or portable build keeps both files in its
+  user-data folder. The first launch after this change moves any pick an
+  older Sentinel had written into `config/settings.json` across, once, and
+  puts the tracked file back to its committed content.
 - `data/sentinel.db` — local application data
 - `assets/` — `icon.icns` and its source PNG for the macOS app bundle; used by
   `scripts/install_app.sh`, `scripts/build_app.sh`, and `Sentinel.spec`. Also
@@ -302,7 +311,10 @@ pytest
 
 The suite never contacts a model provider or the local Ollama daemon:
 `tests/conftest.py` serves every client's offline `KNOWN_MODELS` and points
-Chat's saved defaults at a temporary copy of `config/settings.json`. That keeps
+Chat's saved defaults at a temporary copy of `config/settings.json`, with an
+empty override, so neither the shipped defaults nor your own picks in
+`data/settings.local.json` are read or written — the run fails if either file
+changes. That keeps
 results independent of which keys are in `.env` and what is pulled locally, but
 it also means the suite cannot notice a provider renaming or retiring a model.
 Check that by hand, before a release or when a panel opens on the wrong model:
@@ -312,7 +324,7 @@ Check that by hand, before a release or when a panel opens on the wrong model:
 ```
 
 It lists each provider's models (free; no prompt is sent), and reports every
-recommended model and saved Chat default as found or missing. It also names
+recommended model and saved Chat default (shipped default or your own pick) as found or missing. It also names
 offline `KNOWN_MODELS` entries the live API no longer serves. Exit status 1
 means something is missing.
 

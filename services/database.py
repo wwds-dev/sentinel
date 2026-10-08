@@ -878,8 +878,11 @@ def _migrate_runs(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:
-    path = BASE_DIR / "config" / "settings.json"
-    data = _load_json(path, {})
+    from services import settings_store
+
+    data = settings_store.load_settings(
+        settings_store.defaults_path(BASE_DIR), settings_store.override_path(BASE_DIR)
+    )
 
     for key, value in data.items():
         conn.execute(

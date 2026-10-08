@@ -62,6 +62,7 @@ from services.database import init_db, get_setting, save_setting, get_connection
 from services.registry import Registry
 from services.validator import Validator
 from services.run_logger import RunLogger
+from services import settings_store
 
 from agents.chat_agent import ChatAgent
 from agents.osint_agent import OSINTAgent
@@ -116,7 +117,10 @@ ALL_PROJECTS_FILTER = "All projects"
 UNFILED_PROJECT_FILTER = "Unfiled"
 NO_ACTIVE_PROJECT = "No project"
 
-SETTINGS_FILE = CONFIG_DIR / "settings.json"
+# Shipped defaults (tracked, bundled, never written by the app) and this
+# machine's own picks laid over them (git-ignored). services/settings_store.py.
+SETTINGS_FILE = settings_store.defaults_path(BASE_DIR)
+SETTINGS_OVERRIDE_FILE = settings_store.override_path(BASE_DIR)
 COMMANDS_FILE = CONFIG_DIR / "commands.json"
 TOOL_PROMPTS_FILE = CONFIG_DIR / "tool_prompts.json"
 README_FILE = RESOURCE_DIR / "README.md"
@@ -242,7 +246,7 @@ class GodAI(QWidget):
         self.tool_prompts = runtime_tool_prompts(
             self.load_json(TOOL_PROMPTS_FILE, {}), registry_tools
         )
-        self.settings = self.load_json(SETTINGS_FILE, {})
+        self.settings = settings_store.load_settings(SETTINGS_FILE, SETTINGS_OVERRIDE_FILE)
         # (widget, css) for the inline sheets that predate ui/style.py.
         # apply_global_style repaints them with everything else.
         self._inline_sheets: list[tuple[QWidget, str]] = []
@@ -2885,10 +2889,8 @@ class GodAI(QWidget):
         self._mark_paid_route_choices(self.provider_box, self.model_box)
 
     def _routing_priority_changed(self, label: str) -> None:
-        self.settings["routing_priority"] = ROUTING_PRIORITIES.get(label, "balanced")
         try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.settings, f, indent=2)
+            self.save_setting("routing_priority", ROUTING_PRIORITIES.get(label, "balanced"))
         except Exception as e:
             self._note_failure("routing priority: save", e)
         # Only the badges follow; an agent panel keeps what the user selected.
@@ -2906,13 +2908,15 @@ class GodAI(QWidget):
         if not provider or not model:
             return
 
-        self.settings[f"default_model_{provider}"] = model
-
         try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.settings, f, indent=2)
+            self.save_setting(f"default_model_{provider}", model)
         except Exception as e:
-            self.output_box.append(f"[Settings Save Error] {e}")   
+            self.output_box.append(f"[Settings Save Error] {e}")
+
+    def save_setting(self, key: str, value) -> None:
+        """Keep a user pick for this session and in the git-ignored override."""
+        self.settings[key] = value
+        settings_store.save_override(SETTINGS_OVERRIDE_FILE, key, value)
 
     def themed_sheet(self, widget, css: str) -> None:
         """Apply `css` to `widget` under the current theme, and on every change.
@@ -4887,6 +4891,16 @@ if __name__ == "__main__":
     QLocalServer.removeServer(SINGLE_INSTANCE_KEY)   # clear a socket left by a crash
     instance_server = QLocalServer()
     instance_server.listen(SINGLE_INSTANCE_KEY)
+
+    # Before the window reads them: picks an older Sentinel saved into the
+    # tracked defaults move to the override, once. Only for a checkout — a
+    # frozen build has no repo, and asking for git there can raise macOS's
+    # developer-tools install prompt.
+    if not is_frozen():
+        try:
+            settings_store.migrate_tracked_defaults(SETTINGS_FILE, SETTINGS_OVERRIDE_FILE)
+        except OSError as exc:
+            print(f"settings migration skipped: {exc}", file=sys.stderr)
 
     window = GodAI()
     settings = QSettings("Sentinel", "Sentinel")

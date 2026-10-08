@@ -71,20 +71,31 @@ def _offline_model_lists():
 
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_settings_file():
-    """Point Chat's saved provider/model defaults at a copy under _TEST_ROOT.
+    """Point Chat's saved defaults at a copy under _TEST_ROOT, and its picks
+    at an empty override there.
 
     Switching Chat's provider saves the selected model, and the tests switch
-    providers, so they were rewriting the real config/settings.json. Session
-    scope for the same reason as the model lists: `win` is built first.
+    providers, so they were rewriting the real config/settings.json. The app
+    now writes picks to data/settings.local.json instead, but the tests still
+    get neither real file: the copy keeps them on the shipped defaults, and
+    the developer's own picks must not decide which tests pass. Both real
+    files must end the run byte for byte as they began. Session scope for the
+    same reason as the model lists: `win` is built first.
     """
+    import hashlib
+
     import main
 
+    real = (main.SETTINGS_FILE, main.SETTINGS_OVERRIDE_FILE)
+    digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None  # noqa: E731
+    before = [digest(path) for path in real]
     copy = _TEST_ROOT / "config" / "settings.json"
     copy.parent.mkdir(parents=True, exist_ok=True)
     if main.SETTINGS_FILE.exists():
         shutil.copyfile(main.SETTINGS_FILE, copy)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(main, "SETTINGS_FILE", copy)
+        patch.setattr(main, "SETTINGS_OVERRIDE_FILE", _TEST_ROOT / "data" / "settings.local.json")
         # The model watch too: a real data folder's adopted models would move
         # recommendations the tests assert on, and a scan would write to it.
         patch.setattr(main, "MODEL_WATCH_FILE", _TEST_ROOT / "data" / "model_watch.json")
@@ -93,6 +104,7 @@ def _isolated_settings_file():
         patch.setattr(main, "RATINGS_CACHE_FILE", _TEST_ROOT / "data" / "lmarena_ratings.json")
         patch.setattr(main, "RATINGS_SNAPSHOT_FILE", _TEST_ROOT / "no_snapshot.json")
         yield
+    assert [digest(path) for path in real] == before, f"the test run modified {real}"
 
 
 # Every key a lookup source switches on. The app loads the real .env, so with
