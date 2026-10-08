@@ -110,6 +110,31 @@ OSINT_SOURCE_KEYS = (
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _real_env_file_is_never_written(tmp_path_factory):
+    """Save Key writes to a scratch file, and the real .env must end the run
+    exactly as it began.
+
+    On 2026-10-08 a Settings test clicked Save Key while the stub meant to
+    stop it patched the wrong name, and the operator's HIBP key was replaced
+    with test data. The redirect stops that; the hash check makes any other
+    route to the real file fail loudly instead of silently.
+    """
+    import hashlib
+
+    from services.runtime_paths import user_data_base
+    from ui import dialogs
+
+    real = user_data_base() / ".env"
+    digest = lambda: hashlib.sha256(real.read_bytes()).hexdigest() if real.exists() else None
+    before = digest()
+    scratch = tmp_path_factory.mktemp("env") / ".env"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(dialogs, "_osint_env_path", lambda: scratch)
+        yield scratch
+    assert digest() == before, f"the test run modified {real}"
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _no_osint_keys_for_the_session():
     """Session scope too, so the module-scoped windows are built keyless."""
     with pytest.MonkeyPatch.context() as patch:

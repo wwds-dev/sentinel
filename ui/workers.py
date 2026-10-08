@@ -538,6 +538,33 @@ class AliasMintWorker(QThread):
             self.error_signal.emit(str(exc))
 
 
+class KeyCheckWorker(QThread):
+    """Check API keys against their own services, one after another, off the UI.
+
+    ``items`` is a list of (tool_id, key). Each result is emitted as it lands, so
+    a row updates while the rest are still being asked. Started only by the
+    operator: a row's Check button, Save Key, or Check all keys.
+    """
+
+    result_signal = Signal(str, dict)
+
+    def __init__(self, items):
+        super().__init__()
+        self.items = list(items)
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        from providers.key_check import check
+
+        for tool_id, key in self.items:
+            if self._cancel_requested:
+                return
+            self.result_signal.emit(tool_id, check(tool_id, key))
+
+
 class SentryWatchWorker(QThread):
     """Run one Sentry watch pass (read-only network snapshot + diff) off the UI."""
 

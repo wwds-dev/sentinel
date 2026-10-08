@@ -57,8 +57,19 @@ Each row says who uses the key. A filled chip, such as **Trace**, means the
 service is part of that agent's default run. An outlined chip means it is an
 extra: the agent works without it and uses it once the key is saved or you
 tick it. Leave **Explain on hover** on and hover a service's name for what it
-does and what its key changes. A key the service rejects shows up as an error
-on that source's card in Trace, naming the service.
+does and what its key changes.
+
+**Check whether a key works.** Save Key checks the key straight away, and each
+row's **Check** button does it again at any time. The button then reads
+**✓ Works**, **✗ Rejected**, **✗ Malformed** (the key cannot be right, for
+example a VirusTotal key that is not 64 hexadecimal characters; nothing is
+sent), **! Limited** (the key is fine but its quota or plan is the problem) or
+**? Offline**. Hover it for the details, such as the plan and what is left.
+**Check all keys** checks every saved key whose check is free. A few services
+have no free way to test a key, so their check spends one lookup or credit;
+Check all leaves those out and names them, and their tooltip says the cost. A
+check asks only about the key, never about a target. The last result is
+remembered until the key changes; the key itself is never stored with it.
 
 Never paste a key into a chat message, a report or a screenshot, and never
 commit `.env` to git.

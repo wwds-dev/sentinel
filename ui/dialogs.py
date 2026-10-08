@@ -7,14 +7,15 @@ bodies are moved verbatim; only the receiver was renamed from `self` to `app`.
 """
 
 import html
+from datetime import datetime
 import json
 import os
 
-from PySide6.QtCore import QPropertyAnimation, Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog,
-    QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog,
+    QFrame, QGridLayout, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -355,7 +356,50 @@ def _used_by_cell(tool_id: str) -> QWidget:
     return cell
 
 
-_USED_BY_WIDTH = 250
+_USED_BY_WIDTH = 212
+_CHECK_WIDTH = 104
+
+_CHECK_STYLES = {
+    "ok": "color: #3cff88;",
+    "rejected": "color: #ff6b6b;",
+    "malformed": "color: #ff6b6b;",
+    "limited": "color: #ffaa00;",
+    "unreachable": "color: #9aa5a0;",
+    "error": "color: #9aa5a0;",
+    "busy": "color: #9aa5a0;",
+    "": "",
+}
+
+
+def _osint_env_path():
+    """Where Save Key writes. A function, so the test suite can point it at a
+    temporary file: the real .env holds the operator's keys, and a test once
+    overwrote one of them through this tab."""
+    return user_data_base() / ".env"
+
+
+def _fp(key: str) -> str:
+    from providers.key_check import fingerprint
+    return fingerprint(key)
+
+
+def _show_check(button: QPushButton, tool_id: str, stored, current_key: str) -> None:
+    """Show a row's last check, if it was made for the key now in the field."""
+    from providers.key_check import CHECKS
+
+    spec = CHECKS.get(tool_id)
+    cost = (f" This check spends {spec.cost}." if spec and spec.cost
+            else " This check is free.")
+    if stored and current_key.strip() and stored.get("fp") == _fp(current_key):
+        button.setText(stored.get("summary") or "Check")
+        button.setStyleSheet(_CHECK_STYLES.get(stored.get("state"), ""))
+        button.setToolTip(f"{stored.get('detail', '')}\nChecked {stored.get('at', '')}. "
+                          f"Click to check again.{cost}")
+        return
+    button.setText("Check")
+    button.setStyleSheet("")
+    button.setToolTip("Ask the service whether this key works. Nothing about any "
+                      f"target is sent.{cost}")
 
 
 def show_settings(app):
@@ -568,7 +612,7 @@ def show_settings(app):
     tabs.addTab(_scrolling(pricing_tab), "Pricing")
 
     # ── Tab 5: OSINT Keys ─────────────────────────────────────────
-    env_path = user_data_base() / ".env"
+    env_path = _osint_env_path()
 
     def _read_env_values():
         """Parse KEY=value pairs from the .env file (missing file -> {})."""
@@ -766,6 +810,11 @@ def show_settings(app):
         "Hover a service's name for what it does, which agents use it and "
         "what its key changes.")
     hover_help.setChecked(get_setting("osint_hover_help", "1") != "0")
+    check_all_btn = QPushButton("Check all keys")
+    check_all_btn.setToolTip(
+        "Ask each service whether its saved key works. Only free checks run here; "
+        "a check that would spend a lookup or credit is left for its own Check button.")
+    filter_row.addWidget(check_all_btn)
     filter_row.addWidget(hover_help)
     ol.addLayout(filter_row)
 
@@ -776,6 +825,12 @@ def show_settings(app):
     legend.setWordWrap(True)
     legend.setStyleSheet("color: #888; font-size: 11px;")
     ol.addWidget(legend)
+    check_all_note = QLabel("")
+    check_all_note.setObjectName("KeyCheckAllNote")
+    check_all_note.setWordWrap(True)
+    check_all_note.setStyleSheet("color: #888; font-size: 11px;")
+    check_all_note.setVisible(False)
+    ol.addWidget(check_all_note)
 
     # Tool rows
     category_colors = {
@@ -789,15 +844,63 @@ def show_settings(app):
     rows_layout.setSpacing(4)
 
     osint_rows = []          # (frame, category, cost)
+    key_rows = {}            # tool_id -> (key field, check button)
+    try:
+        stored_checks = json.loads(get_setting("osint_key_checks", "{}") or "{}")
+        if not isinstance(stored_checks, dict):
+            stored_checks = {}
+    except (TypeError, ValueError):
+        stored_checks = {}
+
+    def run_checks(items):
+        """Check keys on a worker thread; each row updates as its answer lands."""
+        items = [(t, k) for t, k in items if t in key_rows]
+        if not items:
+            return
+        for tool_id, key in items:
+            _, button = key_rows[tool_id]
+            if key.strip():
+                button.setText("Checking…")
+                button.setStyleSheet(_CHECK_STYLES["busy"])
+                button.setEnabled(False)
+        from ui.workers import KeyCheckWorker
+
+        worker = KeyCheckWorker(items)
+        worker.result_signal.connect(on_check_result)
+        worker.finished.connect(lambda w=worker: key_workers.remove(w)
+                                if w in key_workers else None)
+        key_workers.append(worker)
+        worker.start()
+
+    def on_check_result(tool_id, result):
+        from providers.key_check import MISSING, fingerprint
+
+        edit, button = key_rows[tool_id]
+        button.setEnabled(True)
+        if result.get("state") == MISSING:
+            stored_checks.pop(tool_id, None)
+        else:
+            stored_checks[tool_id] = {
+                **result, "fp": fingerprint(edit.text()),
+                "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        save_setting("osint_key_checks", json.dumps(stored_checks))
+        _show_check(button, tool_id, stored_checks.get(tool_id), edit.text())
+        if check_all_pending and tool_id in check_all_pending:
+            check_all_pending.discard(tool_id)
+            if not check_all_pending:
+                finish_check_all()
+
+    key_workers = []
+    check_all_pending = set()
     hover_targets = []       # (widget, explanation) the hover switch governs
     osint_checks = {}        # tool_id -> QCheckBox
-    fade_anims = []          # keep QPropertyAnimation objects alive
 
     def update_reg_summary():
         count = sum(1 for chk in osint_checks.values() if chk.isChecked())
         reg_progress.setValue(count)
         reg_summary.setText(f"{count} / {total_tools} tools registered")
 
+    display_names = {row[0]: row[1] for row in osint_tools}
     for tool_id, display, category, cost, url, env_key in osint_tools:
         frame = QFrame()
         frame.setFrameShape(QFrame.StyledPanel)
@@ -866,43 +969,33 @@ def show_settings(app):
         eye_btn.setFixedWidth(30)
         eye_btn.setToolTip("Show / hide key")
         save_key_btn = QPushButton("Save Key")
-        saved_lbl = QLabel("")
-        saved_lbl.setStyleSheet("color: #3cff88; font-size: 11px;")
-        saved_lbl.setFixedWidth(56)
-        saved_effect = QGraphicsOpacityEffect(saved_lbl)
-        saved_effect.setOpacity(1.0)
-        saved_lbl.setGraphicsEffect(saved_effect)
+        check_btn = QPushButton("Check")
+        check_btn.setObjectName(f"KeyCheck_{tool_id}")
+        check_btn.setFixedWidth(_CHECK_WIDTH)
+        if env_key:
+            key_rows[tool_id] = (key_edit, check_btn)
+            _show_check(check_btn, tool_id, stored_checks.get(tool_id), key_edit.text())
+            check_btn.clicked.connect(
+                lambda _c=False, t=tool_id, e=key_edit: run_checks([(t, e.text())]))
 
         def toggle_echo(checked, edit=key_edit):
             edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
 
         eye_btn.toggled.connect(toggle_echo)
 
-        def save_key(_checked=False, k=env_key, edit=key_edit,
-                     lbl=saved_lbl, effect=saved_effect):
+        def save_key(_checked=False, k=env_key, edit=key_edit, t=tool_id):
             try:
                 _write_env_key(k, edit.text())
             except OSError as exc:
                 QMessageBox.warning(dialog, "Save failed", f"Could not write {k}:\n{exc}")
                 return
-            effect.setOpacity(1.0)
-            lbl.setText("Saved ✓")
-
-            def start_fade():
-                anim = QPropertyAnimation(effect, b"opacity", lbl)
-                anim.setDuration(400)
-                anim.setStartValue(1.0)
-                anim.setEndValue(0.0)
-                anim.finished.connect(lambda: lbl.setText(""))
-                anim.finished.connect(lambda: fade_anims.remove(anim) if anim in fade_anims else None)
-                fade_anims.append(anim)
-                anim.start()
-
-            QTimer.singleShot(2000, lbl, start_fade)
+            # Saving is when a mistyped key would otherwise go unnoticed until
+            # a lookup fails, so check it straight away.
+            run_checks([(t, edit.text())])
 
         save_key_btn.clicked.connect(save_key)
 
-        for w in (key_edit, eye_btn, save_key_btn, saved_lbl):
+        for w in (key_edit, eye_btn, save_key_btn, check_btn):
             rl.addWidget(w)
             if not env_key:
                 w.setVisible(False)
@@ -932,6 +1025,63 @@ def show_settings(app):
             frame.setVisible(show)
 
     filter_group.buttonClicked.connect(apply_osint_filter)
+
+    def check_all():
+        from providers.key_check import CHECKS
+
+        free, costly = [], []
+        for tool_id, (edit, _button) in key_rows.items():
+            if not edit.text().strip():
+                continue
+            spec = CHECKS.get(tool_id)
+            (costly if spec and spec.cost else free).append((tool_id, edit.text()))
+        check_all_note.setVisible(True)
+        if not free:
+            check_all_note.setText(
+                "No saved key has a free check." if costly else "No keys saved yet.")
+            return
+        check_all_pending.clear()
+        check_all_pending.update(t for t, _ in free)
+        check_all_btn.setEnabled(False)
+        check_all_note.setText(f"Checking {len(free)} key(s)…")
+        dialog._costly_skipped = [t for t, _ in costly]
+        run_checks(free)
+
+    def finish_check_all():
+        from providers.key_check import OK
+
+        check_all_btn.setEnabled(True)
+        checked = [t for t in stored_checks if t in key_rows]
+        failing = [display_names[t] for t in checked
+                   if stored_checks[t].get("state") != OK
+                   and stored_checks[t].get("fp") == _fp(key_rows[t][0].text())]
+        parts = ["Done."]
+        if failing:
+            parts.append("Needs attention: " + ", ".join(sorted(failing)) + ".")
+        else:
+            parts.append("Every key checked works.")
+        skipped = [display_names[t] for t in getattr(dialog, "_costly_skipped", [])]
+        if skipped:
+            parts.append("Not checked, because a check spends a lookup or credit: "
+                         + ", ".join(sorted(skipped))
+                         + ". Use their own Check buttons.")
+        check_all_note.setText(" ".join(parts))
+
+    check_all_btn.clicked.connect(check_all)
+
+    def _stop_key_checks(_result=None):
+        # Same reasoning as the alias worker: never terminate a thread blocked
+        # in a request; drop its slots and let it end inside its timeout.
+        for worker in list(key_workers):
+            worker.cancel()
+            try:
+                worker.result_signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            _DETACHED_ALIAS_WORKERS.append(worker)
+            worker.finished.connect(lambda w=worker: _discard_detached_worker(w))
+
+    dialog.finished.connect(_stop_key_checks)
 
     def apply_hover_help(on):
         # Rich text, so Qt wraps the tooltip instead of drawing one long line.
