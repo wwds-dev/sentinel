@@ -262,3 +262,32 @@ def test_check_all_runs_only_free_checks_and_names_the_rest(tab):
     assert "Needs attention: HaveIBeenPwned." in note
     assert "DeHashed" in note and "spends a lookup or credit" in note
     assert _row(tab, "dehashed")[1].text() == "Check"
+
+
+INTELX_KEY = "00000000-0000-0000-0000-000000000000"
+
+
+def test_intelx_paid_key_works(calls):
+    calls.reply = Reply(200, {})
+    out = key_check.check("intelx", INTELX_KEY)
+    assert out["state"] == key_check.OK
+    assert [c["url"].split("/")[2] for c in calls] == ["2.intelx.io"]
+
+
+def test_intelx_free_key_works_and_says_it_uses_the_free_host(calls, monkeypatch):
+    """Sentinel's searches fall back to free.intelx.io, so a free key is not
+    reported as unusable any more."""
+    def fake(method, url, **kwargs):
+        calls.append({"method": method, "url": url, **kwargs})
+        return Reply(401 if url.startswith("https://2.intelx.io") else 200, {})
+    monkeypatch.setattr(requests, "request", fake)
+    out = key_check.check("intelx", INTELX_KEY)
+    assert out["state"] == key_check.OK
+    assert "free-tier" in out["detail"] and "free host" in out["detail"]
+    assert "will not work" not in out["detail"]
+
+
+def test_intelx_key_refused_on_both_hosts(calls):
+    calls.reply = Reply(401, {})
+    assert key_check.check("intelx", INTELX_KEY)["state"] == key_check.REJECTED
+    assert len(calls) == 2

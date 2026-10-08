@@ -364,11 +364,11 @@ class OsintPanel(AgentPanel):
                 if extra:
                     sources += ", " + ", ".join(extra)
             if validation.query_type == "Company":
-                from providers.company_lookup import OPENSANCTIONS_KEY
+                from providers.company_lookup import opensanctions_key
 
                 # OpenSanctions needs a key for every call; without one it is
                 # neither named here nor contacted. CourtListener always runs.
-                if OPENSANCTIONS_KEY:
+                if opensanctions_key():
                     selected_sources = ("opensanctions",)
                     sources = ("GLEIF Legal Entity Index, OpenSanctions, and "
                                "CourtListener court records")
@@ -409,7 +409,7 @@ class OsintPanel(AgentPanel):
 
     def _choose_email_sources(self, target: str) -> tuple[str, ...]:
         """Ask separately which services may receive a complete email address."""
-        from providers.email_lookup import HIBP_KEY
+        from providers.email_lookup import hibp_key
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Choose Email Research Sources")
@@ -428,7 +428,7 @@ class OsintPanel(AgentPanel):
         )
         gravatar.setChecked(True)
         hibp = QCheckBox("Have I Been Pwned — breach and paste records (API key required)")
-        hibp.setEnabled(bool(HIBP_KEY))
+        hibp.setEnabled(bool(hibp_key()))
         breach = QCheckBox("BreachDirectory — open breach-index search")
         from providers.intel_sources import key as _key
 
@@ -526,8 +526,9 @@ class OsintPanel(AgentPanel):
 
     def _choose_exposure_sources(self, target: str, query_type: str) -> tuple[str, ...]:
         """Ask which dark-web / leak services may receive the target."""
-        from providers.exposure_lookup import INTELX_KEY, dehashed_key
+        from providers.exposure_lookup import dehashed_key, intelx_key
         dehashed_available = bool(dehashed_key())
+        intelx_available = bool(intelx_key())
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Choose Exposure Check Sources")
@@ -549,11 +550,11 @@ class OsintPanel(AgentPanel):
         )
         ahmia.setChecked(True)
         intelx = QCheckBox(
-            "Intelligence X — leaks, pastes and archived dark-web material (paid API key required)"
+            "Intelligence X — leaks, pastes and archived dark-web material (API key required)"
         )
-        intelx.setEnabled(bool(INTELX_KEY))
-        intelx.setChecked(bool(INTELX_KEY))
-        if not INTELX_KEY:
+        intelx.setEnabled(intelx_available)
+        intelx.setChecked(intelx_available)
+        if not intelx_available:
             intelx.setToolTip("Set INTELX_API_KEY in .env to enable Intelligence X.")
         dehashed = QCheckBox(
             "DeHashed — which breach databases the target is in; metadata only, "

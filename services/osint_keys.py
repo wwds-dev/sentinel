@@ -192,7 +192,8 @@ OSINT_TOOL_INFO = {
     "intelx": {
         "about": "Intelligence X: a searchable archive of leaks, pastes and dark-web "
                  "material. Sentinel queries the index only and never downloads "
-                 "files. Paid; free keys were discontinued.",
+                 "files. A paid key, or a free account's key within the free "
+                 "tier's limits.",
         "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
         "key": KEY_NEEDED,
     },

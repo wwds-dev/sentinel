@@ -24,19 +24,22 @@ from dotenv import load_dotenv
 from services.runtime_paths import user_data_base
 
 load_dotenv(user_data_base() / ".env", override=False)
-HIBP_KEY = os.getenv("HIBP_API_KEY", "")
+def hibp_key() -> str:
+    """Read live, so a key saved in the OSINT Keys tab works without a restart."""
+    return os.getenv("HIBP_API_KEY", "").strip()
 
 
 def _hibp(email: str) -> dict:
     """HaveIBeenPwned v3 — breach list + pastes. Requires HIBP_API_KEY."""
-    if not HIBP_KEY:
+    key = hibp_key()
+    if not key:
         return {
             "source": "haveibeenpwned",
             "status": "skipped",
             "reason": "HIBP_API_KEY not set in .env — get key at haveibeenpwned.com/API/Key",
         }
     headers = {
-        "hibp-api-key": HIBP_KEY,
+        "hibp-api-key": key,
         "User-Agent": "Sentinel-OSINT/2.0",
     }
     try:

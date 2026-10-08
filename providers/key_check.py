@@ -343,7 +343,8 @@ def _dehashed(key):
 
 def _intelx(key):
     # Intelligence X ties a key to a host: 2.intelx.io for paid accounts,
-    # free.intelx.io for free ones. Sentinel's searches use the paid host.
+    # free.intelx.io for free ones. Sentinel's searches try them in the same
+    # order (exposure_lookup._INTELX_HOSTS), so either kind of key works.
     for host, tier in (("2.intelx.io", "paid"), ("free.intelx.io", "free")):
         answer = _call("GET", f"https://{host}/authenticate/info", secret=key,
                        headers={"x-key": key})
@@ -352,9 +353,9 @@ def _intelx(key):
         if answer.status == 200 and tier == "paid":
             return _result(OK, "Intelligence X accepted the key.")
         if answer.status == 200:
-            return _result(LIMITED, "Intelligence X accepted this as a free-tier key. "
-                                    "Sentinel's searches use the paid API host, so they "
-                                    "will not work with it.")
+            return _result(OK, "Intelligence X accepted this as a free-tier key. "
+                               "Sentinel searches its free host with it, within the "
+                               "free tier's limits.")
         if answer.status == 402:
             return _result(LIMITED, "Intelligence X knows the key, but its credits are "
                                     "used up or the plan has no API access.")

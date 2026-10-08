@@ -26,8 +26,8 @@ Usernames can use URLScan; companies use the GLEIF legal-entity registry and can
 add U.S. court dockets from CourtListener (metadata only — never document text or
 PDFs) and, with a key, sanctions and watchlist screening. A separate **Exposure
 Check** asks which leak and dark-web indexes may receive the target:
-Ransomware.live and Ahmia are free, while Intelligence X and DeHashed need paid
-keys and stay metadata-only — DeHashed reports which breach databases a target
+Ransomware.live and Ahmia are free, Intelligence X needs a key (a free
+account's works, within its limits) and DeHashed a paid one; both stay metadata-only — DeHashed reports which breach databases a target
 appears in and never returns leaked passwords or hashes. Email services are
 chosen individually, breach sources are never enabled without explicit consent,
 and person and phone targets remain planning-only to avoid data-broker and

@@ -31,11 +31,19 @@ from dotenv import load_dotenv
 from services.runtime_paths import user_data_base
 
 load_dotenv(user_data_base() / ".env", override=False)
-OPENSANCTIONS_KEY = os.getenv("OPENSANCTIONS_API_KEY", "")
 OPENSANCTIONS_URL = "https://api.opensanctions.org/search/default"
-COURTLISTENER_KEY = os.getenv("COURTLISTENER_API_KEY", "")
 COURTLISTENER_URL = "https://www.courtlistener.com/api/rest/v4/search/"
 COURTLISTENER_SITE = "https://www.courtlistener.com"
+
+
+# Keys are read live, so a key saved in the OSINT Keys tab (which writes it
+# into the environment) works without an app restart.
+def opensanctions_key() -> str:
+    return os.getenv("OPENSANCTIONS_API_KEY", "").strip()
+
+
+def courtlistener_key() -> str:
+    return os.getenv("COURTLISTENER_API_KEY", "").strip()
 
 
 GLEIF_URL = "https://api.gleif.org/api/v1/lei-records"
@@ -116,7 +124,8 @@ def _offshore_leaks(company: str) -> dict:
 
 def _opensanctions(company: str) -> dict:
     """OpenSanctions watchlist matches for a name, best first."""
-    if not OPENSANCTIONS_KEY:
+    key = opensanctions_key()
+    if not key:
         return {"status": "skipped",
                 "detail": "OPENSANCTIONS_API_KEY is not set (opensanctions.org/api)."}
     try:
@@ -124,7 +133,7 @@ def _opensanctions(company: str) -> dict:
             OPENSANCTIONS_URL,
             params={"q": company, "limit": 10},
             timeout=15,
-            headers={"Authorization": f"ApiKey {OPENSANCTIONS_KEY}",
+            headers={"Authorization": f"ApiKey {key}",
                      "User-Agent": "Sentinel-OSINT/2.0"},
         )
         if response.status_code in (401, 403):
@@ -195,8 +204,9 @@ def _court_records(company: str) -> dict:
     A name match is a lead, not proof the case concerns this organisation.
     """
     headers = {"User-Agent": "Sentinel-OSINT/2.0", "Accept": "application/json"}
-    if COURTLISTENER_KEY:
-        headers["Authorization"] = f"Token {COURTLISTENER_KEY}"
+    key = courtlistener_key()
+    if key:
+        headers["Authorization"] = f"Token {key}"
     try:
         response = requests.get(
             COURTLISTENER_URL,
@@ -208,7 +218,7 @@ def _court_records(company: str) -> dict:
         )
         if response.status_code in (401, 403):
             return {"error": ("CourtListener rejected the API key"
-                              if COURTLISTENER_KEY else
+                              if key else
                               f"CourtListener refused anonymous access (HTTP {response.status_code})")}
         if response.status_code == 429:
             return {"error": "CourtListener rate limit reached; try again later"}

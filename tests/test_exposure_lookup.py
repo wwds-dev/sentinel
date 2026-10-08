@@ -156,7 +156,7 @@ def test_ahmia_missing_token_is_a_clean_error(monkeypatch):
 # ── Intelligence X ───────────────────────────────────────────────────────────
 
 def test_intelx_skipped_without_key(monkeypatch):
-    monkeypatch.setattr(exposure_lookup, "INTELX_KEY", "")
+    monkeypatch.delenv("INTELX_API_KEY", raising=False)
     monkeypatch.setattr(
         exposure_lookup.requests, "post",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call IntelX")))
@@ -170,7 +170,7 @@ def test_intelx_skipped_without_key(monkeypatch):
 
 
 def test_intelx_search_reads_index_only(monkeypatch):
-    monkeypatch.setattr(exposure_lookup, "INTELX_KEY", "test-key")
+    monkeypatch.setenv("INTELX_API_KEY", "test-key")
     monkeypatch.setattr(exposure_lookup.time, "sleep", lambda *_a, **_k: None)
 
     posts, gets = [], []
@@ -209,6 +209,63 @@ def test_intelx_search_reads_index_only(monkeypatch):
     assert any("search/result" in u for u in gets)
     assert result["summary"]["intelx_records"] == 1
 
+
+
+def _intelx_hosts(monkeypatch, refused_by=()):
+    """Fake both IntelX hosts; return the hosts each call went to."""
+    monkeypatch.setenv("INTELX_API_KEY", "test-key")
+    monkeypatch.setattr(exposure_lookup.time, "sleep", lambda *_a, **_k: None)
+    hosts = []
+
+    def host(url):
+        hosts.append(url.split("/")[2])
+        return hosts[-1]
+
+    def fake_post(url, *a, **k):
+        if host(url) in refused_by:
+            return _Response({}, status_code=401)
+        return _Response({"id": "search-1", "status": 0})
+
+    def fake_get(url, *a, **k):
+        host(url)
+        return _Response({"records": [], "status": 1})
+
+    monkeypatch.setattr(exposure_lookup.requests, "post", fake_post)
+    monkeypatch.setattr(exposure_lookup.requests, "get", fake_get)
+    return hosts
+
+
+def test_intelx_paid_key_stays_on_the_paid_host(monkeypatch):
+    hosts = _intelx_hosts(monkeypatch)
+    assert exposure_lookup._intelx("acme.com")["status"] == "ok"
+    assert set(hosts) == {"2.intelx.io"}
+
+
+def test_intelx_free_key_falls_back_to_the_free_host(monkeypatch):
+    """A free account's key is refused by 2.intelx.io; the search, its polling
+    and its release all go to free.intelx.io instead."""
+    hosts = _intelx_hosts(monkeypatch, refused_by={"2.intelx.io"})
+    assert exposure_lookup._intelx("acme.com")["status"] == "ok"
+    assert hosts[0] == "2.intelx.io"
+    assert set(hosts[1:]) == {"free.intelx.io"} and len(hosts) > 2
+
+
+def test_intelx_key_refused_on_both_hosts(monkeypatch):
+    hosts = _intelx_hosts(monkeypatch, refused_by={"2.intelx.io", "free.intelx.io"})
+    result = exposure_lookup._intelx("acme.com")
+    assert result["status"] == "error"
+    assert "paid and free hosts" in result["detail"]
+    assert hosts == ["2.intelx.io", "free.intelx.io"]
+
+
+def test_intelx_out_of_credits_does_not_try_the_free_host(monkeypatch):
+    monkeypatch.setenv("INTELX_API_KEY", "test-key")
+    posts = []
+    monkeypatch.setattr(exposure_lookup.requests, "post",
+                        lambda url, *a, **k: posts.append(url) or _Response({}, status_code=402))
+    result = exposure_lookup._intelx("acme.com")
+    assert result["status"] == "error" and "credits" in result["detail"]
+    assert len(posts) == 1
 
 # ── DeHashed (key-gated, metadata only) ──────────────────────────────────────
 
@@ -328,7 +385,7 @@ def test_cancel_before_contact_touches_nothing(monkeypatch):
 
 
 def test_progress_and_source_selection(monkeypatch):
-    monkeypatch.setattr(exposure_lookup, "INTELX_KEY", "")
+    monkeypatch.delenv("INTELX_API_KEY", raising=False)
     monkeypatch.setattr(exposure_lookup.requests, "get",
                         lambda *a, **k: _Response([]))
     events = []

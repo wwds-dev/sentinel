@@ -1909,9 +1909,8 @@ class TestTracePanel:
     ])
     def test_company_research_adds_opensanctions_only_with_a_key(
             self, trace, monkeypatch, key, named, sources):
-        from providers import company_lookup
-
-        monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", key)
+        # Set after the window was built, as Save Key does: no restart needed.
+        monkeypatch.setenv("OPENSANCTIONS_API_KEY", key)
         prompts = []
         monkeypatch.setattr(
             QMessageBox, "question",

@@ -23,11 +23,11 @@ Zero-cost stack (no key required):
 Key-gated (set in .env):
   • Intelligence X   → INTELX_API_KEY — leaks, pastes, dark-web and other
                        archived material matching a strong selector (email,
-                       domain, company). Commercial/paid; Intelligence X
-                       discontinued its free public API keys, so this source
-                       stays skipped until a licensed key is present. Only the
-                       search index is queried — the file/read (download)
-                       endpoints are never called.
+                       domain, company). A paid account's key searches
+                       2.intelx.io; a free account's key is refused there and
+                       searches free.intelx.io instead. Skipped until a key is
+                       present. Only the search index is queried — the
+                       file/read (download) endpoints are never called.
   • DeHashed         → DEHASHED_API_KEY — which breach databases an email or
                        domain appears in. Paid and credit-metered; skipped until
                        a key is present. STRICTLY metadata only: Sentinel reads
@@ -61,7 +61,9 @@ from dotenv import load_dotenv
 from services.runtime_paths import user_data_base
 
 load_dotenv(user_data_base() / ".env", override=False)
-INTELX_KEY = os.getenv("INTELX_API_KEY", "")
+def intelx_key() -> str:
+    """Read live, like the keys below, so a saved key needs no restart."""
+    return os.getenv("INTELX_API_KEY", "").strip()
 
 
 def dehashed_key() -> str:
@@ -368,38 +370,51 @@ def _parse_ahmia(html: str) -> list[dict]:
 
 # ── Intelligence X ───────────────────────────────────────────────────────────
 
+# Intelligence X ties a key to a host: paid accounts search 2.intelx.io, free
+# accounts free.intelx.io (help.intelx.io/api), and each host refuses the other
+# kind of key. Paid first, so a paid key costs one request as before.
+_INTELX_HOSTS = ("https://2.intelx.io", "https://free.intelx.io")
+
+
 def _intelx(term: str, *, should_stop=None) -> dict:
     """Search Intelligence X for a strong selector (email/domain/company).
 
     Two-step API: POST a search, then poll for records until the search
     reports it is done. Only the *index* is read — file content is never
-    downloaded. Requires a licensed INTELX_API_KEY.
+    downloaded. Requires INTELX_API_KEY, from a paid or a free account.
     """
-    if not INTELX_KEY:
+    key = intelx_key()
+    if not key:
         return {
             "source": "intelx",
             "status": "skipped",
-            "reason": "INTELX_API_KEY not set in .env — Intelligence X is a paid service "
-                      "(its free public API keys were discontinued); add a licensed key to enable it.",
+            "reason": "INTELX_API_KEY not set in .env — add a key from an Intelligence X "
+                      "account (paid, or free within the free tier's limits) to enable it.",
         }
 
-    base = "https://2.intelx.io"
-    headers = {"X-Key": INTELX_KEY, "User-Agent": _UA}
+    headers = {"X-Key": key, "User-Agent": _UA}
     try:
-        start = requests.post(
-            f"{base}/intelligent/search",
-            json={
-                "term": term, "buckets": [], "lookuplevel": 0, "maxresults": 50,
-                "timeout": 5, "datefrom": "", "dateto": "", "sort": 4,
-                "media": 0, "terminate": [],
-            },
-            headers=headers,
-            timeout=15,
-        )
-        if start.status_code in (401, 402, 403):
+        for base in _INTELX_HOSTS:
+            start = requests.post(
+                f"{base}/intelligent/search",
+                json={
+                    "term": term, "buckets": [], "lookuplevel": 0, "maxresults": 50,
+                    "timeout": 5, "datefrom": "", "dateto": "", "sort": 4,
+                    "media": 0, "terminate": [],
+                },
+                headers=headers,
+                timeout=15,
+            )
+            if start.status_code not in (401, 403):
+                break
+        if start.status_code in (401, 403):
             return {"source": "intelx", "status": "error",
-                    "detail": f"Intelligence X rejected the key (HTTP {start.status_code}) — "
-                              "check the key and that the licence covers API search"}
+                    "detail": f"Intelligence X rejected the key on its paid and free hosts "
+                              f"(HTTP {start.status_code}) — check the key"}
+        if start.status_code == 402:
+            return {"source": "intelx", "status": "error",
+                    "detail": "Intelligence X knows the key, but its search credits are "
+                              "used up or the plan has no API search (HTTP 402)"}
         if start.status_code != 200:
             return {"source": "intelx", "status": "error", "code": start.status_code}
 

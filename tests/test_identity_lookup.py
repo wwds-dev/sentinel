@@ -137,7 +137,7 @@ def test_email_lookup_contacts_only_selected_source(monkeypatch):
 
 
 def test_hibp_without_key_is_recorded_as_skipped_not_contacted(monkeypatch):
-    monkeypatch.setattr(email_lookup, "HIBP_KEY", "")
+    monkeypatch.delenv("HIBP_API_KEY", raising=False)
     progress = []
     result = email_lookup.lookup(
         "analyst@example.com",
@@ -358,7 +358,7 @@ def test_offshore_leaks_matches_are_labelled_as_name_similarity(monkeypatch):
 
 def test_sanctions_without_a_key_is_skipped_not_contacted(monkeypatch):
     _gleif_empty(monkeypatch)
-    monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", "")
+    monkeypatch.delenv("OPENSANCTIONS_API_KEY", raising=False)
     result = company_lookup.lookup("Example Limited", sanctions=True)
     assert result["sanctions"]["status"] == "skipped"
     assert {"source": "OpenSanctions", "status": "skipped"} in result["sources_skipped"]
@@ -366,7 +366,7 @@ def test_sanctions_without_a_key_is_skipped_not_contacted(monkeypatch):
 
 
 def test_sanctions_matches_carry_listing_and_datasets(monkeypatch):
-    monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", "test-key")
+    monkeypatch.setenv("OPENSANCTIONS_API_KEY", "test-key")
     calls = []
 
     def fake_get(url, params=None, headers=None, **kwargs):
@@ -436,7 +436,7 @@ def test_court_records_surface_metadata_only_never_document_content(monkeypatch)
             "recap_documents": [{"snippet": "DOCBODY", "plain_text": "MORE"}],
         }],
     }
-    monkeypatch.setattr(company_lookup, "COURTLISTENER_KEY", "")
+    monkeypatch.delenv("COURTLISTENER_API_KEY", raising=False)
     fake_get = _court_get(monkeypatch, payload)
     result = company_lookup.lookup("Acme Corp", court_records=True)
 
@@ -462,14 +462,14 @@ def test_court_records_surface_metadata_only_never_document_content(monkeypatch)
 
 
 def test_court_records_sends_token_header_when_key_is_set(monkeypatch):
-    monkeypatch.setattr(company_lookup, "COURTLISTENER_KEY", "cl-key")
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "cl-key")
     fake_get = _court_get(monkeypatch, {"count": 0, "results": []})
     company_lookup.lookup("Acme Corp", court_records=True)
     assert fake_get.court_headers["Authorization"] == "Token cl-key"
 
 
 def test_court_records_401_is_a_clean_error(monkeypatch):
-    monkeypatch.setattr(company_lookup, "COURTLISTENER_KEY", "bad-key")
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "bad-key")
     _court_get(monkeypatch, {"detail": "Invalid token."}, status_code=401)
     result = company_lookup.lookup("Acme Corp", court_records=True)
     assert "rejected the API key" in result["court_records"]["error"]
@@ -477,7 +477,7 @@ def test_court_records_401_is_a_clean_error(monkeypatch):
 
 
 def test_a_rejected_sanctions_key_is_an_error(monkeypatch):
-    monkeypatch.setattr(company_lookup, "OPENSANCTIONS_KEY", "bad")
+    monkeypatch.setenv("OPENSANCTIONS_API_KEY", "bad")
     monkeypatch.setattr(company_lookup.requests, "get",
                         lambda *a, **k: _JsonResponse({}, status_code=401))
     assert company_lookup._opensanctions("Example") == {

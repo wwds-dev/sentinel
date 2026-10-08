@@ -108,6 +108,72 @@ def test_every_key_on_the_tab_does_something():
     assert unread == []
 
 
+
+# ── Saved keys take effect without a restart ──────────────────────────
+
+def _sent(monkeypatch, module, method):
+    """Replace requests.<method> in a provider; return the headers it sent."""
+    sent = []
+
+    class Reply:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"id": "search-1", "status": 1, "results": [], "count": 0}
+
+    def fake(url, *a, **k):
+        sent.append(k.get("headers") or {})
+        return Reply()
+
+    monkeypatch.setattr(getattr(module, "requests"), method, fake)
+    return sent
+
+
+@pytest.mark.parametrize("variable,call,header,expected", [
+    ("HIBP_API_KEY", "email_lookup._hibp", "hibp-api-key", "{}"),
+    ("INTELX_API_KEY", "exposure_lookup._intelx", "X-Key", "{}"),
+    ("OPENSANCTIONS_API_KEY", "company_lookup._opensanctions", "Authorization", "ApiKey {}"),
+    ("COURTLISTENER_API_KEY", "company_lookup._court_records", "Authorization", "Token {}"),
+])
+def test_a_key_saved_after_import_is_used(monkeypatch, variable, call, header, expected):
+    """Save Key writes os.environ while the app runs. These four once read
+    their key into a constant at import and kept the old one until restart."""
+    import importlib
+
+    module_name, function = call.split(".")
+    module = importlib.import_module(f"providers.{module_name}")
+    method = "post" if module_name == "exposure_lookup" else "get"
+    sent = _sent(monkeypatch, module, method)
+    if hasattr(module, "time"):  # IntelX polls between requests
+        monkeypatch.setattr(module.time, "sleep", lambda *_: None)
+
+    monkeypatch.setenv(variable, "saved-while-running")
+    getattr(module, function)("example.com")
+    assert sent and sent[0].get(header) == expected.format("saved-while-running")
+
+
+def test_no_provider_reads_a_key_at_import():
+    """A module-level `X = os.getenv("..._API_KEY")` is frozen at import, so a
+    key saved in the OSINT Keys tab would not reach it until a restart."""
+    import ast
+
+    def reads_environment(value):
+        return any(
+            isinstance(n, (ast.Call, ast.Subscript))
+            and ast.unparse(n.func if isinstance(n, ast.Call) else n.value)
+            in {"os.getenv", "os.environ.get", "os.environ", "getenv"}
+            for n in ast.walk(value))
+
+    frozen = []
+    for path in [*(ROOT / "providers").rglob("*.py"), *(ROOT / "ui" / "panels").rglob("*.py")]:
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            value = getattr(node, "value", None)
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and value is not None \
+                    and reads_environment(value):
+                frozen.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert frozen == []
+
 # ── The tab ───────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
