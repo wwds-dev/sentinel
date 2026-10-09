@@ -429,28 +429,16 @@ def _ensure_registered_command() -> str:
 
 def _run_privileged(script: str, prompt: str) -> tuple[bool, str]:
     """
-    Run a command as root.
+    Run a command as root, through the macOS authorisation dialog.
 
-    Tries cached sudo credentials first; falls back to the native macOS
-    authorisation dialog, which is the only way a GUI can ask. Nothing secret
-    is ever passed here — these are firewall rules and file paths — so the
-    command being briefly visible in the process list costs nothing.
+    Arming and disarming pf is a Sentinel-gated action, so it never rides on a
+    cached sudo ticket; the shared runner in ``privileged`` owns the policy.
+    Nothing secret is ever passed here — these are firewall rules and file
+    paths — so the command being briefly visible in the process list costs
+    nothing.
     """
-    if os.geteuid() == 0:
-        return _run(["bash", "-c", script])
-
-    ok, output = _run(["sudo", "-n", "bash", "-c", script])
-    if ok:
-        return True, output
-
-    if "password" not in output.lower() and "sudo" not in output.lower():
-        return False, output
-
-    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
-    return _run([
-        "osascript", "-e",
-        f'do shell script "{escaped}" with prompt "{prompt}" with administrator privileges',
-    ])
+    from agents.vpn_agent.services import privileged
+    return privileged.run_as_root(script, prompt, TIMEOUT, allow_cached_sudo=False)
 
 
 def _run(command: list[str]) -> tuple[bool, str]:

@@ -23,7 +23,11 @@ from services.runtime_paths import user_data_base
 
 # Injected in tests; the default raises the real admin prompt.
 try:  # pragma: no cover - exercised via the real app, mocked in tests
-    from agents.vpn_agent.services.privileged import run_as_root as _default_run_as_root
+    from functools import partial as _partial
+    from agents.vpn_agent.services.privileged import run_as_root as _privileged_run_as_root
+    # Sentinel's gated actions always go through the macOS dialog (never a
+    # cached sudo ticket) — that is what the README and the review promise.
+    _default_run_as_root = _partial(_privileged_run_as_root, allow_cached_sudo=False)
 except Exception:  # pragma: no cover
     def _default_run_as_root(script: str, prompt: str, timeout: float = 30):
         return False, "Privileged execution is unavailable."
