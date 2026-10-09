@@ -147,3 +147,61 @@ def test_the_tool_row_carries_the_approved_limits(factory):
         "FROM tools WHERE name = ?", (spec["label"],)).fetchone()
     assert json.loads(row[0]) == ["ollama"]
     assert row[1] == 0.25 and row[2] == 1 and row[3] == "Tiny helper." and row[4] == 0
+
+
+# ── P0-14: hostile specs write nothing; a disk failure leaves nothing ───────
+
+@pytest.mark.parametrize("name", [
+    "../evil", "..\\evil", "a/b", "/etc/passwd", "weather brief", "Weather",
+    "weather.py", "x" * 65, "1abc", "", "naïve", "a\x00b",
+])
+def test_a_hostile_agent_name_is_refused_and_touches_nothing(factory, name):
+    agent_factory, db_path = factory
+    before = sorted(p.name for p in agent_factory.agents_dir.parent.rglob("*"))
+
+    report = agent_factory.create_agent({**SPEC, "name": name})
+
+    assert report["success"] is False
+    assert report["files_created"] == []
+    assert sorted(p.name for p in agent_factory.agents_dir.parent.rglob("*")) == before
+    assert _rows(db_path, "agents") == []
+    assert len(_rows(db_path, "tools")) == 1
+
+
+@pytest.mark.parametrize("name", ["chat", "osint", "wifi", "manager", "vpn", "bug_bounty"])
+def test_a_built_in_agent_name_cannot_be_overwritten(factory, name):
+    agent_factory, db_path = factory
+    report = agent_factory.create_agent({**SPEC, "name": name})
+    assert report["success"] is False
+    assert _rows(db_path, "agents") == []
+    assert not (agent_factory.agents_dir / f"{name}_agent.py").exists()
+
+
+def test_a_provider_outside_the_catalogue_is_refused(factory):
+    agent_factory, db_path = factory
+    report = agent_factory.create_agent({**SPEC, "allowed_providers": ["openai", "evilcloud"]})
+    assert report["success"] is False
+    assert _rows(db_path, "agents") == []
+
+
+@pytest.mark.parametrize("stage", ["write", "publish"])
+def test_a_disk_failure_leaves_no_file_and_no_rows(factory, monkeypatch, stage):
+    import os
+
+    agent_factory, db_path = factory
+    full = OSError(28, "No space left on device")
+    if stage == "write":
+        monkeypatch.setattr(
+            agent_factory, "_write_agent_temp_file",
+            lambda *a, **k: (_ for _ in ()).throw(full))
+    else:
+        monkeypatch.setattr(os, "link", lambda *a, **k: (_ for _ in ()).throw(full))
+
+    report = agent_factory.create_agent(dict(SPEC))
+    monkeypatch.undo()
+
+    assert report["success"] is False
+    assert report["files_created"] == []
+    assert list(agent_factory.agents_dir.glob("*")) == []     # no temp leftovers
+    assert _rows(db_path, "agents") == []
+    assert len(_rows(db_path, "tools")) == 1
