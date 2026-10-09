@@ -302,6 +302,7 @@ class GodAI(QWidget):
         }
 
         self.current_messages = []
+        self.current_chat_path = None   # the saved-chat file this conversation continues
 
         self.session_cost_total = 0.0
         self.session_request_count = 0
@@ -3320,12 +3321,20 @@ class GodAI(QWidget):
             moment = moment.astimezone()
         return moment.isoformat(timespec="seconds")
 
-    def _timestamped_message(self, role: str, content: str, timestamp=None) -> dict:
-        return {
+    def _timestamped_message(self, role: str, content: str, timestamp=None,
+                             *, ui_only: bool = False) -> dict:
+        message = {
             "role": role,
             "content": content,
             "timestamp": self._message_timestamp(timestamp),
         }
+        if ui_only:
+            # A notice for the reader (stopped, failed), never for the model.
+            message["ui_only"] = True
+        return message
+
+    def _ui_notice(self, content: str) -> dict:
+        return self._timestamped_message("system", content, ui_only=True)
 
     def _normalise_chat_messages(self, messages: list, fallback=None) -> list:
         return [
@@ -3333,6 +3342,7 @@ class GodAI(QWidget):
                 str(message.get("role", "system")),
                 str(message.get("content", "")),
                 message.get("timestamp") or fallback,
+                ui_only=bool(message.get("ui_only")),
             )
             for message in messages
             if isinstance(message, dict)
@@ -3340,10 +3350,16 @@ class GodAI(QWidget):
 
     @staticmethod
     def _backend_messages(messages: list) -> list:
-        """Provider APIs receive only their standard role/content fields."""
+        """Provider APIs receive only their standard role/content fields.
+
+        Transcript notices ("stopped by user", "could not be completed") are
+        marked ui_only and never sent: as system messages they displaced the
+        tool's instructions on providers that keep only the last system turn.
+        """
         return [
             {"role": message["role"], "content": message["content"]}
             for message in messages
+            if not message.get("ui_only")
         ]
 
     def _render_chat_conversation(self, *, force_tail: bool = False) -> None:
@@ -3466,7 +3482,16 @@ class GodAI(QWidget):
             prior = list(self.current_messages) if selected_agent == "chat" else []
             fresh = self._normalise_chat_messages(messages)
             if prior and fresh and fresh[0].get("role") == "system":
+                # The tool chosen for this turn sets the instructions for this
+                # turn: its system prompt replaces the one the conversation
+                # started with instead of being thrown away (a switch from
+                # Writing to Coding mid-chat used to be silently ignored).
+                system_now = fresh[0]
                 fresh = fresh[1:]
+                if prior[0].get("role") == "system" and not prior[0].get("ui_only"):
+                    prior[0] = {**prior[0], "content": system_now["content"]}
+                else:
+                    prior.insert(0, system_now)
             self.pending_messages = prior + fresh
             self.pending_prompt = full_prompt
             self.pending_usage = None
@@ -3818,6 +3843,11 @@ class GodAI(QWidget):
             if verdict is not None and verdict["level"] == "too_big":
                 raise RuntimeError(verdict["message"])
 
+            # Stream like every cloud provider: the worker checks its cancel
+            # flag per token, so Stop interrupts a local reply instead of
+            # waiting for the whole thing (and the transcript fills as it goes).
+            if hasattr(self.ollama, "stream_chat"):
+                return self.ollama.stream_chat(model=model, messages=messages)
             if hasattr(self.ollama, "chat"):
                 return self.ollama.chat(model=model, messages=messages)
             if hasattr(self.ollama, "generate"):
@@ -3954,15 +3984,28 @@ class GodAI(QWidget):
             )
             self.active_run_id = None
 
-        self.history.save_chat(
-            agent=self.pending_agent,
-            backend=self.pending_backend,
-            model=self.pending_model,
-            command=self.pending_command,
-            messages=self.current_messages,
-            response=response,
-            project=self.pending_project,
-        )
+        current_path = getattr(self, "current_chat_path", None)
+        if current_path and Path(current_path).is_file():
+            try:
+                self.history.update_chat(
+                    current_path,
+                    messages=self.current_messages, response=response,
+                    backend=self.pending_backend, model=self.pending_model,
+                    command=self.pending_command, project=self.pending_project,
+                )
+            except Exception as exc:
+                self._note_failure("saved chats: update", exc)
+                self.current_chat_path = None
+        if not getattr(self, "current_chat_path", None):
+            self.current_chat_path = str(self.history.save_chat(
+                agent=self.pending_agent,
+                backend=self.pending_backend,
+                model=self.pending_model,
+                command=self.pending_command,
+                messages=self.current_messages,
+                response=response,
+                project=self.pending_project,
+            ))
 
         self.load_history_list()
         self.route_result_label.setText(f"Router: {self.pending_agent} · {self.pending_backend} · {self.pending_model}")
@@ -3974,7 +4017,7 @@ class GodAI(QWidget):
                 and not self.current_messages[-1].get("content")):
             self.current_messages.pop()
         self.current_messages.append(
-            self._timestamped_message("system", f"The request could not be completed. {error}")
+            self._ui_notice(f"The request could not be completed. {error}")
         )
         self._render_chat_conversation()
         self.send_btn.show()
@@ -4000,7 +4043,7 @@ class GodAI(QWidget):
                     and not self.current_messages[-1].get("content")):
                 self.current_messages.pop()
             self.current_messages.append(
-                self._timestamped_message("system", "Chat request stopped by user.")
+                self._ui_notice("Chat request stopped by user.")
             )
             self._render_chat_conversation()
         self.stop_chat_timer()
@@ -4537,6 +4580,8 @@ class GodAI(QWidget):
             self.current_messages = self._normalise_chat_messages(
                 messages, fallback=data.get("timestamp")
             )
+            # Continuing this chat appends to this file rather than cloning it.
+            self.current_chat_path = str(filepath)
             self._render_chat_conversation(force_tail=True)
             self.input_box.clear()
             self.route_result_label.setText(
@@ -4564,12 +4609,17 @@ class GodAI(QWidget):
 
         try:
             Path(filepath).unlink(missing_ok=True)
+            if getattr(self, "current_chat_path", None) == str(filepath):
+                self.current_chat_path = None
             self.load_history_list()
         except Exception as e:
             QMessageBox.warning(self, "Delete Failed", str(e))
 
     def new_chat(self):
+        if getattr(self, "chat_worker", None) is not None and self.chat_worker.isRunning():
+            self.stop_chat_worker()
         self.current_messages = []
+        self.current_chat_path = None
         self.input_box.clear()
         self.output_box.clear()
         self.hide_output_area()
