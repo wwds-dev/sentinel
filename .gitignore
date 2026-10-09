@@ -58,3 +58,6 @@ data/settings.local.json
 
 # Coverage data from a local pytest --cov run
 .coverage
+
+# Local runtime data written by the VPN tools when running from a checkout
+/vpn/

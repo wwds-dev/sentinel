@@ -207,6 +207,9 @@ def pytest_configure(config):
     """
     global _TEST_ROOT
     _TEST_ROOT = Path(tempfile.mkdtemp(prefix="sentinel-tests-"))
+    # VPN state (sites, keys, Tor dir, kill-switch files) must never touch the
+    # developer's real folders, and Tunnel tests must not see each other's.
+    os.environ["VPN_AGENT_STATE_DIR"] = str(_TEST_ROOT / "vpn-state")
 
     from services import database
 

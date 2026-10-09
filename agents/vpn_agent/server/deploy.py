@@ -14,14 +14,16 @@ already resolved by the time the script is built.
 from __future__ import annotations
 
 import platform
+import shlex
 import shutil
 import subprocess
 import time
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
-from . import bootstrap, obfuscation, provision
+from . import bootstrap, obfuscation, paths, provision
 from .model import MODE_NATIVE, MODE_REMOTE, Site
 
 OutputCallback = Callable[[str], None]
@@ -192,27 +194,47 @@ def _run_remote(site: Site, script: str, on_output: OutputCallback | None) -> De
 
 def _run_local(site: Site, script: str, on_output: OutputCallback | None) -> DeployResult:
     """
-    Run the installer on this machine.
+    Run the installer on this machine, as root.
 
-    Requires root. We use `sudo -n` rather than prompting: a GUI has nowhere to
-    show a terminal password prompt, and silently blocking on one looks like a
-    hang. If credentials are not cached the caller is told exactly what to run.
+    Sentinel's gated actions use the macOS administrator dialog and never a
+    cached ``sudo`` ticket. The dialog runs one command, not a stdin stream, so
+    the installer goes into a private (0600) file inside the state folder, runs
+    as ``bash <file>``, and the file is removed afterwards whatever happens: the
+    script embeds the server's private keys.
     """
     import os
+    import tempfile
+
+    from agents.vpn_agent.services import privileged
 
     if os.geteuid() == 0:
-        command = ["bash", "-s"]
-    else:
-        command = ["sudo", "-n", "bash", "-s"]
+        return _stream(["bash", "-s"], script, on_output)
 
-    result = _stream(command, script, on_output)
-    if not result.success and "sudo" in result.error.lower() and "password" in result.error.lower():
-        result.problems.append(
-            "sudo needs a password and none is cached. Run `sudo -v` in a terminal "
-            "first, then deploy again — or use 'Save installer script' and run it "
-            "yourself with sudo."
+    directory = paths.ensure_private_dir(paths.state_dir() / "tmp")
+    fd, name = tempfile.mkstemp(prefix="install-", suffix=".sh", dir=directory)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(script)
+        os.chmod(path, 0o600)
+        ok, output = privileged.run_as_root(
+            f"/bin/bash {shlex.quote(str(path))}",
+            f"Sentinel needs administrator access to set up the VPN server on {site.name}.",
+            DEPLOY_TIMEOUT,
+            allow_cached_sudo=False,
         )
-    return result
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    if on_output:
+        for line in output.splitlines():
+            on_output(line)
+    if ok:
+        return DeployResult(True, output=output, command="(installer run through the macOS dialog)")
+    return DeployResult(False, output=output, error=_explain_failure(1, output),
+                        command="(installer run through the macOS dialog)")
 
 
 def _stream(

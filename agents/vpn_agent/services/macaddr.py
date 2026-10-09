@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import shlex
 import subprocess
 from dataclasses import dataclass
 
@@ -172,16 +173,20 @@ def set_mac(device: str, address: str) -> tuple[bool, str]:
     if interface is None:
         return False, f"No such interface: {device}"
 
+    dev = shlex.quote(device)
     steps = []
     if interface.is_wifi:
-        steps.append(f"networksetup -setairportpower {device} off")
+        steps.append(f"/usr/sbin/networksetup -setairportpower {dev} off")
         steps.append("sleep 1")
-    steps.append(f"ifconfig {device} ether {address}")
+    steps.append(f"/sbin/ifconfig {dev} ether {shlex.quote(address)}")
     if interface.is_wifi:
-        steps.append(f"networksetup -setairportpower {device} on")
+        steps.append(f"/usr/sbin/networksetup -setairportpower {dev} on")
 
+    # Sentinel's gated actions always use the macOS dialog, never a cached
+    # sudo ticket left by some unrelated command.
     ok, output = run_as_root(
-        "; ".join(steps), f"Change the hardware address of {device}"
+        "; ".join(steps), f"Change the hardware address of {device}",
+        allow_cached_sudo=False,
     )
     if not ok:
         return False, output or "The change was refused."

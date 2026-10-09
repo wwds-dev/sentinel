@@ -24,12 +24,8 @@ DIR_MODE = 0o700
 FILE_MODE = 0o600
 
 
-def state_dir() -> Path:
-    """Root directory for all VPN Agent state that must survive reinstalls."""
-    override = os.environ.get(ENV_STATE_DIR)
-    if override:
-        return Path(override).expanduser()
-
+def legacy_state_dir() -> Path:
+    """Where the standalone VPN Agent kept its state before Sentinel owned it."""
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / APP_NAME
     if os.name == "nt":
@@ -37,6 +33,80 @@ def state_dir() -> Path:
         return Path(base) / APP_NAME
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "vpn-agent"
+
+
+_prepared: set[str] = set()
+_notice: str = ""
+MIGRATION_MARKER = ".migrated-from-vpn-agent"
+
+
+def state_dir() -> Path:
+    """Root directory for all VPN state that must survive reinstalls.
+
+    Inside Sentinel this is ``<Sentinel data>/vpn``, so portable mode,
+    Emergency Reset and Sentinel backups cover sites, keys, the Tor data dir,
+    the proxy chain and the kill-switch state. ``VPN_AGENT_STATE_DIR`` still
+    overrides it (tests, or a site kept on an encrypted volume).
+    """
+    override = os.environ.get(ENV_STATE_DIR)
+    if override:
+        return Path(override).expanduser()
+
+    from services.runtime_paths import user_data_base
+
+    root = user_data_base() / "vpn"
+    key = str(root)
+    if key not in _prepared:
+        _prepared.add(key)
+        _prepare(root)
+    return root
+
+
+def _prepare(root: Path) -> None:
+    """Create the folder privately and bring over the standalone app's state once."""
+    global _notice
+    root.mkdir(parents=True, exist_ok=True)
+    _harden_dir(root)
+    marker = root / MIGRATION_MARKER
+    legacy = legacy_state_dir()
+    if marker.exists() or not legacy.is_dir() or legacy.resolve() == root.resolve():
+        return
+    copied = _copy_tree_no_overwrite(legacy, root)
+    try:
+        write_private(marker, f"copied {copied} file(s) from {legacy}\n")
+    except OSError:
+        pass
+    if copied:
+        _notice = (f"Copied {copied} file(s) of VPN state (sites, keys, profiles) from "
+                   f"{legacy} into Sentinel's data folder. The original was left untouched; "
+                   "delete it yourself once you have checked everything works.")
+
+
+def migration_notice() -> str:
+    """One-line message about the copy made on first run, or '' if none."""
+    return _notice
+
+
+def _copy_tree_no_overwrite(source: Path, dest: Path) -> int:
+    """Copy files that do not exist at the destination; never move or delete."""
+    import shutil
+
+    copied = 0
+    for item in sorted(source.rglob("*")):
+        relative = item.relative_to(source)
+        target = dest / relative
+        if item.is_symlink():
+            continue
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            _harden_dir(target)
+        elif item.is_file() and not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _harden_dir(target.parent)
+            shutil.copyfile(item, target)
+            os.chmod(target, FILE_MODE)
+            copied += 1
+    return copied
 
 
 def sites_dir() -> Path:
