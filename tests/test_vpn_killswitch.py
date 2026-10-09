@@ -8,6 +8,8 @@ blocks it), the arm/disarm pass-throughs, and the worker's result normalisation.
 
 from __future__ import annotations
 
+import pytest
+
 from services import vpn_connection
 
 
@@ -180,3 +182,42 @@ def test_worker_disarm_reports_failure(monkeypatch):
     worker.run()
     assert received and received[0]["success"] is False
     assert received[0]["error"] == "pfctl error"
+
+
+# ── P0-12: the real pf service refuses to arm when it cannot exempt the tunnel ─
+
+@pytest.fixture
+def real_ks(monkeypatch):
+    from agents.vpn_agent.services import killswitch
+
+    privileged = []
+    monkeypatch.setattr(killswitch, "is_supported", lambda: True)
+    monkeypatch.setattr(killswitch, "_run_privileged",
+                        lambda script, why: privileged.append(script) or (True, "ok"))
+    killswitch.privileged_calls = privileged
+    return killswitch
+
+
+def test_an_endpoint_that_does_not_resolve_is_not_armed(real_ks, monkeypatch):
+    import socket
+
+    def nxdomain(*a, **k):
+        raise socket.gaierror(8, "nodename nor servname provided")
+    monkeypatch.setattr(real_ks.socket, "getaddrinfo", nxdomain)
+    ok, message = real_ks.arm(["vpn.invalid.example"], allow=[("udp", 51820)])
+    assert ok is False
+    assert "Could not resolve" in message
+    assert real_ks.privileged_calls == []            # pfctl never ran
+
+
+def test_the_unspecified_placeholder_address_is_not_armed(real_ks):
+    ok, message = real_ks.arm(["0.0.0.0"], allow=[("udp", 51820)])
+    assert ok is False and real_ks.privileged_calls == []
+
+
+def test_a_failed_arm_reports_the_recovery_command(real_ks, monkeypatch):
+    monkeypatch.setattr(real_ks, "_run_privileged", lambda s, w: (False, "denied"))
+    monkeypatch.setattr(real_ks, "validate", lambda path: (True, ""))
+    ok, message = real_ks.arm(["203.0.113.7"], allow=[("udp", 51820)])
+    assert ok is False and "denied" in message
+    assert real_ks.recovery_command() in message
