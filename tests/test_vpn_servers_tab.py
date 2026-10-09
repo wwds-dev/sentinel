@@ -37,6 +37,8 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    from agents.vpn_agent.server import deploy as _d
+    monkeypatch.setattr(_d.shutil, "which", lambda name, *a, **k: "/usr/bin/" + name)
     e.tab = ServersTab()
     e.tab.refresh_sites()
     e.qr_shown = []
@@ -267,3 +269,173 @@ def test_corrupt_site_file_does_not_crash_the_tab(env):
     env.tab.refresh_sites()
     env.tab._select_site("home")
     assert "Could not open" in env.tab.status_label.text()
+
+
+# ───────────── deploy, status, teardown, register ─────────────
+from agents.vpn_agent.server import deploy as deploy_mod
+from agents.vpn_agent.server.deploy import DeployResult
+
+
+def remote_site(e, **ssh):
+    make_site(e)
+    t = e.tab
+    t.ssh_host_input.setText(ssh.get("host", "203.0.113.5"))
+    t.save_settings()
+    return store.load_site("home")
+
+
+def test_ssh_target_cannot_become_an_ssh_option(env):
+    s = remote_site(env)
+    for host, user in (("-oProxyCommand=touch /tmp/x", "root"), ("1.2.3.4", "-oProxyCommand=x"),
+                       ("1.2.3.4", "root;id"), ("a b", "root")):
+        s.ssh.host, s.ssh.user = host, user
+        assert deploy_mod.ssh_problems(s), (host, user)
+    s.ssh.host, s.ssh.user, s.wg_interface = "1.2.3.4", "root", "wg0; reboot"
+    assert deploy_mod.ssh_problems(s)
+    s.wg_interface = "wg0"
+    assert deploy_mod.ssh_problems(s) == []
+    assert deploy_mod._ssh_command(s)[-2:] == ["--", "root@1.2.3.4"]
+
+
+def test_hostile_ssh_target_runs_nothing(env, monkeypatch):
+    remote_site(env)
+    env.tab.ssh_host_input.setText("-oProxyCommand=evil")
+    env.tab.save_settings()
+    ran = []
+    monkeypatch.setattr(deploy_mod.subprocess, "run", lambda *a, **k: ran.append(a))
+    monkeypatch.setattr(deploy_mod.subprocess, "Popen", lambda *a, **k: ran.append(a))
+    for fn in (env.tab.check_ssh, env.tab.server_status, env.tab.deploy_site, env.tab.teardown_site):
+        env.answers = [True]
+        env.typed = ["home"]
+        fn()
+    assert ran == []
+    assert all(l["outcome"] == "refused" for l in audit(env) if l["action"] in
+               ("deploy-check", "server-status", "deploy", "teardown"))
+
+
+def test_preview_shows_no_secret(env):
+    s = remote_site(env)
+    select_peer(env)
+    env.tab.preview_deploy()
+    shown = env.tab.output_view.toPlainText()
+    assert "wg" in shown.lower() and len(shown) > 200
+    for secret in (s.server_wg_private_key, s.ca_key_pem, s.server_key_pem, s.tls_crypt_key,
+                   s.peers[0].wg_preshared_key, s.peers[0].wg_private_key):
+        assert secret and secret not in shown
+    import base64
+    for line in shown.splitlines():
+        for tok in line.split("'"):
+            if len(tok) > 60:
+                try:
+                    plain = base64.b64decode(tok, validate=True).decode()
+                except Exception:
+                    continue
+                assert "PRIVATE KEY" not in plain and s.server_wg_private_key not in plain
+
+
+def test_deploy_declined_runs_nothing_and_is_audited(env, monkeypatch):
+    remote_site(env)
+    called = []
+    monkeypatch.setattr(deploy_mod, "deploy", lambda *a, **k: called.append(1))
+    env.tab.deploy_site()
+    assert called == [] and audit(env)[-1] == {**audit(env)[-1], "action": "deploy", "outcome": "declined"}
+    assert "203.0.113.5" in env.asked[0][1]
+
+
+def test_deploy_blocked_by_preflight_without_prompt(env, monkeypatch):
+    make_site(env, peers=())       # no peers, no ssh host
+    env.tab.deploy_site()
+    assert env.asked == [] and audit(env)[-1]["outcome"] == "refused"
+
+
+def test_deploy_confirmed_streams_redacted_output_and_audits(env, monkeypatch):
+    s = remote_site(env)
+
+    def fake(site, dry_run=False, on_output=None):
+        for l in ("installing wireguard", f"PrivateKey = {s.server_wg_private_key}", "done"):
+            on_output(l)
+        return DeployResult(True, output="", command="ssh ...")
+    monkeypatch.setattr(deploy_mod, "deploy", fake)
+    env.answers = [True]
+    env.tab.deploy_site()
+    env.tab._drain_output()
+    shown = env.tab.output_view.toPlainText()
+    assert "installing wireguard" in shown and s.server_wg_private_key not in shown
+    last = audit(env)[-1]
+    assert last["action"] == "deploy" and last["outcome"] == "succeeded"
+    assert s.server_wg_private_key not in env.audit.read_text()
+
+
+def test_deploy_failure_is_audited_as_failed(env, monkeypatch):
+    remote_site(env)
+    monkeypatch.setattr(deploy_mod, "deploy",
+                        lambda site, **k: DeployResult(False, error="Permission denied (publickey)."))
+    env.answers = [True]
+    env.tab.deploy_site()
+    assert audit(env)[-1]["outcome"] == "failed" and "Permission denied" in env.tab.status_label.text()
+
+
+def test_check_ssh_and_status_are_gated(env, monkeypatch):
+    remote_site(env)
+    calls = []
+    monkeypatch.setattr(deploy_mod, "check_ssh", lambda site: calls.append("c") or DeployResult(True, output="0\nLinux"))
+    monkeypatch.setattr(deploy_mod, "server_status", lambda site: calls.append("s") or deploy_mod.ServerStatus())
+    env.tab.check_ssh()
+    env.tab.server_status()
+    assert calls == [] and [l["outcome"] for l in audit(env)[-2:]] == ["declined", "declined"]
+    env.answers = [True, True]
+    env.tab.check_ssh()
+    env.tab.server_status()
+    assert calls == ["c", "s"]
+
+
+def test_native_site_refuses_ssh_actions(env):
+    make_site(env, name="lan", mode="native")
+    env.tab.check_ssh()
+    assert audit(env)[-1]["outcome"] == "refused" and env.asked == []
+
+
+def test_teardown_needs_the_typed_name(env, monkeypatch):
+    remote_site(env)
+    calls = []
+    monkeypatch.setattr(deploy_mod, "teardown", lambda site, **k: calls.append(1) or DeployResult(True))
+    env.typed, env.answers = ["nope"], [True]
+    env.tab.teardown_site()
+    assert calls == [] and audit(env)[-1]["outcome"] == "declined"
+    env.typed = ["home"]
+    env.tab.teardown_site()
+    assert calls == [1] and audit(env)[-1]["action"] == "teardown"
+
+
+def test_native_teardown_and_deploy_use_the_dialog_not_sudo(env, monkeypatch):
+    import os
+    from agents.vpn_agent.services import privileged
+    monkeypatch.setattr(os, "geteuid", lambda: 501)
+    monkeypatch.setattr(deploy_mod.platform, "system", lambda: "Linux")
+    seen = []
+
+    def runner(script, prompt, timeout=0, *, allow_cached_sudo=True):
+        seen.append(allow_cached_sudo)
+        return True, "ok"
+    monkeypatch.setattr(privileged, "run_as_root", runner)
+    monkeypatch.setattr(deploy_mod.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("sudo/pipe path used"))
+    s = make_site(env, name="lan", mode="native")
+    assert deploy_mod.teardown(s).success and seen == [False]
+
+
+def test_register_profile_writes_private_config_and_profile(env):
+    from services import vpn_connection
+    make_site(env)
+    select_peer(env)
+    env.tab.register_profile()
+    assert "PRIVATE" in env.asked[0][1]
+    assert not [p for p in vpn_connection.load_connectable_profiles(False) if p["name"].startswith("home")]
+    env.answers = [True]
+    env.tab.register_profile()
+    [prof] = [p for p in vpn_connection.load_connectable_profiles(False) if p["name"].startswith("home")]
+    conf = Path(prof["config_path"])
+    assert prof["name"] == "home — phone" and conf.is_file()
+    assert stat.S_IMODE(conf.stat().st_mode) == 0o600
+    assert len(conf.stem) <= 15 and prof["interface"] == conf.stem
+    assert not vpn_connection.is_placeholder(prof)

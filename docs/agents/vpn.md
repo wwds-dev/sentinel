@@ -107,6 +107,21 @@ backup or export exists you must also accept that the keys are gone for good).
 Private keys, the CA key and passphrases never appear on screen, in the audit
 log or in any model request.
 
+### Deploying a server you own
+
+On a site (Servers tab): **Check SSH** (asks first; key-based only, never a
+password; the first host key is trusted and its fingerprint shown, a changed key
+is refused), **Preview deploy** (the installer with keys replaced by
+`<redacted N bytes>`; nothing runs), **Deploy** (asks first; shows target and what
+is installed; live output with keys redacted), **Server status** (asks first;
+read-only), **Teardown** (type the site name) and **Use for Connect** (writes one
+peer's config, which holds a private key, and adds a profile so Connect can use
+it). A remote deploy streams the installer over SSH and writes nothing to the
+server's disk. A native deploy on this Mac writes the installer to a private
+temporary file, runs it through the macOS administrator dialog (never a cached
+sudo) and removes the file afterwards. SSH host, user, key file and interface
+name are validated, so a restored backup cannot smuggle in an ssh option.
+
 ## Remote vs Native (the choice the agent keeps you honest about)
 | | Remote (VPS) | Native (home LAN) |
 |---|---|---|

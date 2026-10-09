@@ -12,18 +12,19 @@ from __future__ import annotations
 
 import io
 import json
+from collections import deque
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
+    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
-from agents.vpn_agent.server import backup, export, paths, provision, render, store
+from agents.vpn_agent.server import backup, deploy, export, paths, provision, render, store
 from agents.vpn_agent.server.model import MODE_NATIVE, MODE_REMOTE, MODES, OBFS_MODES
 from ui.panels.vpn_gate import GatedTab
 from services import vpn_execution
@@ -71,6 +72,10 @@ class ServersTab(GatedTab):
         super().__init__(parent)
         self._site = None
         self._loaded = False
+        self._lines: deque[str] = deque()
+        self._timer = QTimer(self)
+        self._timer.setInterval(150)
+        self._timer.timeout.connect(self._drain_output)
         self._build()
         self._set_editor_enabled(False)
 
@@ -187,6 +192,33 @@ class ServersTab(GatedTab):
         pl.addLayout(row)
         layout.addWidget(self.peers_box)
 
+        self.deploy_box = QGroupBox("Deploy")
+        dl = QVBoxLayout(self.deploy_box)
+        row = QHBoxLayout()
+        self.check_ssh_btn = QPushButton("Check SSH…")
+        self.preview_btn = QPushButton("Preview deploy")
+        self.deploy_btn = QPushButton("Deploy…")
+        self.status_btn = QPushButton("Server status…")
+        self.teardown_btn = QPushButton("Teardown…")
+        self.profile_btn = QPushButton("Use for Connect…")
+        self.check_ssh_btn.clicked.connect(self.check_ssh)
+        self.preview_btn.clicked.connect(self.preview_deploy)
+        self.deploy_btn.clicked.connect(self.deploy_site)
+        self.status_btn.clicked.connect(self.server_status)
+        self.teardown_btn.clicked.connect(self.teardown_site)
+        self.profile_btn.clicked.connect(self.register_profile)
+        for w in (self.check_ssh_btn, self.preview_btn, self.deploy_btn,
+                  self.status_btn, self.teardown_btn, self.profile_btn):
+            row.addWidget(w)
+        dl.addLayout(row)
+        self.output_view = QPlainTextEdit()
+        self.output_view.setReadOnly(True)
+        self.output_view.setMinimumHeight(140)
+        self.output_view.setPlaceholderText(
+            "Preview and live deploy output appear here, with keys redacted.")
+        dl.addWidget(self.output_view)
+        layout.addWidget(self.deploy_box)
+
         row = QHBoxLayout()
         self.backup_btn = QPushButton("Back up this site…")
         self.delete_btn = QPushButton("Delete site…")
@@ -199,7 +231,7 @@ class ServersTab(GatedTab):
         layout.addStretch(1)
 
     def _site_widgets(self):
-        return (self.editor_box, self.peers_box, self.backup_btn, self.delete_btn)
+        return (self.editor_box, self.peers_box, self.deploy_box, self.backup_btn, self.delete_btn)
 
     def _set_editor_enabled(self, on: bool) -> None:
         for w in self._site_widgets():
@@ -538,3 +570,177 @@ class ServersTab(GatedTab):
             return
         self._gated("site-delete", name, "Delete site", None,
                     lambda: (store.delete_site(name), f"Deleted {name}."))
+
+    # ── deploy and friends ──
+    def _emit_line(self, line: str) -> None:
+        """Called from the worker thread; the timer shows it on the UI thread."""
+        self._lines.append(vpn_execution.redact_secrets(line))
+
+    def _drain_output(self) -> None:
+        while self._lines:
+            self.output_view.appendPlainText(self._lines.popleft())
+
+    def _show_output(self, text: str) -> None:
+        self.output_view.setPlainText(vpn_execution.redact_secrets(text))
+
+    def _target_text(self, s) -> str:
+        if s.mode == MODE_REMOTE:
+            return f"{s.ssh.destination()} (port {s.ssh.port}) over SSH"
+        return "this Mac (macOS will ask for your administrator password)"
+
+    def _run_streamed(self, action: str, s, title: str, text: str | None, work) -> bool:
+        """_gated plus a live output pane. ``work(emit)`` returns (ok, message)."""
+        self._lines.clear()
+        self._timer.start()
+
+        def run():
+            return work(self._emit_line)
+
+        def after(_ok):
+            self._timer.stop()
+            self._drain_output()
+
+        started = self._gated(action, s.name, title, text, run, after=after)
+        if not started:
+            self._timer.stop()
+        return started
+
+    def _ssh_refused(self, action: str, s) -> bool:
+        """Remote-only actions: refuse with the reason, before any prompt."""
+        if s.mode != MODE_REMOTE:
+            self._refuse(action, s.name, "This action is for remote (VPS) sites.")
+            return True
+        problems = deploy.ssh_problems(s)
+        if not s.ssh.is_configured():
+            problems = ["No SSH host is set for this site."]
+        if problems:
+            self._refuse(action, s.name, "; ".join(problems))
+            return True
+        return False
+
+    def check_ssh(self) -> None:
+        s = self._site
+        if s is None or self._ssh_refused("deploy-check", s):
+            return
+        text = (f"Check SSH access to {s.ssh.destination()}?\n\nThis connects to "
+                f"{s.ssh.host} port {s.ssh.port} using your SSH key, never a password. If "
+                "this is the first time, ssh trusts and remembers the server's host key "
+                "(a changed key later is refused); the fingerprint is shown afterwards. "
+                "No keys from this site are sent.")
+        site = s
+        self.output_view.clear()
+        self._run_streamed("deploy-check", s, "Check SSH", text,
+                           lambda emit: self._result(deploy.check_ssh(site), emit))
+
+    @staticmethod
+    def _result(result, emit) -> tuple[bool, str]:
+        for line in (result.output or "").splitlines():
+            emit(line)
+        if result.error:
+            emit("error: " + result.error)
+        if result.success:
+            return True, "Succeeded."
+        return False, result.summary()
+
+    def preview_deploy(self) -> None:
+        s = self._site
+        if s is None:
+            return
+        problems = deploy.preflight(s)
+        if problems:
+            self._show_output("This site cannot be deployed yet:\n- " + "\n- ".join(problems))
+            self._say("Preview shows what is blocking the deploy.")
+            return
+        self._show_output(deploy.preview_script(s))
+        self._say("Preview shown with keys redacted. Nothing was run.")
+
+    def deploy_site(self) -> None:
+        s = self._site
+        if s is None:
+            return
+        problems = deploy.preflight(s)
+        if problems:
+            self._show_output("This site cannot be deployed yet:\n- " + "\n- ".join(problems))
+            self._refuse("deploy", s.name, "; ".join(problems))
+            return
+        preview = deploy.preview_script(s)
+        text = (f"Deploy {s.name}?\n\nTarget: {self._target_text(s)}\n"
+                f"Installs: WireGuard{' + OpenVPN' if s.enable_openvpn else ''}"
+                f"{' behind stunnel' if s.obfuscation == 'stunnel' else ''}, firewall rules "
+                f"and IP forwarding, for {sum(p.enabled for p in s.peers)} enabled peer(s).\n"
+                f"The installer is {len(preview.splitlines())} lines; read it with Preview "
+                "deploy first. It contains the server's private keys, goes over the SSH "
+                "connection (or a private temporary file removed afterwards) and is never "
+                "shown unredacted or logged.")
+        site = s
+
+        def work(emit):
+            return self._result(deploy.deploy(site, on_output=emit), emit)
+        self._show_output(preview + "\n\n── live output ──")
+        self._run_streamed("deploy", s, "Deploy", text, work)
+
+    def server_status(self) -> None:
+        s = self._site
+        if s is None or self._ssh_refused("server-status", s):
+            return
+        text = (f"Ask {s.ssh.destination()} for its status?\n\nThis connects over SSH and "
+                "runs read-only commands (wg show, systemctl, uptime). Nothing is changed.")
+        site = s
+        self.output_view.clear()
+
+        def work(emit):
+            st = deploy.server_status(site)
+            for p in st.peers:
+                emit(f"{p.name}: handshake {p.describe_handshake()}, {p.describe_transfer()}")
+            return st.reachable, st.summary()
+        self._run_streamed("server-status", s, "Server status", text, work)
+
+    def teardown_site(self) -> None:
+        s = self._site
+        if s is None:
+            return
+        if s.mode == MODE_REMOTE and self._ssh_refused("teardown", s):
+            return
+        name = s.name
+        typed = self._ask_text(
+            "Teardown",
+            f"This stops and removes the VPN server for {name} from {self._target_text(s)}: "
+            "every device loses its VPN until you deploy again. Local keys and the site "
+            f"stay. Packages are left installed.\n\nType the site name ({name}) to confirm:")
+        if typed != name:
+            vpn_execution.record_companion("teardown", "declined",
+                                           "Name not typed or not matching.", target=name)
+            self._say("Not run: the name was not confirmed.")
+            return
+        site = s
+        self.output_view.clear()
+        self._run_streamed("teardown", s, "Teardown", None,
+                           lambda emit: self._result(deploy.teardown(site, on_output=emit), emit))
+
+    def register_profile(self) -> None:
+        s, peer = self._site, self._selected_peer()
+        if s is None or peer is None:
+            self._say("Select a peer first; its config is what Connect will use.")
+            return
+        directory = paths.state_dir() / "client-configs"
+        text = (f"Use {peer.name} of {s.name} for Connect?\n\nThis writes the device's "
+                f"WireGuard config, which contains its PRIVATE key, to {directory} "
+                "(owner-only) and adds a profile so Tunnel can connect with it from this Mac. "
+                "Do this only for a peer that is meant for this computer.")
+        site, p = s, peer
+
+        def work():
+            from services import vpn_connection
+            paths.ensure_private_dir(directory)
+            index = site.peers.index(p) + 1
+            stem = f"sn{index}-{paths.slugify(site.name)}"[:15].rstrip("-")
+            conf = paths.write_private(directory / f"{stem}.conf",
+                                       render.wg_client_config(site, p))
+            profile = vpn_connection.profile_from_config(str(conf))
+            profile["name"] = f"{site.name} — {p.name}"
+            profile["endpoint"] = site.endpoint_host or profile.get("endpoint", "imported")
+            profile["port"] = site.wg_port
+            profile["notes"] = f"Built by Sentinel ({site.mode} mode)"
+            vpn_connection.save_profile(profile)
+            return True, f"Added profile '{profile['name']}'. Pick it in Connect."
+        self._gated("register-profile", f"{s.name}/{peer.name}", "Use for Connect", text, work)
