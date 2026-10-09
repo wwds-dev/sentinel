@@ -303,3 +303,13 @@ def test_arrow_keys_step_through_the_themes(win):
     finally:
         theme.set_current(theme.GREEN)
         win.apply_global_style()
+
+
+def test_selector_menu_shows_action_tooltips():
+    """D7: QMenu hides action tooltips unless setToolTipsVisible(True); the
+    BEST FIT reason and the 'costs money' text on cloud entries live there."""
+    from PySide6.QtWidgets import QApplication
+    from ui.widgets import SelectorMenu
+    QApplication.instance() or QApplication([])
+    menu = SelectorMenu()
+    assert menu.toolTipsVisible() is True

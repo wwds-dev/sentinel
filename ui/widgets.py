@@ -58,6 +58,9 @@ class SelectorMenu(QMenu):
         super().__init__(parent)
         self._badges: dict = {}
         self._muted: set = set()
+        # QMenu hides action tooltips unless asked. Without this the BEST FIT
+        # reason and the "costs money" text on cloud entries never showed (D7).
+        self.setToolTipsVisible(True)
 
     def markBestFit(self, action, text: str = BEST_FIT_BADGE) -> None:  # noqa: N802
         """Give one of this menu's actions a best-fit pill."""
