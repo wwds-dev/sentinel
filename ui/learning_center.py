@@ -61,7 +61,7 @@ LEARNING_CURRICULUM = (
         LearningTopic("Sentry", "sentry.md", "Read-only network anomaly watch and continuous background monitoring."),
         LearningTopic("Bug Spray", "bug_spray.md", "Authorised website assessment and reporting."),
         LearningTopic("Tunnel", "tunnel.md", "Profile-aware VPN checks, safe previews, design, and troubleshooting."),
-        LearningTopic("Forge", "forge.md", "Create and review agent scaffolds."),
+        LearningTopic("Forge", "forge.md", "Draft and approve agent scaffolds."),
     )),
     ("Across Sentinel", (
         LearningTopic("Agent workflows", "workflows.md", "Combine agents to complete larger goals."),

@@ -1,0 +1,34 @@
+# Coverage is measured for the product Sentinel ships. The modules omitted here
+# are companion-era VPN Agent code that no Sentinel panel reaches (the audit of
+# 2026-10-09, docs/qa_audit/tunnel.md §3b); counting them would understate the
+# coverage of the code users actually run. server/paths.py stays counted: the
+# Tunnel panel reads profile locations through it.
+[run]
+omit =
+    .venv/*
+    */.venv/*
+    agents/vpn_agent/server/backup.py
+    agents/vpn_agent/server/bootstrap.py
+    agents/vpn_agent/server/cli.py
+    agents/vpn_agent/server/deploy.py
+    agents/vpn_agent/server/export.py
+    agents/vpn_agent/server/keys.py
+    agents/vpn_agent/server/model.py
+    agents/vpn_agent/server/obfuscation.py
+    agents/vpn_agent/server/pki.py
+    agents/vpn_agent/server/provision.py
+    agents/vpn_agent/server/render.py
+    agents/vpn_agent/server/store.py
+    agents/vpn_agent/services/tor.py
+    agents/vpn_agent/services/proxychain.py
+    agents/vpn_agent/services/socks_client.py
+    agents/vpn_agent/services/macaddr.py
+    agents/vpn_agent/services/profile_store.py
+    agents/vpn_agent/services/health_monitor.py
+    agents/bug_spray/.venv/*
+    scripts/*
+    build/*
+    dist.noindex/*
+
+[report]
+skip_empty = True

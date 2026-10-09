@@ -108,7 +108,9 @@ looked like they did more than they did. Most are fixed (see below).
    "activated" by restart). [ui/panels/vpn.py](../ui/panels/vpn.py),
    [ui/panels/bug_bounty.py](../ui/panels/bug_bounty.py), [ui/panels/manager.py](../ui/panels/manager.py).
 
-6. **File-discovery wording fixed** so remote SSH mode no longer says "locally".
+6. **File-discovery wording fixed** so remote SSH mode no longer says "locally"
+   (panel status and hint text, and the two file-search tooltips in
+   [ui/tooltips.py](../ui/tooltips.py)).
    [ui/panels/osint_heavy.py](../ui/panels/osint_heavy.py).
 
 ### Not yet addressed (recommended follow-ups)
@@ -150,13 +152,14 @@ has now been changed on request: Tunnel is a **real VPN client**.
 **Honest limitations / follow-ups for this feature:**
 
 - Real foreign exits require real configs: import a provider's `.conf`/`.ovpn`,
-  or provision your own server (the submodule's `server/*` provisioning does this
-  on a VPS you rent). Sentinel cannot conjure working servers in other countries.
-- The pf **kill switch** works in the standalone app but its module uses an
-  absolute `from server import paths` that only resolves once the VPN code is
-  merged into Sentinel's tree; until then `arm/disarm` degrade gracefully with a
-  clear message. Same for `profile_store`. This is the remaining reason to do the
-  de-submodule merge.
+  or a config for a server you run yourself. Sentinel cannot conjure working
+  servers in other countries, and the in-tree `server/*` provisioning code is
+  not reachable from Tunnel.
+- The pf **kill switch** now works in this tree (the VPN code is merged; `arm`
+  and `disarm` run through the gate). It exempts a WireGuard tunnel interface
+  only, so an OpenVPN tunnel's own traffic is blocked while it is armed, and
+  Disarm flushes the rules but leaves the anchor block in `/etc/pf.conf` and pf
+  enabled.
 - OpenVPN support is a real but basic client (daemonised, pid/log tracked); auth
   prompts, pushed-DNS handling and live connection-status polling are follow-ups.
 - Connect/Disconnect updates status from the tool's result; there is no live

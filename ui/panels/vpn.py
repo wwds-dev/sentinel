@@ -115,8 +115,10 @@ class VpnPanel(AgentPanel):
         ks_row.addWidget(QLabel("Kill switch:"))
         self.arm_ks_btn = QPushButton("Arm")
         self.arm_ks_btn.setToolTip(
-            "Block all traffic except the selected tunnel's endpoint, so a dropped "
-            "tunnel cannot leak. Requires macOS pf and your administrator password.")
+            "Block network traffic except the tunnel interface, the tunnel's "
+            "transport to the server, loopback, DHCP and your LAN, so a dropped "
+            "tunnel cannot leak. Connect first, then arm. Only a WireGuard tunnel "
+            "interface is exempt. Requires macOS pf and your administrator password.")
         self.arm_ks_btn.clicked.connect(self.arm_kill_switch)
         ks_row.addWidget(self.arm_ks_btn)
         self.disarm_ks_btn = QPushButton("Disarm")
@@ -154,13 +156,15 @@ class VpnPanel(AgentPanel):
         self.public_ip_label.setWordWrap(True)
         self.public_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.public_ip_label.setToolTip(
-            "Your exit IP, its location and network owner, and whether it is "
-            "flagged as a VPN/proxy/hosting range.")
+            "Your exit IP, its location and network owner, and — only with an "
+            "IPinfo key on a plan that returns it — whether it is flagged as a "
+            "VPN/proxy/hosting range.")
         ip_layout.addWidget(self.public_ip_label, 1, 1)
         self.check_public_ip_btn = QPushButton("Check public IP")
         self.check_public_ip_btn.setToolTip(
-            "Optional: contacts api.ipify.org and IPinfo (or ipapi.co) to read "
-            "your exit IP. No AI provider is used.")
+            "Contacts IPinfo (when IPINFO_API_KEY is set) or ipapi.co to read your "
+            "exit IP, location and network owner. Starts immediately. No AI "
+            "provider is used.")
         self.check_public_ip_btn.clicked.connect(self.check_public_ip)
         ip_layout.addWidget(self.check_public_ip_btn, 1, 2)
 
