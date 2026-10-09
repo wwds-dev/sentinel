@@ -13,7 +13,10 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt
+import shlex
+import shutil
+
+from PySide6.QtCore import QProcess, Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
@@ -31,6 +34,35 @@ SEVERITY_COLOURS = {
 }
 
 
+_CVSS_VERSION = re.compile(r"(?i)\bv(?:ersion)?\s*\d\.\d\b")
+_CVSS_VECTOR = re.compile(r"(?i)CVSS:\s*\d\.\d/[A-Z]{1,3}:[A-Z0-9:/.]+")
+_CVSS_SCORE = re.compile(r"(?<![\d.])(10(?:\.0)?|\d(?:\.\d)?)(?![\d.])")
+
+
+def extract_cvss_score(text: str) -> str | None:
+    """The CVSS base score in a report, or None.
+
+    ``CVSS.*?(\\d+\\.\\d+)`` read the version out of "CVSS v3.1: 7.5" and the
+    tile said 3.1 for every report that followed the prompt. Version tokens
+    and vector strings are dropped first, then the first number in 0-10 after
+    the word CVSS is the score.
+    """
+    match = re.search(r"CVSS(.{0,160})", text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    tail = _CVSS_VECTOR.sub(" ", "CVSS" + match.group(1))[4:]
+    tail = _CVSS_VERSION.sub(" ", tail)
+    score = _CVSS_SCORE.search(tail)
+    if not score:
+        return None
+    value = score.group(1)
+    return value if "." in value else f"{value}.0"
+
+
+NMAP_TIMEOUT_MS = 10 * 60 * 1000     # a scan the operator has not killed by then is stuck
+NMAP_OUTPUT_LIMIT = 256 * 1024       # characters kept; enough for any single-host -sV -sC
+
+
 class BugBountyPanel(AgentPanel):
     """Triage findings into a severity, a CVSS score and a report to submit."""
 
@@ -41,6 +73,9 @@ class BugBountyPanel(AgentPanel):
         self.setObjectName("BugBountyPanel")
         self._last_response = ""
         self._nmap_process: QProcess | None = None
+        self._nmap_scan_text = ""
+        self._nmap_truncated = False
+        self._nmap_timer: QTimer | None = None
         self._build()
         self.polish_workspace()
         self.hide()
@@ -254,32 +289,120 @@ class BugBountyPanel(AgentPanel):
             cmd_text = f"nmap -sV -sC -T4 --open {host}"
             self.nmap_cmd_input.setText(cmd_text)
 
+        try:
+            program, args = self._nmap_argv(cmd_text)
+        except ValueError as exc:
+            self.nmap_output.setPlainText(f"[Error] {exc}")
+            return
+
+        self._nmap_scan_text = ""
+        self._nmap_truncated = False
         self.nmap_output.setPlainText(f"[Running] {cmd_text}\n")
         self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, True)
 
-        self._nmap_process = QProcess(self)
-        self._nmap_process.setProcessChannelMode(QProcess.MergedChannels)
-        self._nmap_process.readyRead.connect(self._nmap_read)
-        self._nmap_process.finished.connect(self._nmap_finished)
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        process.readyRead.connect(self._nmap_read)
+        process.finished.connect(self._nmap_finished)
+        process.errorOccurred.connect(self._nmap_error)
+        self._nmap_process = process
+        self._nmap_timer = QTimer(self)
+        self._nmap_timer.setSingleShot(True)
+        self._nmap_timer.timeout.connect(self._nmap_timed_out)
+        self._nmap_timer.start(NMAP_TIMEOUT_MS)
+        process.start(program, args)
 
-        parts = cmd_text.split()
-        self._nmap_process.start(parts[0], parts[1:])
+    @staticmethod
+    def _nmap_argv(cmd_text: str) -> tuple[str, list[str]]:
+        """The scanner argv, or ValueError. Only nmap is ever started: the box
+        is a scan command, not a shell, and a stray first word must not become
+        a program run with the operator's privileges."""
+        parts = shlex.split(cmd_text)
+        if not parts:
+            raise ValueError("Enter an nmap command.")
+        if Path(parts[0]).name != "nmap":
+            raise ValueError(
+                f"Only nmap can be run from here (got '{parts[0]}').")
+        program = shutil.which("nmap")
+        if program is None:
+            for candidate in ("/opt/homebrew/bin/nmap", "/usr/local/bin/nmap"):
+                if Path(candidate).is_file():
+                    program = candidate
+                    break
+        if program is None:
+            raise ValueError("nmap is not installed (brew install nmap).")
+        return program, parts[1:]
+
+    @property
+    def nmap_scan_text(self) -> str:
+        """What the scanner printed, without the panel's own status markers."""
+        return getattr(self, "_nmap_scan_text", "")
 
     def _nmap_read(self) -> None:
         data = self._nmap_process.readAll().data().decode("utf-8", errors="replace")
+        room = NMAP_OUTPUT_LIMIT - len(self._nmap_scan_text)
+        if room <= 0:
+            return
+        if len(data) > room:
+            data = data[:room]
+            self._nmap_truncated = True
+        self._nmap_scan_text += data
         self.nmap_output.moveCursor(QTextCursor.End)
         self.nmap_output.insertPlainText(data)
         self.nmap_output.moveCursor(QTextCursor.End)
+        if self._nmap_truncated:
+            self.nmap_output.insertPlainText(
+                f"\n[Output capped at {NMAP_OUTPUT_LIMIT // 1024} KB; stopping the scan]")
+            self._nmap_process.kill()
 
-    def _nmap_finished(self) -> None:
+    def _nmap_stop_timer(self) -> None:
+        timer = getattr(self, "_nmap_timer", None)
+        if timer is not None:
+            timer.stop()
+
+    def _nmap_finished(self, exit_code: int = 0, _status=None) -> None:
+        self._nmap_stop_timer()
         self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
         self.nmap_output.moveCursor(QTextCursor.End)
-        self.nmap_output.insertPlainText("\n[Done]")
+        self.nmap_output.insertPlainText(
+            "\n[Done]" if exit_code == 0 else f"\n[Done — nmap exited {exit_code}]")
+
+    def _nmap_error(self, error) -> None:
+        # QProcess never emits finished() for a start failure, which left the
+        # Run button disabled for good when nmap was missing or not executable.
+        from PySide6.QtCore import QProcess as _QP
+        if error == _QP.FailedToStart:
+            self._nmap_stop_timer()
+            self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
+            self.nmap_output.moveCursor(QTextCursor.End)
+            self.nmap_output.insertPlainText(
+                "\n[Error] nmap could not be started (not found or not executable).")
+
+    def _nmap_timed_out(self) -> None:
+        if self._nmap_process is not None and self._nmap_process.state() != QProcess.NotRunning:
+            self.nmap_output.moveCursor(QTextCursor.End)
+            self.nmap_output.insertPlainText(
+                f"\n[Error] Scan stopped after {NMAP_TIMEOUT_MS // 60000} minutes; "
+                "narrow the target or ports.")
+            self._nmap_process.kill()
 
     def kill_nmap(self) -> None:
+        self._nmap_stop_timer()
         if self._nmap_process is not None:
             self._nmap_process.kill()
         self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
+
+    def shutdown(self, timeout_ms: int = 2000) -> None:
+        """Kill a running scan and cancel the model worker before the widgets go."""
+        self._nmap_stop_timer()
+        process = self._nmap_process
+        if process is not None and process.state() != QProcess.NotRunning:
+            process.kill()
+            process.waitForFinished(timeout_ms)
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            if hasattr(self.worker, "wait"):
+                self.worker.wait(timeout_ms)
 
     # ── Analysis (paid) ─────────────────────────────────────────────────
     def analyse(self) -> None:
@@ -287,7 +410,9 @@ class BugBountyPanel(AgentPanel):
         program = self.program_input.text().strip()
         scope_type = self.scope_box.currentText()
         findings = self.findings_input.toPlainText().strip()
-        nmap_output = self.nmap_output.toPlainText().strip()
+        # The model gets what the scanner printed, never the panel's own
+        # [Running]/[Done]/[Error] markers dressed up as scan evidence.
+        nmap_output = self.nmap_scan_text.strip()
 
         if not target and not findings and not nmap_output:
             self.status_label.setText(
@@ -311,7 +436,10 @@ class BugBountyPanel(AgentPanel):
         self.set_busy(self.analyse_btn, self.stop_btn, True)
 
         prompt = target or "bug_bounty"
-        if not self.authorize(prompt):
+        # Authorise against the text that is really sent: findings and scan
+        # output are usually kilobytes, the target a few dozen characters.
+        full_text = "\n".join(str(m.get("content", "")) for m in messages)
+        if not self.authorize(full_text, label=prompt):
             # The controls were already disabled above; a blocked request has to
             # put them back or the panel is stuck with a dead Analyse button.
             self.status_label.setText("Blocked before sending.")
@@ -371,17 +499,33 @@ class BugBountyPanel(AgentPanel):
 
     @staticmethod
     def parse_sections(text: str) -> dict[str, str]:
-        """Split the existing report format into cards; absent sections stay empty."""
+        """Split the report into cards; absent sections stay empty.
+
+        The system prompt asks for the PoC and the remediation as numbered
+        bold items *inside* ``## VULNERABILITY REPORT`` (``5. **Proof of
+        Concept** — …``), not as ``##`` headings. The parser accepted only the
+        heading form, so with a model that followed the prompt those two cards
+        were always empty. Both forms are accepted; an item ends at the next
+        numbered bold item or the next ``##`` heading.
+        """
+        item_end = r"(?=\n\s*\d+\.\s*\*\*|\n##|$)"
         patterns = {
             "vulnerability": (
                 r"(?:##\s*VULNERABILITY\s*REPORT|##\s*Vulnerability Details?)"
-                r"(.*?)(?=##|$)"
+                r"(.*?)(?=\n##|$)"
             ),
-            "poc": r"(?:##\s*Proof of Concept|PoC\s*Draft?)(.*?)(?=##|$)",
-            "remediation": r"(?:##\s*Remediation)(.*?)(?=##|$)",
+            "poc": (
+                r"(?:##\s*Proof of Concept\s*\n|PoC\s*Draft:?\s*\n"
+                r"|\d+\.\s*\*\*Proof of Concept\*\*\s*[—:\-]?\s*)"
+                r"(.*?)" + item_end
+            ),
+            "remediation": (
+                r"(?:##\s*Remediation\s*\n|\d+\.\s*\*\*Remediation\*\*\s*[—:\-]?\s*)"
+                r"(.*?)" + item_end
+            ),
             "submission": (
                 r"(?:##\s*SUBMISSION\s*DRAFT|Submission\s*Draft?)"
-                r"(.*?)(?=##|$)"
+                r"(.*?)(?=\n##|$)"
             ),
         }
         result = {}
@@ -402,12 +546,12 @@ class BugBountyPanel(AgentPanel):
                 f"color: {SEVERITY_COLOURS.get(sev, '#ffffff')};"
             )
 
-        cvss_m = re.search(r"CVSS.*?(\d+\.\d+)", text, re.IGNORECASE)
-        if cvss_m:
-            score = float(cvss_m.group(1))
+        cvss = extract_cvss_score(text)
+        if cvss is not None:
+            score = float(cvss)
             color = ("#ff3333" if score >= 9 else "#ff7722" if score >= 7
                      else "#f0c040" if score >= 4 else "#3cff88")
-            self.cvss_label.setText(cvss_m.group(1))
+            self.cvss_label.setText(cvss)
             self.cvss_label.setStyleSheet(
                 f"font-size: 22px; font-weight: bold; color: {color};")
 
@@ -438,6 +582,7 @@ class BugBountyPanel(AgentPanel):
         self.findings_input.clear()
         self.nmap_output.clear()
         self.nmap_cmd_input.clear()
+        self._nmap_scan_text = ""
         self._clear_results()
         self.severity_label.setText("—")
         self.severity_label.setStyleSheet(

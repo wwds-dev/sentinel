@@ -184,3 +184,54 @@ def test_full_rescan_passes_full_flag(panel, tmp_path, monkeypatch):
     panel.full_scan_action.trigger()
     assert started and started[0][-1] == "--full"
     assert "Full re-scan" in panel.status.text()
+
+
+# ── Report parsing follows the prompt's own format ───────────────────────────
+
+PROMPT_SHAPED_REPORT = """## VULNERABILITY REPORT
+1. **Vulnerability Title** — Reflected XSS (CWE-79)
+2. **Severity** — High with CVSS v3.1 score 7.5
+3. **Target** — /search?q=
+4. **Description** — unescaped reflection
+5. **Proof of Concept** — Visit /search?q=<script>alert(1)</script>
+   and observe the dialog.
+6. **Impact** — session theft
+7. **Remediation** — HTML-encode q before rendering; add CSP.
+8. **References** — OWASP XSS
+
+## SUBMISSION DRAFT
+Title: Reflected XSS"""
+
+
+def test_parse_sections_accepts_numbered_bold_items():
+    from ui.panels.bug_bounty import BugBountyPanel
+    parsed = BugBountyPanel.parse_sections(PROMPT_SHAPED_REPORT)
+    assert parsed["poc"].startswith("Visit /search?q=")
+    assert "observe the dialog" in parsed["poc"]
+    assert "Impact" not in parsed["poc"]
+    assert parsed["remediation"] == "HTML-encode q before rendering; add CSP."
+    assert parsed["submission"].startswith("Title: Reflected XSS")
+    assert parsed["vulnerability"].startswith("1. **Vulnerability Title**")
+
+
+def test_parse_sections_still_accepts_heading_form():
+    from ui.panels.bug_bounty import BugBountyPanel
+    parsed = BugBountyPanel.parse_sections(
+        "## VULNERABILITY REPORT\nx\n## Proof of Concept\ncurl …\n## Remediation\npatch it\n## SUBMISSION DRAFT\nd")
+    assert parsed["poc"] == "curl …" and parsed["remediation"] == "patch it"
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Severity — High with CVSS v3.1 score 7.5", "7.5"),
+    ("CVSS v3.1: 9.8 (Critical)", "9.8"),
+    ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H — Base Score 9.8", "9.8"),
+    ("CVSS 8.1", "8.1"),
+    ("CVSS version 3.1 base score: 4", "4.0"),
+    ("CVSS v3.1 score: 10.0", "10.0"),
+    ("CVSS v3.1 score 3.1", "3.1"),
+    ("no numbers here", None),
+    ("CVSS v3.1 (score not assessed)", None),
+])
+def test_extract_cvss_score_skips_the_version(text, expected):
+    from ui.panels.bug_bounty import extract_cvss_score
+    assert extract_cvss_score(text) == expected

