@@ -11,9 +11,12 @@ dead tunnel means no traffic rather than unprotected traffic.
 
 Three deliberate choices, all of them about not bricking your network:
 
-  Rules live in a named pf anchor, never the main ruleset. Apple owns
+  Rules live in a named pf anchor, not spliced into Apple's rules. Apple owns
   /etc/pf.conf and ships its own anchors in it; loading into `vpn-agent-killswitch`
-  means flushing ours can never disturb theirs.
+  means flushing ours can never disturb theirs. The one change to the main
+  file is a marked block that registers the anchor (a backup is kept as
+  /etc/pf.conf.vpn-agent.bak); it stays after Disarm and is harmless without
+  rules in the anchor.
 
   The switch does not survive a reboot. A kill switch that comes back on its
   own after a restart is one you cannot escape without knowing pfctl — the

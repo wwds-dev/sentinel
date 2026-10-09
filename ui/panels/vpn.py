@@ -165,9 +165,9 @@ class VpnPanel(AgentPanel):
         ip_layout.addWidget(self.public_ip_label, 1, 1)
         self.check_public_ip_btn = QPushButton("Check public IP")
         self.check_public_ip_btn.setToolTip(
-            "Contacts IPinfo (when IPINFO_API_KEY is set) or ipapi.co to read your "
-            "exit IP, location and network owner. Starts immediately. No AI "
-            "provider is used.")
+            "Contacts api.ipify.org for your exit IP, then IPinfo (when IPINFO_API_KEY "
+            "is set) or ipapi.co for its location and network owner. Starts "
+            "immediately. No AI provider is used.")
         self.check_public_ip_btn.clicked.connect(self.check_public_ip)
         ip_layout.addWidget(self.check_public_ip_btn, 1, 2)
 

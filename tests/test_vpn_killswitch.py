@@ -328,3 +328,14 @@ def test_a_declined_arm_is_not_recorded_as_armed(real_ks, monkeypatch, tmp_path)
     monkeypatch.setattr(real_ks, "_run_privileged", lambda s, w: (False, "Cancelled."))
     ok, _ = real_ks.arm(["203.0.113.7"], allow=[("udp", 51820)])
     assert ok is False and not (tmp_path / "killswitch.armed").exists()
+
+
+def test_build_config_snippet_is_the_rules_arm_would_load():
+    """Build Config's pf text comes from killswitch.build_rules, not a hand copy."""
+    from agents.vpn_agent.sentinel_chat_agent import _killswitch_block
+    from agents.vpn_agent.services import killswitch
+    text = _killswitch_block()
+    expected = killswitch.build_rules(["<SERVER_IP>"], [("udp", 51820)], interfaces=["utun"])
+    assert expected in text
+    assert "pass quick on lo0 all" in text and "Example only" in text
+    assert "never the main ruleset" not in text

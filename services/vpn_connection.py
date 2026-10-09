@@ -230,8 +230,7 @@ def arm_killswitch(profile: dict):
     tunnel can still reach its server while everything else is blocked."""
     ks = _killswitch()
     if ks is None:
-        return False, ("Kill switch is unavailable until the VPN module is merged "
-                       "into Sentinel (pending cleanup).")
+        return False, "Kill switch is unavailable: its module could not be loaded."
     if not ks.is_supported():
         return False, "Kill switch needs pf (macOS)."
     if is_placeholder(profile):

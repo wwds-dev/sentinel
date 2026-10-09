@@ -163,16 +163,21 @@ def _native_deploy_steps(lan_subnet: str) -> list:
 
 
 def _killswitch_block() -> str:
+    """The pf rules Tunnel's own Arm button would load, with a placeholder endpoint.
+
+    Rendered by the same function the app uses, so the text cannot drift from
+    what Arm really does. Tunnel's Arm button is the supported way to use it: it
+    fills in the selected profile's real endpoint, loads the rules into a pf
+    anchor, and prints the recovery command.
+    """
+    from agents.vpn_agent.services import killswitch
+
+    rules = killswitch.build_rules(["<SERVER_IP>"], [("udp", int(WG_PORT))], interfaces=["utun"])
     return (
-        "# macOS kill switch — fail closed if the tunnel drops.\n"
-        "# Loads into a PRIVATE pf anchor, never the main ruleset; does NOT survive reboot.\n"
-        "# Replace <SERVER_IP> so the tunnel itself can always reconnect.\n"
-        "block drop all\n"
-        "pass on lo0 all\n"
-        "pass on utun+ all                     # the tunnel interface\n"
-        "pass out proto udp to any port 67:68  # DHCP\n"
-        "pass out to <SERVER_IP> port " + WG_PORT + "  # reach the VPN server to (re)connect\n"
-        "pass out to 192.168.0.0/16            # local LAN\n"
+        "# Example only: replace <SERVER_IP> (and the pass-out lines) with your server's\n"
+        "# address before loading by hand. The Arm kill switch button in Tunnel does this\n"
+        "# for you from the selected profile and shows the command that undoes it.\n"
+        + rules
     )
 
 

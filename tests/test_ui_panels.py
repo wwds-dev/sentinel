@@ -3332,8 +3332,15 @@ class FakeVpnAgent:
 
 
 @pytest.fixture
-def tunnel(qapp, monkeypatch):
+def tunnel(qapp, monkeypatch, tmp_path):
     import ui.panels.vpn as vpn_mod
+    from services import vpn_execution
+    # Interface-only profiles need a wg-quick config on disk to be connectable.
+    confs = tmp_path / "wireguard"
+    confs.mkdir()
+    for name in ("wg0", "wg1", "wg2", "wg3", "wgtest"):
+        (confs / f"{name}.conf").write_text("[Interface]\n")
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(confs),))
     from ui.panels.vpn import VpnPanel
     from services.vpn_diagnostics import VpnProfileCatalog
     from PySide6.QtWidgets import QMessageBox

@@ -58,6 +58,8 @@ OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                      "tls-verify", "auth-user-pass-verify", "plugin",
                      "script-security")
 HOOK_VALUE_LIMIT = 100
+# Where wg-quick looks for <interface>.conf when it is given a bare name.
+WG_CONFIG_DIRS = ("/etc/wireguard", "/opt/homebrew/etc/wireguard", "/usr/local/etc/wireguard")
 
 
 # Anything the tunnel tools print can quote the config: wg-quick echoes the
@@ -327,6 +329,12 @@ def review_execution(action: str, profile: dict | None, *,
                                         "`chmod 600` on it.")
                 except OSError:
                     pass
+        elif (not config_path and action == "connect" and interface
+              and WG_INTERFACE_NAME.fullmatch(interface)
+              and not any((Path(d) / f"{interface}.conf").is_file() for d in WG_CONFIG_DIRS)):
+            blockers.append(
+                f"No config for '{interface}' was found in {', '.join(WG_CONFIG_DIRS)}. "
+                "wg-quick would fail; import the .conf file instead.")
         if interface and WG_INTERFACE_NAME.fullmatch(interface):
             state = probe["wireguard"](interface)
             if action == "connect" and state.get("up"):

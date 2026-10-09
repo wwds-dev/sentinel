@@ -493,3 +493,16 @@ def test_execute_redacts_tool_output_and_error_everywhere(tmp_path):
     everything = json.dumps(outcome.as_result()) + audit.read_text()
     assert PRIVATE_KEY not in everything
     assert "[redacted]" in everything
+
+
+def test_interface_only_profile_without_a_wg_quick_config_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(tmp_path),))
+    profile = {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+               "interface": "wgtest"}
+    r = review("connect", profile)
+    assert any("No config for 'wgtest'" in b for b in r.blockers)
+    (tmp_path / "wgtest.conf").write_text("[Interface]\n")
+    r = review("connect", profile)
+    assert not any("No config for" in b for b in r.blockers)
+    r = review("disconnect", profile)       # coming down never needs the file
+    assert not any("No config for" in b for b in r.blockers)
