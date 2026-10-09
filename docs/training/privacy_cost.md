@@ -12,7 +12,9 @@ it under its own terms, and can charge the associated account.
 An amber provider/model control means “potentially paid cloud route is
 selected”; in the open dropdown, the hover text on each cloud entry says the
 same thing. Neither means the provider has credit, the model is available, or
-that the final price is known.
+that the final price is known. In Chat's default Local only mode an amber
+selection is not used: the request runs on Ollama until you choose Hybrid
+allowed or Cloud only and tick the provider.
 
 ## Before approving cloud use
 
@@ -25,6 +27,16 @@ that the final price is known.
 Provider permission is separate from an API key. A key proves the app can
 authenticate; permission records whether Sentinel is allowed to use it.
 
+## Sentry's AI read
+
+Sentry works locally: its read-only commands, its baseline and its findings log stay
+on this Mac. Only the optional **Explain findings with AI** box sends anything, it is
+off by default, and it sends only when a pass has findings: each finding's title and
+evidence (LAN IPs, MAC addresses, interface names, process names and IDs, ports and
+remote addresses) and the counts of devices, listeners and connections. Sentry's
+default provider is a paid cloud one; choose an Ollama model to keep the read on
+this Mac. The request and the reply are saved in Saved Chats.
+
 ## Budgets and records
 
 Session, daily and per-agent caps are Sentinel guardrails based on configured
@@ -35,5 +47,6 @@ shows failed and cancelled operations as well as successes.
 ## Completion check
 
 Explain why “API ready,” “permission enabled,” “within budget” and “provider
-account funded” are four different conditions.
+account funded” are four different conditions. Say what Sentry sends, and when, if
+its AI box is ticked.
 

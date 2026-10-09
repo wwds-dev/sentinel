@@ -12,7 +12,7 @@ cancellation, logs and structured results—not to copy Kali Linux wholesale.
 | Beacon | Kismet, Wireshark | Passive wireless discovery and packet analysis |
 | Bug Spray | Nmap, OWASP ZAP, Nuclei, Nikto, WhatWeb | Authorised service and website assessment |
 | Tunnel | WireGuard, OpenVPN, tcpdump | VPN management and connection diagnosis |
-| Forge | Reporting and scripting tools | Repeatable outputs from reviewed findings |
+| Forge | None; it runs no external tools | It drafts reviewable agent scaffolds, not reports or scripts |
 
 ## Where Sentinel currently stops
 

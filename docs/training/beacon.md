@@ -8,17 +8,21 @@ Use Beacon only on networks you own or have written permission to test.
 
 ## Modes
 
-- **Interface Info** describes the selected Mac network interface.
+- **Interface Info** describes the Mac's network interfaces.
 - **Scan Networks** lists nearby wireless networks visible to the device.
-- **Signal Monitor** follows signal conditions over time.
+- **Signal Monitor** takes the same single snapshot as Scan Networks — despite
+  the name, it does not poll or follow signal conditions over time. Run it
+  again to refresh the reading.
 - **Ping Test** checks reachability to the host you enter.
 - **Kali Command Builder** prepares reviewed command sequences for a separate
   authorised Kali lab; it does not silently run them on the Mac.
 
-Select the correct interface (often `en0`) and enter a target host only for Ping
-Test. **Detect Adapters** identifies known USB adapters and reports whether their
-chipset is expected to support monitor mode or injection. Detection is guidance;
-drivers and operating-system support still matter.
+The Interface field lists common names (`en0`, `en1`, …) but is informational
+only: no mode currently reads it, so changing it has no effect on which
+interface is diagnosed. Enter a target host only for Ping Test. **Detect
+Adapters** identifies known USB adapters and reports whether their chipset is
+expected to support monitor mode or injection. Detection is guidance; drivers
+and operating-system support still matter.
 
 ## Adapter and internet setup
 
@@ -53,11 +57,20 @@ Sentinel intentionally does not do it silently.
 Kali mode requests an operation, adapter, BSSID, channel and ESSID. Intrusive
 operations can disconnect users or disrupt service. Run them only in an
 isolated lab or during an explicitly approved test window. Review every command
-and confirm the target identifiers before using it outside Sentinel.
+and confirm the target identifiers before using it outside Sentinel. A BSSID,
+channel or ESSID that doesn't look like a real value is not rejected with a
+message — it is silently swapped for a placeholder in the generated commands,
+so check the command header rather than assuming your input was used. Note
+too that Run Preflight is re-read automatically every time you generate Kali
+commands, and that Save in Kali mode stores only the commands, not the
+Preflight warning shown above them.
 
 **AI interpretation** is optional and off by default because raw network output
-may reveal device names, addresses and infrastructure details. Prefer a local
-model; redact unnecessary details before approving a cloud route.
+may reveal device names, addresses and infrastructure details. The provider
+dropdown still defaults to Sentinel's standard provider, which may be a paid
+cloud model — switching to a local model or redacting details is something
+you still have to do yourself; Beacon does not do either automatically before
+sending a scan to whichever provider is selected.
 
 ## Exercise
 

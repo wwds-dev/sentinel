@@ -1,124 +1,103 @@
 # TRACE — Light OSINT
 
-`key: osint` · class: `agents/osint_agent.py → OSINTAgent` · panel: `ui/panels/osint.py → OsintPanel`
+`key: osint` · class: `agents/osint_agent/__init__.py → OSINTAgent` · panel: `ui/panels/osint.py → OsintPanel`
 
 ## What it does
-A fast, lightweight open-source-intelligence assistant. Given a target (name, username, email, domain, org) plus optional context, it structures a research query, suggests public sources and search operators, and summarises what to look for. It is a **reasoning/planning layer** — it does not perform live lookups itself.
+A fast, lightweight open-source-intelligence assistant with three separate actions on one target (name, username, email, domain, IP address, company or phone). **Structure Query** is a reasoning/planning layer: the model structures a research query, suggests public sources and search operators, and summarises what to look for. It does not perform live lookups itself. **Live Research** and **Exposure Check** are separate buttons that, after explicit confirmation, collect records directly from named public services; no model is involved and Sentinel bills nothing for them (a keyed service may still spend its own quota or credits). There is no context field: the Target box takes the identifier only.
 
 ## Inputs (panel controls)
 | Control | Purpose |
 |---|---|
-| Query / target box | The subject to research. Structured types are validated locally before authorization. |
-| Query type | Auto-detect, Person, Username, Email, Domain, Company, Phone, or IP Address. Auto-detect records the resolved type in the activity trail. |
-| Model override | Optional provider/model change; the task recommendation is selected by default. |
-| Structure Query | Generate a model-based investigation plan without contacting research sources. |
-| Live Research | After explicit confirmation, query WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, crt.sh and the Wayback Machine for domains; WHOIS, DNS, IP-to-ASN, SANS DShield, Shodan InternetDB and passive DNS for IPs (plus IPinfo, Criminal IP, AbuseIPDB, GreyNoise, VirusTotal, AlienVault OTX, Shodan and Censys when their keys are set); VirusTotal, OTX, SecurityTrails, DomainTools, Shodan DNS, URLScan and Hunter's email pattern and role addresses for domains when their keys are set; URLScan (on your key's quota when saved), GitHub and Keybase for usernames; individually selected email services, including Hunter's mail-server check; or GLEIF and CourtListener court dockets (plus OpenSanctions with a key) for companies. Person and phone targets remain local-only. |
-| Stop | Request cancellation; completed source results remain visible as a partial result. |
+| Target box | The identifier to research. It must match the chosen type, so extra words around an email, domain, IP, phone number or username fail validation (a target is at most 512 characters with no control characters). Structured types are validated locally before authorization. |
+| Query type | Auto-detect, Person, Username, Email, Domain, Company, Phone, or IP Address. Auto-detect resolves offline, in this order: a leading @ is a Username, anything containing @ is an Email, then IP, Phone and Domain (any dotted name; a URL is reduced to its host), and finally Person if the text contains a space, otherwise Username. It never resolves to Company, so choose Company yourself for an organisation. Structure Query's trail records the resolved type with "(auto-detected)"; Live Research and Exposure Check print the resolved type without saying it was auto-detected, and their confirmation dialogs show the target and sources but not the type. **Known limitation:** a dotted handle such as john.smith resolves to Domain and goes to WHOIS, DNS, crt.sh and the Wayback Machine; a Bitcoin or Ethereum address resolves to Username, so Live Research would send it to URLScan, GitHub and Keybase; a non-ASCII domain such as bücher.de fails domain validation. Choose the type yourself when it matters. |
+| Provider and Model | The two dropdowns in the run bar. They choose the model for Structure Query only; Live Research and Exposure Check call no model. The dropdown marks the recommended entry with a BEST FIT badge, and **Auto-route** beside them picks the best available provider and model for the current input without starting a request. |
+| Structure Query | Generate a model-based investigation plan without contacting research sources. It goes through the request guard: a cloud model receives the prompt only after you confirm the request dialog, an Ollama model keeps the target on this Mac, and Settings → Agents can disable Trace or set a cap on the estimated cost of one paid request (default €2.00). **Known limitation:** the cost estimate in that dialog, and the cap check, are computed from the target text alone, not from the system prompt and catalogue picks Trace adds, so they understate a cloud request. |
+| Live Research | After explicit confirmation, collect records from the public services listed under "Live Research sources by target type" below, for Domain, IP Address, Username, Email and Company targets. Domain, IP, Username and Company show a **Confirm Live Research** dialog (default No) that lists the target and sources; Email shows the source picker described below. Declining or cancelling contacts nothing. Person and Phone targets are refused with an explanation. It does not call the request guard, so the agent and provider rules and the cost cap do not apply to it, and the execution mode (Local only, Hybrid allowed, Cloud only) does not gate it; its gate is the confirmation dialog. |
+| Exposure Check | A separate button for Domain, Company or Email targets (other types are refused with an explanation): it asks which leak and dark-web indexes may receive the target, in the **Choose Exposure Check Sources** dialog described below. Text results only: no onion site is contacted and nothing is downloaded. |
+| Stop | Request cancellation. For Live Research and Exposure Check it is checked between sources, so the source already running finishes first (each has its own timeout, typically 10 to 20 seconds); completed source results remain visible as a partial result and the run is saved as cancelled. For Structure Query the request is cancelled when the next token arrives. **Known limitation:** a stopped Structure Query ends as a red "Request cancelled by user." error box with the status "Error.", the partial text is discarded, and nothing is saved or recorded as cost (a cloud provider may still bill the tokens already generated). **Known limitation:** Stop re-enables the buttons at once, and its Activity line "No further processing was performed" appears at once, although a Live Research source in flight still finishes; wait for "Stopped — partial results retained." before starting another lookup, because a second run started in that window replaces the first worker without waiting for it. |
+| Clear | Empties the Target box, the results and the Activity trail. |
+
+## Live Research sources by target type
+| Target type | Sources that need no key | Sources that need a saved key | What you choose |
+|---|---|---|---|
+| Domain | WHOIS; DNS (A, AAAA, MX, NS, TXT, SOA); Team Cymru IP-to-ASN; Mnemonic passive DNS; crt.sh certificate transparency; Wayback Machine | VirusTotal, AlienVault OTX, SecurityTrails, DomainTools, Shodan DNS, URLScan, Hunter (role addresses and a count of named people) | Nothing: the confirmation lists every source, and names each key-gated one that has a saved key. |
+| IP Address | WHOIS; DNS; Team Cymru IP-to-ASN; SANS DShield; Shodan InternetDB; Mnemonic passive DNS (crt.sh and the Wayback Machine are skipped) | IPinfo, Criminal IP, AbuseIPDB, GreyNoise, VirusTotal, AlienVault OTX, Shodan (full host record), Censys | Nothing: as for Domain. |
+| Username | URLScan search; GitHub profile for the exact handle; Keybase profile and proofs | None; a saved URLSCAN_API_KEY only moves the URLScan search onto your account's quota | Nothing. The WhatsMyName sweep of about 600 sites is Bloodhound's Deep Dive only. |
+| Email | EmailRep (ticked by default); Gravatar (ticked by default; only a hash is sent); BreachDirectory (unticked) | Have I Been Pwned (unticked; unavailable without a key); Hunter mail-server check (unavailable without a key, ticked once its key is saved) | The **Choose Email Research Sources** dialog: the complete address goes only to ticked services. |
+| Company | GLEIF Legal Entity Index; CourtListener court dockets (a key is optional and only raises the rate limit) | OpenSanctions | Nothing: CourtListener runs on every company Live Research. ICIJ Offshore Leaks is Bloodhound only. |
+| Crypto address | None: Trace has no crypto query type, validator or lookup. Blockstream (Bitcoin) and Blockscout (Ethereum) are Bloodhound only. | None | A pasted address auto-detects as Username (see Query type). |
+| Person | None: Structure Query only | None | Nothing |
+| Phone | None: Structure Query only | None | Nothing |
+| Exposure Check (Domain, Company or Email) | Ransomware.live; Ahmia (clearnet only) | Intelligence X; DeHashed; Snusbase (count-only endpoint); LeakCheck | The **Choose Exposure Check Sources** dialog. The keyless sources, and every source whose key is saved, are ticked by default. |
+
+Keys are saved in Settings → OSINT Keys (or in `.env`) and are read at call time, so no restart is needed; a key-gated source is left out of a run until its key is saved. For Domain and IP a source left out for lack of a key is simply omitted, not listed as skipped, and the summary card then reads "Skipped before contact: none".
+
+The DNS and WHOIS steps are not passive in the sense the OSINT Framework catalogue uses the word: the DNS step asks your configured resolver for the target's own records (Team Cymru's step resolves a domain name again), so the lookups travel to the target's name servers, and WHOIS contacts registry servers. For an IP, WHOIS depends on what the python-whois library returns for an address and may report an error.
+
+**Known limitation:** the DNS step for an IP asks for A, AAAA, MX, NS, TXT and SOA records of the address string itself and does no reverse (PTR) lookup, so it normally returns "no records resolved" and every IP run lists DNS under Errors.
+
+**Known limitation:** Trace does not filter private, loopback, link-local or reserved addresses. Any syntactically valid IP, including 10.x, 192.168.x and 127.0.0.1, is sent to Mnemonic, DShield, InternetDB and every keyed IP service (Team Cymru answers that no network announces it).
+
+**Known limitation:** Person and Phone are local-only because of the type you choose, not because of a check on the text. Person and Company share one validator, so choosing Company for a personal name sends that name to GLEIF, CourtListener (a party-name search) and, with a key, OpenSanctions, after you confirm the dialog that names them.
 
 ## Outputs
-The persistent **Activity** trail explains validation, local/cloud execution,
-model processing, completion, cancellation, and errors. It explicitly states
-whether external sources were queried and remains visible after completion.
-Results are shown as readable cards, with the raw streamed response visible
-while generation is in progress.
+The persistent **Activity** trail explains validation, local/cloud execution, model processing, completion, cancellation, and errors. It explicitly states whether external sources were queried and remains visible after completion.
 
-Successful runs appear in Trace's **Saved Searches** rail. A saved search can be
-filtered, reopened, renamed, deleted, or used as the starting point for a new
-search. Reopening restores the target, query type, provider/model where
-available, and structured response without performing another request.
+Structure Query results are shown as four readable cards (Query structure, Google dorks, Public sources, Summary and next steps), each with a **Copy** button and a **Raw response** toggle; the raw streamed response is visible while generation is in progress. **Known limitation:** the parser matches only "## SUMMARY" and keeps the rest of that header line, so the Summary and next steps card begins with "& NEXT STEPS" before the summary text; nothing is lost.
 
-**Live Research** results are collected records rather than model
-inferences. The Activity trail names each source as it is contacted, records
-success or failure independently, and lists the sources actually contacted at
-completion. One failed source does not discard successful results.
+Live Research and Exposure Check results are cards of pretty-printed JSON text: a **Research summary** card (target, sources contacted, successful, errors, skipped before contact, and a note when the run was cancelled) followed by one card per source. A source that did not run reads "Not checked." These are collected records rather than model inferences.
 
-For email targets, the complete address is sent only to sources selected in the
-confirmation dialog. EmailRep and Gravatar are selected by default; Have I Been
-Pwned and BreachDirectory are off by default. HIBP cannot be selected without a
-configured API key. Gravatar never receives the address: it is looked up by the
-SHA-256 hash of the trimmed, lower-cased address, and returns the public profile
-its owner published (display name, location, verified accounts) or "no profile".
-A service skipped before contact is recorded separately and is not reported as
-contacted.
+The Trace entries in the left rail's **Saved searches** section (the "▸ Saved searches" toggle, shown while Trace is selected) hold completed Structure Query runs and Live Research and Exposure Check runs. Click an entry to reopen it; double-click it to rename it (there is no rename button); use the filter box (it matches the title or the result text); **Delete selected** removes the selected entry after a confirmation; **New search** clears the panel for a fresh one. Reopening performs no request, no model call and no network call: it reads the stored text or JSON, and restores the target, the provider/model where available, and the stored result. A Live Research run is saved when at least one source was contacted or skipped, including a stopped run (recorded as cancelled); a run that fails before completing, and a stopped Structure Query, are not saved. **Known limitation:** the query type is restored only for a Structure Query save (as the resolved type, never "Auto-detect"); a Live Research or Exposure Check save is labelled "Live Research · Domain" and so on, which is not a choice in the type box, so the box keeps its previous value. The reopen trail always says "stored query-planning result", also for a stored live record, and the saved Activity lines are not restored (the Research summary card still lists the sources).
 
-For domain targets, the **Wayback Machine** card gives the earliest and latest
-archived snapshot and a link to every capture. It uses the availability API
-twice rather than the CDX search API, which gives full capture counts but
-routinely takes longer than 30 seconds. IP targets skip crt.sh and the archive.
+A saved Live Research record is the whole collected JSON, kept as plain text in Sentinel's chat history on this Mac. It can include WHOIS contact emails and organisation, a GitHub profile's public email, location and bio, and Gravatar profile details. **Delete selected** removes that saved record.
 
-**Structure Query**'s public-source section draws on a curated reference list
-in the system prompt: free, no-login tools per target type (web-check, ViewDNS,
-CentralOps, archive.today, WhatsMyName, OpenCorporates, the German company
-registers, Das Örtliche, and similar), picked from Bruno Mortier's OSINT
-framework (start.me/p/ZME8nR/osint) on 2026-09-28. Deeper, key-gated or
-investigative tools belong to Bloodhound's library instead.
+**Live Research** results are collected records rather than model inferences. The Activity trail names each source as it is contacted ("Consent recorded", "Approved external sources", then "Checking …" for each), records success or failure independently, and lists the sources actually contacted at completion (a source that returned an error still counts as contacted). One failed source does not discard successful results. Each run is logged under `osint` as "Live Research · Domain" and so on, with the provider `public-sources` and a cost of €0.00.
 
-It also appends up to 15 tools from the **OSINT Framework catalogue**
-(osintframework.com, MIT licence) for the query type, keeping only tools the
-catalogue marks live, not deprecated, free, usable without an account, and
-passive. People-search and dating sites are never suggested, and shadow
-libraries are blocked outright. The catalogue is downloaded at most once a week
-into `data/cache/osint-framework.json` by a background thread started when the
-panel is first shown. Building the prompt reads only that cache, so Structure
-Query itself contacts nothing; with no cache, only the built-in list is used.
+For email targets, the complete address is sent only to sources selected in the confirmation dialog, which is itself the consent: **OK** starts the lookup, **Cancel** contacts nothing, and ticking nothing shows "No Sources Selected". EmailRep and Gravatar are selected by default; Have I Been Pwned and BreachDirectory are off by default. HIBP cannot be selected without a configured API key. Hunter's mail-server check cannot be selected without its key, and is selected by default once the key is saved. Gravatar never receives the address: it is looked up by the SHA-256 hash of the trimmed, lower-cased address, and returns the public profile its owner published (display name, location, job title, company, a short description, verified accounts) or "no profile". A service skipped before contact is recorded separately and is not reported as contacted. **Known limitation:** BreachDirectory's reply is not filtered by Sentinel: up to 10 entries come back exactly as the service sent them, so if its endpoint includes password or hash fields they reach the card and the saved search. Whether that endpoint still works without a key has not been confirmed.
 
-For IPs and domains, **Team Cymru** names the network that announces the
-address (ASN, prefix, country), asked over DNS rather than the web. **Mnemonic
-passive DNS** shows what a name has resolved to over time, or which names have
-been seen on an IP; busy shared addresses return partial results, dated by when
-Mnemonic's records were created and updated. **SANS DShield** (IPs only)
-reports attacks its sensors have logged from the address, including SSH
-brute-forcing and web-application probing. For usernames, the **GitHub** and
-**Keybase** lookups return the public profile for that exact handle; Keybase
-also lists the accounts its owner has cryptographically proven they control.
+For domain targets, the **Wayback Machine** card gives the earliest and latest archived snapshot and one link to the archive's calendar of every capture. It uses the availability API twice rather than the CDX search API, which gives full capture counts but routinely takes longer than 30 seconds. IP targets skip crt.sh and the archive.
 
-For company targets, the complete company name is sent only to the **GLEIF Legal
-Entity Index** after the user confirms that exact destination. Results contain
-legal-entity identifiers and registration reference data. GLEIF covers entities
-with an LEI, so no match is not proof that an organization does not exist.
-When `OPENSANCTIONS_API_KEY` is set, the confirmation also names
-**OpenSanctions**, and the name is screened against sanctions lists,
-politically exposed persons and other watchlists. Each match shows whether the
-entity itself is listed or only related to a listed one. Without a key,
-OpenSanctions is neither named nor contacted. Its API needs a key for every
-call, and commercial use needs their licence. The parsing is tested against
-recorded responses; it has not been run against the live API, because no key
-was available.
+For company targets, the complete company name is sent to the **GLEIF Legal Entity Index** and to **CourtListener** after the user confirms that exact list of destinations. Results from GLEIF contain legal-entity identifiers and registration reference data. GLEIF covers entities with an LEI, so no match is not proof that an organization does not exist. CourtListener returns docket metadata (case name, court, number, dates, parties and a link to the docket page) and never filing text or PDFs; a name match is a lead, not proof that the case concerns this organisation. When `OPENSANCTIONS_API_KEY` is set, the confirmation also names **OpenSanctions**, and the name is screened against sanctions lists, politically exposed persons and other watchlists. Each match shows whether the entity itself is listed or only related to a listed one. Without a key, OpenSanctions is neither named nor contacted. Its API needs a key for every call, and commercial use needs their licence. The parsing is tested against recorded responses; it has not been run against the live API, because no key was available.
 
-Trace intentionally performs no live collection for **Person** or **Phone**
-targets. It does not send those personal identifiers to people-search,
-reverse-phone, or data-broker services. Structure Query remains available for a
-local planning-only workflow.
+**Exposure Check** answers "is this domain, company or email in a leak or on a ransomware leak site?" through clearnet services that do their own crawling. In the source dialog Ransomware.live and Ahmia are keyless; Intelligence X, DeHashed, Snusbase and LeakCheck need a saved key and cannot be ticked without one. Unlike the email dialog, where breach services start unticked, every source with a saved key is ticked by default, so untick any you do not want to receive the target before pressing **OK**. Ahmia is reached through its clearnet site in two requests (its home page, to read the search form's token, then the search), and Sentinel never contacts an onion site. Intelligence X is searched by index only and nothing is downloaded; a paid account's key searches `2.intelx.io` and a free account's key searches `free.intelx.io`, within the free tier's limits. DeHashed, Snusbase (through its count-only endpoint) and LeakCheck report breach names, record counts and kinds of leaked data, never leaked values; they search emails and domains only, so for a Company target they are recorded as skipped with that reason. For an email target Ransomware.live and Ahmia receive only the domain part; the complete address goes to Intelligence X, DeHashed, Snusbase and LeakCheck. Every other web source identifies itself with a `Sentinel-OSINT/2.0` User-Agent header; Ahmia is sent a desktop-browser User-Agent because it turns other clients away.
+
+The **Exposure verdict** card reads "On a ransomware leak site" when Ransomware.live lists a direct victim match, "Possible exposure" when any source returned a hit, and otherwise "No exposure found in the sources that were queried". **Known limitation:** the verdict ignores errors and cancellation: if every source failed, or you pressed Stop first, the headline still reads "No exposure found"; check the Errors line of the Research summary card. A "direct victim match" is a substring test of the name part of the domain (apple for apple.com) against the victim's name or domain, so a victim called "Pineapple …" counts; verify each listing before treating it as a breach.
+
+**Structure Query**'s public-source section draws on a curated reference list in the system prompt: free, no-login tools per target type (web-check, ViewDNS, CentralOps, archive.today, WhatsMyName, OpenCorporates, the German company registers, Das Örtliche, and similar), picked from Bruno Mortier's OSINT framework (start.me/p/ZME8nR/osint) on 2026-09-28. Deeper, key-gated or investigative tools belong to Bloodhound's library instead.
+
+It also appends up to 15 tools from the **OSINT Framework catalogue** (osintframework.com, MIT licence) for the resolved query type, keeping only tools the catalogue marks live, not deprecated, free, usable without an account, passive and not a local install. Shadow libraries are blocked outright, and the People Search Engines branch is left out for Trace (the catalogue branches Trace draws on include no dating branch). **Known limitation:** the people-search filter works on whole branch names, so a people-search tool filed under another branch (Username, Social Networks, Public Records) is not recognised, and the shadow-library block applies to the catalogue picks, not to what the model suggests on its own. The catalogue is downloaded at most once a week into `data/cache/osint-framework.json`, once per app run, by a background thread started when the panel is first shown (Bloodhound's panel starts the same thread). Building the prompt reads only that cache, so Structure Query itself contacts no research source; with no cache, only the built-in list is used. **Known limitation:** the download is a real request to raw.githubusercontent.com that carries no target but is not recorded in the Activity trail and is not skipped in Local only mode.
+
+For IPs and domains, **Team Cymru** names the network that announces the address (ASN, prefix, country), asked over DNS rather than the web; for a domain it uses the first IPv4 address the name resolves to, and a name with only an IPv6 address returns an error. **Mnemonic passive DNS** shows what a name has resolved to over time, or which names have been seen on an IP (at most 25 records); busy shared addresses return partial results, dated by when Mnemonic's records were created and updated. **SANS DShield** (IPs only) reports attacks its sensors have logged from the address, including SSH brute-forcing and web-application probing. **Shodan InternetDB** (IPs only) lists the open ports, software and known CVEs Shodan has already crawled for the address; it needs no key, and "no record" is reported as such rather than as an error. For usernames, the **GitHub** (60 lookups an hour without a token) and **Keybase** lookups return the public profile for that exact handle; Keybase also lists the accounts its owner has cryptographically proven they control. **Hunter** reports a domain's email pattern and role addresses (info@, security@) and only a count of named people's addresses, never who.
+
+Trace intentionally performs no live collection for **Person** or **Phone** targets. It does not send those personal identifiers to people-search, reverse-phone, or data-broker services. Structure Query remains available for a local planning-only workflow.
+
+A domain run with several keyed sources executes its sources one after another with no progress bar, so a long run can take minutes; the Activity trail shows which source is being checked.
 
 ## How it works
-`OSINTAgent.validate_target()` validates and classifies the target entirely
-offline. `build_messages()` then wraps the accepted target in a system prompt
-tuned for defensive, legal OSINT. Requests run through the shared `ChatWorker`,
-request guard, cost tracking, history, and run logger.
+`OSINTAgent.validate_target()` validates and classifies the target entirely offline. `build_messages()` then wraps the accepted target in a system prompt tuned for defensive, legal OSINT. Structure Query requests run through the shared `ChatWorker`, request guard, cost tracking, history, and run logger. Live Research and Exposure Check run on their own worker threads (`DomainLookupWorker`, `IdentityLookupWorker` and `ExposureLookupWorker` in `ui/workers.py`), call no model, bypass the request guard, and are recorded afterwards by `record_external_research` in `main.py`.
 
 ## Under the hood — files & functions
 | Location | Role |
 |---|---|
-| `agents/osint_agent.py` | `OSINTAgent` — system prompt + message builder. |
-| `ui/panels/osint.py` | Panel, workflow state, result presentation, and request lifecycle. |
+| `agents/osint_agent/__init__.py` | `OSINTAgent` — system prompt, target validation and Auto-detect, message builder, and the catalogue block appended to the prompt. |
+| `ui/panels/osint.py` | Panel, workflow state, consent dialogs, result presentation, and request lifecycle. |
+| `ui/workers.py` | The three lookup workers that run Live Research and Exposure Check off the interface thread. |
 | `main.py` | Routing, authorization, Saved Searches, history, and provider execution. |
 | `providers/domain_lookup.py` | Consented live WHOIS, DNS, IP-to-ASN, passive DNS, DShield and Shodan InternetDB (IPs), IPinfo and Criminal IP (IPs, key-gated), certificate-transparency, and Wayback Machine snapshot collection for domains/IPs. |
 | `providers/intel_sources.py` | Key-gated threat intelligence for domain and IP lookups, one registry that drives the lookup, the consent text and the result cards. Hunter reports only role addresses and a count of named ones. |
 | `providers/exposure_lookup.py` | Exposure Check: Ransomware.live, Ahmia, and key-gated Intelligence X, DeHashed, Snusbase (count-only endpoint) and LeakCheck. Breach sources report names, counts and kinds of leaked data, never values. |
-| `providers/username_lookup.py` | Consented URLScan search plus GitHub and Keybase profile lookups for a username. |
+| `providers/username_lookup.py` | Consented URLScan search plus GitHub and Keybase profile lookups for a username. Its opt-in WhatsMyName sweep is called by Bloodhound only. |
 | `services/osint_catalog.py` | OSINT Framework catalogue: weekly cached download, filtering, and per-agent tool selection for the prompt. |
-| `providers/email_lookup.py` | Per-source EmailRep, Gravatar (hash only), HIBP, and BreachDirectory collection with breach services opt-in. |
-| `providers/company_lookup.py` | Consented company-name search against GLEIF's public legal-entity records, ICIJ Offshore Leaks, CourtListener court dockets, and (key-gated) OpenSanctions screening. |
+| `providers/email_lookup.py` | Per-source EmailRep, Gravatar (hash only), HIBP, BreachDirectory and Hunter collection with breach services opt-in. |
+| `providers/company_lookup.py` | Consented company-name search against GLEIF's public legal-entity records, CourtListener court dockets, and (key-gated) OpenSanctions screening. Its opt-in ICIJ Offshore Leaks search is called by Bloodhound only. |
+| `services/osint_keys.py`, `providers/key_check.py` | The Settings → OSINT Keys tab's per-service explanations (who uses a service, what its key changes) and its key checks. |
+
+`providers/crypto_lookup.py` (Blockstream, Blockscout) and `providers/whatsmyname.py` are not reachable from Trace; Bloodhound is their only caller.
 
 ## Extend it
 - **Person/phone enrichment**: intentionally local-only. Do not add people-search, reverse-phone, or data-broker collectors without a new privacy review and explicit source-specific consent design.
-- **Escalation**: hand results to **Bloodhound** (`osint_heavy`) for a full dossier.
-- Edit the system prompt in `agents/osint_agent.py` to change tradecraft focus.
+- **Escalation**: hand results to **Bloodhound** (`osint_heavy`) for a full dossier, including the WhatsMyName sweep, ICIJ Offshore Leaks and crypto-address lookups that Trace does not run.
+- Edit the system prompt in `agents/osint_agent/__init__.py` to change tradecraft focus.
 
 ## Requirements
-Any model provider (API key and consent for cloud; Ollama is local and free).
-HIBP requires `HIBP_API_KEY`; its checkbox is unavailable without one. EmailRep,
-Gravatar, BreachDirectory, URLScan, GitHub (60 lookups an hour), Keybase, GLEIF,
-WHOIS, the configured DNS resolver, Team Cymru, Mnemonic, DShield, crt.sh, and
-the Wayback Machine can be used without a configured application key, subject to their own limits
-and availability. Structure Query never contacts these services.
+Any model provider (API key and consent for cloud; Ollama is local and free) for Structure Query; Live Research and Exposure Check need no model. HIBP requires `HIBP_API_KEY`; its checkbox is unavailable without one. EmailRep, Gravatar, BreachDirectory, URLScan, GitHub (60 lookups an hour), Keybase, GLEIF, CourtListener, WHOIS, the configured DNS resolver, Team Cymru, Mnemonic, DShield, Shodan InternetDB, crt.sh, the Wayback Machine, Ransomware.live and Ahmia can be used without a configured application key, subject to their own limits and availability. IPinfo, Criminal IP, AbuseIPDB, GreyNoise, VirusTotal, AlienVault OTX, Shodan (full host record and DNS), Censys, SecurityTrails, DomainTools, Hunter, OpenSanctions, Intelligence X, DeHashed, Snusbase and LeakCheck are left out until their key is saved. A source whose provider has changed its service shows an error in its card and in the trail, and the other sources are unaffected. Structure Query never contacts these services; its only network contact besides the model is the weekly catalogue download described above.

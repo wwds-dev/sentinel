@@ -6,11 +6,11 @@ agent or cloud provider.
 
 | Goal | Suggested flow | Result |
 |---|---|---|
-| Research a public identity | Trace → Bloodhound → Forge | Sources, connections and a structured report |
-| Review an authorised website | Trace → Bug Spray → Forge | Context, findings and a remediation report |
+| Research a public identity | Trace → Bloodhound → Chat | Sources, connections and a written report |
+| Review an authorised website | Trace → Bug Spray | Context, findings and a remediation report |
 | Improve a personal network | Beacon → Tunnel → Chat | Wi-Fi observations, VPN guidance and a checklist |
-| Find and organise files | Bloodhound → Chat → Forge | Selected files, interpretation and an index/report |
-| Diagnose a software issue | Chat → Forge | Explanation followed by a concrete fix or deliverable |
+| Find and organise files | Bloodhound → Chat | Selected files, interpretation and an organisation plan |
+| Design a new specialist | Chat → Forge | A reviewed specification and an inactive scaffold |
 
 ## Workflow 1: public identity research
 
@@ -19,8 +19,8 @@ agent or cloud provider.
 2. Review matches and remove unrelated people or unsupported assumptions.
 3. **Bloodhound** turns the verified starting material into a deeper dossier.
 4. Review sources, confidence and risk statements.
-5. **Forge** is appropriate only if you need an agent scaffold; for an ordinary
-   written report, use Chat's Writing tool or export the reviewed result.
+5. **Forge** is for agent scaffolds only; it does not write reports. For an
+   ordinary written report, use Chat's Writing tool or export the reviewed result.
 
 Do not transfer a complete email address, personal image or case file to a
 cloud provider merely for convenience.
@@ -61,8 +61,11 @@ Never place VPN private keys in Chat or an AI-backed diagnostic request.
 
 1. Use **Chat** to clarify the problem and remove unnecessary capabilities.
 2. Use **Forge** to generate a structured agent spec.
-3. Review providers, tools, budget and approval requirements.
-4. Create the inactive scaffold, inspect the code and add tests.
+3. Review providers, tools, budget and approval requirements. The
+   specification cannot be edited in Forge; to change it, refine the idea and
+   analyse again.
+4. Create the inactive scaffold (one file and two disabled registry rows),
+   inspect the code and add tests.
 5. Integrate it deliberately; creation does not equal production readiness.
 
 ## Handoff checklist
@@ -71,7 +74,8 @@ Never place VPN private keys in Chat or an AI-backed diagnostic request.
 2. Keep only information the next agent genuinely needs.
 3. Review whether the next route is local or cloud.
 4. Run the next agent and verify its result before continuing.
-5. Use Forge for a finished output only after the evidence is reviewed.
+5. Write up a finished output (Chat's Writing tool, or the specialist's own
+   report cards) only after the evidence is reviewed. Forge does not write reports.
 
 ## Choosing where to pause
 

@@ -4,44 +4,92 @@
 
 ![Trace workspace](docs/training/images/trace.png)
 
+The capture above predates the **Exposure Check** button, which now sits beside
+**Live Research** in the run bar; **Stop** replaces the three action buttons
+while a request runs.
+
 ## Choose a target
 
-Enter a name, username, email, domain, company, phone number or IP address.
-Choose the type or leave **Auto-detect** selected. Auto-detection happens
-locally. Add only the context needed to distinguish the target.
+Enter a name, username, email, domain, company, phone number or IP address in
+the Target box. There is no separate context field: the box holds the
+identifier only, and it must fit the type you choose, so an email or domain
+with extra words around it is rejected before anything is sent. Choose the
+type or leave **Auto-detect** selected. Auto-detection happens locally, and it
+is a guess: a handle with a dot (john.smith) reads as a domain, a Bitcoin or
+Ethereum address reads as a username, and it never picks Company, so choose
+**Company** yourself for an organisation. Choose the type yourself before a
+live lookup whenever the guess could matter.
 
 ## Structure Query versus Live Research
 
 **Structure Query** asks the selected model to create an investigation plan.
 It does not contact research sources. With Ollama, the target remains local.
-With a cloud model, the prompt is sent to that provider after permission.
+With a cloud model, the prompt is sent to that provider after you confirm the
+request. Separately, Sentinel refreshes a public list of OSINT tools from
+GitHub at most once a week; that request carries no target. **Stop** cancels
+a plan, but a stopped plan ends as an error message: the partial text is not
+kept and nothing is saved.
 
 **Live Research** contacts supported public sources after showing exactly what
-will be shared. Domains and IPs draw on WHOIS, DNS, passive DNS and
-network-owner records, with certificate transparency (crt.sh) and the Wayback
-Machine added for domains only; an IP additionally reports attack history
-(DShield) and known exposure (Shodan InternetDB), plus — when their keys are set
-— geolocation and privacy flags (IPinfo) and a reputation score (Criminal IP).
-Usernames can use URLScan; companies use the GLEIF legal-entity registry and can
-add U.S. court dockets from CourtListener (metadata only — never document text or
-PDFs) and, with a key, sanctions and watchlist screening. A separate **Exposure
-Check** asks which leak and dark-web indexes may receive the target:
-Ransomware.live and Ahmia are free, Intelligence X needs a key (a free
-account's works, within its limits) and DeHashed a paid one; both stay metadata-only — DeHashed reports which breach databases a target
-appears in and never returns leaked passwords or hashes. Email services are
-chosen individually, breach sources are never enabled without explicit consent,
-and person and phone targets remain planning-only to avoid data-broker and
-reverse-phone disclosure.
+will be shared. It calls no model, so Sentinel bills nothing for it (a keyed
+service may still spend its own quota or credits). Domains and IPs draw on
+WHOIS, DNS, passive DNS and network-owner records, with certificate
+transparency (crt.sh) and the Wayback Machine added for domains only; an IP
+additionally reports attack history (DShield) and known exposure (Shodan
+InternetDB). Every threat-intelligence service whose key you saved in
+Settings → OSINT Keys is added and named in the confirmation: for an IP,
+IPinfo (geolocation and privacy flags), Criminal IP (a reputation score),
+AbuseIPDB, GreyNoise, VirusTotal, AlienVault OTX, Shodan and Censys; for a
+domain, VirusTotal, OTX, SecurityTrails, DomainTools, Shodan, URLScan and
+Hunter (role addresses and a count of named people, never their addresses).
+Usernames go to URLScan, GitHub and Keybase. Companies use the GLEIF
+legal-entity registry and U.S. court dockets from CourtListener, which is part
+of every company lookup (metadata only — never document text or PDFs), and,
+with a key, sanctions and watchlist screening. Email services are chosen one by
+one in a dialog: EmailRep and Gravatar start ticked, Have I Been Pwned and
+BreachDirectory start unticked, and Hunter is ticked once its key is saved.
+Person and phone targets remain planning-only to avoid data-broker and
+reverse-phone disclosure; that rests on the type you choose, so a personal name
+entered as a Company is sent to GLEIF and CourtListener.
+
+A separate **Exposure Check** (domain, company or email) asks which leak and
+dark-web indexes may receive the target: Ransomware.live and Ahmia are free,
+Intelligence X needs a key (a free account's works, within its limits), and
+DeHashed, Snusbase and LeakCheck need paid ones. All stay metadata-only: the
+breach services report which breaches a target appears in and, for some, when
+and what kinds of data leaked, and never return leaked passwords or hashes. The dialog ticks
+every source whose key is saved, so untick any you do not want to receive the
+target before pressing OK. For an email address, only its domain goes to
+Ransomware.live and Ahmia; the full address goes to the key-gated services you
+tick.
 
 ## Read the result
 
 The Activity trail distinguishes validation, contacted sources, skipped
-sources, partial failures, model work and cancellation. A source returning no
-match is not proof that the subject does not exist. Treat model summaries as
-interpretation and live-source records as evidence that still needs context.
+sources, partial failures, model work and cancellation. Domain and IP lookups
+leave out a keyed service whose key is not saved without listing it as skipped.
+A source returning no match is not proof that the subject does not exist. Treat
+model summaries as interpretation and live-source records as evidence that
+still needs context. Live results are plain-text (JSON) records, one card per
+source, with a Research summary card first.
 
-Saved Searches can be reopened, renamed, filtered or deleted. Reopening never
-reruns the search automatically.
+Know the rough edges before you rely on a result:
+
+- The Exposure verdict reads "No exposure found" even when every source
+  failed or you pressed Stop; read the Errors line of the Research summary
+  card. A "direct victim match" is a loose name match, so verify each listing.
+- An IP lookup normally lists DNS as an error, because Trace does no reverse
+  lookup, and it sends private and loopback addresses like any other.
+- BreachDirectory's reply is shown exactly as the service sent it; Sentinel
+  does not filter it.
+- The Summary and next steps card of a plan begins with "& NEXT STEPS".
+
+Saved searches (the **Saved searches** toggle near the bottom of the left rail
+while Trace is selected) can be reopened with a click, renamed with a
+double-click, filtered or deleted. Reopening never sends anything. A reopened
+live record does not restore the query type, and the trail line says it is a
+stored query-planning result either way. A saved live record keeps everything
+the sources returned, such as WHOIS contact emails, until you delete it.
 
 ## Best practices
 
@@ -50,10 +98,12 @@ reruns the search automatically.
 - Record URLs and dates; public records can change.
 - Separate confirmed facts, likely matches and speculation.
 - Do not use Trace for harassment, stalking or decisions about someone's
-  eligibility, employment, housing, credit or insurance.
+  eligibility, employment, housing, credit or insurance. Trace cannot check
+  your purpose; keeping to this rule is yours to do.
 
 ## Exercise
 
 Use a domain you own. Run Structure Query locally, review its plan, then start
-Live Research and inspect the consent screen before deciding whether to proceed.
-
+Live Research and read the confirmation screen before deciding whether to
+proceed. Decline once and read the status line, then run it and reopen the
+result from Saved searches.
