@@ -31,9 +31,26 @@ except Exception:  # pragma: no cover
 RunAsRoot = Callable[..., tuple[bool, str]]
 
 
+def openvpn_binary() -> str | None:
+    """Absolute path of the OpenVPN client, or None.
+
+    Homebrew installs it under ``sbin``, which the macOS authorisation dialog's
+    shell and sudo's secure_path both drop, so the privileged script must name
+    the binary by its full path (the same fix ``wg_quick_command`` carries).
+    """
+    found = shutil.which("openvpn")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/sbin/openvpn", "/usr/local/sbin/openvpn",
+                      "/opt/homebrew/bin/openvpn", "/usr/local/bin/openvpn"):
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
 def is_openvpn_available() -> bool:
-    """True when an OpenVPN client binary is on PATH."""
-    return shutil.which("openvpn") is not None
+    """True when an OpenVPN client binary can be found."""
+    return openvpn_binary() is not None
 
 
 def _run_dir() -> Path:
@@ -95,7 +112,7 @@ def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root) 
     except OSError:
         pass
     script = (
-        f"openvpn --config {_quote(str(cfg))} "
+        f"{_quote(openvpn_binary() or 'openvpn')} --config {_quote(str(cfg))} "
         f"--daemon sentinel-ovpn "
         f"--log {_quote(str(log))} "
         f"--writepid {_quote(str(pid))} "
@@ -112,25 +129,33 @@ def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root) 
 def _is_tracked_process(pid: int) -> bool:
     """Fail closed unless this PID names Sentinel's own OpenVPN command.
 
-    A PID file alone is not identity: PIDs can be stale or reused. Ambiguous
-    process arguments (including unquoted spaces from ps) are refused.
+    A PID file alone is not identity: PIDs can be stale or reused. The command
+    line is compared as the raw string ``ps`` prints (``-ww`` so it is never
+    truncated) rather than re-tokenised: ``ps`` does not quote arguments, so a
+    pid-file path containing a space — every packaged build keeps it under
+    ``~/Library/Application Support`` and every portable one under
+    ``Sentinel Data`` — would split into two tokens and the real process would
+    be refused forever (D2).
     """
     if pid <= 1:
         return False
     try:
         proc = subprocess.run(
-            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            ["/bin/ps", "-ww", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, timeout=3,
         )
-        args = shlex.split(proc.stdout.strip())
-        return (
-            proc.returncode == 0 and bool(args)
-            and Path(args[0]).name == "openvpn"
-            and args[args.index("--daemon") + 1] == "sentinel-ovpn"
-            and args[args.index("--writepid") + 1] == str(pid_file())
-        )
-    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
+    command = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not command:
+        return False
+    first, _, _ = command.partition(" ")
+    if Path(first).name != "openvpn":
+        return False
+    return (
+        " --daemon sentinel-ovpn " in f"{command} "
+        and f" --writepid {pid_file()} " in f"{command} "
+    )
 
 
 def disconnect(*, run_as_root: RunAsRoot = _default_run_as_root) -> dict:

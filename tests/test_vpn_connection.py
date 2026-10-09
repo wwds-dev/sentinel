@@ -126,7 +126,7 @@ def test_openvpn_connect_requires_a_config_path():
 def test_openvpn_connect_launches_daemon(monkeypatch, tmp_path):
     cfg = tmp_path / "jp.ovpn"
     cfg.write_text("client\nremote 203.0.113.7 1194\n")
-    monkeypatch.setattr(openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     monkeypatch.setattr(openvpn_manager, "is_running", lambda: False)
     run = Recorder(ok=True, output="")
     result = vpn_connection.connect(
@@ -136,7 +136,7 @@ def test_openvpn_connect_launches_daemon(monkeypatch, tmp_path):
     assert result["success"] is True
     assert result["protocol"] == "OpenVPN"
     assert len(run.scripts) == 1
-    assert "openvpn --config" in run.scripts[0]
+    assert run.scripts[0].startswith("'/opt/homebrew/sbin/openvpn' --config")
     assert str(cfg) in run.scripts[0]
     assert "--daemon" in run.scripts[0]
 
@@ -187,10 +187,14 @@ def test_openvpn_disconnect_preserves_tracking_and_reports_signal_failure(monkey
 
 @pytest.mark.parametrize("command, expected", [
     ("/opt/homebrew/sbin/openvpn --daemon sentinel-ovpn --writepid /tmp/sentinel.pid", True),
+    ("/opt/homebrew/sbin/openvpn --config /tmp/a.ovpn --daemon sentinel-ovpn "
+     "--log /tmp/o.log --writepid /tmp/sentinel.pid --verb 3", True),
     ("/usr/bin/python --daemon sentinel-ovpn --writepid /tmp/sentinel.pid", False),
     ("openvpn --daemon other --writepid /tmp/sentinel.pid", False),
     ("openvpn --daemon sentinel-ovpn --writepid /tmp/other.pid", False),
+    ("openvpn --daemon sentinel-ovpn --writepid /tmp/sentinel.pid.bak", False),
     ("openvpn --daemon", False),
+    ("", False),
 ])
 def test_openvpn_process_identity(monkeypatch, command, expected):
     from pathlib import Path
@@ -199,6 +203,43 @@ def test_openvpn_process_identity(monkeypatch, command, expected):
     monkeypatch.setattr(openvpn_manager.subprocess, "run", lambda *a, **k:
                         SimpleNamespace(returncode=0, stdout=command))
     assert openvpn_manager._is_tracked_process(12345) is expected
+
+
+@pytest.mark.parametrize("pid_dir", [
+    "/Users/me/Library/Application Support/Sentinel/vpn",   # packaged build
+    "/Volumes/USB/Sentinel Data/vpn",                        # portable build
+])
+def test_openvpn_process_identity_survives_spaces_in_the_pid_path(monkeypatch, pid_dir):
+    # D2 regression: ps prints argv unquoted, and the old check re-tokenised
+    # it with shlex, so any data directory containing a space made Disconnect
+    # refuse, let a second Connect through, and reported "not verified".
+    from pathlib import Path
+    from types import SimpleNamespace
+    pid_path = Path(pid_dir) / "openvpn.pid"
+    monkeypatch.setattr(openvpn_manager, "pid_file", lambda: pid_path)
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"/opt/homebrew/sbin/openvpn --config {pid_dir}/srv.ovpn "
+                   f"--daemon sentinel-ovpn --log {pid_dir}/openvpn.log "
+                   f"--writepid {pid_path} --verb 3\n")
+    monkeypatch.setattr(openvpn_manager.subprocess, "run", fake_run)
+    assert openvpn_manager._is_tracked_process(4242) is True
+    assert "-ww" in seen["argv"]          # never truncated by the terminal width
+
+
+def test_openvpn_connect_names_the_binary_by_absolute_path(monkeypatch, tmp_path):
+    cfg = tmp_path / "srv.ovpn"
+    cfg.write_text("client\nremote 203.0.113.7 1194\n")
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    monkeypatch.setattr(openvpn_manager, "is_running", lambda: False)
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
+    rec = Recorder()
+    openvpn_manager.connect(str(cfg), run_as_root=rec)
+    assert rec.scripts and rec.scripts[0].startswith("'/opt/homebrew/sbin/openvpn' --config")
 
 
 # ── Protocol dispatch ───────────────────────────────────────────────────────
