@@ -73,6 +73,26 @@ Normal app close and Portable Emergency Reset both cancel every Tunnel worker, w
 | Starter profile catalog | Bundled with the app and read only until the state folder has its own file. |
 Known limitation: the VPN Agent state folder is outside Sentinel's data folder, so Portable mode does not carry it and Emergency Reset does not erase it. On a Mac with no profile file yet, the first import creates one holding only the imported profile, so the starter profiles disappear from both pickers.
 
+## Privacy tab — hardware address, Tor, proxy chain
+
+Three cards, each honest about its limits (the same text is in the tab).
+
+- **Hardware address.** Randomise or restore an interface's MAC. One hop only:
+  your router still sees your traffic; the change lasts until restart or Restore.
+  Review shows `old → new` and warns that Wi-Fi will be cycled. Asks for the
+  macOS administrator dialog (never a cached sudo). Audit action `mac-set`.
+- **Tor.** A local client on 127.0.0.1:9250 (never a relay), state in Sentinel's
+  data folder. Start asks first; Stop only signals the Tor Sentinel started;
+  Check contacts check.torproject.org through Tor (asks first); New identity
+  requests fresh circuits. Needs `brew install tor`. Audit `tor-start`,
+  `tor-stop`, `tor-check`, `tor-newnym`.
+- **Proxy chain.** Ordered hops (SOCKS5/SOCKS4/HTTP), saved 0600; passwords are
+  never shown or logged. Test chain asks first, naming api.ipify.org and each hop
+  (audit `chain-probe`). The proxychains wrapper barely works on macOS (SIP).
+
+Every action runs off the interface thread, is audited including declined and
+refused attempts, and none of it talks to an AI provider.
+
 ## Remote vs Native (the choice the agent keeps you honest about)
 | | Remote (VPS) | Native (home LAN) |
 |---|---|---|

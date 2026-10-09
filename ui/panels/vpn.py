@@ -31,6 +31,7 @@ from services.vpn_diagnostics import (
 )
 from services import vpn_connection, vpn_execution
 from ui.panels.base import AgentPanel
+from ui.panels.vpn_privacy import PrivacyTab
 from ui.widgets import MenuComboBox, SectionView
 from ui.workers import (
     DnsLeakWorker, IpSnapshotWorker, VpnConnectionWorker, VpnDiagnosticsWorker,
@@ -365,6 +366,9 @@ class VpnPanel(AgentPanel):
 
         self.execution_view = SectionView()
         self.tabs.addTab(self.execution_view, "Execution")
+
+        self.privacy_tab = PrivacyTab()
+        self.tabs.addTab(self.privacy_tab, "Privacy")
 
         self.advisor_box.setPlaceholderText(
             "Troubleshooting advice will appear after you select Ask Advisor."
@@ -944,6 +948,9 @@ class VpnPanel(AgentPanel):
         """Cancel and join Tunnel workers before their widgets are destroyed."""
         workers = [self.worker, self._diagnostics_worker, self._ip_worker,
                    self._dns_worker, getattr(self, "_connection_worker", None)]
+        privacy = getattr(self, "privacy_tab", None)
+        if privacy is not None:
+            privacy.shutdown(timeout_ms)
         for worker in workers:
             if worker is not None and worker.isRunning():
                 worker.cancel()

@@ -445,6 +445,37 @@ class VpnConnectionWorker(QThread):
                 self.error_signal.emit(str(exc))
 
 
+class CallWorker(QThread):
+    """Run one blocking companion call (Tor, MAC, proxy probe, deploy) off the UI thread.
+
+    ``func`` returns anything; it is emitted as-is. Like the connection worker,
+    cancel() cannot interrupt a privileged call; it makes the worker drop its
+    result so a torn-down panel is never touched, and shutdown() joins it.
+    """
+
+    finished_signal = Signal(object)
+    error_signal = Signal(str)
+
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self._func = func
+        self._args = args
+        self._kwargs = kwargs
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            result = self._func(*self._args, **self._kwargs)
+            if not self._cancel_requested:
+                self.finished_signal.emit(result)
+        except Exception as exc:
+            if not self._cancel_requested:
+                self.error_signal.emit(str(exc))
+
+
 class VpnDiagnosticsWorker(QThread):
     """Collect Tunnel's read-only local snapshot off the interface thread."""
 

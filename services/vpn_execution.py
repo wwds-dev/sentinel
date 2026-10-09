@@ -514,6 +514,21 @@ def record_killswitch(action: str, ok: bool, message: str, *,
     }, audit_path)
 
 
+def record_companion(action: str, outcome: str, detail: str = "", *,
+                     target: str = "", audit_path: Path | None = None) -> Path | None:
+    """Audit one Privacy/Servers action (mac-set, tor-start, chain-probe, ...).
+
+    ``outcome`` is declined, refused, succeeded or failed. Everything goes
+    through redact_secrets, so keys and passwords never reach the log.
+    """
+    return append_audit({
+        "time": _now(), "action": action, "protocol": "companion",
+        "target": redact_secrets(str(target or ""))[:200],
+        "outcome": outcome,
+        "detail": redact_secrets(str(detail or ""))[:OUTPUT_LIMIT],
+    }, audit_path)
+
+
 # ── Execution ───────────────────────────────────────────────────────────────
 
 @dataclass
