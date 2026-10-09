@@ -669,6 +669,8 @@ class VpnPanel(AgentPanel):
             QMessageBox.information(self, "No profile", "Choose a server profile first.")
             return
         if vpn_connection.is_placeholder(profile):
+            vpn_execution.record_refusal(
+                "connect", profile, "Template profile: no real endpoint or config.")
             QMessageBox.information(
                 self, "Template profile",
                 "This is an example/template. Import a real WireGuard .conf or "
@@ -697,6 +699,8 @@ class VpnPanel(AgentPanel):
         self.execution_view.show_sections(review.sections())
         self.tabs.setCurrentWidget(self.execution_view)
         if not review.allowed:
+            vpn_execution.record_refusal(
+                action, profile, "; ".join(review.blockers), review=review)
             self.connection_status_label.setText(
                 ("Refused: " + "; ".join(review.blockers))[:300])
             QMessageBox.warning(
@@ -708,7 +712,23 @@ class VpnPanel(AgentPanel):
         confirm = QMessageBox.question(
             self, title, review.confirmation_text(),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        return confirm == QMessageBox.Yes
+        if confirm == QMessageBox.Yes and review.root_hooks:
+            # A config with hooks is a script run as root, not just keys and
+            # routes; make that a decision of its own, default No.
+            confirm = QMessageBox.warning(
+                self, "This config runs commands as administrator",
+                "The config file contains hook directives that wg-quick/openvpn "
+                "will execute with administrator rights:\n\n"
+                + "\n".join(f"• {item}" for item in review.root_hooks)
+                + "\n\nOnly continue if you wrote these or trust their source.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            vpn_execution.record_refusal(
+                action, profile, "Operator declined the confirmation.",
+                review=review, outcome="declined")
+            self.connection_status_label.setText("Not run: confirmation declined.")
+            return False
+        return True
 
     def _connection_busy(self) -> bool:
         worker = getattr(self, "_connection_worker", None)
@@ -772,15 +792,25 @@ class VpnPanel(AgentPanel):
                 "Choose a real server profile first — the kill switch must exempt "
                 "its endpoint, or it would block the tunnel too.")
             return
+        allow = vpn_connection.tunnel_allow_rules(profile)
+        allowed = ", ".join(f"{proto.upper()}/{port}" for proto, port in allow)
+        recovery = vpn_connection.killswitch_recovery_command()
         confirm = QMessageBox.question(
             self, "Arm kill switch",
-            "Arm a firewall kill switch?\n\nThis blocks all network traffic except "
-            f"the selected tunnel's endpoint ({profile.get('endpoint')}). If the "
-            "tunnel drops, traffic stays blocked until you disarm. It needs your "
-            "administrator password, and refuses to arm if the endpoint cannot be "
-            "resolved.",
-            QMessageBox.Yes | QMessageBox.No)
+            "Arm a firewall kill switch?\n\n"
+            "This loads a pf anchor that blocks all network traffic except "
+            f"{allowed} to the selected tunnel's endpoint ({profile.get('endpoint')}), "
+            "the tunnel interface itself, loopback, DHCP and your LAN. If the "
+            "tunnel drops, traffic stays blocked until you press Disarm.\n\n"
+            "It asks for your administrator password, and refuses to arm if the "
+            "endpoint cannot be resolved.\n\n"
+            f"If Sentinel cannot disarm it, run in Terminal:\n{recovery}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
+            vpn_execution.record_refusal(
+                "killswitch-arm", profile, "Operator declined the confirmation.",
+                outcome="declined")
+            self.kill_switch_status_label.setText("Kill switch: not armed (declined).")
             return
         self._start_killswitch("arm", profile, "Arming kill switch…")
 

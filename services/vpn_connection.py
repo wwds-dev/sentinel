@@ -41,7 +41,11 @@ def _killswitch():
         return None
 
 try:  # pragma: no cover - real prompt in the app, mocked in tests
-    from agents.vpn_agent.services.privileged import run_as_root as _default_run_as_root
+    from functools import partial as _partial
+    from agents.vpn_agent.services.privileged import run_as_root as _privileged_run_as_root
+    # Sentinel's gated actions always go through the macOS dialog (never a
+    # cached sudo ticket) — that is what the README and the review promise.
+    _default_run_as_root = _partial(_privileged_run_as_root, allow_cached_sudo=False)
 except Exception:  # pragma: no cover
     def _default_run_as_root(script: str, prompt: str, timeout: float = 30):
         return False, "Privileged execution is unavailable."
@@ -239,6 +243,15 @@ def arm_killswitch(profile: dict):
         return False, ("This profile has no server endpoint, so the kill switch "
                        "could not exempt the tunnel. Import a real config first.")
     return ks.arm([endpoint], allow=tunnel_allow_rules(profile))
+
+
+def killswitch_recovery_command() -> str:
+    """The Terminal command that undoes the pf anchor, for the Arm dialog."""
+    ks = _killswitch()
+    try:
+        return ks.recovery_command() if ks is not None else "sudo pfctl -d"
+    except Exception:  # noqa: BLE001 - the dialog must open even if this fails
+        return "sudo pfctl -d"
 
 
 def disarm_killswitch():

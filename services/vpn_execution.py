@@ -47,6 +47,65 @@ WG_RUN_DIR = Path("/var/run/wireguard")
 ROUTE_PROBE_ADDRESS = "1.1.1.1"
 AUDIT_FILENAME = "tunnel_audit.jsonl"
 OUTPUT_LIMIT = 2000
+
+# Directives that make the tunnel tool run a program as root when the tunnel
+# comes up or goes down. A config with one of these is a script, not just a
+# set of keys and routes; the review names each so the operator confirms it
+# knowingly (auditor finding: these were neither inspected nor warned about).
+WG_HOOK_KEYS = ("PreUp", "PostUp", "PreDown", "PostDown")
+OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
+                     "client-connect", "client-disconnect", "learn-address",
+                     "tls-verify", "auth-user-pass-verify", "plugin",
+                     "script-security")
+HOOK_VALUE_LIMIT = 100
+
+
+# Anything the tunnel tools print can quote the config: wg-quick echoes the
+# offending line of a bad config ("Line unrecognized: `PrivateKey = …`"), and
+# OpenVPN logs inline <key> blocks on parse errors. Redact before anything
+# reaches the Execution tab, the audit log or a saved chat.
+_SECRET_FIELD = re.compile(
+    r"(?i)\b(PrivateKey|PresharedKey|password|passwd|auth-user-pass|secret|token)"
+    r"(\s*[=:]\s*|\s+)(?!\[redacted)(\S+)")
+_INLINE_BLOCK = re.compile(
+    r"(?is)<(key|tls-auth|tls-crypt|tls-crypt-v2|pkcs12|secret)>.*?</\1>")
+_KEY_TOKEN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{42,}={0,2}(?![A-Za-z0-9+/=])")
+
+
+def redact_secrets(text: str | None) -> str:
+    """Scrub key material from tool output before it is shown or stored."""
+    if not text:
+        return ""
+    text = _INLINE_BLOCK.sub(lambda m: f"<{m.group(1)}>[redacted]</{m.group(1)}>", text)
+    text = _SECRET_FIELD.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
+    return _KEY_TOKEN.sub("[redacted key]", text)
+
+
+def config_root_hooks(path: str | Path, protocol: str) -> list[str]:
+    """Lines in a WireGuard/OpenVPN config that execute as root, as
+    'Directive: value' strings; secrets are not read (only hook lines are kept).
+    An unreadable file yields no hooks — the review reports that separately."""
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    hooks: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if protocol == "WireGuard":
+            key, sep, value = line.partition("=")
+            key = key.strip()
+            if sep and key.lower() in {k.lower() for k in WG_HOOK_KEYS}:
+                hooks.append(f"{key}: {value.strip()[:HOOK_VALUE_LIMIT]}")
+        elif protocol == "OpenVPN":
+            parts = line.split(None, 1)
+            key = parts[0].lstrip("-").lower()
+            if key in OPENVPN_HOOK_KEYS:
+                value = parts[1].strip() if len(parts) > 1 else ""
+                hooks.append(f"{parts[0]}: {value[:HOOK_VALUE_LIMIT]}")
+    return hooks
 ACTIONS = ("connect", "disconnect")
 
 
@@ -116,6 +175,7 @@ class ExecutionReview:
     blockers: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     rollback: tuple[str, ...] = ()
+    root_hooks: tuple[str, ...] = ()
 
     @property
     def allowed(self) -> bool:
@@ -131,6 +191,9 @@ class ExecutionReview:
         ]
         if self.config_lines:
             lines += [""] + list(self.config_lines)
+        if self.root_hooks:
+            lines += ["", "RUNS COMMANDS AS ADMINISTRATOR — this config executes:"]
+            lines += [f"• {item}" for item in self.root_hooks]
         if self.warnings:
             lines += ["", "Check first:"] + [f"• {item}" for item in self.warnings]
         lines += ["", "To undo:"] + [f"• {item}" for item in self.rollback]
@@ -152,6 +215,9 @@ class ExecutionReview:
         if self.config_lines:
             sections.append(("Configuration intent (keys discarded)",
                              "\n".join(self.config_lines), True))
+        if self.root_hooks:
+            sections.append(("Runs commands as administrator",
+                             "\n".join(f"• {item}" for item in self.root_hooks), True))
         if self.blockers:
             sections.append(("Refused — nothing was run",
                              "\n".join(f"• {item}" for item in self.blockers), False))
@@ -202,6 +268,7 @@ def review_execution(action: str, profile: dict | None, *,
     blockers: list[str] = []
     warnings: list[str] = []
     config_lines: list[str] = []
+    root_hooks: list[str] = []
     route_mode = ""
     ks_armed = killswitch_armed()
 
@@ -247,6 +314,7 @@ def review_execution(action: str, profile: dict | None, *,
                     if route_mode == "Split tunnel":
                         warnings.append("Split tunnel: only the listed networks use the VPN; "
                                         "other traffic keeps your normal route.")
+                root_hooks = config_root_hooks(source, "WireGuard")
                 try:
                     mode = source.stat().st_mode
                     if mode & (stat.S_IRGRP | stat.S_IROTH):
@@ -283,6 +351,8 @@ def review_execution(action: str, profile: dict | None, *,
                 blockers.append("This OpenVPN profile has no config file.")
             elif not Path(target).expanduser().is_file():
                 blockers.append(f"The config file {target} no longer exists.")
+            else:
+                root_hooks = config_root_hooks(target, "OpenVPN")
             if probe["openvpn_running"]():
                 blockers.append("An OpenVPN process is already running — Disconnect it first.")
             rollback = ["Press Disconnect (only a process Sentinel started and "
@@ -293,6 +363,10 @@ def review_execution(action: str, profile: dict | None, *,
         interface, target, command = "", "", ""
         blockers.append(f"Unsupported protocol '{profile.get('protocol')}'.")
         rollback = []
+
+    if root_hooks:
+        warnings.append(f"This config runs {len(root_hooks)} command(s) as administrator "
+                        "when the tunnel comes up or goes down (see the list above).")
 
     if action == "disconnect":
         if ks_armed:
@@ -309,6 +383,7 @@ def review_execution(action: str, profile: dict | None, *,
         interface=interface, command=command, route_mode=route_mode,
         config_lines=tuple(config_lines), blockers=tuple(blockers),
         warnings=tuple(warnings), rollback=tuple(rollback),
+        root_hooks=tuple(root_hooks),
     )
 
 
@@ -398,12 +473,44 @@ def _now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def record_refusal(action: str, profile: dict | None, reason: str, *,
+                   review: "ExecutionReview | None" = None,
+                   outcome: str = "refused",
+                   audit_path: Path | None = None) -> Path | None:
+    """Audit an attempt that ended before execute() was reached.
+
+    The README promises that every attempt, refused ones included, is logged.
+    execute() keeps that promise for the service path, but every refusal a
+    user can trigger from the panel — a template profile, a blocker in the
+    review, or answering No to the confirmation — returned before execute(),
+    so nothing was written. `outcome` is "refused" for Sentinel's own
+    refusals and "declined" when the operator said No.
+    """
+    profile = profile or {}
+    entry = {
+        "time": _now(),
+        "action": action,
+        "protocol": (review.protocol if review else vpn_connection.resolve_protocol(profile)),
+        "profile": (review.profile_name if review else str(profile.get("name") or "")),
+        "target": (review.target if review else str(profile.get("endpoint") or "")),
+        "interface": (review.interface if review else str(profile.get("interface") or "")),
+        "command": (review.command if review else ""),
+        "outcome": outcome,
+        "blockers": list(review.blockers) if review else [],
+        "warnings": list(review.warnings) if review else [],
+        "verified": None,
+        "verification": "",
+        "error": redact_secrets(str(reason or ""))[:OUTPUT_LIMIT],
+    }
+    return append_audit(entry, audit_path)
+
+
 def record_killswitch(action: str, ok: bool, message: str, *,
                       audit_path: Path | None = None) -> Path | None:
     return append_audit({
         "time": _now(), "action": f"killswitch-{action}", "protocol": "pf",
         "outcome": "succeeded" if ok else "failed",
-        "detail": str(message or "")[:OUTPUT_LIMIT],
+        "detail": redact_secrets(str(message or ""))[:OUTPUT_LIMIT],
     }, audit_path)
 
 
@@ -491,8 +598,9 @@ def execute(action: str, profile: dict, *,
         result = runner(profile, **kwargs)
         outcome = ExecutionOutcome(
             review, ran=True, success=bool(result.get("success")),
-            output=str(result.get("output") or "")[:OUTPUT_LIMIT],
-            error=result.get("error"),
+            output=redact_secrets(str(result.get("output") or ""))[:OUTPUT_LIMIT],
+            error=(redact_secrets(str(result.get("error")))
+                   if result.get("error") else None),
         )
         outcome.verified, outcome.verification = post_change_check(review, probe, sleep=sleep)
 
