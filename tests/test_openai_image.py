@@ -185,3 +185,10 @@ def test_every_priced_image_model_is_in_the_seed_and_the_json(seeded_pricing):
     for model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"):
         assert seeded[model]["output_per_1m_usd"] == shipped[model]["output_per_1m_usd"] > 0
         assert seeded[model]["input_per_1m_usd"] == shipped[model]["input_per_1m_usd"] > 0
+
+
+def test_model_list_excludes_speech_realtime_and_embedding_ids():
+    from services.openai_client import usable_model_ids
+    ids = ["gpt-4o", "gpt-4o-mini-tts", "gpt-4o-transcribe", "gpt-realtime",
+           "gpt-4o-audio-preview", "text-embedding-3-small", "gpt-image-1", "o3"]
+    assert usable_model_ids(ids) == ["gpt-4o", "gpt-image-1", "o3"]

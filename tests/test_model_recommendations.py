@@ -35,3 +35,8 @@ def test_no_text_agent_recommends_an_image_only_model():
 
 def test_unavailable_model_falls_back_to_provider_catalog():
     assert resolve_available_model("retired-model", ["current-model"]) == "current-model"
+
+
+def test_speed_first_is_not_routed_like_balanced():
+    from services.model_recommendations import RATING_MARGIN
+    assert "speed" not in RATING_MARGIN

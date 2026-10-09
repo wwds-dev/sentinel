@@ -415,7 +415,10 @@ def blended_price(profile: ModelProfile, prices: PriceLookup | None = None) -> f
 # when two models meet head to head. An unrated model is not considered when
 # rated ones exist, because nothing shows it is good enough. Privacy first
 # keeps the old score, which is what prefers the local models.
-RATING_MARGIN = {"balanced": 20, "cost": 50, "speed": 20, "quality": 0}
+# "speed" is deliberately absent: there is no latency rating, so Speed first
+# uses the score-based route (which weighs model speed) instead of behaving
+# like Balanced.
+RATING_MARGIN = {"balanced": 20, "cost": 50, "quality": 0}
 SIMPLE_TASK_MARGIN = 50           # "a quick answer": lean harder on price
 
 RatingLookup = Callable[[str, str, str], object]

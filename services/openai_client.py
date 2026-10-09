@@ -12,11 +12,24 @@ from services.runtime_paths import user_data_base
 # dall-e-3 left OpenAI's model list in Sep 2026; the gpt-image models replace it.
 DEFAULT_IMAGE_MODEL = "gpt-image-1.5"
 IMAGE_MODEL_PREFIXES = ("gpt-image", "chatgpt-image", "dall-e")
+# Ids that match "gpt" but are not chat or image models (speech, realtime,
+# embeddings, moderation). They fail when sent as a chat request.
+NON_CHAT_MARKERS = ("tts", "transcribe", "realtime", "audio", "whisper",
+                    "embedding", "moderation", "instruct")
 
 
 def is_image_model(model: str) -> bool:
     """True for a model served by images.generate rather than chat."""
     return str(model).lower().startswith(IMAGE_MODEL_PREFIXES)
+
+
+def usable_model_ids(ids) -> list[str]:
+    """Chat and image model ids from a provider listing, sorted."""
+    return sorted(
+        i for i in ids
+        if any(x in i.lower() for x in ("gpt", "o1", "o3", "o4", "dall-e", "image"))
+        and not any(x in i.lower() for x in NON_CHAT_MARKERS)
+    )
 
 
 def image_output_dir() -> Path:
@@ -61,10 +74,7 @@ class OpenAIClientWrapper:
             return self.KNOWN_MODELS
         try:
             result = self.client.models.list()
-            models = sorted(
-                m.id for m in result.data
-                if any(x in m.id.lower() for x in ("gpt", "o1", "o3", "o4", "dall-e", "image"))
-            )
+            models = usable_model_ids(m.id for m in result.data)
             return models if models else self.KNOWN_MODELS
         except Exception:
             return self.KNOWN_MODELS
