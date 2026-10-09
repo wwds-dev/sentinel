@@ -90,3 +90,20 @@ def test_killswitch_goes_through_the_shared_runner(monkeypatch):
     monkeypatch.setattr(privileged, "run_as_root", fake)
     assert killswitch._run_privileged("pfctl -d", "Disarm") == (True, "ok")
     assert seen["allow"] is False and seen["script"] == "pfctl -d"
+
+
+def test_the_dialog_path_gives_the_person_time_to_type_the_password(monkeypatch):
+    seen = {}
+
+    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT):
+        seen["timeout"] = timeout
+        return True, "ok"
+    monkeypatch.setattr(privileged, "run", fake_run)
+    privileged.run_with_dialog("true", "Test", 30)
+    assert seen["timeout"] == 30 + privileged.PASSWORD_ENTRY_SECONDS
+
+
+def test_a_dialog_timeout_does_not_claim_nothing_happened(monkeypatch):
+    monkeypatch.setattr(privileged, "run", lambda command, timeout=0: (False, "Timed out."))
+    ok, message = privileged.run_with_dialog("wg-quick up wg0", "Test", 30)
+    assert ok is False and "may still have happened" in message

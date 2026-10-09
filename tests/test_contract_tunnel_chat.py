@@ -848,11 +848,6 @@ class TestKillSwitch:
         assert pf.ks.status().armed is False
         assert vpn_execution._killswitch_armed() is False
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: agents/vpn_agent/services/killswitch.py:381-392 disarm() deletes the "
-        "killswitch.armed marker before checking whether pfctl succeeded, so a cancelled "
-        "authorisation leaves the pf anchor loaded (traffic still blocked) while status() "
-        "and Tunnel report 'Disarmed'."))
     def test_a_failed_disarm_must_not_forget_that_the_switch_is_still_armed(
             self, tunnel, pf, dialogs):
         pick(tunnel, VPS)

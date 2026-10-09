@@ -383,12 +383,15 @@ def disarm() -> tuple[bool, str]:
     ok, output = _run_privileged(
         f"pfctl -a {ANCHOR} -F rules", "Disarm the VPN Agent kill switch"
     )
+    if not ok:
+        # The anchor may still be loaded (a cancelled authorisation, a pfctl
+        # error), so the marker stays: status() must keep saying "armed" until
+        # the rules are really gone, never report a block that is still live.
+        return False, f"Failed to disarm: {output}\n\nRun manually:\n  {recovery_command()}"
+
     marker = paths.state_dir() / "killswitch.armed"
     if marker.exists():
         marker.unlink()
-
-    if not ok:
-        return False, f"Failed to disarm: {output}\n\nRun manually:\n  {recovery_command()}"
     return True, "Kill switch disarmed — traffic routes normally again."
 
 

@@ -17,6 +17,10 @@ import os
 import subprocess
 
 DEFAULT_TIMEOUT = 30
+# The dialog path waits for a person to read the prompt and type a password
+# before the command even starts; the command's own timeout must not be spent
+# on that, or a slow typist sees "Timed out." for a change they approved.
+PASSWORD_ENTRY_SECONDS = 90
 
 
 def run(command: list[str], timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
@@ -61,14 +65,21 @@ def _sudo_refused(output: str) -> bool:
 def run_with_dialog(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
     """Run a shell snippet as root through the macOS authorisation dialog only."""
     escaped = script.replace("\\", "\\\\").replace('"', '\\"')
-    return run(
+    ok, output = run(
         [
             "osascript", "-e",
             f'do shell script "{escaped}" with prompt "{prompt}" '
             "with administrator privileges",
         ],
-        timeout,
+        timeout + PASSWORD_ENTRY_SECONDS,
     )
+    if not ok and output == "Timed out.":
+        # Once the password is accepted the command runs as root on its own;
+        # stopping osascript does not undo it. Say so, so nobody reads this as
+        # "nothing happened" — callers re-check local state afterwards.
+        output = ("Timed out waiting for the administrator dialog or the command. "
+                  "If you had already approved it, the change may still have happened.")
+    return ok, output
 
 
 def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,
