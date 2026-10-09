@@ -4059,9 +4059,29 @@ class GodAI(QWidget):
     def handle_chat_usage(self, usage):
         self.pending_usage = usage
 
+    def _detach_chat_worker(self, worker) -> None:
+        """Stop listening to a worker that is no longer the current request.
+
+        A cancelled worker can still deliver a final answer or a usage report
+        a moment later; delivered into the window, that would be rendered and
+        billed against a run that was already closed as cancelled.
+        """
+        for signal, handler in (
+            (worker.status_signal, self.handle_chat_status),
+            (worker.token_signal, self.handle_chat_token),
+            (worker.finished_signal, self.handle_chat_finished),
+            (worker.usage_signal, self.handle_chat_usage),
+            (worker.error_signal, self.handle_chat_error),
+        ):
+            try:
+                signal.disconnect(handler)
+            except (RuntimeError, TypeError):
+                pass
+
     def stop_chat_worker(self):
         if self.chat_worker is not None and self.chat_worker.isRunning():
             self.chat_worker.cancel()
+            self._detach_chat_worker(self.chat_worker)
             self.chat_worker.terminate()
             self.chat_worker.wait(2000)
             if (self.current_messages
@@ -4945,8 +4965,17 @@ class GodAI(QWidget):
         try:
             if self.chat_worker is not None and self.chat_worker.isRunning():
                 self.chat_worker.cancel()
+                self._detach_chat_worker(self.chat_worker)
                 self.chat_worker.terminate()
                 self.chat_worker.wait(1000)
+            # The run log must not keep a request "running" after the app is
+            # gone: close it as cancelled, as the Stop button would.
+            run_id = getattr(self, "active_run_id", None)
+            if run_id:
+                try:
+                    self.run_logger.cancel(run_id)
+                finally:
+                    self.active_run_id = None
             # The model scan and a model pull are QThreads of ours too; a quit
             # while one ran destroyed a live thread (and could crash on exit).
             for name in ("model_scan_worker", "model_pull_worker"):
