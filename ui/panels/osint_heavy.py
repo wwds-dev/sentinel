@@ -113,6 +113,7 @@ def exif_for_prompt(path: str) -> str:
 
 
 class OsintHeavyPanel(AgentPanel):
+    _stopped_request = False
     """Investigate one target in depth and produce a dossier."""
 
     agent_key = "osint_heavy"
@@ -512,6 +513,7 @@ class OsintHeavyPanel(AgentPanel):
 
     # ── Running ─────────────────────────────────────────────────────────
     def investigate(self) -> None:
+        self._stopped_request = False
         target = self.target_input.text().strip()
         target_type = self.type_box.currentText()
         scope = self.scope_box.currentText()
@@ -574,7 +576,7 @@ class OsintHeavyPanel(AgentPanel):
         worker.finished_signal.connect(
             lambda results: self._on_collection_finished(worker, brief, results))
         worker.error_signal.connect(
-            lambda error: self._on_collection_finished(worker, brief, []))
+            lambda error: self._on_collection_failed(worker, brief))
         self.worker = worker
         worker.start()
 
@@ -590,6 +592,14 @@ class OsintHeavyPanel(AgentPanel):
             + "\n\nNo AI provider is involved in this step. Continue?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         return answer == QMessageBox.Yes
+
+    def _on_collection_failed(self, worker, brief: tuple) -> None:
+        # A crashed sweep contacted nothing this time; never show the last
+        # run's count as "actually contacted".
+        agent = self.agent()
+        if hasattr(agent, "last_source_count"):
+            agent.last_source_count = 0
+        self._on_collection_finished(worker, brief, [])
 
     def _on_collection_progress(self, message: str) -> None:
         if self._collecting:
@@ -645,6 +655,15 @@ class OsintHeavyPanel(AgentPanel):
         self.save_btn.setEnabled(True)
 
     def _on_error(self, error: str) -> None:
+        if error == "Request cancelled by user.":
+            # The worker reports a cancel as an error. It is a stop, not a
+            # failure: keep "Stopped." and the partial text; nothing is billed.
+            if not self._stopped_request:
+                self._stopped_request = True
+                self.abandon("cancelled")
+                self.status_label.setText("Stopped.")
+                self.set_busy(self.investigate_btn, self.stop_btn, False)
+            return
         self.abandon()
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
@@ -662,7 +681,12 @@ class OsintHeavyPanel(AgentPanel):
         return self._file_search_running() or super().is_running()
 
     def stop(self) -> None:
-        self.stop_worker()
+        running = self.stop_worker()
+        if running and not self._collecting and self._request_id is not None:
+            # A model request in flight: close it as cancelled so it is not
+            # billed (the worker's own cancel error is then ignored).
+            self._stopped_request = True
+            self.abandon("cancelled")
         if self._collecting:
             # Authorised but never sent: close the request so it is not billed.
             self._collecting = False

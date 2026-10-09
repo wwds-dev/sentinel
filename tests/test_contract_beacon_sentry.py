@@ -385,10 +385,6 @@ class TestBeaconAiAnalysisOptIn:
         assert beacon.sections.isHidden() is False          # raw scan still visible
         assert "agrCtlRSSI: -50" in beacon.sections._raw
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: ui/panels/wifi.py:_scan_finished sets 'Running AI analysis…' AFTER "
-        "_start_ai_pass returns, even when authorize() refused it, so the status "
-        "claims an analysis that never started"))
     def test_denied_consent_does_not_claim_an_analysis_is_running(self, beacon):
         beacon.host.authorized = False
         worker = _scan(beacon, ai=True)
@@ -509,9 +505,6 @@ class TestBeaconStop:
         assert beacon.status_label.text() == "Stopped."
         assert beacon.run_btn.isEnabled() is True and beacon.stop_btn.isEnabled() is False
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: ui/panels/wifi.py:_scan_finished has no stopped/cancelled guard; a scan "
-        "result already queued when Stop was pressed still authorizes and starts a paid AI request"))
     def test_a_scan_result_that_arrives_after_stop_does_not_start_a_paid_request(self, beacon):
         """A result already queued when Stop was pressed must not be sent to a model."""
         worker = _scan(beacon, ai=True)
@@ -969,10 +962,6 @@ class TestSentryAiAnalysisOptIn:
         assert "192.168.10.200" in sentry.findings_box.toPlainText()
         assert sentry.run_btn.isEnabled() is True and sentry.stop_btn.isEnabled() is False
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: ui/panels/sentry.py:_pass_finished sets 'Interpreting findings…' AFTER "
-        "_start_ai_pass returns, even when authorize() refused it, so the status "
-        "claims an interpretation that never started"))
     def test_denied_consent_does_not_claim_findings_are_being_interpreted(self, sentry, world):
         self._with_findings(sentry, world)
         sentry.host.authorized = False
@@ -1099,9 +1088,6 @@ class TestSentryStop:
         assert sentry.status_label.text() == "Stopped."
         assert sentry.run_btn.isEnabled() is True and sentry.stop_btn.isEnabled() is False
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: ui/panels/sentry.py:_pass_finished has no stopped/cancelled guard; a watch "
-        "result already queued when Stop was pressed still authorizes and starts a paid AI request"))
     def test_a_result_that_arrives_after_stop_does_not_start_a_paid_request(self, sentry):
         sentry.ai_checkbox.setChecked(True)
         sentry.stop()

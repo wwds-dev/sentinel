@@ -405,6 +405,7 @@ class WifiPanel(AgentPanel):
         else:
             cmd = list(WIFI_SCAN_CMD)
 
+        self._stopped = False
         self.scan_worker = SubprocessWorker(cmd)
         self.scan_worker.finished_signal.connect(self._scan_finished)
         self.scan_worker.error_signal.connect(self._scan_error)
@@ -458,6 +459,8 @@ class WifiPanel(AgentPanel):
             return raw
 
     def _scan_finished(self, raw: str) -> None:
+        if getattr(self, "_stopped", False):
+            return            # Stop was pressed; a result already queued must not start a paid request
         raw = self._format_scan_output(raw)
         self._source_output = raw
         self._show_sections([("Raw wireless output", raw, True)], raw)
@@ -467,19 +470,19 @@ class WifiPanel(AgentPanel):
         if self.ai_checkbox.isChecked() and self.model:
             mode = self.mode_box.currentText()
             prompt = f"Mode: {mode}\n\nRaw output:\n{raw}\n\nAnalyse this Wi-Fi scan result."
-            self._start_ai_pass(prompt)
-            self.status_label.setText("Running AI analysis…")
+            if self._start_ai_pass(prompt):
+                self.status_label.setText("Running AI analysis…")
         else:
             self._last_response = raw
             self.set_busy(self.run_btn, self.stop_btn, False)
             self.save_btn.setEnabled(True)
 
-    def _start_ai_pass(self, prompt: str) -> None:
+    def _start_ai_pass(self, prompt: str) -> bool:
         """The paid half. `run`/scan already put the panel in the running state."""
         messages = self.agent().build_messages(prompt)
         if not self.authorize(prompt):
             self.set_busy(self.run_btn, self.stop_btn, False)
-            return
+            return False
         self._last_response = ""
         self.sections.setVisible(False)
         self.stream_box.clear()
@@ -490,6 +493,7 @@ class WifiPanel(AgentPanel):
             on_finished=self._on_finished,
             on_error=self._on_error,
         )
+        return True
 
     def _scan_error(self, error: str) -> None:
         self.sections.setVisible(False)
@@ -531,6 +535,7 @@ class WifiPanel(AgentPanel):
         self.set_busy(self.run_btn, self.stop_btn, False)
 
     def stop(self) -> None:
+        self._stopped = True
         if self.scan_worker is not None and self.scan_worker.isRunning():
             self.scan_worker.cancel()
         self.stop_worker()

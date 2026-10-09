@@ -544,6 +544,9 @@ class OsintHeavyAgent:
         than the model's self-declared estimate. The panel runs this on a
         worker thread; ``should_stop`` lets its Stop button end a long sweep.
         """
+        # A sweep that raises must not leave the previous run's numbers behind.
+        self.last_live_results = []
+        self.last_source_count = 0
         results = _run_providers(target, target_type, scope,
                                  on_progress=on_progress, should_stop=should_stop)
         self.last_live_results = results

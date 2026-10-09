@@ -174,12 +174,15 @@ class SentryPanel(AgentPanel):
         self.status_label.setText(
             "Observing the network…" if persist else "Dry run — observing…"
         )
+        self._stopped = False
         self.watch_worker = SentryWatchWorker(persist=persist)
         self.watch_worker.finished_signal.connect(self._pass_finished)
         self.watch_worker.error_signal.connect(self._pass_error)
         self.watch_worker.start()
 
     def _pass_finished(self, summary: dict) -> None:
+        if getattr(self, "_stopped", False):
+            return            # Stop was pressed; a late result must not start a paid request
         self._last_summary = summary
         self._render_findings(summary)
         self.refresh_watch_status()
@@ -206,8 +209,8 @@ class SentryPanel(AgentPanel):
             return
 
         if self.ai_checkbox.isChecked() and self.model:
-            self._start_ai_pass(self._prompt_from(summary))
-            self.status_label.setText("Interpreting findings…")
+            if self._start_ai_pass(self._prompt_from(summary)):
+                self.status_label.setText("Interpreting findings…")
         else:
             self.status_label.setText(f"{len(findings)} finding(s).")
             self.set_busy(self.run_btn, self.stop_btn, False)
@@ -296,11 +299,11 @@ class SentryPanel(AgentPanel):
         return "\n".join(lines)
 
     # ── AI read (shared request guard) ───────────────────────────────────
-    def _start_ai_pass(self, prompt: str) -> None:
+    def _start_ai_pass(self, prompt: str) -> bool:
         messages = self.agent().build_messages(prompt)
         if not self.authorize(prompt):
             self.set_busy(self.run_btn, self.stop_btn, False)
-            return
+            return False
         self._last_response = ""
         self.stream_box.clear()
         self.stream_box.setVisible(True)
@@ -310,6 +313,7 @@ class SentryPanel(AgentPanel):
             on_finished=self._on_finished,
             on_error=self._on_error,
         )
+        return True
 
     def _on_token(self, token: str) -> None:
         self._last_response += token
@@ -446,6 +450,7 @@ class SentryPanel(AgentPanel):
         return watching or super().is_running()
 
     def stop(self) -> None:
+        self._stopped = True
         if self.watch_worker is not None and self.watch_worker.isRunning():
             self.watch_worker.cancel()
         self.stop_worker()

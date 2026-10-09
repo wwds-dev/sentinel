@@ -394,7 +394,6 @@ class TestInvestigateContract:
         assert agent.calls[-1]["live"] == []
         assert len(FakeWorker.instances) == 1
 
-    @pytest.mark.xfail(strict=True, reason="BUG: ui/panels/osint_heavy.py:_on_collection_finished reads agent.last_source_count after a crashed collection; agents/osint_heavy_agent collect_live never resets it, so the Sources gauge shows the previous run's count as 'actually contacted'")
     def test_a_collection_that_crashed_does_not_report_the_previous_runs_source_count(self, qapp, monkeypatch, dialogs):
         import agents.osint_heavy_agent as heavy
         agent = heavy.OsintHeavyAgent()
@@ -1066,13 +1065,11 @@ class TestStopContract:
         assert hound._file_search_worker.cancelled is True
         assert hound.host.count("abandon") == 0
 
-    @pytest.mark.xfail(strict=True, reason="BUG: ui/panels/osint_heavy.py:stop() only abandons during collection; a model request cancelled mid-call is never abandoned (ChatWorker emits nothing on a cancelled non-streaming call)")
     def test_cancel_a_stopped_model_request_is_closed_with_the_guard(self, plain_hound):
         plain_hound.investigate()
         plain_hound.stop()
         assert [c for c in plain_hound.host.calls if c[0] == "abandon"] != []
 
-    @pytest.mark.xfail(strict=True, reason="BUG: ui/panels/osint_heavy.py:_on_error treats the cancelled-by-user error as a failure, replacing 'Stopped.' with 'Error.' and a [Error] banner")
     def test_cancel_the_workers_own_cancelled_error_does_not_overwrite_stopped(self, plain_hound):
         plain_hound.investigate()
         plain_hound.stop()

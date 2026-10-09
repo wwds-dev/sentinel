@@ -208,6 +208,23 @@ from ui.panels.wifi import WifiPanel
 from ui.panels.sentry import SentryPanel
 from ui.panels.osint import OsintPanel
 
+
+def _write_json_atomic(path, data) -> None:
+    """Write JSON so a failure part-way leaves the old file intact (temp file
+    in the same folder, then an atomic replace)."""
+    path = str(path)
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
 class ChatInput(QTextEdit):
     """Multiline composer with the familiar Enter/Shift+Enter contract."""
 
@@ -4350,8 +4367,7 @@ class GodAI(QWidget):
             data["project"] = project_id
         else:
             data.pop("project", None)
-        with open(filepath, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, ensure_ascii=False)
+        _write_json_atomic(filepath, data)
         self.load_history_list()
 
     def assign_selected_chat_to_project(self) -> None:
@@ -4548,8 +4564,7 @@ class GodAI(QWidget):
                 data["title"] = title
             else:
                 data.pop("title", None)
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2, ensure_ascii=False)
+            _write_json_atomic(path, data)
             self.load_saved_searches()
         except Exception as exc:
             self._note_failure("saved searches: rename", exc)
@@ -4619,8 +4634,7 @@ class GodAI(QWidget):
         else:
             data.pop("title", None)      # cleared — fall back to the first prompt
         try:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2, ensure_ascii=False)
+            _write_json_atomic(path, data)
         except Exception as exc:
             self._note_failure("saved chats: save new name", exc)
             return
@@ -4690,7 +4704,12 @@ class GodAI(QWidget):
             QMessageBox.warning(self, "Warning", "No output to export.")
             return
         title = self.agent_box.currentText() + "_report"
-        filepath = self.report_exporter.export_text_report(title, content)
+        try:
+            filepath = self.report_exporter.export_text_report(title, content)
+        except Exception as exc:
+            self._note_failure("export report", exc)
+            QMessageBox.warning(self, "Export Failed", f"The report could not be saved:\n{exc}")
+            return
         QMessageBox.information(self, "Export Complete", f"Report saved to:\n{filepath}")
 
     @staticmethod

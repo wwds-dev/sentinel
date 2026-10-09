@@ -1382,11 +1382,6 @@ class TestChatRename:
         win.rename_selected_chat(item)           # must not raise
         assert not path.exists()
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: main.py:4619-4621 (rename_selected_chat; same pattern in _assign_chat_to_project "
-        "main.py:4352 and rename_selected_search) opens the chat file with 'w' and then "
-        "json.dump()s into it. A write failure (disk full) after the truncate leaves an empty, "
-        "unreadable chat. HistoryStore.update_chat already writes tmp-then-replace; rename does not."))
     def test_error_a_failed_write_during_rename_must_not_destroy_the_saved_chat(
             self, win, env, monkeypatch):
         path = seed(env, "a", prompt="precious conversation")
@@ -1564,10 +1559,6 @@ class TestChatExport:
         assert len(both) == 2
         assert all(both[name] == data for name, data in first.items())
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: main.py:4687-4694 export_report() has no error handling around "
-        "report_exporter.export_text_report(); an unwritable or full reports folder raises "
-        "out of the slot, so the user gets no message and no report."))
     def test_error_an_unwritable_report_folder_must_be_reported_not_swallowed(
             self, win, env, monkeypatch):
         turn(win, "q", "a")
