@@ -336,13 +336,15 @@ def planned_sources(target: str, target_type: str, scope: str = "") -> list[str]
     except Exception:  # noqa: BLE001 - the dialog must still open
         pass
     if tt == "domain":
-        sources = ["WHOIS", "DNS", "Team Cymru IP-to-ASN", "Mnemonic passive DNS",
-                   "crt.sh", "Wayback Machine"]
+        # The same plan domain_lookup.lookup() runs, so an IP is never shown
+        # the domain list (crt.sh, Wayback) while DShield and Shodan go unnamed.
         try:
-            from providers.domain_lookup import keyed_labels
-            sources += list(keyed_labels(target))
-        except Exception:  # noqa: BLE001
-            pass
+            from providers.domain_lookup import planned_labels
+            sources = list(planned_labels(target))
+        except Exception:  # noqa: BLE001 - the dialog must still open
+            sources = ["WHOIS", "DNS", "Team Cymru IP-to-ASN", "SANS DShield",
+                       "Shodan InternetDB", "Mnemonic passive DNS",
+                       "Certificate transparency (crt.sh)", "Wayback Machine"]
         return sources + exposure
     if tt == "organisation":
         return ["GLEIF Legal Entity Index", "ICIJ Offshore Leaks", "OpenSanctions",

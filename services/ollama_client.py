@@ -236,6 +236,13 @@ class OllamaClient:
 
                     data = json.loads(line.decode("utf-8"))
 
+                    if data.get("error"):
+                        # Ollama reports a failure part-way through a stream
+                        # (runner crash, out of memory) as an error line with
+                        # HTTP 200; ending quietly would save a cut-off reply
+                        # as a successful turn.
+                        raise RuntimeError(f"Ollama stopped mid-reply: {data['error']}")
+
                     if "message" in data and "content" in data["message"]:
                         yield data["message"]["content"]
 

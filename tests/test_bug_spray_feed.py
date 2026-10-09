@@ -231,6 +231,10 @@ def test_parse_sections_still_accepts_heading_form():
     ("CVSS v3.1 score 3.1", "3.1"),
     ("no numbers here", None),
     ("CVSS v3.1 (score not assessed)", None),
+    ("CVSS 3.1: 7.5", "7.5"),
+    ("CVSS 3.1 Base Score: 8.1", "8.1"),
+    ("CVSS3.1 score of 7.5", "7.5"),
+    ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H 9.8", "9.8"),
 ])
 def test_extract_cvss_score_skips_the_version(text, expected):
     from ui.panels.bug_bounty import extract_cvss_score

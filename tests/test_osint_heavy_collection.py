@@ -194,7 +194,8 @@ def test_planned_sources_follow_the_dispatch_key(monkeypatch):
                 "DEHASHED_API_KEY", "SNUSBASE_API_KEY", "LEAKCHECK_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     domain = mod.planned_sources("acme.com", "Domain / IP")
-    assert {"WHOIS", "DNS", "crt.sh", "Wayback Machine", "ransomware.live"} <= set(domain)
+    assert {"WHOIS", "DNS", "Certificate transparency (crt.sh)", "Wayback Machine",
+            "ransomware.live"} <= set(domain)
     assert "Intelligence X" not in domain                  # keyless: self-skips
     assert mod.planned_sources("bob42", "Username", "Quick Scan") == ["URLScan", "GitHub", "Keybase"]
     assert "WhatsMyName" in " ".join(mod.planned_sources("bob42", "Username", "Deep Dive"))
@@ -214,3 +215,22 @@ def test_the_assembled_prompt_is_far_larger_than_the_target():
                                                 "", "", live_results=live)
     text = "\n".join(m["content"] for m in messages)
     assert len(text) > 50 * len("acme.com")
+
+
+# ── Final review: the consent list is the list that is contacted ────────────
+
+@pytest.mark.parametrize("target", ["8.8.8.8", "2001:4860:4860::8888", "example.com"])
+def test_bloodhound_consent_names_exactly_what_domain_lookup_contacts(target, monkeypatch):
+    from agents.osint_heavy_agent import planned_sources
+    from providers import domain_lookup
+
+    contacted = []
+    sources, _ = domain_lookup._plan(domain_lookup._normalize(target),
+                                     domain_lookup._is_ip(domain_lookup._normalize(target)))
+    for label, key, _fn in sources:
+        contacted.append(label)
+    named = planned_sources(target, "Domain / IP", "Standard Investigation")
+    assert named[:len(contacted)] == contacted
+    if domain_lookup._is_ip(target):
+        assert "SANS DShield" in named and "Shodan InternetDB" in named
+        assert not any("crt.sh" in n or "Wayback" in n for n in named)

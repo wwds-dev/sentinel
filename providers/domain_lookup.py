@@ -498,25 +498,10 @@ def keyed_labels(target: str) -> list[str]:
     return labels
 
 
-def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
-    """
-    Return a normalised OSINT dict for a domain or IP address.
-
-    Keys:
-      type, query, whois, dns, network, passive_dns, certificates, archive   (domain)
-      type, query, whois, dns, network, attack_reports, host_exposure,
-        ip_details, ip_reputation, passive_dns                               (IP)
-      sources_contacted, sources_skipped (keyed services with no key saved)
-    """
-    target = _normalize(domain)
-    is_ip = _is_ip(target)
-    result: dict = {
-        "type": "ip" if is_ip else "domain",
-        "query": target,
-        "sources_contacted": [],
-        "sources_skipped": [],
-    }
-
+def _plan(target: str, is_ip: bool) -> tuple[list, list[str]]:
+    """Every source a lookup of ``target`` contacts, in order, and the keyed
+    ones it skips. lookup() runs this list and the consent dialogs name it,
+    so what is asked for and what is contacted cannot drift apart."""
     sources = [
         ("WHOIS", "whois", _whois),
         ("DNS", "dns", _dns),
@@ -548,6 +533,37 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
                         lambda t, k=keyed: intel_sources.call(k, t)))
     skipped += [s.label for s in intel_sources.SOURCES
                 if kind in s.kinds and s not in keyed_now]
+
+    return sources, skipped
+
+
+def planned_labels(target: str) -> list[str]:
+    """Labels of every service lookup() would contact for ``target`` right now."""
+    normalized = _normalize(target)
+    sources, _ = _plan(normalized, _is_ip(normalized))
+    return [label for label, _, _ in sources]
+
+
+def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
+    """
+    Return a normalised OSINT dict for a domain or IP address.
+
+    Keys:
+      type, query, whois, dns, network, passive_dns, certificates, archive   (domain)
+      type, query, whois, dns, network, attack_reports, host_exposure,
+        ip_details, ip_reputation, passive_dns                               (IP)
+      sources_contacted, sources_skipped (keyed services with no key saved)
+    """
+    target = _normalize(domain)
+    is_ip = _is_ip(target)
+    result: dict = {
+        "type": "ip" if is_ip else "domain",
+        "query": target,
+        "sources_contacted": [],
+        "sources_skipped": [],
+    }
+
+    sources, skipped = _plan(target, is_ip)
 
     # Decided before any request: a keyed service with no key saved is never
     # contacted, and the run says so.

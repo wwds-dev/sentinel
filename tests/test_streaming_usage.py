@@ -112,3 +112,38 @@ def test_kimi_stream_requests_usage_and_yields_a_sentinel():
     assert sentinels == [{"__usage__": {
         "input_tokens": 50, "cached_input_tokens": 0,
         "output_tokens": 10, "total_tokens": 60}}]
+
+
+def test_an_ollama_error_line_mid_stream_raises_instead_of_ending_quietly(monkeypatch):
+    """Ollama reports a runner crash part-way through as an error line with
+    HTTP 200; a cut-off reply must not be saved as a successful turn."""
+    import json as _json
+
+    import pytest
+    from services import ollama_client
+
+    lines = [
+        _json.dumps({"message": {"content": "The answer is "}}).encode(),
+        _json.dumps({"error": "model runner has unexpectedly stopped"}).encode(),
+    ]
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self):
+            return iter(lines)
+
+    monkeypatch.setattr(ollama_client.requests, "post", lambda *a, **k: Response())
+    client = ollama_client.OllamaClient()
+    received = []
+    with pytest.raises(RuntimeError, match="stopped mid-reply"):
+        for chunk in client.stream_chat("llama3", [{"role": "user", "content": "q"}]):
+            received.append(chunk)
+    assert received == ["The answer is "]

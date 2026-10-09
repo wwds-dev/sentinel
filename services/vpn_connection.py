@@ -200,8 +200,8 @@ def tunnel_allow_rules(profile: dict) -> list[tuple[str, int]]:
     pf's anchor is default-deny, so without a pass rule for the tunnel's own
     transport the encrypted packets to the server are dropped on the physical
     interface and arming the switch kills the tunnel it is meant to protect.
-    WireGuard is always UDP. OpenVPN follows the config's `proto` line (UDP
-    when absent). The port comes from the profile, else the config file, else
+    WireGuard is always UDP. OpenVPN follows the proto on its ``remote`` line,
+    then its ``proto`` line (UDP when absent). The port comes from the profile, else the config file, else
     the protocol's registered default.
     """
     protocol = resolve_protocol(profile)
@@ -221,9 +221,7 @@ def tunnel_allow_rules(profile: dict) -> list[tuple[str, int]]:
             text = Path(config_path).read_text(encoding="utf-8", errors="replace")
         except OSError:
             text = ""
-        match = re.search(r"(?im)^\s*proto\s+(tcp|udp)", text)
-        if match:
-            proto = match.group(1).lower()
+        proto = parse_openvpn_remote(text)[2] or "udp"
     return [(proto, port)]
 
 
@@ -242,7 +240,17 @@ def arm_killswitch(profile: dict):
     if not endpoint:
         return False, ("This profile has no server endpoint, so the kill switch "
                        "could not exempt the tunnel. Import a real config first.")
-    return ks.arm([endpoint], allow=tunnel_allow_rules(profile))
+    allow = tunnel_allow_rules(profile)
+    if resolve_protocol(profile) == "OpenVPN" and openvpn_manager.is_running():
+        # pf only knows WireGuard's utun by itself. An OpenVPN tunnel that is up
+        # must be passed by its own device, or arming drops everything inside it.
+        device = openvpn_manager.tunnel_device()
+        if not device:
+            return False, ("OpenVPN is running but its tunnel device could not be read "
+                           "from its log, so arming now would block traffic inside the "
+                           "tunnel. Reconnect, then arm again.")
+        return ks.arm([endpoint], allow=allow, extra_interfaces=[device])
+    return ks.arm([endpoint], allow=allow)
 
 
 def killswitch_recovery_command() -> str:
@@ -287,6 +295,44 @@ def load_connectable_profiles(include_examples: bool = True) -> list[dict]:
     return profiles
 
 
+def _openvpn_proto(value: str | None) -> str | None:
+    """Normalise OpenVPN's proto spellings (tcp-client, tcp4, udp6…) to tcp/udp."""
+    if not value:
+        return None
+    value = value.lower()
+    if value.startswith("tcp"):
+        return "tcp"
+    if value.startswith("udp"):
+        return "udp"
+    return None
+
+
+def parse_openvpn_remote(text: str) -> tuple[str | None, int | None, str | None]:
+    """The first ``remote`` of an OpenVPN config as (host, port, proto).
+
+    OpenVPN's own precedence: ``remote host [port] [proto]`` wins; a remote
+    without a port takes ``rport``/``port``, then 1194 (left to the caller);
+    a remote without a proto takes the ``proto`` line, then UDP (left to the
+    caller). Only the first remote is read — a config with failover remotes
+    reaches the others only while the kill switch is disarmed.
+    """
+    remote = re.search(r"(?im)^[ \t]*remote[ \t]+(\S+)(?:[ \t]+(\d+))?(?:[ \t]+(\S+))?", text)
+    if not remote:
+        return None, None, None
+    host = remote.group(1)
+    port = int(remote.group(2)) if remote.group(2) else None
+    proto = _openvpn_proto(remote.group(3))
+    if port is None:
+        default_port = (re.search(r"(?im)^[ \t]*rport[ \t]+(\d+)", text)
+                        or re.search(r"(?im)^[ \t]*port[ \t]+(\d+)", text))
+        if default_port:
+            port = int(default_port.group(1))
+    if proto is None:
+        line = re.search(r"(?im)^[ \t]*proto[ \t]+(\S+)", text)
+        proto = _openvpn_proto(line.group(1)) if line else None
+    return host, port, proto
+
+
 def extract_endpoint(config_path: str, protocol: str) -> tuple[str | None, int | None]:
     """Read the server host/port from a WireGuard `.conf` or OpenVPN `.ovpn`.
 
@@ -299,10 +345,8 @@ def extract_endpoint(config_path: str, protocol: str) -> tuple[str | None, int |
     except OSError:
         return None, None
     if protocol == "OpenVPN":
-        match = re.search(r"(?im)^\s*remote\s+(\S+)(?:\s+(\d+))?", text)
-        if match:
-            return match.group(1), int(match.group(2)) if match.group(2) else None
-        return None, None
+        host, port, _ = parse_openvpn_remote(text)
+        return host, port
     # WireGuard: Endpoint = host:port  (also handle [IPv6]:port)
     match = re.search(r"(?im)^\s*Endpoint\s*=\s*(.+?)\s*$", text)
     if not match:

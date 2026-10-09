@@ -35,6 +35,8 @@ SEVERITY_COLOURS = {
 
 
 _CVSS_VERSION = re.compile(r"(?i)\bv(?:ersion)?\s*\d\.\d\b")
+# A bare version straight after the word: "CVSS 3.1: 7.5", "CVSS3.1 score of 7.5".
+_CVSS_LEADING_VERSION = re.compile(r"(?i)^\s*(?:v(?:ersion)?\s*)?[2-4]\.[01](?![\d.])")
 _CVSS_VECTOR = re.compile(r"(?i)CVSS:\s*\d\.\d/[A-Z]{1,3}:[A-Z0-9:/.]+")
 _CVSS_SCORE = re.compile(r"(?<![\d.])(10(?:\.0)?|\d(?:\.\d)?)(?![\d.])")
 
@@ -50,7 +52,10 @@ def extract_cvss_score(text: str) -> str | None:
     match = re.search(r"CVSS(.{0,160})", text, re.IGNORECASE | re.DOTALL)
     if not match:
         return None
-    tail = _CVSS_VECTOR.sub(" ", "CVSS" + match.group(1))[4:]
+    tail = _CVSS_VECTOR.sub(" ", "CVSS" + match.group(1))
+    # The vector, when present, took the leading "CVSS" with it.
+    tail = tail[4:] if tail[:4].upper() == "CVSS" else tail
+    tail = _CVSS_LEADING_VERSION.sub(" ", tail, count=1)
     tail = _CVSS_VERSION.sub(" ", tail)
     score = _CVSS_SCORE.search(tail)
     if not score:

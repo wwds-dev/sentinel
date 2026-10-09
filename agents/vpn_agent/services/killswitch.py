@@ -30,6 +30,8 @@ this module reports state — see recovery_command().
 
 from __future__ import annotations
 
+import re
+
 import ipaddress
 import os
 import shutil
@@ -316,9 +318,13 @@ def arm(
     allow: list[tuple[str, int]],
     *,
     allow_lan: bool = True,
+    extra_interfaces: list[str] | None = None,
 ) -> tuple[bool, str]:
     """
     Block everything that is not the tunnel.
+
+    ``extra_interfaces`` names tunnel devices that are not WireGuard's (an
+    OpenVPN utun); each must look like ``utunN``/``tunN``.
 
     Resolves endpoints, writes the anchor, registers it in /etc/pf.conf if
     needed, and loads it. Returns (ok, message); the message always carries the
@@ -335,6 +341,11 @@ def arm(
         )
 
     interfaces = active_tunnel_interfaces()
+    for device in extra_interfaces or []:
+        if not re.fullmatch(r"(?:utun|tun)\d{1,4}", str(device)):
+            return False, f"Refusing to arm — {device!r} is not a tunnel device name."
+        if device not in interfaces:
+            interfaces.append(device)
     rules = build_rules(addresses, allow, interfaces=interfaces, allow_lan=allow_lan)
     path = write_rules(rules)
 
@@ -353,6 +364,15 @@ def arm(
     ok, output = _run_privileged(script, "Arm the VPN Agent kill switch")
 
     if not ok:
+        if "may still have happened" in output:
+            # Approved, then timed out: pf may hold the rules now. Recording it
+            # as armed keeps Disarm offered; disarming rules that never loaded
+            # is harmless, while showing "Disarmed" over a live block is not.
+            (paths.state_dir() / "killswitch.armed").write_text("armed\n", encoding="utf-8")
+            return False, (
+                f"{output}\nTreating the kill switch as armed so Disarm stays available. "
+                f"If the network is now broken, press Disarm or run:\n  {recovery_command()}"
+            )
         return False, (
             f"Failed to arm: {output}\n\nIf the network is now broken, run:\n  {recovery_command()}"
         )
@@ -365,7 +385,7 @@ def arm(
         warning = f"\nWarning: could not resolve {', '.join(unresolved)} — those endpoints are not exempt."
     if not interfaces:
         warning += (
-            "\nWarning: no WireGuard tunnel detected, so nothing is exempt and "
+            "\nWarning: no tunnel device detected, so nothing is exempt and "
             "traffic is blocked now. Connect a tunnel, then re-arm."
         )
 

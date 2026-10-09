@@ -1812,3 +1812,31 @@ class TestChatTools:
             assert "Rewrite" not in tool_names(restarted)
             assert "Rewrite" not in restarted.tool_prompts
         assert "Rewrite" in tool_names(make_window())
+
+
+# ── Review findings (final pre-merge review) ────────────────────────────────
+
+class TestChatReviewRegressions:
+
+    def test_opening_another_saved_chat_mid_reply_never_overwrites_it(self, win, env):
+        b = seed(env, "2020-01-01_00-00-00-000000_b", prompt="precious B")
+        win.load_history_list()
+        worker = send(win, "question A")
+        run_id = win.active_run_id
+        win.open_selected_chat(item_for(win, "precious B"))
+        worker.stream("answer A")
+        worker.finish("answer A", usage={"input_tokens": 1, "output_tokens": 1})
+        contents = [m["content"] for m in load(b)["messages"]]
+        assert "precious B" in contents and "question A" not in contents
+        assert worker.cancelled is True
+        assert run_id is None or win.active_run_id is None
+
+    def test_a_signal_queued_before_stop_is_ignored_after_it(self, win, env, monkeypatch):
+        worker = send(win, "q")
+        before = usage_count()
+        win.stop_chat_worker()
+        monkeypatch.setattr(win, "sender", lambda: worker)
+        win.handle_chat_usage({"input_tokens": 50, "output_tokens": 50})
+        win.handle_chat_finished("a reply that was already queued")
+        assert usage_count() == before
+        assert "already queued" not in win.output_box.toPlainText()

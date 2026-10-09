@@ -221,3 +221,110 @@ def test_a_failed_arm_reports_the_recovery_command(real_ks, monkeypatch):
     ok, message = real_ks.arm(["203.0.113.7"], allow=[("udp", 51820)])
     assert ok is False and "denied" in message
     assert real_ks.recovery_command() in message
+
+
+# ── Final review: OpenVPN tunnels and OpenVPN config spellings ──────────────
+
+class _FakeKSWithDevices(_FakeKS):
+    def arm(self, endpoints, allow, extra_interfaces=None):
+        self.arm_calls.append((list(endpoints), list(allow), list(extra_interfaces or [])))
+        return True, "Kill switch ARMED"
+
+
+def test_arming_with_openvpn_up_passes_its_tunnel_device(monkeypatch):
+    fake = _FakeKSWithDevices()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    monkeypatch.setattr(vpn_connection.openvpn_manager, "is_running", lambda: True)
+    monkeypatch.setattr(vpn_connection.openvpn_manager, "tunnel_device", lambda: "utun6")
+    ok, _ = vpn_connection.arm_killswitch(
+        {"name": "Srv", "protocol": "OpenVPN", "endpoint": "203.0.113.9", "port": 443})
+    assert ok is True
+    assert fake.arm_calls == [(["203.0.113.9"], [("udp", 443)], ["utun6"])]
+
+
+def test_arming_refuses_when_openvpn_is_up_but_its_device_is_unknown(monkeypatch):
+    fake = _FakeKSWithDevices()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    monkeypatch.setattr(vpn_connection.openvpn_manager, "is_running", lambda: True)
+    monkeypatch.setattr(vpn_connection.openvpn_manager, "tunnel_device", lambda: None)
+    ok, message = vpn_connection.arm_killswitch(
+        {"name": "Srv", "protocol": "OpenVPN", "endpoint": "203.0.113.9"})
+    assert ok is False and "tunnel device" in message
+    assert fake.arm_calls == []
+
+
+@pytest.mark.parametrize("log, expected", [
+    ("... Opened utun device utun4\n", "utun4"),
+    ("TUN/TAP device tun0 opened\n", "tun0"),
+    ("Opened utun device utun3\n...restart...\nOpened utun device utun7\n", "utun7"),
+    ("nothing useful\n", None),
+    ("Opened utun device utun4; pass quick all\n", "utun4"),
+])
+def test_the_openvpn_device_is_read_from_its_log(tmp_path, monkeypatch, log, expected):
+    from services import openvpn_manager
+    path = tmp_path / "openvpn.log"
+    path.write_text(log)
+    monkeypatch.setattr(openvpn_manager, "log_file", lambda: path)
+    monkeypatch.setattr(openvpn_manager, "is_running", lambda: True)
+    assert openvpn_manager.tunnel_device() == expected
+
+
+@pytest.mark.parametrize("device", ["en0", "utun4 all", "lo0", "utun", "../x"])
+def test_the_pf_service_refuses_a_device_that_is_not_a_tunnel(real_ks, device):
+    ok, message = real_ks.arm(["203.0.113.7"], allow=[("udp", 1194)],
+                              extra_interfaces=[device])
+    assert ok is False and real_ks.privileged_calls == []
+
+
+def test_the_pf_rules_pass_the_openvpn_device(real_ks, monkeypatch):
+    seen = {}
+    real_build = real_ks.build_rules
+    monkeypatch.setattr(real_ks, "build_rules",
+                        lambda *a, **k: seen.setdefault("rules", real_build(*a, **k)))
+    monkeypatch.setattr(real_ks, "active_tunnel_interfaces", lambda: [])
+    monkeypatch.setattr(real_ks, "validate", lambda path: (True, ""))
+    monkeypatch.setattr(real_ks, "write_rules", lambda rules: "/tmp/never-used")
+    monkeypatch.setattr(real_ks.paths, "state_dir", lambda: __import__("pathlib").Path("/tmp"))
+    ok, _ = real_ks.arm(["203.0.113.7"], allow=[("tcp", 443)], extra_interfaces=["utun6"])
+    assert ok is True
+    assert "pass quick on utun6 all" in seen["rules"]
+    assert "pass out quick inet proto tcp from any to 203.0.113.7 port 443" in seen["rules"]
+
+
+@pytest.mark.parametrize("config, expected", [
+    ("client\nremote vpn.example.com 443 tcp\n", [("tcp", 443)]),
+    ("client\nproto tcp\nport 443\nremote vpn.example.com\n", [("tcp", 443)]),
+    ("client\nproto udp\nrport 8443\nremote vpn.example.com\n", [("udp", 8443)]),
+    ("client\nproto tcp-client\nremote vpn.example.com 993\n", [("tcp", 993)]),
+    ("client\nremote vpn.example.com 1195 udp6\nproto tcp\n", [("udp", 1195)]),
+    ("client\n# remote old.example.com 1 tcp\nremote vpn.example.com\n", [("udp", 1194)]),
+])
+def test_openvpn_transport_follows_openvpn_precedence(tmp_path, monkeypatch, config, expected):
+    ovpn = tmp_path / "srv.ovpn"
+    ovpn.write_text(config)
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    monkeypatch.setattr(vpn_connection.openvpn_manager, "is_running", lambda: False)
+    profile = vpn_connection.profile_from_config(str(ovpn))
+    ok, _ = vpn_connection.arm_killswitch(profile)
+    assert ok is True
+    assert fake.arm_calls[-1][1] == expected
+
+
+def test_an_approved_arm_that_times_out_is_treated_as_armed(real_ks, monkeypatch, tmp_path):
+    monkeypatch.setattr(real_ks, "validate", lambda path: (True, ""))
+    monkeypatch.setattr(real_ks.paths, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(real_ks, "_run_privileged", lambda s, w: (
+        False, "Timed out waiting for the administrator dialog or the command. "
+               "If you had already approved it, the change may still have happened."))
+    ok, message = real_ks.arm(["203.0.113.7"], allow=[("udp", 51820)])
+    assert ok is False and "Disarm" in message
+    assert (tmp_path / "killswitch.armed").exists()
+
+
+def test_a_declined_arm_is_not_recorded_as_armed(real_ks, monkeypatch, tmp_path):
+    monkeypatch.setattr(real_ks, "validate", lambda path: (True, ""))
+    monkeypatch.setattr(real_ks.paths, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(real_ks, "_run_privileged", lambda s, w: (False, "Cancelled."))
+    ok, _ = real_ks.arm(["203.0.113.7"], allow=[("udp", 51820)])
+    assert ok is False and not (tmp_path / "killswitch.armed").exists()

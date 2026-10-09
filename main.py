@@ -3976,15 +3976,21 @@ class GodAI(QWidget):
         self.chat_progress.hide()
 
     def handle_chat_status(self, text):
+        if self._from_detached_chat_worker():
+            return
         self.chat_status_label.setText(text)
 
     def handle_chat_token(self, text):
+        if self._from_detached_chat_worker():
+            return
         if not self.current_messages or self.current_messages[-1].get("role") != "assistant":
             self.current_messages.append(self._timestamped_message("assistant", ""))
         self.current_messages[-1]["content"] += text
         self._render_chat_conversation()
 
     def handle_chat_finished(self, response):
+        if self._from_detached_chat_worker():
+            return
         self.stop_chat_timer()
         self.send_btn.show()
         self.send_btn.setEnabled(True)
@@ -4054,6 +4060,8 @@ class GodAI(QWidget):
         self.route_result_label.setText(f"Router: {self.pending_agent} · {self.pending_backend} · {self.pending_model}")
 
     def handle_chat_error(self, error):
+        if self._from_detached_chat_worker():
+            return
         self.stop_chat_timer()
         if (self.current_messages
                 and self.current_messages[-1].get("role") == "assistant"
@@ -4074,7 +4082,17 @@ class GodAI(QWidget):
             self.active_run_id = None
         
     def handle_chat_usage(self, usage):
+        if self._from_detached_chat_worker():
+            return
         self.pending_usage = usage
+
+    def _from_detached_chat_worker(self) -> bool:
+        """True when the signal being handled came from a worker that was
+        already stopped. Disconnecting does not drop events Qt had queued
+        before Stop, so a reply finishing just before Stop could otherwise
+        still be rendered, saved and billed against a cancelled run."""
+        sender = self.sender()
+        return sender is not None and getattr(sender, "_sentinel_detached", False)
 
     def _detach_chat_worker(self, worker) -> None:
         """Stop listening to a worker that is no longer the current request.
@@ -4083,6 +4101,10 @@ class GodAI(QWidget):
         a moment later; delivered into the window, that would be rendered and
         billed against a run that was already closed as cancelled.
         """
+        try:
+            worker._sentinel_detached = True
+        except (AttributeError, RuntimeError):
+            pass
         for signal, handler in (
             (worker.status_signal, self.handle_chat_status),
             (worker.token_signal, self.handle_chat_token),
@@ -4642,6 +4664,11 @@ class GodAI(QWidget):
 
     def open_selected_chat(self, item):
         filepath = item.data(Qt.UserRole) or item.text()
+        # A reply still streaming belongs to the conversation on screen. Left
+        # running, it would finish into whichever chat is open by then and be
+        # saved over that file, so it is stopped (and its run cancelled) first.
+        if getattr(self, "chat_worker", None) is not None and self.chat_worker.isRunning():
+            self.stop_chat_worker()
         try:
             data = self.history.load_chat(filepath)
             self.show_output_area()
