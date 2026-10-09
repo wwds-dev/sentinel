@@ -3737,6 +3737,48 @@ class TestSentryPanel:
         assert sentry_panel.isHidden() is True
         assert sentry_panel.stop_btn.isEnabled() is False
 
+    def test_recorded_findings_are_shown_when_the_panel_opens(self, qapp, monkeypatch, tmp_path):
+        """The background watch writes to the findings log while the app is
+        closed; the panel must show that, not open empty."""
+        import ui.panels.sentry as sentry_module
+        from agents.sentry.sentry import baseline as baseline_module
+        from agents.sentry.sentry.baseline import BaselineStore
+        from agents.sentry.sentry.models import Finding
+        from ui.panels.sentry import SentryPanel
+        monkeypatch.setattr(baseline_module, "default_state_dir", lambda: tmp_path)
+        monkeypatch.setattr(sentry_module, "SentryWatchWorker", FakeSentryWatchWorker)
+        monkeypatch.setattr(sentry_module.watchd, "status",
+                            lambda: {"installed": True, "loaded": True, "interval": 300, "log": ""})
+        BaselineStore().append_findings([Finding(
+            severity="warning", kind="new_listener", title="New listener 0.0.0.0:5900",
+            detail="vnc", evidence={})])
+        panel = SentryPanel(FakeHost())
+        text = panel.findings_box.toPlainText()
+        assert "Recorded by earlier watch passes" in text
+        assert "New listener 0.0.0.0:5900" in text
+
+    def test_a_dry_run_without_a_baseline_says_nothing_was_saved(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False, "no_baseline": True, "findings": [],
+            "device_count": 2, "listener_count": 1, "connection_count": 0,
+            "dry_run": True, "collector_errors": [],
+        }
+        sentry_panel.run_pass(persist=False)
+        assert "nothing was saved" in sentry_panel.status_label.text()
+        assert "Baseline recorded" not in sentry_panel.findings_box.toPlainText()
+
+    def test_collector_failures_are_shown_and_a_baseline_is_not_adopted(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False, "baseline_refused": True, "findings": [],
+            "device_count": 0, "listener_count": 0, "connection_count": 0,
+            "collector_errors": ["arp: not found"],
+        }
+        sentry_panel.run_pass(persist=True)
+        assert "COLLECTOR FAILED" in sentry_panel.findings_box.toPlainText()
+        assert "arp: not found" in sentry_panel.findings_box.toPlainText()
+        assert "No baseline saved" in sentry_panel.status_label.text()
+        assert sentry_panel.run_btn.isEnabled() is True
+
     def test_ai_explanation_is_off_by_default(self, sentry_panel):
         # D5: findings carry LAN IPs, MACs and process names; the lesson says
         # "tick to enable", so the box must not ship ticked.

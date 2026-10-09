@@ -94,15 +94,31 @@ def cmd_watch(args) -> int:
 
 
 def cmd_selftest(_args) -> int:
-    """Prove the collectors run and parse without raising, on this machine."""
+    """Prove the collectors run and parse on this machine.
+
+    Exit 1 when a collector could not run or when every collector came back
+    empty: a watch built on that would report nothing and look healthy.
+    """
+    from . import collectors
+
     snapshot = collect_snapshot()
-    print(
-        "selftest OK — "
+    errors = collectors.collection_errors()
+    counts = (
         f"{len(snapshot.devices)} devices, "
         f"{len(snapshot.listeners)} listeners, "
         f"{len(snapshot.connections)} connections, "
         f"gateway {snapshot.gateway_ip or '?'}"
     )
+    if errors:
+        print(f"selftest FAILED — {counts}")
+        for error in errors:
+            print(f"  collector error: {error}")
+        return 1
+    if not (snapshot.devices or snapshot.listeners or snapshot.connections):
+        print(f"selftest FAILED — nothing observed ({counts}); "
+              "the collectors ran but returned no data")
+        return 1
+    print(f"selftest OK — {counts}")
     return 0
 
 

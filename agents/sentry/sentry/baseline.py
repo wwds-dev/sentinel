@@ -72,8 +72,23 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+STATE_DIR_ENV = "SENTRY_STATE_DIR"
+
+
 def default_state_dir() -> Path:
-    """Sentry's writable directory, following Sentinel's runtime path rules."""
+    """Sentry's writable directory, following Sentinel's runtime path rules.
+
+    The launchd watcher runs with agents/sentry as its working directory, where
+    Sentinel's ``services`` package is not importable, so it used to fall back
+    to agents/sentry/data while the panel wrote to <data>/sentry: two baselines,
+    and the panel never saw what the background watch found. The plist now
+    passes the panel's resolved directory in SENTRY_STATE_DIR, read first.
+    """
+    configured = os.environ.get(STATE_DIR_ENV, "").strip()
+    if configured:
+        base = Path(configured).expanduser()
+        base.mkdir(parents=True, exist_ok=True)
+        return base
     try:
         from services.runtime_paths import user_data_base
 

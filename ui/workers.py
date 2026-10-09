@@ -599,33 +599,41 @@ class SentryWatchWorker(QThread):
             from agents.sentry.sentry.baseline import BaselineStore
             from agents.sentry.sentry.engine import collect_snapshot, diff, run_watch
 
+            from agents.sentry.sentry import collectors
+
             if self._persist:
-                self.finished_signal.emit(run_watch())
+                summary = run_watch(should_stop=lambda: self._cancel_requested)
+                if not self._cancel_requested and not summary.get("cancelled"):
+                    self.finished_signal.emit(summary)
                 return
             # Dry run: compare against the stored baseline without writing.
             store = BaselineStore()
             baseline = store.load_baseline()
             current = collect_snapshot()
+            errors = collectors.collection_errors()
+            if self._cancel_requested:
+                return                      # Stop: nothing to report, nothing saved
+            counts = {
+                "device_count": len(current.devices),
+                "listener_count": len(current.listeners),
+                "connection_count": len(current.connections),
+                "taken_at": current.taken_at, "dry_run": True,
+                "collector_errors": errors,
+            }
             if baseline is None:
                 self.finished_signal.emit({
-                    "baseline_established": True, "findings": [],
-                    "device_count": len(current.devices),
-                    "listener_count": len(current.listeners),
-                    "connection_count": len(current.connections),
-                    "taken_at": current.taken_at, "dry_run": True,
+                    "baseline_established": False, "no_baseline": True,
+                    "findings": [], **counts,
                 })
                 return
             findings = diff(baseline, current)
             self.finished_signal.emit({
                 "baseline_established": False,
-                "findings": [f.as_dict() for f in findings],
-                "device_count": len(current.devices),
-                "listener_count": len(current.listeners),
-                "connection_count": len(current.connections),
-                "taken_at": current.taken_at, "dry_run": True,
+                "findings": [f.as_dict() for f in findings], **counts,
             })
         except Exception as exc:
-            self.error_signal.emit(str(exc))
+            if not self._cancel_requested:
+                self.error_signal.emit(str(exc))
 
 
 class ModelScanWorker(QThread):

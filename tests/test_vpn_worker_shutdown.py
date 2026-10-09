@@ -76,3 +76,22 @@ def test_emergency_reset_reports_any_failure():
     handler = handler[:handler.index("_portable_reset_committed = True")]
     assert "except Exception" in handler
     assert "Reset refused" in handler
+
+
+def test_a_cancelled_sentry_pass_reports_nothing(monkeypatch):
+    """Stop during a persisted pass: run_watch gets should_stop, and a result
+    that arrives after cancel is dropped instead of being rendered."""
+    from agents.sentry.sentry import engine
+    seen = {}
+
+    def fake_run_watch(should_stop=None, **kwargs):
+        seen["should_stop"] = should_stop
+        return {"baseline_established": False, "findings": [{"severity": "alert"}]}
+    monkeypatch.setattr(engine, "run_watch", fake_run_watch)
+    worker = workers.SentryWatchWorker(persist=True)
+    emitted = []
+    worker.finished_signal.connect(emitted.append)
+    worker.cancel()
+    worker.run()
+    assert emitted == []
+    assert seen["should_stop"]() is True

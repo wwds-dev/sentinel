@@ -241,11 +241,39 @@ def parse_lsof_connections(text: str) -> list[Connection]:
 
 # ── Subprocess wrappers (thin; the parsing above is what carries the logic) ──
 
+# Failures of the last collection, as "command: reason" strings. A collector
+# that cannot run returns an empty list, which looked exactly like a quiet
+# network: selftest passed with zero results and a first pass could adopt an
+# empty baseline. Callers read this after collecting and refuse to trust an
+# empty result that came from a failure.
+_errors: list[str] = []
+
+
+def collection_errors() -> list[str]:
+    """Errors recorded by the collectors since reset_errors()."""
+    return list(_errors)
+
+
+def reset_errors() -> None:
+    _errors.clear()
+
+
 def _run(cmd: list[str], timeout: int = 15) -> str:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
+        _errors.append(f"{cmd[0]}: not found")
         return ""
+    except subprocess.TimeoutExpired:
+        _errors.append(f"{' '.join(cmd)}: timed out after {timeout}s")
+        return ""
+    except OSError as exc:
+        _errors.append(f"{' '.join(cmd)}: {exc}")
+        return ""
+    if proc.returncode != 0 and not proc.stdout:
+        detail = (proc.stderr or "").strip().splitlines()
+        _errors.append(f"{' '.join(cmd)}: exited {proc.returncode}"
+                       + (f" ({detail[0][:120]})" if detail else ""))
     return proc.stdout or ""
 
 

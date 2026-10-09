@@ -185,12 +185,23 @@ class SentryPanel(AgentPanel):
         self.refresh_watch_status()
 
         findings = summary.get("findings", [])
+        errors = summary.get("collector_errors") or []
+        if summary.get("baseline_refused"):
+            self.status_label.setText(
+                "No baseline saved: a collector failed, so this pass cannot be trusted.")
+            self.set_busy(self.run_btn, self.stop_btn, False)
+            return
+        if summary.get("no_baseline"):
+            self.status_label.setText("Dry run: no baseline exists yet, nothing was saved.")
+            self.set_busy(self.run_btn, self.stop_btn, False)
+            return
         if summary.get("baseline_established"):
             self.status_label.setText("Baseline recorded.")
             self.set_busy(self.run_btn, self.stop_btn, False)
             return
         if not findings:
-            self.status_label.setText("No new anomalies.")
+            self.status_label.setText(
+                "No new anomalies." + (" Some collectors failed — see above." if errors else ""))
             self.set_busy(self.run_btn, self.stop_btn, False)
             return
 
@@ -215,7 +226,25 @@ class SentryPanel(AgentPanel):
         parts = [f"<p style='color:#888'>{escape(counts)}"]
         if summary.get("taken_at"):
             parts.append(f" · {escape(summary['taken_at'])}")
+        if summary.get("dry_run"):
+            parts.append(" · dry run, nothing saved")
         parts.append("</p>")
+
+        for error in summary.get("collector_errors") or []:
+            parts.append(
+                f"<p style='color:#ffb347'>[COLLECTOR FAILED] {escape(error)}</p>")
+        if summary.get("baseline_refused"):
+            parts.append(
+                "<p>No baseline was saved: with a collector failing, an empty result "
+                "cannot be told from a quiet network. Fix the collector and run again.</p>")
+            self.findings_box.setHtml("".join(parts))
+            return
+        if summary.get("no_baseline"):
+            parts.append(
+                "<p>Dry run with no baseline: nothing to compare against and nothing "
+                "was saved. Run a pass to record the first baseline.</p>")
+            self.findings_box.setHtml("".join(parts))
+            return
 
         if summary.get("baseline_established"):
             parts.append(
@@ -329,7 +358,47 @@ class SentryPanel(AgentPanel):
         self.status_label.setText(result.get("message", ""))
         self.refresh_watch_status()
 
+    def show_recorded_findings(self, limit: int = 25) -> None:
+        """Render what the watch passes have written to the findings log.
+
+        The background watcher runs while the app is closed; before this, its
+        findings reached the log but no UI ever read them, so the panel opened
+        empty. Shown until a live pass in this session replaces it.
+        """
+        if getattr(self, "_last_summary", None):
+            return
+        try:
+            from agents.sentry.sentry.baseline import BaselineStore
+
+            records = BaselineStore().load_findings()
+        except Exception:
+            records = []
+        if not records:
+            return
+        parts = [
+            "<p style='color:#888'>Recorded by earlier watch passes (background "
+            f"watch included) — last {min(limit, len(records))} of {len(records)}:</p>"
+        ]
+        for finding in records[-limit:][::-1]:
+            severity = finding.get("severity", "info")
+            color = _SEVERITY_COLOR.get(severity, "#8a8a8a")
+            label = _SEVERITY_LABEL.get(severity, severity.upper())
+            when = finding.get("observed_at", "")
+            parts.append(
+                f"<p style='margin:8px 0 2px 0'>"
+                f"<b style='color:{color}'>[{label}]</b> {escape(finding.get('title', ''))}"
+                + (f" <span style='color:#777;font-size:11px'>{escape(when)}</span>" if when else "")
+                + "</p>"
+            )
+            if finding.get("detail"):
+                parts.append(
+                    f"<p style='margin:0 0 6px 12px;color:#bbb;font-size:12px'>"
+                    f"{escape(finding['detail'])}</p>"
+                )
+        self.findings_box.setHtml("".join(parts))
+
     def refresh_watch_status(self) -> None:
+        self.show_recorded_findings()
         # Baseline line
         try:
             from agents.sentry.sentry.baseline import BaselineStore
