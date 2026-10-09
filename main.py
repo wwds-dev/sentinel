@@ -3685,6 +3685,34 @@ class GodAI(QWidget):
         }
         return True
 
+    def recheck_budget(self, agent, provider, model, prompt, request_id=None) -> bool:
+        """Re-run the budget caps against the text that is really being sent.
+
+        authorize_request() runs before a panel has its full prompt (live
+        collection, EXIF, scan output arrive later), so its estimate can be a
+        few dozen characters while the real request is many kilobytes. This
+        checks the caps again with the assembled prompt, keeps the consent
+        already given, and updates the pending record so the run log and the
+        bill describe what was sent. False means: do not send, abandon.
+        """
+        estimated_cost, _ = self.estimate_chat_cost(provider, model, prompt)
+        result = self.validator.validate_budget(
+            agent_name=agent, tool_name=None, provider=provider,
+            session_cost=self.session_cost_total,
+            session_budget=self.session_budget_eur,
+            daily_cost=self.usage_tracker.get_today_total(),
+            daily_budget=self.daily_budget_eur,
+            estimated_cost=estimated_cost,
+        )
+        if not result.allowed:
+            QMessageBox.warning(self, "Request Blocked", result.reason)
+            return False
+        key = self._pending_request_key(agent, request_id)
+        pending = self._pending_requests.get(key) if key else None
+        if pending is not None:
+            pending["prompt"] = prompt
+        return True
+
     def record_request(self, agent, response, messages=None, request_id=None):
         """Bill, save and close out a request authorised by authorize_request()."""
         key = self._pending_request_key(agent, request_id)

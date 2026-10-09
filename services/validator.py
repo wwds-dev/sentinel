@@ -73,6 +73,48 @@ class Validator:
                     f"API access for '{provider}' is not enabled. Enable it in the API Permissions panel."
                 )
 
+        budget = self.validate_budget(
+            agent_name=agent_name, tool_name=tool_name, provider=provider,
+            session_cost=session_cost, session_budget=session_budget,
+            daily_cost=daily_cost, daily_budget=daily_budget,
+            estimated_cost=estimated_cost,
+        )
+        if not budget.allowed:
+            return budget
+
+        # 11. Approval required?
+        if self.registry.agent_requires_approval(agent_name):
+            return ValidationResult(
+                False,
+                f"Agent '{agent_name}' requires manual approval before running."
+            )
+
+        if tool_name and self.registry.tool_requires_approval(tool_name):
+            return ValidationResult(
+                False,
+                f"Tool '{tool_name}' requires manual approval before running."
+            )
+
+        return ValidationResult(True, "OK")
+
+    def validate_budget(
+        self,
+        agent_name: str,
+        tool_name: str | None,
+        provider: str,
+        session_cost: float,
+        session_budget: float,
+        daily_cost: float,
+        daily_budget: float,
+        estimated_cost: float,
+    ) -> ValidationResult:
+        """Steps 7-10 of validate(): the four budget caps, nothing else.
+
+        Panels that assemble their prompt after the first authorisation (live
+        collection, EXIF, scan output) call this again with the text that is
+        really being sent, so the caps are checked against the real size and
+        not the few characters of the target string.
+        """
         # 7. Per-agent budget (daily)
         agent_budget = self.registry.get_agent_budget(agent_name)
         if agent_budget is not None and provider != "ollama":
@@ -112,18 +154,5 @@ class Validator:
                     f"Daily budget exceeded. "
                     f"Remaining: €{daily_remaining:.4f}, request: ~€{estimated_cost:.4f}."
                 )
-
-        # 11. Approval required?
-        if self.registry.agent_requires_approval(agent_name):
-            return ValidationResult(
-                False,
-                f"Agent '{agent_name}' requires manual approval before running."
-            )
-
-        if tool_name and self.registry.tool_requires_approval(tool_name):
-            return ValidationResult(
-                False,
-                f"Tool '{tool_name}' requires manual approval before running."
-            )
 
         return ValidationResult(True, "OK")
