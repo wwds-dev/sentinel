@@ -30,7 +30,7 @@ class _CheckValue:
 
 
 def _routing_stub(mode: str, qwen_enabled: bool):
-    return SimpleNamespace(
+    stub = SimpleNamespace(
         provider_box=_TextValue("qwen"),
         model_box=_TextValue("qwen3-max"),
         execution_mode_box=_TextValue(mode),
@@ -40,7 +40,12 @@ def _routing_stub(mode: str, qwen_enabled: bool):
         allow_gemini_checkbox=_CheckValue(False),
         allow_anthropic_checkbox=_CheckValue(False),
         allow_qwen_checkbox=_CheckValue(qwen_enabled),
+        settings={},
+        notices=[],
     )
+    stub._set_route_notice = lambda text: stub.notices.append(text)
+    stub._local_default_model = lambda: "deepseek-r1:8b"
+    return stub
 
 
 @pytest.mark.parametrize("mode", ["Cloud only", "Hybrid allowed"])
@@ -234,3 +239,59 @@ def test_shared_panel_shutdown_prefers_join_contract_and_stops_fallbacks():
     shutdown_panels(app)
 
     assert calls == ["joined", "stopped"]
+
+
+# ── D3: Local only must never send a cloud model name to Ollama ─────────────
+
+def _local_only_stub(provider: str, model: str, saved_ollama: str = "llama3:8b"):
+    stub = _routing_stub("Local only", True)
+    stub.provider_box = _TextValue(provider)
+    stub.model_box = _TextValue(model)
+    stub.settings = {"default_model_ollama": saved_ollama}
+    stub._local_default_model = lambda: saved_ollama
+    return stub
+
+
+def test_local_only_with_a_cloud_pick_uses_the_saved_ollama_model():
+    from main import GodAI
+
+    stub = _local_only_stub("anthropic", "claude-sonnet-5")
+    assert GodAI.resolve_backend_model(stub) == ("ollama", "llama3:8b")
+    assert stub.notices and "Local only" in stub.notices[-1]
+    assert "claude-sonnet-5" in stub.notices[-1]       # the user is told what was swapped
+
+
+def test_local_only_with_an_ollama_pick_keeps_it_and_clears_the_notice():
+    from main import GodAI
+
+    stub = _local_only_stub("ollama", "mistral:7b")
+    assert GodAI.resolve_backend_model(stub) == ("ollama", "mistral:7b")
+    assert stub.notices == [""]
+
+
+def test_local_only_never_returns_a_cloud_model_name():
+    from main import GodAI
+
+    for provider, model in [("openai", "gpt-4.1-mini"), ("qwen", "qwen3-max"),
+                            ("gemini", "gemini-2.5-pro"), ("deepseek", "deepseek-chat")]:
+        backend, resolved = GodAI.resolve_backend_model(_local_only_stub(provider, model))
+        assert backend == "ollama"
+        assert resolved != model
+
+
+def test_blocked_route_does_not_escape_the_cost_estimate():
+    """resolve_backend_model raises for an unticked provider on every
+    keystroke; get_current_cost_estimate must absorb it."""
+    from main import GodAI
+
+    stub = _routing_stub("Hybrid allowed", False)          # qwen unticked
+    stub.input_box = SimpleNamespace(toPlainText=lambda: "hello")
+    stub.build_user_prompt = lambda raw: ("General", raw)
+    stub.runbar_cost = SimpleNamespace(setText=lambda t: stub.notices.append(f"bar:{t}"),
+                                       setToolTip=lambda t: None)
+    stub.resolve_backend_model = lambda: GodAI.resolve_backend_model(stub)
+
+    result = GodAI.get_current_cost_estimate(stub)
+
+    assert result == (0.0, 0, None, None)
+    assert any("not enabled" in n for n in stub.notices)

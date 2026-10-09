@@ -544,7 +544,15 @@ class GodAI(QWidget):
             return 0.0, 0, None, None
 
         _, full_prompt = self.build_user_prompt(raw_text)
-        backend, model = self.resolve_backend_model()
+        try:
+            backend, model = self.resolve_backend_model()
+        except RuntimeError as exc:
+            # D3: raised on every keystroke for an unticked provider; the
+            # estimate shows the reason instead of dying unseen.
+            self._set_route_notice(str(exc))
+            if hasattr(self, "runbar_cost"):
+                self.runbar_cost.setText("blocked · see route")
+            return 0.0, 0, None, None
 
         estimated_cost, approx_tokens = self.estimate_chat_cost(
             backend,
@@ -596,8 +604,12 @@ class GodAI(QWidget):
 
         if hasattr(self, "runbar_cost"):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
-            if backend == "ollama":
-                self.runbar_cost.setText(f"free · {tokens} tok")
+            if backend is None:
+                pass                      # a blocked route already set the text
+            elif backend == "ollama":
+                notice = getattr(self, "_route_resolution_notice", "")
+                self.runbar_cost.setText(
+                    f"free · {tokens} tok" + (" · local only" if notice else ""))
             else:
                 self.runbar_cost.setText(f"~€{estimated_cost:.2f} · {tokens} tok")
 
@@ -3228,7 +3240,20 @@ class GodAI(QWidget):
         }
 
         if execution_mode == "Local only":
-            return "ollama", model if model else "deepseek-r1:8b"
+            # D3: a cloud provider picked in the run bar used to be sent to
+            # Ollama under its cloud model name, silently. Local only means
+            # Ollama with an Ollama model, and the substitution is shown.
+            if provider == "ollama":
+                self._set_route_notice("")
+                return "ollama", model if model else "deepseek-r1:8b"
+            local_model = self._local_default_model()
+            self._set_route_notice(
+                f"Local only mode: using ollama · {local_model} instead of "
+                f"{provider} · {model}. Switch the execution mode to use {provider}."
+            )
+            return "ollama", local_model
+
+        self._set_route_notice("")
 
         if execution_mode == "Cloud only":
             if provider == "ollama":
@@ -3252,6 +3277,22 @@ class GodAI(QWidget):
             return provider, model
 
         return "ollama", model if model else "deepseek-r1:8b"
+
+    def _local_default_model(self) -> str:
+        """The Ollama model Local only mode falls back to."""
+        settings = getattr(self, "settings", None) or {}
+        saved = str(settings.get("default_model_ollama") or "").strip()
+        return saved or "deepseek-r1:8b"
+
+    def _set_route_notice(self, text: str) -> None:
+        """Show (or clear) a one-line notice about how the route was resolved."""
+        self._route_resolution_notice = text
+        label = getattr(self, "route_result_label", None)
+        if label is not None and text:
+            label.setText(text)
+        bar = getattr(self, "runbar_cost", None)
+        if bar is not None:
+            bar.setToolTip(text)
 
     def build_user_prompt(self, raw_text: str):
         command_name = self.command_box.currentText()
@@ -3361,7 +3402,11 @@ class GodAI(QWidget):
 
         selected_tool = self.tool_box.currentText() if hasattr(self, "tool_box") else "General Chat"
         command_name, full_prompt = self.build_user_prompt(raw_text)
-        final_backend, final_model = self.resolve_backend_model()
+        try:
+            final_backend, final_model = self.resolve_backend_model()
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Request blocked", str(exc))
+            return
 
         estimated_cost, approx_tokens = self.estimate_chat_cost(final_backend, final_model, full_prompt)
 
