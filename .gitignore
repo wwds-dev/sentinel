@@ -55,3 +55,6 @@ data/settings.local.json
 /agents/*/.pytest_cache/
 /agents/*/.ruff_cache/
 /agents/*/data/
+
+# Coverage data from a local pytest --cov run
+.coverage
