@@ -432,3 +432,14 @@ def test_ollama_is_streamed_when_the_client_can():
     result = GodAI.run_backend(stub, "ollama", "llama3", [{"role": "user", "content": "x"}], "x")
     assert list(result) == ["tok"]
     assert calls == [("stream", "llama3")]
+
+
+# ── Reopening another agent's record must not turn it into a Chat file ──────
+
+def test_only_chat_records_are_continued_in_place(tmp_path):
+    from main import GodAI
+    path = tmp_path / "x.json"
+    assert GodAI._continuable_chat_path({"agent": "chat"}, path) == str(path)
+    assert GodAI._continuable_chat_path({}, path) == str(path)            # legacy, no agent field
+    for other in ("osint", "osint_heavy", "wifi", "sentry", "bug_bounty", "vpn", "manager"):
+        assert GodAI._continuable_chat_path({"agent": other}, path) is None

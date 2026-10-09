@@ -3295,6 +3295,16 @@ class GodAI(QWidget):
 
         return "ollama", model if model else "deepseek-r1:8b"
 
+    @staticmethod
+    def _continuable_chat_path(record: dict, filepath) -> str | None:
+        """The saved-chat file a reopened record may be continued in, or None.
+
+        Only a record written by Chat is continued in place; any other agent's
+        record stays as it is and the next Chat turn starts a new file.
+        """
+        agent = str((record or {}).get("agent") or "chat")
+        return str(filepath) if agent == "chat" else None
+
     def _local_default_model(self) -> str:
         """The Ollama model Local only mode falls back to."""
         settings = getattr(self, "settings", None) or {}
@@ -4596,8 +4606,10 @@ class GodAI(QWidget):
             self.current_messages = self._normalise_chat_messages(
                 messages, fallback=data.get("timestamp")
             )
-            # Continuing this chat appends to this file rather than cloning it.
-            self.current_chat_path = str(filepath)
+            # Continuing this chat appends to this file rather than cloning it —
+            # but only when the file is a Chat record. A Trace or Bloodhound
+            # record opened for reading must not be rewritten into a Chat thread.
+            self.current_chat_path = self._continuable_chat_path(data, filepath)
             self._render_chat_conversation(force_tail=True)
             self.input_box.clear()
             self.route_result_label.setText(
