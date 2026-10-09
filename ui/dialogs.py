@@ -29,7 +29,7 @@ from services.kimi_client import KimiClientWrapper
 from services.openai_client import OpenAIClientWrapper
 from services.registry import Registry
 from services.runtime_paths import PortableRuntimeError, is_portable, user_data_base
-from services.validator import Validator
+from services.validator import Validator, parse_money
 from ui.style import global_stylesheet, polish_combo_box
 from ui.theme import LABELS as THEME_LABELS, THEMES
 from ui.theme import current as current_theme, set_current as set_theme
@@ -50,13 +50,22 @@ def _discard_detached_worker(worker) -> None:
 
 
 def shutdown_panels(app) -> None:
-    """Stop panel work and join workers that provide a shutdown contract."""
-    for panel in getattr(app, "panels", {}).values():
-        shutdown = getattr(panel, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-        elif panel.is_running():
-            panel.stop()
+    """Stop panel work and join workers that provide a shutdown contract.
+
+    One panel's failure must not leave the others running: the exception is
+    noted and the loop goes on.
+    """
+    for key, panel in getattr(app, "panels", {}).items():
+        try:
+            shutdown = getattr(panel, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+            elif panel.is_running():
+                panel.stop()
+        except Exception as exc:  # noqa: BLE001
+            note = getattr(app, "_note_failure", None)
+            if callable(note):
+                note(f"shutdown: {key}", exc)
 
 
 def show_cost_history(app):
@@ -485,6 +494,15 @@ def show_settings(app):
     theme_box.currentIndexChanged.connect(preview_theme)
     dialog.rejected.connect(restore_theme)
 
+    ratings_check = QCheckBox(
+        "Refresh public model ratings (LMArena leaderboard) at most once a day")
+    ratings_check.setChecked(get_setting("public_ratings_refresh", "on") == "on")
+    ratings_check.setToolTip(
+        "On: each model scan also fetches the public leaderboard the router "
+        "ranks models by, when the cached copy is over a day old. Off, or in "
+        "Local only mode: no contact; the shipped snapshot is used instead.")
+    gl.addWidget(ratings_check, 5, 0, 1, 2)
+
     reset_heading = QLabel("Portable emergency reset")
     reset_heading.setStyleSheet("font-weight: 600; color: #ff6b6b;")
     reset_description = QLabel(
@@ -502,11 +520,11 @@ def show_settings(app):
     reset_heading.setVisible(is_portable())
     reset_description.setVisible(is_portable())
     emergency_reset_btn.setVisible(is_portable())
-    gl.addWidget(reset_heading, 5, 0, 1, 2)
-    gl.addWidget(reset_description, 6, 0, 1, 2)
-    gl.addWidget(emergency_reset_btn, 7, 0, 1, 2)
+    gl.addWidget(reset_heading, 6, 0, 1, 2)
+    gl.addWidget(reset_description, 7, 0, 1, 2)
+    gl.addWidget(emergency_reset_btn, 8, 0, 1, 2)
 
-    gl.setRowStretch(8, 1)
+    gl.setRowStretch(9, 1)
     tabs.addTab(_scrolling(general_tab), "General")
 
     # ── Tab 2: Agents ─────────────────────────────────────────────
@@ -1145,29 +1163,30 @@ def show_settings(app):
 
         # General
         try:
-            eur = float(eur_input.text().strip())
-            sess = float(sess_input.text().strip())
-            daily = float(daily_input.text().strip())
+            eur = parse_money(eur_input.text(), field="EUR per USD", minimum=0.000001)
+            sess = parse_money(sess_input.text(), field="Session budget")
+            daily = parse_money(daily_input.text(), field="Daily budget")
             save_setting("eur_per_usd", str(eur))
             save_setting("session_budget_eur", str(sess))
             save_setting("daily_budget_eur", str(daily))
+            save_setting("public_ratings_refresh", "on" if ratings_check.isChecked() else "off")
             app.session_budget_eur = sess
             app.daily_budget_eur = daily
             if hasattr(app, "session_budget_input"):
                 app.session_budget_input.setText(str(sess))
             if hasattr(app, "daily_budget_input"):
                 app.daily_budget_input.setText(str(daily))
-        except ValueError:
-            errors.append("General: invalid number in EUR rate or budget fields.")
+        except ValueError as exc:
+            errors.append(f"General: {exc} Previous values kept.")
 
         # Agents
         with get_connection() as conn:
             for name, (chk, budget_edit) in agent_widgets.items():
                 raw = budget_edit.text().strip()
                 try:
-                    budget = float(raw) if raw else None
-                except ValueError:
-                    errors.append(f"Agent '{name}': invalid budget value '{raw}'.")
+                    budget = parse_money(raw, field=f"Agent '{name}' budget", allow_blank=True)
+                except ValueError as exc:
+                    errors.append(f"{exc} Previous value kept.")
                     continue
                 conn.execute(
                     "UPDATE agents SET enabled = ?, budget_limit_eur = ? WHERE name = ?",
@@ -1188,18 +1207,19 @@ def show_settings(app):
         with get_connection() as conn:
             for (backend, model), (in_edit, cached_edit, out_edit) in pricing_widgets.items():
                 try:
-                    in_val = float(in_edit.text().strip())
-                    cached_raw = cached_edit.text().strip()
-                    cached_val = float(cached_raw) if cached_raw else None
-                    out_val = float(out_edit.text().strip())
+                    label = f"Pricing {backend}/{model}"
+                    in_val = parse_money(in_edit.text(), field=f"{label} input")
+                    cached_val = parse_money(cached_edit.text(), field=f"{label} cached input",
+                                             allow_blank=True)
+                    out_val = parse_money(out_edit.text(), field=f"{label} output")
                     conn.execute(
                         "UPDATE pricing SET input_per_1m_usd = ?, "
                         "cached_input_per_1m_usd = ?, output_per_1m_usd = ? "
                         "WHERE backend = ? AND model = ?",
                         (in_val, cached_val, out_val, backend, model)
                     )
-                except ValueError:
-                    errors.append(f"Pricing {backend}/{model}: invalid number.")
+                except ValueError as exc:
+                    errors.append(f"{exc} Previous values kept.")
             conn.commit()
 
         # OSINT Keys (API keys are written to .env on "Save Key", not here)

@@ -1,5 +1,32 @@
 from dataclasses import dataclass
+import math
 from decimal import Decimal
+
+
+def parse_money(raw: str, *, field: str, minimum: float = 0.0,
+                allow_blank: bool = False) -> float | None:
+    """A finite, non-negative number from a settings field, or ValueError.
+
+    float() alone accepted "nan", "inf" and negatives, which then reached the
+    Decimal budget maths and the pricing table: a nan budget compared as never
+    exceeded, an inf rate priced every request as infinite, a negative cap
+    blocked everything. ``minimum`` is inclusive; blank is allowed only where
+    the field is optional (a per-agent budget means "no cap" when empty).
+    """
+    text = (raw or "").strip().replace(",", ".")
+    if not text:
+        if allow_blank:
+            return None
+        raise ValueError(f"{field}: enter a number.")
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError(f"{field}: '{raw}' is not a number.") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{field}: '{raw}' is not a finite number.")
+    if value < minimum:
+        raise ValueError(f"{field}: must be at least {minimum:g}.")
+    return value
 from services.registry import Registry
 
 

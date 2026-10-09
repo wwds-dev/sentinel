@@ -60,7 +60,7 @@ from services.report_exporter import ReportExporter
 from services.usage_tracker import UsageTracker, estimate_prompt_tokens
 from services.database import init_db, get_setting, save_setting, get_connection
 from services.registry import Registry
-from services.validator import Validator
+from services.validator import Validator, parse_money
 from services.run_logger import RunLogger
 from services import settings_store
 
@@ -109,6 +109,9 @@ MODEL_WATCH_FILE = DATA_DIR / "model_watch.json"
 # Public per-task model ratings (services/benchmarks.py): the last fetch, and
 # the snapshot shipped with the code that stands in until the first one.
 RATINGS_CACHE_FILE = DATA_DIR / "lmarena_ratings.json"
+# Settings key: "on" (default) or "off". Off means the router uses the cached
+# or shipped ratings only and never contacts the leaderboard.
+PUBLIC_RATINGS_SETTING = "public_ratings_refresh"
 RATINGS_SNAPSHOT_FILE = benchmarks.SNAPSHOT_FILE
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
@@ -783,17 +786,17 @@ class GodAI(QWidget):
 
     def save_budget_limits(self):
         try:
-            self.session_budget_eur = float(self.session_budget_input.text().strip())
-            self.daily_budget_eur = float(self.daily_budget_input.text().strip())
-
-            save_setting("session_budget_eur", str(self.session_budget_eur))
-            save_setting("daily_budget_eur", str(self.daily_budget_eur))
-
-            self.update_usage_labels()
-            QMessageBox.information(self, "Budget Saved", "Budget limits saved.")
-
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Budget", "Please enter valid numbers.")
+            session = parse_money(self.session_budget_input.text(), field="Session budget")
+            daily = parse_money(self.daily_budget_input.text(), field="Daily budget")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Budget", f"{exc} Previous values kept.")
+            return
+        self.session_budget_eur = session
+        self.daily_budget_eur = daily
+        save_setting("session_budget_eur", str(self.session_budget_eur))
+        save_setting("daily_budget_eur", str(self.daily_budget_eur))
+        self.update_usage_labels()
+        QMessageBox.information(self, "Budget Saved", "Budget limits saved.")
 
     def reset_session_spend(self):
         self.session_cost_total = 0.0
@@ -1192,12 +1195,25 @@ class GodAI(QWidget):
 
     # ── Model updates: scan, report, adopt ───────────────────────────────────
 
+    def public_ratings_refresh_enabled(self) -> bool:
+        """Whether a model scan may also fetch the public LMArena ratings."""
+        if get_setting(PUBLIC_RATINGS_SETTING, "on") != "on":
+            return False
+        mode_box = getattr(self, "execution_mode_box", None)
+        if mode_box is not None and mode_box.currentText() == "Local only":
+            return False
+        return True
+
     def start_model_scan(self) -> None:
         """List every provider's models in the background (startup and Check now)."""
         if self.model_scan_worker is not None and self.model_scan_worker.isRunning():
             return
         self.model_updates_card.set_checking(True)
-        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES, RATINGS_CACHE_FILE)
+        # The public ratings fetch (LMArena) is a network contact of its own.
+        # It stays off in Local only mode and when the operator has switched
+        # it off in Settings; the shipped snapshot still serves the router.
+        ratings_cache = RATINGS_CACHE_FILE if self.public_ratings_refresh_enabled() else None
+        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES, ratings_cache)
         worker.finished_signal.connect(self._on_model_scan_finished)
         worker.error_signal.connect(self._on_model_scan_error)
         self.model_scan_worker = worker
@@ -4908,6 +4924,17 @@ class GodAI(QWidget):
                 self.chat_worker.cancel()
                 self.chat_worker.terminate()
                 self.chat_worker.wait(1000)
+            # The model scan and a model pull are QThreads of ours too; a quit
+            # while one ran destroyed a live thread (and could crash on exit).
+            for name in ("model_scan_worker", "model_pull_worker"):
+                thread = getattr(self, name, None)
+                if thread is not None and thread.isRunning():
+                    cancel = getattr(thread, "cancel", None)
+                    if callable(cancel):
+                        cancel()
+                    if not thread.wait(2000):
+                        thread.terminate()
+                        thread.wait(1000)
             from ui.dialogs import shutdown_panels
             shutdown_panels(self)
         except Exception as exc:
@@ -4937,10 +4964,22 @@ def _tray_status(window) -> str:
     menu opens.
     """
     worker = getattr(window, "chat_worker", None)
+    busy_key = ""
     if worker is not None and worker.isRunning():
-        agent = BUILTIN_AGENTS.get(
-            window.pending_agent or getattr(window, "_current_agent", ""), {}
-        ).get("label", "")
+        busy_key = window.pending_agent or getattr(window, "_current_agent", "")
+    else:
+        # The specialist agents run in their own panels, not through
+        # chat_worker; a Tunnel check or a Bloodhound sweep used to read as Idle.
+        for key, panel in (getattr(window, "panels", None) or {}).items():
+            is_running = getattr(panel, "is_running", None)
+            try:
+                if is_running is not None and is_running():
+                    busy_key = key
+                    break
+            except Exception:  # noqa: BLE001 - a status line must never raise
+                continue
+    if busy_key or (worker is not None and worker.isRunning()):
+        agent = BUILTIN_AGENTS.get(busy_key, {}).get("label", "")
         activity = f"Working — {agent}" if agent else "Working"
     else:
         activity = "Idle"
