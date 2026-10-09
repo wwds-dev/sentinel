@@ -735,6 +735,21 @@ def _leakcheck(terms: dict) -> dict:
 
 # ── public interface ──────────────────────────────────────────────────────────
 
+def keyed_labels() -> list[str]:
+    """The key-gated exposure services a lookup would contact right now, for
+    consent dialogs; keyless ones self-skip and are not named here."""
+    labels = []
+    if intelx_key():
+        labels.append("Intelligence X")
+    if dehashed_key():
+        labels.append("DeHashed")
+    if snusbase_key():
+        labels.append("Snusbase")
+    if leakcheck_key():
+        labels.append("LeakCheck")
+    return labels
+
+
 def lookup(target: str, target_type: str = "", *, selected_sources=None,
            on_progress=None, should_stop=None) -> dict:
     """

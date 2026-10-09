@@ -320,6 +320,48 @@ def real_source_count(live_results: list[dict]) -> int:
     return total
 
 
+def planned_sources(target: str, target_type: str, scope: str = "") -> list[str]:
+    """Human labels of every public source _run_providers() will contact for
+    this target, for the consent dialog. Keyed by the same dispatch key, so
+    the dialog and the lookup cannot drift apart on target type; key-gated
+    extras are named only when their key is present."""
+    tt = _normalize_target_type(target, target_type)
+    deep = (scope or "").strip().lower() == "deep dive"
+    exposure = ["ransomware.live", "Ahmia (Tor search)"]
+    try:
+        from providers import exposure_lookup as _exp
+        keyed = getattr(_exp, "keyed_labels", None)
+        if keyed:
+            exposure += list(keyed())
+    except Exception:  # noqa: BLE001 - the dialog must still open
+        pass
+    if tt == "domain":
+        sources = ["WHOIS", "DNS", "Team Cymru IP-to-ASN", "Mnemonic passive DNS",
+                   "crt.sh", "Wayback Machine"]
+        try:
+            from providers.domain_lookup import keyed_labels
+            sources += list(keyed_labels(target))
+        except Exception:  # noqa: BLE001
+            pass
+        return sources + exposure
+    if tt == "organisation":
+        return ["GLEIF Legal Entity Index", "ICIJ Offshore Leaks", "OpenSanctions",
+                "CourtListener court records"] + exposure
+    if tt == "email":
+        return ["EmailRep", "Gravatar", "Have I Been Pwned", "BreachDirectory", "Hunter"] + exposure
+    if tt == "username":
+        return ["URLScan", "GitHub", "Keybase"] + (["WhatsMyName (several hundred sites)"] if deep else [])
+    if tt == "person":
+        if "@" in target and "." in target.split("@")[-1]:
+            return ["EmailRep", "Gravatar", "Have I Been Pwned", "BreachDirectory", "Hunter"]
+        if " " not in target and "@" not in target:
+            return ["URLScan", "GitHub", "Keybase"] + (["WhatsMyName (several hundred sites)"] if deep else [])
+        return []
+    if tt == "crypto":
+        return ["Blockstream (Bitcoin)", "Blockscout (Ethereum)"]
+    return []
+
+
 def _run_providers(target: str, target_type: str, scope: str = "", *,
                    on_progress=None, should_stop=None) -> list[dict]:
     """
@@ -488,6 +530,9 @@ class OsintHeavyAgent:
         self.name = "osint_heavy"
         self.last_live_results: list[dict] = []
         self.last_source_count: int = 0
+
+    def planned_sources(self, target: str, target_type: str, scope: str = "") -> list[str]:
+        return planned_sources(target, target_type, scope)
 
     def collect_live(self, target: str, target_type: str, scope: str = "", *,
                      on_progress=None, should_stop=None) -> list[dict]:

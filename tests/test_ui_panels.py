@@ -2544,6 +2544,67 @@ class TestBloodhoundPanel:
         assert filters.min_size == int(1.5 * 1024 * 1024)
         assert filters.max_size == 3 * 1024 * 1024
 
+    # ── Stop, close and Reset reach a running file search ────────────────
+
+    class _FakeFileSearchWorker:
+        def __init__(self):
+            self.running, self.cancelled, self.waited, self.terminated = True, False, False, False
+        def isRunning(self):
+            return self.running
+        def cancel(self):
+            self.cancelled = True
+        def wait(self, _ms):
+            self.waited = True
+            self.running = False
+            return True
+        def terminate(self):
+            self.terminated = True
+
+    def test_a_running_file_search_counts_as_running(self, hound):
+        assert hound.is_running() is False
+        hound._file_search_worker = self._FakeFileSearchWorker()
+        assert hound.is_running() is True
+
+    def test_stop_cancels_a_running_file_search(self, hound):
+        worker = self._FakeFileSearchWorker()
+        hound._file_search_worker = worker
+        hound.stop()
+        assert worker.cancelled is True
+
+    def test_shutdown_cancels_and_joins_the_file_search(self, hound):
+        worker = self._FakeFileSearchWorker()
+        hound._file_search_worker = worker
+        hound.shutdown()
+        assert worker.cancelled and worker.waited and not worker.terminated
+
+    def test_shutdown_abandons_an_authorised_collection(self, hound):
+        hound._collecting = True
+        hound.shutdown()
+        assert ("abandon", "osint_heavy", "cancelled") in hound.host.calls
+
+    def test_shutdown_is_what_the_app_calls_on_close(self, hound):
+        from ui.dialogs import shutdown_panels
+        worker = self._FakeFileSearchWorker()
+        hound._file_search_worker = worker
+        shutdown_panels(type("App", (), {"panels": {"osint_heavy": hound}})())
+        assert worker.waited is True
+
+    def test_remote_results_reveal_by_copying_the_path(self, hound, monkeypatch):
+        from services.local_file_search import FileMatch, FileSearchReport
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtWidgets import QMessageBox
+        hound.file_source_box.setCurrentText("Remote SSH machine")
+        report = FileSearchReport(matches=[FileMatch(
+            name="notes.txt", path="/srv/archive/notes.txt", extension=".txt",
+            size=10, modified=datetime(2026, 9, 7, 12, 30))])
+        hound._populate_file_results(report)
+        warned = []
+        monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
+        hound.reveal_file_result(0, 1)
+        assert warned == []                                  # no "File Not Found"
+        assert QGuiApplication.clipboard().text() == "/srv/archive/notes.txt"
+        assert "copied" in hound.file_status.text()
+
     def test_file_results_show_path_type_size_and_modified_date(self, hound):
         from services.local_file_search import FileMatch, FileSearchReport
 
@@ -2646,15 +2707,29 @@ class TestBloodhoundPanel:
         assert hound.threat_bar.value() == 0
         assert hound.image_label.text() == "No image selected"
 
-    def test_an_attached_image_puts_its_metadata_in_the_prompt(self, hound, tmp_path):
+    def test_an_attached_image_puts_its_metadata_in_the_prompt_when_opted_in(self, hound, tmp_path):
         # No EXIF in a text file — the point is that the panel sends *something*
-        # about the image rather than silently dropping it.
+        # about the image rather than silently dropping it, once the operator
+        # has ticked the box.
         fake = tmp_path / "target.jpg"
         fake.write_text("not really a jpeg")
         hound.set_image(str(fake))
+        hound.send_exif_checkbox.setChecked(True)
         hound.investigate()
         metadata = hound.host.agent_instances["osint_heavy"].calls[-1][4]
         assert "No EXIF metadata could be extracted" in metadata
+        assert "target.jpg" not in metadata            # the file name never travels
+
+    def test_image_metadata_stays_local_unless_opted_in(self, hound, tmp_path):
+        # The Bloodhound lesson: image metadata reaches a model only when
+        # explicitly approved. The box ships unticked.
+        fake = tmp_path / "target.jpg"
+        fake.write_text("not really a jpeg")
+        hound.set_image(str(fake))
+        assert hound.send_exif_checkbox.isChecked() is False
+        hound.investigate()
+        assert hound.host.agent_instances["osint_heavy"].calls[-1][4] == ""
+        assert hound.exif_display.toPlainText()        # still shown in the panel
 
     def test_no_image_means_no_metadata_in_the_prompt(self, hound):
         hound.investigate()
@@ -2677,6 +2752,57 @@ class TestBloodhoundPanel:
         monkeypatch.setattr(type(hound), "collection_worker_class", FakeCollectionWorker)
         FakeCollectionWorker.instances.clear()
         return hound
+
+    def test_public_sources_are_named_and_need_consent(self, collecting, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        agent = collecting.host.agent_instances["osint_heavy"]
+        agent.planned_sources = lambda target, target_type, scope: ["WHOIS", "crt.sh"]
+        asked = []
+
+        def question(parent, title, text, buttons, default=None):
+            asked.append((text, default))
+            return QMessageBox.No
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+        collecting.investigate()
+        (text, default), = asked
+        assert "acme.com" in text and "WHOIS" in text and "crt.sh" in text
+        assert default == QMessageBox.No
+        assert FakeCollectionWorker.instances == []          # nothing contacted
+        assert FakeWorker.instances == []                    # no model call
+        assert ("abandon", "osint_heavy", "cancelled") in collecting.host.calls
+        assert "Cancelled" in collecting.status_label.text()
+        assert collecting.investigate_btn.isEnabled() is True
+
+    def test_consent_given_starts_collection(self, collecting, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        agent = collecting.host.agent_instances["osint_heavy"]
+        agent.planned_sources = lambda target, target_type, scope: ["WHOIS"]
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        collecting.investigate()
+        assert len(FakeCollectionWorker.instances) == 1
+
+    def test_a_type_with_no_sources_asks_nothing(self, collecting, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        agent = collecting.host.agent_instances["osint_heavy"]
+        agent.planned_sources = lambda target, target_type, scope: []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: pytest.fail("asked for nothing")))
+        collecting.investigate()
+        assert len(FakeCollectionWorker.instances) == 1
+
+    def test_the_assembled_prompt_is_budget_checked_before_the_model_call(self, collecting):
+        seen = []
+        collecting.host.recheck_budget = (
+            lambda agent, provider, model, prompt, request_id=None: seen.append(prompt) or False)
+        collecting.investigate()
+        FakeCollectionWorker.instances[-1].finished_signal.emit(
+            [{"type": "domain", "whois": {"registrar": "Example Registrar"}}])
+        assert FakeWorker.instances == []                    # blocked before sending
+        assert seen == ["acme.com"]                           # the fake agent's whole prompt
+        assert ("abandon", "osint_heavy", "blocked") in collecting.host.calls
+        assert "budget" in collecting.status_label.text().lower()
+        assert collecting.investigate_btn.isEnabled() is True
 
     def test_the_guard_runs_before_any_public_source_is_contacted(self, collecting):
         collecting.host.authorized = False
