@@ -16,9 +16,15 @@ REQUIRED_SPEC_KEYS = {
     "system_prompt",
 }
 
+# Every value the model supplied is rendered with !r, so it arrives in the
+# scaffold as a Python string literal whatever it contains. The docstring used
+# to be interpolated raw, so a description holding \"\"\" or a trailing
+# backslash produced a SyntaxError — or injected code — in a file that was
+# then reported as created (D4). render_agent_source() also compiles the
+# result before anything is written.
 AGENT_TEMPLATE = '''\
 class {class_name}Agent:
-    """{description}"""
+    {description!r}
 
     def __init__(self):
         self.name = {name!r}
@@ -185,15 +191,29 @@ class AgentFactory:
     # Private helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def render_agent_source(name: str, class_name: str, spec: dict) -> str:
+        """The scaffold's source text, verified to compile before it is returned.
+
+        Raises ValueError when the rendered module does not parse, so a hostile
+        or merely unlucky spec can never be published as a broken file.
+        """
+        code = AGENT_TEMPLATE.format(
+            class_name=class_name,
+            description=str(spec.get("description", "")),
+            name=name,
+            system_prompt=str(spec.get("system_prompt", "You are a helpful assistant.")),
+        )
+        try:
+            compile(code, f"<{name}_agent>", "exec")
+        except SyntaxError as exc:
+            raise ValueError(f"Generated scaffold does not compile: {exc.msg}") from exc
+        return code
+
     def _write_agent_temp_file(self, name: str, class_name: str, spec: dict) -> Path:
         """Render beside the destination so the final replace is atomic."""
         self.agents_dir.mkdir(parents=True, exist_ok=True)
-        code = AGENT_TEMPLATE.format(
-            class_name=class_name,
-            description=spec.get("description", ""),
-            name=name,
-            system_prompt=spec.get("system_prompt", "You are a helpful assistant."),
-        )
+        code = self.render_agent_source(name, class_name, spec)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=self.agents_dir,
             prefix=f".{name}_agent.", suffix=".tmp", delete=False,
