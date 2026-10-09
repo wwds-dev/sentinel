@@ -95,3 +95,46 @@ def test_a_cancelled_sentry_pass_reports_nothing(monkeypatch):
     worker.run()
     assert emitted == []
     assert seen["should_stop"]() is True
+
+
+def test_close_joins_the_model_scan_worker(monkeypatch):
+    from types import SimpleNamespace
+    from main import GodAI
+    joined = []
+
+    class Thread:
+        def __init__(self, name):
+            self.name, self.cancelled = name, False
+        def isRunning(self):
+            return True
+        def cancel(self):
+            self.cancelled = True
+        def wait(self, ms):
+            joined.append(self.name); return True
+        def terminate(self):
+            raise AssertionError("joined cleanly, must not terminate")
+
+    monkeypatch.setattr("ui.dialogs.shutdown_panels", lambda app: joined.append("panels"))
+    win = SimpleNamespace(chat_worker=None, model_scan_worker=Thread("scan"),
+                          model_pull_worker=Thread("pull"), _note_failure=lambda *a: None)
+    event = SimpleNamespace(accept=lambda: joined.append("accept"))
+    GodAI.closeEvent(win, event)
+    assert joined == ["scan", "pull", "panels", "accept"]
+    assert win.model_scan_worker.cancelled is True
+
+
+def test_one_panel_failing_to_shut_down_does_not_stop_the_others():
+    from types import SimpleNamespace
+    from ui.dialogs import shutdown_panels
+    order, noted = [], []
+
+    def bad():
+        raise RuntimeError("no cancel()")
+    app = SimpleNamespace(
+        panels={"vpn": SimpleNamespace(shutdown=bad),
+                "bug_bounty": SimpleNamespace(shutdown=lambda: order.append("bug_bounty"))},
+        _note_failure=lambda where, exc: noted.append(where),
+    )
+    shutdown_panels(app)
+    assert order == ["bug_bounty"]
+    assert noted == ["shutdown: vpn"]

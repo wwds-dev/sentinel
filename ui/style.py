@@ -849,7 +849,7 @@ _GREEN_STYLESHEET = """
             background: transparent;
         }
         QLabel#ScreenLight { border-radius: 3px; background-color: #3a423e; }
-        QLabel#ScreenLight[light="ok"] { background-color: #3cff88; }
+        QLabel#ScreenLight[light="ok"] { background-color: #3cff88; } /* keep */
         QLabel#ScreenLight[light="warn"] { background-color: #f0c040; }
         QLabel#ScreenLight[light="alert"] { background-color: #f85149; }
         QGroupBox#Screen QLabel#KVKey,
@@ -932,7 +932,7 @@ _GREEN_STYLESHEET = """
         QPushButton#ModelUpdateAction:disabled { background-color: #1a201d; color: #5d6862; }
 
         QLabel#KVValueOn {
-            color: #3cff88;
+            color: #3cff88; /* keep */
             font-family: Menlo, Monaco, monospace;
             font-size: 12px;
         }

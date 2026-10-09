@@ -63,6 +63,10 @@ _SHIFT: Final[dict[str, float]] = {GREEN: 0.0, RED: -140.0, BLUE: 36.6}
 #: The accent as authored. Painter code asks for it through `accent()`.
 ACCENT_GREEN: Final[str] = "#3cff88"
 
+# Put this comment on a style-sheet line whose colour means something (an
+# "ok" light, an "on" readout) and recolour() leaves that line alone.
+KEEP_MARK: Final[str] = "/* keep */"
+
 _HEX = re.compile(r"#([0-9a-fA-F]{6})\b")
 _RGB = re.compile(r"\brgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?=[,)])")
 
@@ -91,6 +95,16 @@ def recolour(css: str, theme: str | None = None) -> str:
     shift = _SHIFT[theme or current()]
     if not shift:
         return css
+
+    if KEEP_MARK in css:
+        # A line carrying the marker is a status claim painted in the app's
+        # own green ("ok" light, an "on" readout): it keeps its colour in
+        # every theme, or under Red an OK light and an alert light would be
+        # the same red.
+        return "\n".join(
+            line if KEEP_MARK in line else recolour(line, theme)
+            for line in css.split("\n")
+        )
 
     def hex_sub(match: re.Match[str]) -> str:
         digits = match.group(1)
