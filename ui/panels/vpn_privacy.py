@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from agents.vpn_agent.services import macaddr, proxychain, tor
 from agents.vpn_agent.services.socks_client import KINDS, ProxyHop
 from services import vpn_execution
-from ui.workers import CallWorker
+from ui.panels.vpn_gate import GatedTab
 
 MAC_INFO = (
     "Changes the address this Mac presents on the local network only. It is one hop: "
@@ -40,13 +40,11 @@ CHAIN_INFO = (
 )
 
 
-class PrivacyTab(QWidget):
+class PrivacyTab(GatedTab):
     """The Privacy tab. ``busy`` is True while a companion action is running."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._worker = None
-        self._active = False
         self._loaded = False
         self._interfaces: list = []
         self._chain = proxychain.load_chain()
@@ -198,63 +196,7 @@ class PrivacyTab(QWidget):
         label.setObjectName("InfoLine")
         return label
 
-    # ── shared gate ──
-    @property
-    def busy(self) -> bool:
-        return self._active
-
-    def _say(self, text: str) -> None:
-        self.status_label.setText(text[:600])
-
-    def _ask(self, title: str, text: str) -> bool:
-        return QMessageBox.question(
-            self, title, text, QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No) == QMessageBox.Yes
-
-    def _refuse(self, action: str, target: str, reason: str) -> None:
-        vpn_execution.record_companion(action, "refused", reason, target=target)
-        self._say("Refused: " + reason)
-        QMessageBox.warning(self, "Privacy", reason + "\n\nNothing was changed.")
-
-    def _gated(self, action: str, target: str, title: str, text: str | None,
-               func, after=None) -> bool:
-        """Confirm (when ``text``), audit, run ``func`` off-thread, audit result."""
-        if self.busy:
-            QMessageBox.information(self, "Busy", "A Privacy action is already running.")
-            return False
-        if text is not None and not self._ask(title, text):
-            vpn_execution.record_companion(action, "declined",
-                                           "Operator declined the confirmation.",
-                                           target=target)
-            self._say("Not run: confirmation declined.")
-            return False
-        self._say(f"{title}…")
-        self._set_enabled(False)
-        worker = CallWorker(func)
-        self._worker = worker
-        self._active = True
-
-        def done(result):
-            ok, message = result if isinstance(result, tuple) else (bool(result), str(result))
-            vpn_execution.record_companion(
-                action, "succeeded" if ok else "failed", message, target=target)
-            self._finish(f"{message}")
-            if after:
-                after(ok)
-
-        def failed(error):
-            vpn_execution.record_companion(action, "failed", error, target=target)
-            self._finish(f"Failed: {error}")
-
-        worker.finished_signal.connect(done)
-        worker.error_signal.connect(failed)
-        worker.start()
-        return True
-
-    def _finish(self, message: str) -> None:
-        self._active = False
-        self._say(vpn_execution.redact_secrets(message))
-        self._set_enabled(True)
+    def _after_finish(self) -> None:
         self.refresh_interfaces()
         self.refresh_tor()
 
@@ -263,15 +205,6 @@ class PrivacyTab(QWidget):
                   self.tor_start_btn, self.tor_stop_btn, self.tor_check_btn,
                   self.tor_newnym_btn, self.chain_test_btn):
             w.setEnabled(enabled)
-
-    def shutdown(self, timeout_ms: int = 2000) -> None:
-        worker = self._worker
-        if worker is None or not worker.isRunning():
-            return
-        worker.cancel()
-        if not worker.wait(timeout_ms):
-            worker.terminate()
-            worker.wait(500)
 
     # ── hardware address ──
     def refresh_interfaces(self) -> None:

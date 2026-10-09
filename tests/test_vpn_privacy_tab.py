@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QMessageBox
 from agents.vpn_agent.services import macaddr, proxychain, tor
 from agents.vpn_agent.services.macaddr import Interface
 from services import vpn_execution
-from ui.panels import vpn_privacy
+from ui.panels import vpn_gate, vpn_privacy
 from ui.panels.vpn_privacy import PrivacyTab
 
 CANARY = "PW-CANARY-9f2c71"
@@ -55,7 +55,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: audit)
     e.audit = audit
     monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path / "st"))
-    monkeypatch.setattr(vpn_privacy, "CallWorker", SyncWorker)
+    monkeypatch.setattr(vpn_gate, "CallWorker", SyncWorker)
 
     def question(parent, title, text, *a, **k):
         e.asked.append((title, text))

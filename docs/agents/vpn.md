@@ -93,6 +93,20 @@ Three cards, each honest about its limits (the same text is in the tab).
 Every action runs off the interface thread, is audited including declined and
 refused attempts, and none of it talks to an AI provider.
 
+## Servers tab — VPN servers you own
+
+Create a site (remote VPS or native), edit its settings, and manage peers (the
+devices). Keys and certificates are generated locally and kept 0600 in
+Sentinel's data folder. Local, reversible edits (create site, add peer,
+enable/disable, change ports) need no prompt. These ask first, default No, and
+are audited: rotate keys and remove a peer (issued configs stop working at the
+next deploy), export files and show QR (they contain a private key; the QR is
+drawn from memory and never saved), backup (passphrase checked, AES-GCM with
+scrypt), restore over an existing site, and delete (type the site name; if no
+backup or export exists you must also accept that the keys are gone for good).
+Private keys, the CA key and passphrases never appear on screen, in the audit
+log or in any model request.
+
 ## Remote vs Native (the choice the agent keeps you honest about)
 | | Remote (VPS) | Native (home LAN) |
 |---|---|---|
