@@ -215,3 +215,13 @@ def test_the_shipped_json_seeds_the_same_rates_as_the_code(fresh_db):
             if (backend, model) in seeded:
                 assert (rates["input_per_1m_usd"], rates["output_per_1m_usd"]) == \
                     seeded[(backend, model)], (backend, model)
+
+
+def test_blank_dashscope_base_url_means_the_default(monkeypatch):
+    from services import qwen_client
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "")
+    assert qwen_client._base_url() == qwen_client.INTL_BASE_URL
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "  ")
+    assert qwen_client._base_url() == qwen_client.INTL_BASE_URL
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", qwen_client.CHINA_BASE_URL)
+    assert qwen_client._base_url() == qwen_client.CHINA_BASE_URL

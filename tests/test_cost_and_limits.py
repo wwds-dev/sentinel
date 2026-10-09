@@ -276,8 +276,33 @@ def test_local_execution_is_always_free(tracker):
     assert tracker.calculate_cost_eur("ollama", "deepseek-r1:8b", 10**6, 10**6) == 0.0
 
 
-def test_unknown_backend_costs_nothing(tracker):
-    assert tracker.calculate_cost_eur("no-such-backend", "no-such-model", 1000, 1000) == 0.0
+def test_unknown_cloud_price_is_never_free(tracker):
+    """README: a rate of zero means unknown, never free, and a cloud model with
+    no usable price is over- rather than under-estimated. This used to return
+    0.0 and bill €0.00 for any provider whose rows were blank."""
+    from services.usage_tracker import UNKNOWN_PRICE_ROW
+    cost = tracker.calculate_cost_eur("no-such-backend", "no-such-model", 1_000_000, 1_000_000)
+    assert cost > 0.0
+    # At least the fixed ceiling (the dearest table row may be higher still).
+    floor = (UNKNOWN_PRICE_ROW["input_per_1m_usd"] + UNKNOWN_PRICE_ROW["output_per_1m_usd"]) * 0.5
+    assert cost >= floor
+
+
+def test_unknown_cloud_price_uses_the_dearest_row_in_the_table(tracker, monkeypatch):
+    from services import usage_tracker as mod
+    rows = [
+        {"backend": "a", "model": "cheap", "input_per_1m_usd": 0.1, "cached_input_per_1m_usd": 0, "output_per_1m_usd": 0.4},
+        {"backend": "b", "model": "dear", "input_per_1m_usd": 20.0, "cached_input_per_1m_usd": 0, "output_per_1m_usd": 80.0},
+        {"backend": "c", "model": "blank", "input_per_1m_usd": 0, "cached_input_per_1m_usd": 0, "output_per_1m_usd": 0},
+    ]
+    class Conn:
+        def execute(self, sql, params=()):
+            class R:
+                def fetchall(s): return rows
+                def fetchone(s): return None
+            return R()
+    assert mod.dearest_price_row(Conn())["model"] == "dear"
+    assert mod.dearest_price_row(type("C", (), {"execute": lambda s, q, p=(): type("R", (), {"fetchall": lambda s: [rows[2]], "fetchone": lambda s: None})()})()) is None
 
 
 def test_cost_scales_with_token_count(tracker):
@@ -290,3 +315,53 @@ def test_cost_scales_with_token_count(tracker):
 
 def test_cost_is_never_negative(tracker):
     assert tracker.calculate_cost_eur("openai", "gpt-4o", 0, 0) >= 0.0
+
+
+# ── Numeric settings: finite, non-negative, or refused ──────────────────────
+
+from services.validator import parse_money
+
+
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "-1", "-0.01", "abc", "", "1e400"])
+def test_parse_money_refuses_what_float_accepts(raw):
+    with pytest.raises(ValueError):
+        parse_money(raw, field="Daily budget")
+
+
+@pytest.mark.parametrize("raw, expected", [("5", 5.0), (" 2.50 ", 2.5), ("0", 0.0), ("1,5", 1.5), ("1e3", 1000.0)])
+def test_parse_money_accepts_ordinary_values(raw, expected):
+    assert parse_money(raw, field="x") == expected
+
+
+def test_parse_money_blank_is_none_only_when_allowed():
+    assert parse_money("", field="x", allow_blank=True) is None
+    assert parse_money("   ", field="x", allow_blank=True) is None
+    with pytest.raises(ValueError):
+        parse_money("", field="x")
+
+
+def test_parse_money_minimum_is_inclusive():
+    assert parse_money("0.000001", field="rate", minimum=0.000001) == 0.000001
+    with pytest.raises(ValueError):
+        parse_money("0", field="rate", minimum=0.000001)
+
+
+def test_budget_save_keeps_previous_values_on_bad_input(monkeypatch):
+    from types import SimpleNamespace
+    from main import GodAI
+    from PySide6.QtWidgets import QMessageBox
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a[2])))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    saved = []
+    monkeypatch.setattr("main.save_setting", lambda k, v: saved.append((k, v)))
+    stub = SimpleNamespace(
+        session_budget_eur=5.0, daily_budget_eur=20.0,
+        session_budget_input=SimpleNamespace(text=lambda: "nan"),
+        daily_budget_input=SimpleNamespace(text=lambda: "20"),
+        update_usage_labels=lambda: None,
+    )
+    GodAI.save_budget_limits(stub)
+    assert stub.session_budget_eur == 5.0 and stub.daily_budget_eur == 20.0
+    assert saved == []
+    assert warned and "Previous values kept" in warned[0]

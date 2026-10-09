@@ -14,7 +14,9 @@ CHINA_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 def _base_url() -> str:
-    return os.getenv("DASHSCOPE_BASE_URL", INTL_BASE_URL)
+    # `.env.example` ships the line as `DASHSCOPE_BASE_URL=`; an empty value
+    # must mean "the default", not "no base URL at all".
+    return os.getenv("DASHSCOPE_BASE_URL", "").strip() or INTL_BASE_URL
 
 
 class QwenClientWrapper:
