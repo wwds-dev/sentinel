@@ -40,7 +40,9 @@ def factory(tmp_path, monkeypatch):
         );
         CREATE TABLE tools (
             name TEXT PRIMARY KEY, label TEXT, enabled INTEGER DEFAULT 1,
-            system_prompt TEXT,
+            version TEXT DEFAULT '1.0', allowed_providers TEXT DEFAULT '[]',
+            budget_limit_eur REAL, requires_approval INTEGER DEFAULT 0,
+            description TEXT DEFAULT '', system_prompt TEXT,
             recommended_provider TEXT, recommended_model TEXT
         );
         """
@@ -128,3 +130,20 @@ def test_concurrent_destination_is_never_deleted(factory, monkeypatch):
     assert not list(agent_factory.agents_dir.glob(".*.tmp"))
     assert _rows(db_path, "agents") == []
     assert len(_rows(db_path, "tools")) == 1
+
+
+
+def test_the_tool_row_carries_the_approved_limits(factory):
+    """Enabling the tool later must not widen the spec: providers, budget and
+    approval travel with it. They used to be dropped."""
+    import json
+    agent_factory, db_path = factory
+    spec = {**SPEC, "allowed_providers": ["ollama"], "budget_limit_eur": 0.25,
+            "requires_approval": True, "description": "Tiny helper."}
+    report = agent_factory.create_agent(spec)
+    assert report["success"], report["errors"]
+    row = sqlite3.connect(db_path).execute(
+        "SELECT allowed_providers, budget_limit_eur, requires_approval, description, enabled "
+        "FROM tools WHERE name = ?", (spec["label"],)).fetchone()
+    assert json.loads(row[0]) == ["ollama"]
+    assert row[1] == 0.25 and row[2] == 1 and row[3] == "Tiny helper." and row[4] == 0

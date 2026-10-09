@@ -183,9 +183,21 @@ class ManagerPanel(AgentPanel):
         self.stream_box.setVisible(False)
         self.sections.setVisible(True)
         self._populate_sections(spec, response)
-        self.approve_btn.setEnabled(True)
+        # Validate now, not after the reviewer has already said Approve and
+        # confirmed: a spec the factory will refuse is shown as such, and
+        # Approve stays disabled for it.
+        factory = getattr(self.host, "agent_factory", None)
+        valid, reason = (factory.validate_spec(spec) if factory is not None else (True, "OK"))
         self.reject_btn.setEnabled(True)
-        self.log.append("[Ready] Spec generated. Review and approve or reject.")
+        if valid:
+            self.approve_btn.setEnabled(True)
+            self.log.append("[Ready] Spec generated. Review and approve or reject.")
+        else:
+            self.approve_btn.setEnabled(False)
+            self.log.append(f"[Invalid] This spec cannot be created as written: {reason}")
+            self.sections.show_sections(
+                [("Cannot be created as written", reason, False)] + self._spec_sections(spec),
+                raw=response)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
@@ -194,6 +206,17 @@ class ManagerPanel(AgentPanel):
         self.stream_box.setVisible(True)
         self.stream_box.setPlainText(f"[Error]\n{error}")
         self.log.append(f"[Error] {error}")
+
+    def _spec_sections(self, spec: dict) -> list:
+        """The review cards for a spec, without rendering them."""
+        captured = {}
+        original = self.sections.show_sections
+        try:
+            self.sections.show_sections = lambda sections, raw="": captured.setdefault("s", sections)
+            self._populate_sections(spec, "")
+        finally:
+            self.sections.show_sections = original
+        return list(captured.get("s", []))
 
     def _populate_sections(self, spec: dict, raw: str) -> None:
         providers = ", ".join(spec.get("allowed_providers", [])) or "None"
@@ -250,8 +273,9 @@ class ManagerPanel(AgentPanel):
             f"  • Add DISABLED rows to the SQLite agent and tool registries\n\n"
             f"The scaffold is a starting point, not a live agent: nothing loads or "
             f"runs it, and it will not appear in the sidebar. A developer must wire "
-            f"it in by hand. Its generated system prompt can be enabled as a Chat "
-            f"tool from Settings → Tools after a restart.",
+            f"it in by hand. Its registry rows stay disabled, and Chat's tool list "
+            f"is fixed, so the generated prompt is not usable from Chat until that "
+            f"wiring is done.",
             QMessageBox.Yes | QMessageBox.No,
         )
 
@@ -266,8 +290,8 @@ class ManagerPanel(AgentPanel):
                 self.log.append(f"  ✓ {f}")
             self.log.append(
                 "\n[Info] Scaffold written and registered as DISABLED. It will not "
-                "appear in the sidebar or run until a developer wires it in. Its "
-                "system prompt can be enabled as a Chat tool in Settings → Tools.")
+                "appear in the sidebar or run until a developer wires it in; Chat's "
+                "tool list is fixed, so the prompt is not usable from Chat yet.")
             self.approve_btn.setEnabled(False)
             self.reject_btn.setEnabled(False)
             self.pending_spec = None
@@ -276,8 +300,8 @@ class ManagerPanel(AgentPanel):
                 "Scaffold Created",
                 f"Scaffold for '{label}' written and registered (disabled).\n\n"
                 f"This is a starting point, not a runnable agent: nothing loads it "
-                f"and it will not appear in the sidebar. Enable its generated system "
-                f"prompt as a Chat tool from Settings → Tools if you want to use it.",
+                f"and it will not appear in the sidebar. Its registry rows are "
+                f"disabled until a developer wires the agent in.",
             )
         else:
             errors = "\n".join(report["errors"])

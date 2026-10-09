@@ -243,7 +243,13 @@ class AgentFactory:
         providers = spec.get("allowed_providers", [])
         recommended_provider = providers[0] if providers else "ollama"
 
+        # The tool row carries every limit the reviewer approved: enabling the
+        # tool later must not widen the spec (providers, budget, approval).
         conn.execute("""
-            INSERT INTO tools (name, label, enabled, system_prompt, recommended_provider, recommended_model)
-            VALUES (?,?,0,?,?,?)
-        """, (label, label, spec.get("system_prompt", ""), recommended_provider, ""))
+            INSERT INTO tools (name, label, enabled, allowed_providers, budget_limit_eur,
+                               requires_approval, description, system_prompt,
+                               recommended_provider, recommended_model)
+            VALUES (?,?,0,?,?,?,?,?,?,?)
+        """, (label, label, json.dumps(list(providers)), spec.get("budget_limit_eur"),
+              1 if spec.get("requires_approval") else 0, spec.get("description", ""),
+              spec.get("system_prompt", ""), recommended_provider, ""))

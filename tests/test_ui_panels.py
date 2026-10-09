@@ -1174,6 +1174,10 @@ class FakeAgentFactory:
     def __init__(self, success=True):
         self.created = []
         self.success = success
+        self.validation = (True, "OK")
+
+    def validate_spec(self, spec):
+        return self.validation
 
     def create_agent(self, spec):
         self.created.append(spec)
@@ -2174,6 +2178,43 @@ SPEC = '{"name": "fwreview", "label": "Firewall Review"}'
 
 
 class TestForgePanel:
+
+    def test_an_invalid_spec_cannot_be_approved(self, forge):
+        forge.host.agent_factory.validation = (False, "Agent name collides with built-in 'chat'.")
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        assert forge.approve_btn.isEnabled() is False
+        assert forge.reject_btn.isEnabled() is True
+        assert "cannot be created as written" in forge.log.toPlainText().lower()
+        assert "collides" in forge.sections._raw or "collides" in forge.log.toPlainText()
+
+    def test_a_valid_spec_enables_approve(self, forge):
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        assert forge.approve_btn.isEnabled() is True
+
+    def test_review_cards_show_model_text_as_plain_text(self, forge):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        labels = [w for w in forge.sections.findChildren(QLabel)
+                  if w.objectName() in ("SectionBody", "SectionMono")]
+        assert labels
+        assert all(w.textFormat() == Qt.PlainText for w in labels)
+
+    def test_no_message_promises_a_chat_tool(self, forge, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        texts = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: texts.append(a[2]) or QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information",
+                            staticmethod(lambda *a, **k: texts.append(a[2])))
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        forge.approve_spec()
+        everything = "\n".join(texts) + forge.log.toPlainText()
+        assert "Chat tool" not in everything and "Settings → Tools" not in everything
 
     def test_it_builds_without_a_window_and_starts_hidden(self, forge):
         assert forge.isHidden() is True
