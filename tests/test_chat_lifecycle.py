@@ -239,3 +239,44 @@ def test_an_unticked_cloud_provider_blocks_before_a_worker_or_a_run(win):
         assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == runs_before
     assert _usage_count() == usage_before
     assert any("not enabled" in w for w in win.warnings)
+
+
+# ── P0-9: a configured secret never leaves through the Chat path ────────────
+
+CANARY = "CANARY-sk-7f3a9c1e5b2d4086"
+
+
+def test_secret_canaries_stay_out_of_requests_logs_chats_and_the_screen(win, monkeypatch):
+    """Every API key is set to a recognisable value; one full Chat round trip
+    runs; the value must appear nowhere the app writes or shows."""
+    import sqlite3
+    from pathlib import Path
+
+    import conftest
+    from services.database import DB_PATH
+
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+                 "DEEPSEEK_API_KEY", "KIMI_API_KEY", "QWEN_API_KEY",
+                 "SHODAN_API_KEY", "VIRUSTOTAL_API_KEY", "HIBP_API_KEY"):
+        monkeypatch.setenv(name, f"{CANARY}-{name}")
+
+    worker, run_id, _ = _send(win, "What is a salted hash?")
+    worker.stream("A salted hash is ")
+    worker.finish("A salted hash is a hash of password plus random salt.",
+                  usage={"input_tokens": 8, "output_tokens": 12})
+
+    # 1. what would be sent to the model
+    assert CANARY not in repr(worker.messages) and CANARY not in worker.prompt
+    # 2. what is on screen and in the live conversation
+    assert CANARY not in win.output_box.toPlainText()
+    assert CANARY not in repr(win.current_messages)
+    # 3. the database, every table
+    con = sqlite3.connect(str(DB_PATH))
+    dump = "\n".join(con.iterdump())
+    con.close()
+    assert CANARY not in dump
+    # 4. every file the run wrote under the isolated test root
+    root = Path(conftest._TEST_ROOT)
+    for path in root.rglob("*"):
+        if path.is_file() and path.stat().st_size < 5_000_000:
+            assert CANARY.encode() not in path.read_bytes(), f"secret written to {path}"

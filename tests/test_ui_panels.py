@@ -2271,6 +2271,88 @@ class TestTracePanel:
         assert trace.status_label.text() == "Idle"
 
 
+class TestDeclinedConsentContactsNothing:
+    """P0-8: every Trace path that sends a target to a third party starts no
+    worker, touches no socket and logs no lookup when the user says No."""
+
+    @pytest.fixture(autouse=True)
+    def _no_network(self, monkeypatch):
+        import socket
+
+        def refuse(*a, **k):
+            raise AssertionError("network touched after consent was declined")
+        monkeypatch.setattr(socket.socket, "connect", refuse)
+        monkeypatch.setattr(socket, "getaddrinfo", refuse)
+
+    @staticmethod
+    def _all_workers():
+        return (FakeLookupWorker.instances + FakeIdentityLookupWorker.instances
+                + FakeExposureLookupWorker.instances)
+
+    @pytest.mark.parametrize("qtype,target", [
+        ("Domain", "example.com"),
+        ("IP Address", "203.0.113.5"),
+        ("Username", "sapio1337"),
+        ("Company", "Acme Holdings"),
+    ])
+    def test_live_research_declined(self, trace, monkeypatch, qtype, target):
+        trace.type_box.setCurrentText(qtype)
+        trace.target_input.setText(target)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.No))
+        trace.live_research()
+        assert self._all_workers() == []
+        assert trace.status_label.text() == "Live Research cancelled before any lookup."
+        assert "Consent recorded" not in trace.activity_box.toPlainText()
+
+    def test_email_source_dialog_cancelled(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QDialog
+        trace.type_box.setCurrentText("Email")
+        trace.target_input.setText("analyst@example.com")
+        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Rejected)
+        trace.live_research()
+        assert self._all_workers() == []
+        assert trace.status_label.text() == "Live Research cancelled before any lookup."
+
+    def test_email_with_every_source_unticked_contacts_nothing(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QCheckBox, QDialog
+        trace.type_box.setCurrentText("Email")
+        trace.target_input.setText("analyst@example.com")
+
+        def untick_and_accept(self):
+            for box in self.findChildren(QCheckBox):
+                box.setChecked(False)
+            return QDialog.Accepted
+        monkeypatch.setattr(QDialog, "exec", untick_and_accept)
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        trace.live_research()
+        assert self._all_workers() == []
+
+    def test_exposure_check_cancelled(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QDialog
+        trace.type_box.setCurrentText("Domain")
+        trace.target_input.setText("example.com")
+        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Rejected)
+        trace.exposure_check()
+        assert self._all_workers() == []
+        assert trace.status_label.text() == "Exposure check cancelled before any lookup."
+
+    def test_exposure_check_with_every_source_unticked_contacts_nothing(
+            self, trace, monkeypatch):
+        from PySide6.QtWidgets import QCheckBox, QDialog
+        trace.type_box.setCurrentText("Domain")
+        trace.target_input.setText("example.com")
+
+        def untick_and_accept(self):
+            for box in self.findChildren(QCheckBox):
+                box.setChecked(False)
+            return QDialog.Accepted
+        monkeypatch.setattr(QDialog, "exec", untick_and_accept)
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        trace.exposure_check()
+        assert self._all_workers() == []
+
+
 class TestTraceSectionParsing:
     """Pure text handling — no widgets, no host."""
 
