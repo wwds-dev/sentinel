@@ -31,12 +31,12 @@ moving or deleting the file later makes Connect refuse. The status line reads
 **Connection state not checked** until you act — Tunnel does not silently probe
 the tunnel.
 
-**Known limitation:** imported profiles are saved in the VPN Agent's state
-folder (`~/Library/Application Support/VPN Agent/` on a Mac), not inside
-Sentinel's data folder, so Portable mode does not carry them and Emergency Reset
-does not erase them. On a Mac with no profile file yet, the first import creates
-one that holds only the imported profile, so the starter profiles disappear from
-the pickers.
+Imported profiles, server sites and kill-switch state are kept in Sentinel's
+data folder (`vpn/`), so Portable mode carries them and Emergency Reset covers
+them. If you used the standalone VPN Agent before, Sentinel copied its folder
+across on first run (the old copy is left untouched). On a Mac with no profile
+file yet, the first import creates one that holds only the imported profile, so
+the starter profiles disappear from the pickers.
 
 Selecting **Connect** or **Disconnect** never runs the command immediately. It
 first opens the **Execution** results tab with a target review, and only then
@@ -143,7 +143,7 @@ verifying no-leak as three separate steps: an armed kill switch proves traffic
 is blocked when the tunnel is down, not that the tunnel itself is protecting you.
 
 If something goes wrong, the recovery command printed by the Arm confirmation
-(also in the first lines of the rules file in the VPN Agent state folder, and in
+(also in the first lines of the rules file in Sentinel's `vpn/` folder, and in
 the audit log) is:
 
 ```
@@ -317,6 +317,55 @@ Treat comparisons as evidence, not proof. On macOS the WireGuard app may expose
 a friendly profile as a `utun` interface. A full-tunnel route mismatch can also
 mean the tunnel is simply stopped. Re-run Connection Check after a deliberate
 change before drawing a conclusion.
+
+## Privacy tab
+
+Three cards. Each says plainly what it does not do.
+
+**Hardware address.** Pick an interface, then *Randomise…* or *Restore hardware
+address…*. The review shows `old → new` and warns that Wi-Fi will be switched off
+and on. macOS asks for your administrator password. This changes what the local
+network sees, nothing more: your router still sees your traffic, and the change
+lasts until restart or Restore. For Wi-Fi, also set Private Wi-Fi Address to Off
+for that network or macOS may override it.
+
+**Tor.** *Start Tor…* runs a local client on 127.0.0.1:9250 (never a relay).
+*Check…* asks the Tor Project's check site, through Tor, whether you really exit
+through Tor. *New identity* asks for fresh circuits. Tor hides where you connect
+from, not who you are; logging in, cookies and your browser fingerprint still
+identify you. Install with `brew install tor`.
+
+**Proxy chain.** Build an ordered list of SOCKS5/SOCKS4/HTTP proxies (you can add
+Tor as a hop), then *Test chain…*. The test names the site it contacts and each
+hop that will see the request. The proxychains wrapper barely works on macOS: it
+is ignored by Apple's own tools such as `/usr/bin/curl`, which looks exactly like
+success, so always check the exit address. Passwords are stored owner-only and
+never shown or logged.
+
+Everything on this tab is audited (`mac-set`, `tor-*`, `chain-probe`), including
+actions you declined.
+
+## Servers tab — a VPN server you own
+
+Create a site (remote VPS, or native on your home network), set its endpoint,
+ports, routes and SSH details, add a peer per device, and Sentinel generates the
+keys and certificates locally. *Export files…* and *Show QR…* hand a device its
+config; both contain a private key and ask first (the QR is drawn from memory and
+never saved). *Rotate keys…* and *Remove…* make an issued config stop working at
+the next deploy. *Back up this site…* writes an AES-GCM encrypted file; the
+passphrase is never stored. *Delete site…* needs you to type its name, and if no
+backup exists, to accept that the keys are gone for good.
+
+To put the server online: *Check SSH…* (key-based only; the first host key is
+trusted and its fingerprint shown), *Preview deploy* (nothing runs; keys are
+replaced by `<redacted N bytes>`), *Deploy…*, then *Server status…* to see which
+devices have handshaked. *Teardown…* removes the server (type the site name).
+*Use for Connect…* adds one peer as a profile so Tunnel's Connect can use it from
+this Mac. Everything is audited (`deploy`, `teardown`, `export`, `backup`, …).
+
+While Tunnel is on screen a local health monitor watches the selected profile's
+tunnel and your DNS resolvers and warns in the status line if the tunnel drops. It
+never contacts the internet and never changes anything.
 
 ## Deployment choices
 

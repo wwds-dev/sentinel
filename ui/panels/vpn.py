@@ -58,6 +58,7 @@ class VpnPanel(AgentPanel):
         self._dns_worker = None
         self._public_ip_fetched = False
         self._build()
+        self._build_health_monitor()
         self.polish_workspace()
         self.hide()
 
@@ -948,8 +949,59 @@ class VpnPanel(AgentPanel):
             "Configuration inspected locally — key material discarded."
         )
 
+    # ── Health monitor (local only; it never changes anything) ──────────
+    def _build_health_monitor(self) -> None:
+        from agents.vpn_agent.services.health_monitor import HealthMonitor
+        self.health_monitor = HealthMonitor(30, self, tunnel_source=self._local_tunnels)
+        self.health_monitor.warning.connect(self._on_health_warning)
+        self.health_monitor.info.connect(self._on_health_info)
+        self.health_monitor.tunnel_dropped.connect(self._on_tunnel_dropped)
+        self.connect_profile_box.currentIndexChanged.connect(self._watch_selected_profile)
+
+    @staticmethod
+    def _local_tunnels() -> list[str]:
+        """Tunnels visible without contacting anything: WireGuard sockets + OpenVPN."""
+        from agents.vpn_agent.services import wireguard_manager
+        from services import openvpn_manager
+        names = list(wireguard_manager.list_active_tunnels())
+        if openvpn_manager.is_running():
+            names.append("openvpn")
+        return names
+
+    def _watch_selected_profile(self, *_args) -> None:
+        profile = self.selected_connect_profile() or {}
+        if str(profile.get("protocol") or "").lower() == "openvpn":
+            watched = ["openvpn"]
+        else:
+            iface = str(profile.get("interface") or "")
+            watched = [iface] if iface and not vpn_connection.is_placeholder(profile) else []
+        self.health_monitor.set_watched_interfaces(watched)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._watch_selected_profile()
+        self.health_monitor.start()
+
+    def hideEvent(self, event) -> None:
+        self.health_monitor.stop()
+        super().hideEvent(event)
+
+    def _on_health_warning(self, text: str) -> None:
+        self.connection_status_label.setText(text[:300])
+        vpn_execution.record_companion("health-warning", "observed", text)
+
+    def _on_health_info(self, text: str) -> None:
+        self.connection_status_label.setText(text[:300])
+
+    def _on_tunnel_dropped(self, name: str) -> None:
+        vpn_execution.record_companion("tunnel-dropped", "observed",
+                                       f"{name} went offline unexpectedly", target=name)
+
     def shutdown(self, timeout_ms: int = 2000) -> None:
         """Cancel and join Tunnel workers before their widgets are destroyed."""
+        monitor = getattr(self, "health_monitor", None)
+        if monitor is not None:
+            monitor.stop()
         workers = [self.worker, self._diagnostics_worker, self._ip_worker,
                    self._dns_worker, getattr(self, "_connection_worker", None)]
         for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None)):

@@ -283,6 +283,28 @@ The next steps need macOS, an owned WireGuard config and an administrator accoun
 - [ ] In a portable build, start a Connect, then run Settings > General > Emergency Reset: the reset either completes or shows "Reset refused" with the reason; it never fails silently.
 - [ ] Record whether the interrupted attempt appears in the audit log.
 
+15. Privacy tab (needs the Mac; use a USB Ethernet adapter for the MAC test).
+
+- [ ] The tab lists interfaces with current and hardware addresses; Refresh updates them.
+- [ ] Randomise… shows `old → new`, defaults to No; No changes nothing and logs `declined`. Yes asks for the macOS password (not a cached sudo), then the interface reports the new address. Restore puts the hardware address back. `tunnel_audit.jsonl` has `mac-set` lines for each.
+- [ ] Randomise on Wi-Fi warns that Wi-Fi will be cycled; record whether macOS accepts the change and whether Private Wi-Fi Address overrides it.
+- [ ] With Tor not installed the card shows `brew install tor` and Start is disabled. After installing: Start asks first; bootstrap completes; Check confirms "exiting through Tor"; New identity changes the exit; Stop stops it; a Tor you started yourself (Tor Browser) is left alone.
+- [ ] Start Tor with Sentinel's data folder under a path with a space: Tor starts (torrc quoting).
+- [ ] Proxy chain: add a SOCKS proxy you control; Test chain… names api.ipify.org and each hop and shows the exit address; a wrong password fails at the right hop; passwords never appear in the table, status line or audit log. Move up/down and Remove persist after restart.
+- [ ] Write proxychains.conf creates an owner-only file; record whether a Homebrew-installed program honours it and that /usr/bin/curl does not.
+
+16. Servers tab (deploy needs a throwaway VPS you control).
+
+- [ ] Create a remote site and a native site; add two peers; settings survive a restart; an invalid SSH host (starting with `-`) is refused with no process started.
+- [ ] Export files… asks first; files in the exports folder are owner-only; Show QR… asks first, shows a code the WireGuard app on a phone can scan, and nothing is saved.
+- [ ] Check SSH… asks first, shows the host-key fingerprint; Preview deploy shows no key material; Deploy… asks first, streams output with keys redacted; afterwards the VPS runs WireGuard and the phone connects. Server status… shows the handshake.
+- [ ] Use for Connect… adds the profile; Connect from Tunnel to the VPS works and the exit address is the VPS's.
+- [ ] Native deploy on the Mac asks for the macOS password (not a cached sudo) and leaves no `install-*.sh` file in the vpn/tmp folder.
+- [ ] Teardown… needs the site name typed; afterwards the server no longer answers.
+- [ ] Back up this site… with a short passphrase warns; the backup restores on a second account (Import backup…); restoring over an existing site asks first.
+- [ ] Delete site… needs the name typed, and without a backup asks again; then the site is gone and its exports folder too.
+- [ ] While Tunnel is open, drop the tunnel from outside (`wg-quick down`): within about 30 s the status line warns and the audit log has `tunnel-dropped`. Hide Tunnel: no monitor activity.
+
 ## 8. Forge (`manager`)
 
 1. Select **Forge** and describe a harmless agent that summarizes local text supplied by the user.

@@ -1840,3 +1840,56 @@ class TestChatReviewRegressions:
         win.handle_chat_finished("a reply that was already queued")
         assert usage_count() == before
         assert "already queued" not in win.output_box.toPlainText()
+
+
+# ── Companion: health monitor and the new tabs ──────────────────────────────
+
+class TestCompanionWiring:
+
+    def test_tunnel_has_privacy_and_servers_tabs(self, tunnel):
+        names = [tunnel.tabs.tabText(i) for i in range(tunnel.tabs.count())]
+        assert "Privacy" in names and "Servers" in names
+
+    def test_monitor_runs_only_while_the_panel_is_visible(self, tunnel):
+        m = tunnel.health_monitor
+        assert not m._timer.isActive()
+        tunnel.show()
+        assert m._timer.isActive()
+        tunnel.hide()
+        assert not m._timer.isActive()
+
+    def test_monitor_never_contacts_the_internet_by_default(self, tunnel, monkeypatch):
+        from agents.vpn_agent.services import public_ip
+        monkeypatch.setattr(public_ip, "get_public_ip",
+                            lambda *a, **k: pytest.fail("public IP looked up without consent"))
+        spawned = []
+        monkeypatch.setattr(tunnel.health_monitor, "_spawn",
+                            lambda fn, *a, on_result=None: spawned.append(fn))
+        tunnel.health_monitor._run_checks()
+        assert public_ip.get_public_ip not in spawned and len(spawned) == 2
+
+    def test_shutdown_stops_the_monitor(self, tunnel):
+        tunnel.show()
+        tunnel.shutdown(100)
+        assert not tunnel.health_monitor._timer.isActive()
+
+    def test_watched_interface_follows_the_selected_profile(self, tunnel, tmp_path):
+        conf = tmp_path / "wgtest.conf"
+        conf.write_text("[Interface]\nPrivateKey = x\n[Peer]\nEndpoint = 203.0.113.9:51820\n")
+        pick(tunnel, wg_profile(conf))
+        tunnel._watch_selected_profile()
+        assert tunnel.health_monitor._watched_interfaces == ["wgtest"]
+        ovpn = tmp_path / "c.ovpn"
+        ovpn.write_text("remote 203.0.113.9 1194 udp\n")
+        pick(tunnel, vpn_connection.profile_from_config(str(ovpn)))
+        tunnel._watch_selected_profile()
+        assert tunnel.health_monitor._watched_interfaces == ["openvpn"]
+
+    def test_a_dropped_tunnel_warns_and_is_audited(self, tunnel, gate):
+        m = tunnel.health_monitor
+        m.set_watched_interfaces(["wgtest"])
+        m._on_tunnels(["wgtest"])
+        m._on_tunnels([])
+        assert "TUNNEL DROPPED" in tunnel.connection_status_label.text()
+        actions = [json.loads(l)["action"] for l in gate.audit_path.read_text().splitlines()]
+        assert "tunnel-dropped" in actions and "health-warning" in actions

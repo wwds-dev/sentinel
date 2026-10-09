@@ -49,8 +49,14 @@ class HealthMonitor(QObject):
     tunnel_dropped = Signal(str)
     tunnel_up = Signal(str)
 
-    def __init__(self, interval_seconds: int = 30, parent=None):
+    def __init__(self, interval_seconds: int = 30, parent=None, *,
+                 check_public_ip: bool = False, tunnel_source=None):
+        """``check_public_ip`` is off by default: it contacts an outside service every
+        interval, which Sentinel only does when the person asks. ``tunnel_source`` lets
+        the host report tunnels the WireGuard run directory cannot see (OpenVPN)."""
         super().__init__(parent)
+        self._check_public_ip = check_public_ip
+        self._tunnel_source = tunnel_source
         self._interval_ms = interval_seconds * 1000
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._run_checks)
@@ -105,10 +111,13 @@ class HealthMonitor(QObject):
 
     def _run_checks(self) -> None:
         # Import here to avoid circular imports at module load time
-        from agents.vpn_agent.services import public_ip, dns_check, wireguard_manager
-        self._spawn(public_ip.get_public_ip, on_result=self._on_ip)
+        from agents.vpn_agent.services import dns_check, wireguard_manager
+        from agents.vpn_agent.services import public_ip
+        if self._check_public_ip:
+            self._spawn(public_ip.get_public_ip, on_result=self._on_ip)
         self._spawn(dns_check.get_system_dns_servers, on_result=self._on_dns)
-        self._spawn(wireguard_manager.list_active_tunnels, on_result=self._on_tunnels)
+        self._spawn(self._tunnel_source or wireguard_manager.list_active_tunnels,
+                    on_result=self._on_tunnels)
 
     def _on_ip(self, current) -> None:
         if isinstance(current, dict):

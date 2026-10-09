@@ -199,11 +199,12 @@ and password, pushed DNS and live status are not supported, and its log is
 written to Sentinel's data folder but not shown. **Import
 config…** loads a `.conf`/`.ovpn`, reads its real server endpoint out of the
 file, and stores it as a connectable profile. The file's location is remembered,
-not a copy. Known limitation: imported profiles and kill-switch state are stored
-in `~/Library/Application Support/VPN Agent/`, outside Sentinel's data folder, so
-Portable mode does not carry them and Emergency Reset does not erase them; on a
-Mac with no profile file yet, the first import creates one holding only the
-imported profile, so the starter profiles disappear. A few
+not a copy. Imported profiles, server sites, the Tor data folder and kill-switch state now
+live in Sentinel's data folder (`vpn/`), so Portable mode carries them and
+Emergency Reset covers them; on first run an existing `~/Library/Application
+Support/VPN Agent/` is copied across (never moved or deleted). On a Mac with no
+profile file yet, the first import creates one holding only the imported profile,
+so the starter profiles disappear. A few
 country-labelled example profiles ship as explicit templates — they are marked
 `(template)` and the connect path refuses them until you import a real config or
 set a real endpoint, so nothing pretends to be a working server it is not. An
@@ -261,9 +262,10 @@ The main runtime is organised around:
   standalone submodule): the `vpn` agent (`sentinel_chat_agent.py`), the
   `services/` stack (WireGuard/OpenVPN control, `privileged`, `killswitch`,
   `config_inspection`, DNS/latency/public-IP checks); the `server/`
-  provisioning, Tor, proxy-chain, MAC and health-monitor code it also holds is
-  not reachable from the Tunnel panel (`server/paths.py` is the only part used: it
-  locates the VPN Agent state folder).
+  server provisioning, deploy, backup, Tor, proxy-chain, MAC and health-monitor
+  code, reached from Tunnel's **Privacy** and **Servers** tabs (every action there
+  is gated and audited; `server/paths.py` locates the state folder under
+  Sentinel's data folder).
   The real connect path lives in `services/vpn_connection.py` and
   `services/openvpn_manager.py`
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Sentry, Bug Spray, Tunnel, and Forge
