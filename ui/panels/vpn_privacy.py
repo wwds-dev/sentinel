@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -20,6 +20,7 @@ from agents.vpn_agent.services import macaddr, proxychain, tor
 from agents.vpn_agent.services.socks_client import KINDS, ProxyHop
 from services import vpn_execution
 from ui.panels.vpn_gate import GatedTab
+from ui.widgets import MenuComboBox
 
 MAC_INFO = (
     "Changes the address this Mac presents on the local network only. It is one hop: "
@@ -82,7 +83,7 @@ class PrivacyTab(GatedTab):
         ml = QVBoxLayout(mac_box)
         ml.addWidget(self._info(MAC_INFO))
         row = QHBoxLayout()
-        self.mac_device_box = QComboBox()
+        self.mac_device_box = MenuComboBox()
         self.mac_device_box.currentIndexChanged.connect(self._show_mac)
         self.mac_refresh_btn = QPushButton("Refresh")
         self.mac_refresh_btn.clicked.connect(self.refresh_interfaces)
@@ -94,7 +95,7 @@ class PrivacyTab(GatedTab):
         ml.addWidget(self.mac_current_label)
         ml.addWidget(self.mac_hardware_label)
         row = QHBoxLayout()
-        self.mac_mode_box = QComboBox()
+        self.mac_mode_box = MenuComboBox()
         self.mac_mode_box.addItems(list(macaddr.MODES))
         self.mac_random_btn = QPushButton("Randomise…")
         self.mac_random_btn.clicked.connect(self.randomise_mac)
@@ -136,10 +137,11 @@ class PrivacyTab(GatedTab):
             ["#", "Type", "Host", "Port", "User", "Label"])
         self.chain_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.chain_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.chain_table.setSelectionMode(QTableWidget.SingleSelection)
         self.chain_table.setMinimumHeight(120)
         cl.addWidget(self.chain_table)
         row = QHBoxLayout()
-        self.hop_kind_box = QComboBox()
+        self.hop_kind_box = MenuComboBox()
         self.hop_kind_box.addItems(list(KINDS))
         self.hop_host_input = QLineEdit()
         self.hop_host_input.setPlaceholderText("host")
@@ -163,7 +165,7 @@ class PrivacyTab(GatedTab):
         self.hop_remove_btn = QPushButton("Remove selected")
         self.hop_up_btn = QPushButton("Move up")
         self.hop_down_btn = QPushButton("Move down")
-        self.chain_mode_box = QComboBox()
+        self.chain_mode_box = MenuComboBox()
         self.chain_mode_box.addItems(list(proxychain.MODES))
         self.chain_mode_box.setCurrentText(self._chain.mode)
         self.chain_mode_box.currentTextChanged.connect(self._mode_changed)
@@ -364,8 +366,7 @@ class PrivacyTab(GatedTab):
         self._say("Added Tor as a hop.")
 
     def _selected_row(self) -> int:
-        rows = self.chain_table.selectionModel().selectedRows()
-        return rows[0].row() if rows else -1
+        return self.chain_table.currentRow()
 
     def remove_hop(self) -> None:
         row = self._selected_row()
@@ -385,7 +386,7 @@ class PrivacyTab(GatedTab):
         hops[row], hops[target] = hops[target], hops[row]
         self._save_chain()
         self._refresh_chain()
-        self.chain_table.selectRow(target)
+        self.chain_table.setCurrentCell(target, 0)
 
     def write_conf(self) -> None:
         try:

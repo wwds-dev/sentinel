@@ -183,7 +183,7 @@ def test_chain_edit_persists_and_never_shows_password(env):
     assert env.tab.hop_pass_input.text() == ""
     reloaded = proxychain.load_chain()
     assert [h.host for h in reloaded.hops] == ["10.0.0.1", "10.0.0.2"]
-    env.tab.chain_table.selectRow(1)
+    env.tab.chain_table.setCurrentCell(1, 0)
     env.tab.move_hop(-1)
     assert proxychain.load_chain().hops[0].host == "10.0.0.2"
     env.tab.remove_hop()

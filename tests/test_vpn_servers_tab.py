@@ -66,7 +66,7 @@ def make_site(e, name="home", mode="remote", peers=("phone",)):
 
 
 def select_peer(e, row=0):
-    e.tab.peer_table.selectRow(row)
+    e.tab.peer_table.setCurrentCell(row, 0)
 
 
 def all_text(e):

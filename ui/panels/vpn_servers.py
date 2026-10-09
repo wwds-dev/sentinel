@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox,
+    QCheckBox, QDialog, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from agents.vpn_agent.server import backup, deploy, export, paths, provision, render, store
 from agents.vpn_agent.server.model import MODE_NATIVE, MODE_REMOTE, MODES, OBFS_MODES
 from ui.panels.vpn_gate import GatedTab
+from ui.widgets import MenuComboBox
 from services import vpn_execution
 
 SERVERS_INFO = (
@@ -115,7 +116,7 @@ class ServersTab(GatedTab):
         row = QHBoxLayout()
         self.new_name_input = QLineEdit()
         self.new_name_input.setPlaceholderText("new site name")
-        self.new_mode_box = QComboBox()
+        self.new_mode_box = MenuComboBox()
         self.new_mode_box.addItems(list(MODES))
         self.new_endpoint_input = QLineEdit()
         self.new_endpoint_input.setPlaceholderText("public address or DNS name")
@@ -140,7 +141,7 @@ class ServersTab(GatedTab):
         self.full_tunnel_check = QCheckBox("Send all traffic through the server")
         self.lan_input = QLineEdit()
         self.dns_input = QLineEdit()
-        self.obfs_box = QComboBox()
+        self.obfs_box = MenuComboBox()
         self.obfs_box.addItems(list(OBFS_MODES))
         self.ssh_host_input = QLineEdit()
         self.ssh_user_input = QLineEdit()
@@ -169,6 +170,7 @@ class ServersTab(GatedTab):
         self.peer_table.setHorizontalHeaderLabels(["Name", "Address", "Enabled", "OpenVPN"])
         self.peer_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.peer_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.peer_table.setSelectionMode(QTableWidget.SingleSelection)
         self.peer_table.setMinimumHeight(110)
         pl.addWidget(self.peer_table)
         row = QHBoxLayout()
@@ -303,10 +305,10 @@ class ServersTab(GatedTab):
                 self.peer_table.setItem(row, col, QTableWidgetItem(value))
 
     def _selected_peer(self):
-        rows = self.peer_table.selectionModel().selectedRows()
-        if not rows or self._site is None:
+        row = self.peer_table.currentRow()
+        if self._site is None or not (0 <= row < len(self._site.peers)):
             return None
-        return self._site.peers[rows[0].row()]
+        return self._site.peers[row]
 
     # ── local, reversible edits ──
     def create_site(self) -> None:
