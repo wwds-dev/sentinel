@@ -405,6 +405,19 @@ class VpnConnectionWorker(QThread):
         super().__init__()
         self._action = action
         self._profile = dict(profile or {})
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        """Ask the worker to stop reporting.
+
+        A privileged wg-quick/openvpn call cannot be interrupted safely once
+        the authorisation dialog is up, so cancellation does not kill it; it
+        tells the worker to drop its result instead of emitting it into a
+        panel that is being torn down. VpnPanel.shutdown() then waits for the
+        call to finish. Before this method existed, shutdown() raised
+        AttributeError on an in-flight Connect (D6).
+        """
+        self._cancel_requested = True
 
     def run(self) -> None:
         try:
@@ -421,9 +434,11 @@ class VpnConnectionWorker(QThread):
                           "output": message, "error": None if ok else message}
             else:
                 result = {"success": False, "error": f"Unknown action: {self._action}"}
-            self.finished_signal.emit(result)
+            if not self._cancel_requested:
+                self.finished_signal.emit(result)
         except Exception as exc:
-            self.error_signal.emit(str(exc))
+            if not self._cancel_requested:
+                self.error_signal.emit(str(exc))
 
 
 class VpnDiagnosticsWorker(QThread):

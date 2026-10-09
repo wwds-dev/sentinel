@@ -1123,7 +1123,8 @@ def show_settings(app):
             shutdown_panels(app)
             from services.portable_reset import erase_portable_user_data
             erase_portable_user_data()
-        except (OSError, PortableRuntimeError) as exc:
+        except Exception as exc:  # noqa: BLE001 - a failed reset must never
+            # look like a successful one; any error here means data may remain.
             QMessageBox.critical(dialog, "Reset refused", str(exc))
             return
         app._portable_reset_committed = True
