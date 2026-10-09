@@ -187,6 +187,42 @@ def killswitch_supported() -> bool:
     return bool(ks and ks.is_supported())
 
 
+DEFAULT_TUNNEL_PORTS = {"WireGuard": 51820, "OpenVPN": 1194}
+
+
+def tunnel_allow_rules(profile: dict) -> list[tuple[str, int]]:
+    """The (proto, port) pairs the kill switch must leave open for this profile.
+
+    pf's anchor is default-deny, so without a pass rule for the tunnel's own
+    transport the encrypted packets to the server are dropped on the physical
+    interface and arming the switch kills the tunnel it is meant to protect.
+    WireGuard is always UDP. OpenVPN follows the config's `proto` line (UDP
+    when absent). The port comes from the profile, else the config file, else
+    the protocol's registered default.
+    """
+    protocol = resolve_protocol(profile)
+    config_path = resolve_config_path(profile)
+    port = profile.get("port")
+    try:
+        port = int(port) if port else None
+    except (TypeError, ValueError):
+        port = None
+    if not port and config_path:
+        _, port = extract_endpoint(config_path, protocol)
+    if not port:
+        port = DEFAULT_TUNNEL_PORTS.get(protocol, 51820)
+    proto = "udp"
+    if protocol == "OpenVPN" and config_path:
+        try:
+            text = Path(config_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        match = re.search(r"(?im)^\s*proto\s+(tcp|udp)", text)
+        if match:
+            proto = match.group(1).lower()
+    return [(proto, port)]
+
+
 def arm_killswitch(profile: dict):
     """Arm a leak-blocking pf anchor that exempts this profile's endpoint so the
     tunnel can still reach its server while everything else is blocked."""
@@ -199,7 +235,10 @@ def arm_killswitch(profile: dict):
     if is_placeholder(profile):
         return False, "Choose a real server profile before arming the kill switch."
     endpoint = str(profile.get("endpoint") or "").strip()
-    return ks.arm([endpoint] if endpoint else [], allow=[])
+    if not endpoint:
+        return False, ("This profile has no server endpoint, so the kill switch "
+                       "could not exempt the tunnel. Import a real config first.")
+    return ks.arm([endpoint], allow=tunnel_allow_rules(profile))
 
 
 def disarm_killswitch():

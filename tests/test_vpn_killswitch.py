@@ -74,13 +74,66 @@ class _FakeKS:
         return True, "disarmed"
 
 
-def test_arm_exempts_the_profile_endpoint(monkeypatch):
+def test_arm_exempts_the_profile_endpoint_and_its_transport(monkeypatch):
+    # D1 regression: an empty allow list produced an anchor with only an ICMP
+    # pass for the server, so the armed switch dropped the tunnel's own UDP.
     fake = _FakeKS()
     monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
     ok, message = vpn_connection.arm_killswitch(
-        {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7"})
+        {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+         "port": 51820})
     assert ok is True and "ARMED" in message
-    assert fake.arm_calls == [(["203.0.113.7"], [])]
+    assert fake.arm_calls == [(["203.0.113.7"], [("udp", 51820)])]
+
+
+def test_arm_reads_the_port_from_the_config_when_the_profile_has_none(tmp_path, monkeypatch):
+    conf = tmp_path / "wg0.conf"
+    conf.write_text("[Interface]\nPrivateKey = x\n[Peer]\nEndpoint = 203.0.113.7:4443\n")
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    ok, _ = vpn_connection.arm_killswitch(
+        {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+         "config_path": str(conf)})
+    assert ok is True
+    assert fake.arm_calls == [(["203.0.113.7"], [("udp", 4443)])]
+
+
+def test_arm_follows_openvpn_proto_and_port(tmp_path, monkeypatch):
+    ovpn = tmp_path / "srv.ovpn"
+    ovpn.write_text("client\nproto tcp\nremote vpn.example.net 443\n")
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    ok, _ = vpn_connection.arm_killswitch(
+        {"name": "Srv", "protocol": "OpenVPN", "endpoint": "vpn.example.net",
+         "config_path": str(ovpn)})
+    assert ok is True
+    assert fake.arm_calls == [(["vpn.example.net"], [("tcp", 443)])]
+
+
+def test_arm_falls_back_to_the_registered_default_port(monkeypatch):
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    vpn_connection.arm_killswitch(
+        {"name": "Srv", "protocol": "OpenVPN", "endpoint": "203.0.113.9"})
+    assert fake.arm_calls == [(["203.0.113.9"], [("udp", 1194)])]
+
+
+def test_arm_refuses_a_profile_with_no_endpoint(monkeypatch):
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    ok, message = vpn_connection.arm_killswitch(
+        {"name": "Bare", "protocol": "WireGuard", "endpoint": ""})
+    assert ok is False and message
+    assert fake.arm_calls == []
+
+
+def test_build_rules_passes_the_tunnel_transport_to_the_server():
+    from agents.vpn_agent.services import killswitch
+    rules = killswitch.build_rules(["203.0.113.7"], [("udp", 51820)], interfaces=[])
+    assert "pass out quick inet proto udp from any to 203.0.113.7 port 51820" in rules
+    assert "pass out quick inet proto icmp from any to 203.0.113.7" in rules
+    assert rules.strip().startswith("# VPN Agent kill switch")
+    assert "block drop all" in rules
 
 
 def test_arm_refuses_a_placeholder(monkeypatch):
