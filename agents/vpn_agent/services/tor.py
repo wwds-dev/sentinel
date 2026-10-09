@@ -175,7 +175,10 @@ def start(timeout: float = STARTUP_TIMEOUT) -> tuple[bool, str]:
     if not is_installed():
         return False, f"Tor is not installed. Install it with:  {install_hint()}"
     if is_running():
-        return True, f"Tor is already listening on 127.0.0.1:{SOCKS_PORT}."
+        if is_ours():
+            return True, f"Tor is already running on 127.0.0.1:{SOCKS_PORT}."
+        return False, (f"Another program is already using 127.0.0.1:{SOCKS_PORT}, so "
+                       "Sentinel's Tor cannot start. Nothing was started.")
 
     write_torrc()
     log = data_dir() / "tor.log"
@@ -224,6 +227,15 @@ def _is_our_tor(pid: int) -> bool:
         return False
     first = command.split(" ", 1)[0].rsplit("/", 1)[-1]
     return first == "tor" and f" -f {torrc_path()}" in f"{command}"
+
+
+def is_ours() -> bool:
+    """True only when the Tor on our port is the one this app started."""
+    try:
+        pid = int(_pid_path().read_text().strip())
+    except (OSError, ValueError):
+        return False
+    return _is_our_tor(pid) and is_running()
 
 
 def stop() -> tuple[bool, str]:

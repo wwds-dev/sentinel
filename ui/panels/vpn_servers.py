@@ -61,11 +61,12 @@ def mark_backup(site_name: str) -> None:
 
 
 def has_backup(site_name: str) -> bool:
-    """True when a backup was written, or exported configs exist, for the site."""
-    if paths.slugify(site_name) in _read_marks():
-        return True
-    d = paths.exports_dir(site_name)
-    return d.is_dir() and any(d.iterdir())
+    """True when an encrypted backup of the whole site was written.
+
+    A peer export does not count: it holds one device's keys, not the server
+    or CA keys that deleting the site destroys.
+    """
+    return paths.slugify(site_name) in _read_marks()
 
 
 class ServersTab(GatedTab):
@@ -84,7 +85,10 @@ class ServersTab(GatedTab):
         super().showEvent(event)
         if not self._loaded:
             self._loaded = True
+            removed = deploy.sweep_stale_installers()
             self.refresh_sites()
+            if removed:
+                self._say(f"Removed {removed} leftover installer file(s) from an interrupted deploy.")
 
     # ── construction ──
     @staticmethod
@@ -350,6 +354,10 @@ class ServersTab(GatedTab):
         except Exception as exc:
             self._say(f"Not saved: {exc}")
             vpn_execution.record_companion("site-edit", "failed", str(exc), target=s.name)
+            try:                       # drop the half-applied edit; the file is unchanged
+                self._site = store.load_site(s.name)
+            except Exception:
+                self._site = None
             return
         vpn_execution.record_companion("site-edit", "succeeded", "settings saved", target=s.name)
         self._say("Settings saved. They apply to the next deploy.")
@@ -661,12 +669,19 @@ class ServersTab(GatedTab):
         if s is None:
             return
         problems = deploy.preflight(s)
+        fingerprint = ""
+        if s.mode == MODE_REMOTE and not problems:
+            fingerprint = deploy.host_fingerprint(s)
+            if not fingerprint:
+                problems = ["Run Check SSH first: the server's keys are only sent to a host "
+                            "whose key fingerprint you have seen."]
         if problems:
             self._show_output("This site cannot be deployed yet:\n- " + "\n- ".join(problems))
             self._refuse("deploy", s.name, "; ".join(problems))
             return
         preview = deploy.preview_script(s)
-        text = (f"Deploy {s.name}?\n\nTarget: {self._target_text(s)}\n"
+        host_line = f"Host key on record: {fingerprint}\n" if fingerprint else ""
+        text = (f"Deploy {s.name}?\n\nTarget: {self._target_text(s)}\n{host_line}"
                 f"Installs: WireGuard{' + OpenVPN' if s.enable_openvpn else ''}"
                 f"{' behind stunnel' if s.obfuscation == 'stunnel' else ''}, firewall rules "
                 f"and IP forwarding, for {sum(p.enabled for p in s.peers)} enabled peer(s).\n"
@@ -734,8 +749,9 @@ class ServersTab(GatedTab):
         def work():
             from services import vpn_connection
             paths.ensure_private_dir(directory)
-            index = site.peers.index(p) + 1
-            stem = f"sn{index}-{paths.slugify(site.name)}"[:15].rstrip("-")
+            import hashlib
+            tag = hashlib.sha256(f"{site.name}\0{p.name}".encode()).hexdigest()[:8]
+            stem = f"sn-{tag}"          # unique per site and peer, <=15 chars for wg-quick
             conf = paths.write_private(directory / f"{stem}.conf",
                                        render.wg_client_config(site, p))
             profile = vpn_connection.profile_from_config(str(conf))

@@ -69,6 +69,7 @@ _SECRET_FIELD = re.compile(
     r"(\s*[=:]\s*|\s+)(?!\[redacted)(\S+)")
 _INLINE_BLOCK = re.compile(
     r"(?is)<(key|tls-auth|tls-crypt|tls-crypt-v2|pkcs12|secret)>.*?</\1>")
+_PEM_BLOCK = re.compile(r"(?s)-----BEGIN ([A-Za-z0-9 ]+)-----.*?-----END \1-----")
 _KEY_TOKEN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{42,}={0,2}(?![A-Za-z0-9+/=])")
 
 
@@ -77,6 +78,9 @@ def redact_secrets(text: str | None) -> str:
     if not text:
         return ""
     text = _INLINE_BLOCK.sub(lambda m: f"<{m.group(1)}>[redacted]</{m.group(1)}>", text)
+    text = _PEM_BLOCK.sub(
+        lambda m: m.group(0) if "CERTIFICATE" in m.group(1) and "PRIVATE" not in m.group(1)
+        else f"-----BEGIN {m.group(1)}-----[redacted]-----END {m.group(1)}-----", text)
     text = _SECRET_FIELD.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
     return _KEY_TOKEN.sub("[redacted key]", text)
 

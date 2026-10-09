@@ -155,7 +155,8 @@ def test_tor_stop_and_newnym_need_no_confirm_but_are_audited(env, monkeypatch):
     env.tab.stop_tor()
     env.tab.new_tor_identity()
     assert env.calls == ["stop", "newnym"] and env.asked == []
-    assert [l["action"] for l in audit_lines(env)] == ["tor-stop", "tor-newnym"]
+    assert [l["action"] for l in audit_lines(env) if l["outcome"] != "started"] == ["tor-stop", "tor-newnym"]
+    assert [l["outcome"] for l in audit_lines(env)] == ["started", "succeeded", "started", "succeeded"]
 
 
 def test_tor_check_names_the_site_and_declines_cleanly(env, monkeypatch):

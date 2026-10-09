@@ -198,6 +198,12 @@ def deploy(
     if problems:
         return DeployResult(False, problems=problems)
 
+    if site.mode == MODE_REMOTE and not dry_run and not host_fingerprint(site):
+        return DeployResult(False, problems=[
+            "This host's key is not on record yet. Run Check SSH first and compare the "
+            "fingerprint it shows with the one your VPS provider gives you; the "
+            "server's private keys are only sent to a host you have seen."])
+
     script = build_script(site)
 
     if dry_run:
@@ -225,13 +231,34 @@ _B64_RUN = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 def preview_script(site: Site) -> str:
     """The installer as shown to the person: secrets replaced, structure kept.
 
-    Long base64 payloads (config files with keys) become ``<redacted N bytes>``
-    and key material outside them is scrubbed, so the preview can be shown,
-    logged or screenshotted without leaking the server's keys.
+    Base64 payloads (the config files the installer writes) are decoded and
+    shown with their key lines and PEM blocks scrubbed, so the person can read
+    exactly what goes onto the server; anything that is not text becomes
+    ``<redacted N bytes>``. Key material outside them is scrubbed too.
     """
+    import base64
+    import binascii
+
     from services.vpn_execution import redact_secrets
-    text = _B64_RUN.sub(lambda m: f"<redacted {len(m.group(0))} bytes>", build_script(site))
-    return redact_secrets(text)
+
+    def show(match) -> str:
+        blob = match.group(0)
+        try:
+            decoded = base64.b64decode(blob, validate=True).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            return f"<redacted {len(blob)} bytes>"
+        body = redact_secrets(decoded).rstrip("\n")
+        return ("<file contents, keys redacted:\n"
+                + "\n".join("  | " + line for line in body.splitlines()) + "\n>")
+
+    script = build_script(site)
+    out, last = [], 0
+    for match in _B64_RUN.finditer(script):
+        out.append(redact_secrets(script[last:match.start()]))
+        out.append(show(match))
+        last = match.end()
+    out.append(redact_secrets(script[last:]))
+    return "".join(out)
 
 
 def build_script(site: Site) -> str:
@@ -259,6 +286,25 @@ def _run_remote(site: Site, script: str, on_output: OutputCallback | None) -> De
     return _stream(command, script, on_output)
 
 
+def sweep_stale_installers() -> int:
+    """Remove installer files left by a run that was killed mid-dialog.
+
+    They hold server private keys. The normal path removes its own file in a
+    ``finally``; an app killed while the password dialog was up never gets
+    there, so this runs when the Servers tab first opens.
+    """
+    directory = paths.state_dir() / "tmp"
+    removed = 0
+    if directory.is_dir():
+        for stale in directory.glob("install-*.sh"):
+            try:
+                stale.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def _run_local(site: Site, script: str, on_output: OutputCallback | None,
                purpose: str = "set up the VPN server") -> DeployResult:
     """
@@ -266,8 +312,9 @@ def _run_local(site: Site, script: str, on_output: OutputCallback | None,
 
     Sentinel's gated actions use the macOS administrator dialog and never a
     cached ``sudo`` ticket. The dialog runs one command, not a stdin stream, so
-    the installer goes into a private (0600) file inside the state folder, runs
-    as ``bash <file>``, and the file is removed afterwards whatever happens: the
+    the installer goes into a private (0600) file inside the state folder; root
+    copies it to a root-owned temp file, checks its SHA-256, runs it and removes
+    the copy. Sentinel removes its own file afterwards whatever happens: the
     script embeds the server's private keys.
     """
     import os
@@ -278,15 +325,31 @@ def _run_local(site: Site, script: str, on_output: OutputCallback | None,
     if os.geteuid() == 0:
         return _stream(["bash", "-s"], script, on_output)
 
+    import hashlib
+
     directory = paths.ensure_private_dir(paths.state_dir() / "tmp")
     fd, name = tempfile.mkstemp(prefix="install-", suffix=".sh", dir=directory)
     path = Path(name)
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    # The file is ours (user-owned) while the password dialog is up, so another
+    # process running as this user could swap its contents. Root therefore
+    # copies it into a root-owned 0600 temp file, checks the copy's SHA-256
+    # against what Sentinel wrote, and only then runs it; the copy is removed
+    # whatever happens.
+    runner = (
+        "t=$(/usr/bin/mktemp /tmp/sentinel-install.XXXXXX) || exit 97; "
+        f"/bin/cat {shlex.quote(str(path))} > \"$t\"; "
+        "h=$(/usr/bin/shasum -a 256 \"$t\" | /usr/bin/cut -c1-64); "
+        f"if [ \"$h\" = {digest} ]; then /bin/bash \"$t\"; r=$?; "
+        "else echo 'installer changed before it ran; refused' >&2; r=98; fi; "
+        "/bin/rm -f \"$t\"; exit $r"
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(script)
         os.chmod(path, 0o600)
         ok, output = privileged.run_as_root(
-            f"/bin/bash {shlex.quote(str(path))}",
+            runner,
             f"Sentinel needs administrator access to {purpose} on {site.name}.",
             DEPLOY_TIMEOUT,
             allow_cached_sudo=False,
@@ -416,6 +479,7 @@ def build_teardown_script(site: Site) -> str:
     A native macOS install is a different animal — pf and Homebrew rather than
     systemd and apt — so it gets its own script.
     """
+    site.check_strict()
     if site.mode == MODE_NATIVE and platform.system() == "Darwin":
         return bootstrap.macos_teardown_script(site)
 

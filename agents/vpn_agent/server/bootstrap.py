@@ -670,6 +670,7 @@ echo "[vpn-agent] Teardown complete. Homebrew formulae were left installed."
 
 def bootstrap_for(site: Site, platform: str) -> str:
     """Return the right installer for a target platform ('linux' or 'darwin')."""
+    site.check_strict()
     if platform == "darwin":
         return macos_bootstrap(site)
     if platform == "linux":

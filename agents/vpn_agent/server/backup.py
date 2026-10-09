@@ -48,7 +48,7 @@ KEY_BYTES = 32
 
 # ~32 MB and a noticeable fraction of a second per attempt. High enough to make
 # guessing a decent passphrase expensive, low enough not to fail on a laptop.
-SCRYPT_N = 2 ** 15
+SCRYPT_N = 2 ** 17   # ~128 MiB; older 2**15 backups still open
 SCRYPT_R = 8
 SCRYPT_P = 1
 
@@ -142,7 +142,17 @@ def import_site(blob: bytes, passphrase: str) -> Site:
     except (KeyError, ValueError) as exc:
         raise BackupError(f"Backup file is malformed: {exc}") from exc
 
-    key = _derive(passphrase, salt, int(kdf["n"]), int(kdf["r"]), int(kdf["p"]))
+    # The header is authenticated, but only after the key is derived, so its
+    # cost parameters must be bounded first: a crafted file asking for
+    # n=2**24 or p=2**20 would otherwise freeze the app or exhaust memory.
+    try:
+        n, r, p = int(kdf["n"]), int(kdf["r"]), int(kdf["p"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BackupError(f"Backup file is malformed: {exc}") from exc
+    if not (2 ** 14 <= n <= 2 ** 18 and n & (n - 1) == 0 and r == 8 and p == 1
+            and len(salt) == SALT_BYTES and len(nonce) == NONCE_BYTES):
+        raise BackupError("Backup file uses unsupported encryption parameters.")
+    key = _derive(passphrase, salt, n, r, p)
     aad = json.dumps(header, sort_keys=True).encode("utf-8")
 
     try:
@@ -153,7 +163,14 @@ def import_site(blob: bytes, passphrase: str) -> Site:
             "been altered — the format cannot tell you which."
         ) from exc
 
-    return Site.from_dict(json.loads(plaintext.decode("utf-8")))
+    try:
+        site = Site.from_dict(json.loads(plaintext.decode("utf-8")))
+    except (UnicodeDecodeError, ValueError, TypeError, AttributeError) as exc:
+        raise BackupError(f"The backup's contents are malformed: {exc}") from exc
+    problems = site.strict_problems()
+    if problems:
+        raise BackupError("The backup holds values Sentinel will not use: " + " ".join(problems))
+    return site
 
 
 def describe(blob: bytes) -> dict:
@@ -174,11 +191,22 @@ def write_backup(site: Site, passphrase: str, path: Path) -> Path:
         path = path.with_suffix(SUFFIX)
     blob = export_site(site, passphrase)
 
-    # Written through a private-mode open so the ciphertext is never briefly
-    # world-readable. It is encrypted, but there is no reason to be casual.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(blob)
+    # Written to a fresh 0600 temp file and renamed into place, so an existing
+    # file with a looser mode (or a symlink) at the chosen path is replaced,
+    # never written through.
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(blob)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 

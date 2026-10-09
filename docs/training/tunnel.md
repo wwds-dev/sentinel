@@ -357,7 +357,8 @@ passphrase is never stored. *Delete site…* needs you to type its name, and if 
 backup exists, to accept that the keys are gone for good.
 
 To put the server online: *Check SSH…* (key-based only; the first host key is
-trusted and its fingerprint shown), *Preview deploy* (nothing runs; keys are
+trusted and its fingerprint shown; compare it with the one your VPS provider
+gives you; Deploy is refused until this has been done), *Preview deploy* (nothing runs; keys are
 replaced by `<redacted N bytes>`), *Deploy…*, then *Server status…* to see which
 devices have handshaked. *Teardown…* removes the server (type the site name).
 *Use for Connect…* adds one peer as a profile so Tunnel's Connect can use it from

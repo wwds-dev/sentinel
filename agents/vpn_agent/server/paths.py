@@ -170,19 +170,26 @@ def write_private(path: Path, text: str) -> Path:
     """
     Write a file containing secrets so that only this user can read it.
 
-    The mode is set before the content lands, so there is no window in which
-    the key material is world-readable.
+    The content goes into a new 0600 temp file (created exclusively, never
+    following a link) beside the target and is then renamed over it, so an
+    existing looser-mode file or a planted symlink never receives the secrets.
     """
+    import tempfile
+
+    path = Path(path)
     ensure_private_dir(path.parent)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
+        os.fchmod(fd, FILE_MODE)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
-    finally:
-        # os.fdopen owns the fd now; if it raised before taking ownership the
-        # descriptor is already closed by the failure path.
-        pass
-    os.chmod(path, FILE_MODE)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 

@@ -112,15 +112,19 @@ log or in any model request.
 On a site (Servers tab): **Check SSH** (asks first; key-based only, never a
 password; the first host key is trusted and its fingerprint shown, a changed key
 is refused), **Preview deploy** (the installer with keys replaced by
-`<redacted N bytes>`; nothing runs), **Deploy** (asks first; shows target and what
-is installed; live output with keys redacted), **Server status** (asks first;
+`<redacted N bytes>`; nothing runs), **Deploy** (refused until Check SSH has recorded the host key; asks first,
+showing target, host-key fingerprint and what is installed; live output with
+keys redacted), **Server status** (asks first;
 read-only), **Teardown** (type the site name) and **Use for Connect** (writes one
 peer's config, which holds a private key, and adds a profile so Connect can use
 it). A remote deploy streams the installer over SSH and writes nothing to the
 server's disk. A native deploy on this Mac writes the installer to a private
 temporary file, runs it through the macOS administrator dialog (never a cached
-sudo) and removes the file afterwards. SSH host, user, key file and interface
-name are validated, so a restored backup cannot smuggle in an ssh option.
+sudo) and removes the file afterwards. Every site field (names, interface, DNS,
+routes, SSH target, ports) is checked against an allowlist when a site is
+saved, loaded, restored or deployed, so a backup from someone else cannot
+smuggle a command into the installer. Names may use letters, digits, spaces
+and `. _ - ( )`.
 
 ## Remote vs Native (the choice the agent keeps you honest about)
 | | Remote (VPS) | Native (home LAN) |

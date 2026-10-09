@@ -280,9 +280,14 @@ class PrivacyTab(GatedTab):
     # ── Tor ──
     def refresh_tor(self) -> None:
         installed = tor.is_installed()
-        running = tor.is_running() if installed else False
+        listening = tor.is_running() if installed else False
+        running = listening and tor.is_ours()
         busy = self.busy
-        if not installed:
+        if listening and not running:
+            self.tor_state_label.setText(
+                f"Another program is listening on 127.0.0.1:{tor.SOCKS_PORT}; it is not "
+                "the Tor Sentinel started, so Check, New identity and Stop are off.")
+        elif not installed:
             self.tor_state_label.setText(f"Tor is not installed. Install it with: {tor.install_hint()}")
         elif running:
             self.tor_state_label.setText(f"Running on 127.0.0.1:{tor.SOCKS_PORT}. {tor.bootstrap_progress()}")

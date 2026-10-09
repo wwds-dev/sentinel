@@ -49,6 +49,9 @@ class GatedTab(QWidget):
                                            target=target)
             self._say("Not run: confirmation declined.")
             return False
+        # Recorded before anything runs: if the app is closed while a privileged
+        # step is in flight, the log still shows that it was attempted.
+        vpn_execution.record_companion(action, "started", "", target=target)
         self._say(f"{title}…")
         self._set_enabled(False)
         worker = CallWorker(func)

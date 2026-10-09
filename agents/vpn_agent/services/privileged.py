@@ -62,13 +62,27 @@ def _sudo_refused(output: str) -> bool:
     return False
 
 
+def applescript_string(text: str) -> str:
+    """Quote ``text`` as an AppleScript string literal.
+
+    Backslash and double quote are the only escapes inside an AppleScript
+    string; control characters are dropped so a value cannot end the line.
+    Both the shell snippet and the prompt go through here: an unescaped quote
+    in the prompt (a site name, say) would otherwise let the text after it run
+    as AppleScript before any password is asked for.
+    """
+    cleaned = "".join(ch for ch in str(text) if ch in "\n\t" or ord(ch) >= 32)
+    return '"' + cleaned.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def run_with_dialog(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
     """Run a shell snippet as root through the macOS authorisation dialog only."""
-    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
+    prompt_text = " ".join(str(prompt).split())
     ok, output = run(
         [
             "osascript", "-e",
-            f'do shell script "{escaped}" with prompt "{prompt}" '
+            f"do shell script {applescript_string(script)} "
+            f"with prompt {applescript_string(prompt_text)} "
             "with administrator privileges",
         ],
         timeout + PASSWORD_ENTRY_SECONDS,

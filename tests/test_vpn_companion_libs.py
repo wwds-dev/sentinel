@@ -3,6 +3,7 @@ privilege path, native deploy temp file. All offline; no real root, ssh or tor."
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -142,7 +143,7 @@ def test_native_deploy_goes_through_dialog_and_removes_secret_file(state, monkey
     seen = {}
 
     def fake(script, prompt, timeout=0, *, allow_cached_sudo=True):
-        path = Path(shlex.split(script)[-1])
+        path = Path(shlex.split(re.search(r"/bin/cat (.+?) > ", script).group(1))[0])
         seen.update(path=path, exists=path.exists(),
                     mode=stat.S_IMODE(path.stat().st_mode),
                     body=path.read_text(), flag=allow_cached_sudo)
@@ -163,7 +164,7 @@ def test_native_deploy_removes_file_when_dialog_fails(state, monkeypatch):
     holder = {}
 
     def boom(script, *a, **k):
-        holder["p"] = Path(shlex.split(script)[-1])
+        holder["p"] = Path(shlex.split(re.search(r"/bin/cat (.+?) > ", script).group(1))[0])
         return False, "User canceled."
     monkeypatch.setattr(privileged, "run_as_root", boom)
     res = deploy._run_local(default_site("home", MODE_NATIVE), "secret", None)

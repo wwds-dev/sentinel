@@ -147,3 +147,24 @@ new identity, stop; proxy-chain probe through a SOCKS proxy you control; create 
 site, deploy to a throwaway VPS, export a peer, import it in the WireGuard app,
 connect from Tunnel, server status shows the handshake, teardown, delete; backup
 and restore on a second account.
+
+## Independent review (2026-10-09, Opus) — findings and fixes
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | Critical | Site/peer names, interface, DNS, LAN routes from a restored backup or the editor were interpolated into root-run installer/teardown scripts and server configs | `Site.strict_problems()` allowlists every such field; enforced on save, load, backup import, `bootstrap_for` and teardown |
+| 2 | High | Dialog prompt (with the site name) was not escaped for AppleScript | `privileged.applescript_string` quotes both script and prompt |
+| 3 | Medium | Backup scrypt parameters taken from the file before authentication (freeze/OOM) | Bounded: n 2^14–2^18 power of two, r=8, p=1, fixed salt/nonce sizes; N raised to 2^17 |
+| 4 | Medium | Deploy could send keys to a never-seen host (accept-new) | Remote deploy refused until Check SSH has recorded the host key; fingerprint shown in the Deploy confirmation |
+| 5 | Medium | A deploy killed mid-dialog left the key-bearing installer and no audit line | `started` audit line before every gated action; stale `install-*.sh` swept when Servers opens |
+| 6 | Low | Installer file writable by the user while the dialog was open | Root copies it to a root-owned temp file and checks its SHA-256 before running |
+| 7 | Low | tls-crypt static key not redacted | PEM private/static key blocks redacted generically |
+| 8 | Low | "Use for Connect" file names could collide across sites | Name from a hash of site and peer |
+| 9 | Low | Secret files written through existing loose-mode files/symlinks | Temp file 0600 + atomic rename (`write_private`, backups) |
+| 10 | Low | Any program on 127.0.0.1:9250 was shown as our Tor | `tor.is_ours()` (pid + command line); Start refuses a foreign listener |
+| 11 | Low | A peer export counted as a backup before Delete | Only an encrypted site backup counts |
+| 12 | Low | Wrong field types in a restored site broke the editor | Covered by strict validation (types checked) |
+
+Names are now limited to letters, digits, spaces and `. _ - ( )`. A legacy
+site whose name falls outside that will not open; rename it in its JSON file.
+Regression tests: `tests/test_vpn_review_fixes.py`.

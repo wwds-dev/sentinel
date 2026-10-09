@@ -297,20 +297,21 @@ def test_ssh_target_cannot_become_an_ssh_option(env):
     assert deploy_mod._ssh_command(s)[-2:] == ["--", "root@1.2.3.4"]
 
 
-def test_hostile_ssh_target_runs_nothing(env, monkeypatch):
+def test_hostile_ssh_target_is_never_saved_or_loaded(env, monkeypatch):
     remote_site(env)
     env.tab.ssh_host_input.setText("-oProxyCommand=evil")
     env.tab.save_settings()
-    ran = []
-    monkeypatch.setattr(deploy_mod.subprocess, "run", lambda *a, **k: ran.append(a))
-    monkeypatch.setattr(deploy_mod.subprocess, "Popen", lambda *a, **k: ran.append(a))
-    for fn in (env.tab.check_ssh, env.tab.server_status, env.tab.deploy_site, env.tab.teardown_site):
-        env.answers = [True]
-        env.typed = ["home"]
-        fn()
-    assert ran == []
-    assert all(l["outcome"] == "refused" for l in audit(env) if l["action"] in
-               ("deploy-check", "server-status", "deploy", "teardown"))
+    assert "Not saved" in env.tab.status_label.text()
+    assert store.load_site("home").ssh.host == "203.0.113.5"
+    assert env.tab._site.ssh.host == "203.0.113.5"        # the half-applied edit was dropped
+    data = json.loads(paths.site_file("home").read_text())
+    data["ssh"]["host"] = "-oProxyCommand=evil"
+    paths.site_file("home").write_text(json.dumps(data))
+    paths.site_file("home").chmod(0o600)
+    with pytest.raises(ValueError):
+        store.load_site("home")
+    env.tab._select_site("home")
+    assert env.tab._site is None and "Could not open" in env.tab.status_label.text()
 
 
 def test_preview_shows_no_secret(env):
@@ -333,13 +334,28 @@ def test_preview_shows_no_secret(env):
                 assert "PRIVATE KEY" not in plain and s.server_wg_private_key not in plain
 
 
+FP = "256 SHA256:abcdefTESTFINGERPRINT 203.0.113.5 (ED25519)"
+
+
+def test_remote_deploy_needs_a_known_host_key(env, monkeypatch):
+    remote_site(env)
+    monkeypatch.setattr(deploy_mod, "host_fingerprint", lambda site: "")
+    called = []
+    monkeypatch.setattr(deploy_mod, "deploy", lambda *a, **k: called.append(1))
+    env.answers = [True]
+    env.tab.deploy_site()
+    assert called == [] and env.asked == [] and audit(env)[-1]["outcome"] == "refused"
+    assert "Check SSH" in env.tab.output_view.toPlainText()
+
+
 def test_deploy_declined_runs_nothing_and_is_audited(env, monkeypatch):
     remote_site(env)
+    monkeypatch.setattr(deploy_mod, "host_fingerprint", lambda site: FP)
     called = []
     monkeypatch.setattr(deploy_mod, "deploy", lambda *a, **k: called.append(1))
     env.tab.deploy_site()
     assert called == [] and audit(env)[-1] == {**audit(env)[-1], "action": "deploy", "outcome": "declined"}
-    assert "203.0.113.5" in env.asked[0][1]
+    assert "203.0.113.5" in env.asked[0][1] and "SHA256:abcdefTESTFINGERPRINT" in env.asked[0][1]
 
 
 def test_deploy_blocked_by_preflight_without_prompt(env, monkeypatch):
@@ -350,6 +366,7 @@ def test_deploy_blocked_by_preflight_without_prompt(env, monkeypatch):
 
 def test_deploy_confirmed_streams_redacted_output_and_audits(env, monkeypatch):
     s = remote_site(env)
+    monkeypatch.setattr(deploy_mod, "host_fingerprint", lambda site: FP)
 
     def fake(site, dry_run=False, on_output=None):
         for l in ("installing wireguard", f"PrivateKey = {s.server_wg_private_key}", "done"):
@@ -368,6 +385,7 @@ def test_deploy_confirmed_streams_redacted_output_and_audits(env, monkeypatch):
 
 def test_deploy_failure_is_audited_as_failed(env, monkeypatch):
     remote_site(env)
+    monkeypatch.setattr(deploy_mod, "host_fingerprint", lambda site: FP)
     monkeypatch.setattr(deploy_mod, "deploy",
                         lambda site, **k: DeployResult(False, error="Permission denied (publickey)."))
     env.answers = [True]
