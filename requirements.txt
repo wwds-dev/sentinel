@@ -29,3 +29,4 @@ PySide6             # desktop GUI
 google-genai         # Gemini provider
 psutil               # resource monitor
 paramiko>=3.4,<4      # authenticated read-only SFTP search for Bloodhound
+keyring               # Bug Spray companion: Keychain-only secrets (agents/bug_spray)

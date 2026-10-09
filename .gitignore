@@ -47,11 +47,11 @@ data/settings.local.json
 # Nested companion project (its own git repo, moved in under the sentinel family)
 
 
-# Nested companion repos: agent classes split into their own repos
-# (gitignored here until each has a GitHub remote and becomes a proper submodule)
-/agents/chat_agent/
-/agents/osint_agent/
-/agents/osint_heavy_agent/
-/agents/wifi_agent/
-/agents/manager_agent/
-/agents/sentry/
+# The built-in agent packages (chat, osint, osint_heavy, wifi, manager, sentry)
+# live in-tree, like vpn_agent: a fresh clone must import main.py and collect
+# the test suite without a side channel. Their former nested .git directories
+# are archived under _archive/ (ignored) rather than deleted.
+/_archive/
+/agents/*/.pytest_cache/
+/agents/*/.ruff_cache/
+/agents/*/data/
