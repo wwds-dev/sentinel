@@ -1092,6 +1092,47 @@ class TestWorkspaceLayoutRegressions:
         assert trace.status_label.text() == "Saved search loaded."
         assert "no external sources were queried" in trace.activity_box.toPlainText()
 
+    @pytest.mark.parametrize("command,result,expected", [
+        ("Live Research · Domain", {"type": "domain", "query": "acme.com"}, "Domain"),
+        ("Live Research · IP Address", {"type": "ip", "query": "acme.com"}, "IP Address"),
+        ("Live Research · Email", {"type": "email", "query": "acme.com"}, "Email"),
+        ("Live Research · Exposure",
+         {"type": "exposure", "query": "acme.com", "target_type": "company",
+          "summary": {}}, "Company"),
+    ])
+    def test_reopening_a_live_save_restores_its_query_type(
+            self, win, monkeypatch, command, result, expected):
+        """A live save is titled "Live Research · Domain", which is not an item
+        of the type box, so the box kept whatever it showed before."""
+        import json
+
+        data = {
+            "agent": "osint", "backend": "public-sources",
+            "model": "selected-public-sources", "command": command,
+            "messages": [{"role": "user", "content": "acme.com"}],
+            "response": json.dumps({"sources_contacted": [], **result}),
+        }
+        path = Path("trace-live.json")
+        monkeypatch.setattr(win.history, "list_chats", lambda: [path])
+        monkeypatch.setattr(win.history, "load_chat", lambda _path: data)
+        trace = win.panels["osint"]
+        trace.type_box.setCurrentText("Phone")
+
+        win.saved_search_search.setText("")
+        win.load_saved_searches()
+        try:
+            win.open_selected_search(win.saved_search_list.item(0))
+
+            assert trace.type_box.currentText() == expected
+            assert trace.target_input.text() == "acme.com"
+            trail = trace.activity_box.toPlainText()
+            assert "stored live-source record" in trail
+            assert "query-planning" not in trail
+            assert "no external sources were queried" in trail
+        finally:
+            trace.type_box.setCurrentText("Auto-detect")   # the window is shared
+            trace.clear()
+
     def test_chat_width_is_bounded_only_when_the_workspace_is_ultrawide(self, win):
         win.center_widget.resize(2200, 1000)
         win.select_agent("chat")
@@ -1539,6 +1580,10 @@ class FakeIdentityLookupWorker(FakeLookupWorker):
         self.sources = tuple(sources)
 
 
+class FakeExposureLookupWorker(FakeIdentityLookupWorker):
+    instances = []
+
+
 @pytest.fixture
 def trace(qapp, monkeypatch):
     """Trace built against a fake host — no `GodAI`, no window, no thread."""
@@ -1551,9 +1596,13 @@ def trace(qapp, monkeypatch):
     monkeypatch.setattr(
         OsintPanel, "identity_lookup_worker_class", FakeIdentityLookupWorker
     )
+    monkeypatch.setattr(
+        OsintPanel, "exposure_lookup_worker_class", FakeExposureLookupWorker
+    )
     FakeWorker.instances.clear()
     FakeLookupWorker.instances.clear()
     FakeIdentityLookupWorker.instances.clear()
+    FakeExposureLookupWorker.instances.clear()
 
     host = FakeHost()
     host.agent_instances["osint"] = FakeOsintAgent()
@@ -2065,6 +2114,154 @@ class TestTracePanel:
         assert trace.analyse_btn.isEnabled() is True
         assert trace.stop_btn.isEnabled() is False
 
+    def test_a_stopped_plan_keeps_its_partial_text_and_is_not_an_error(self, trace):
+        """Stop used to leave the red "Request cancelled by user." box, drop the
+        partial text and (on a non-streaming reply) record the answer anyway."""
+        trace.analyse()
+        worker = trace.worker
+        worker.token_signal.emit("## QUERY STRUCTURE\npartial plan")
+        trace.stop()
+        # Whatever the cancelled thread still sends must not land.
+        worker.token_signal.emit(" late token")
+        worker.error_signal.emit("Request cancelled by user.")
+        worker.finished_signal.emit("late full answer")
+
+        assert trace.status_label.text() == "Stopped."
+        shown = trace.stream_box.toPlainText()
+        assert shown == "## QUERY STRUCTURE\npartial plan"
+        assert "ERROR" not in shown and trace.stream_box.isVisibleTo(trace)
+        calls = trace.host.calls
+        assert ("abandon", "osint", "cancelled") in calls
+        assert ("abandon", "osint", "error") not in calls
+        assert [c for c in calls if c[0] == "record"] == []
+        assert trace.analyse_btn.isEnabled() and not trace.stop_btn.isEnabled()
+
+    def test_a_cancel_error_that_arrives_without_stop_is_still_a_stop(self, trace):
+        trace.analyse()
+        trace.worker.token_signal.emit("partial")
+        trace.worker.error_signal.emit("Request cancelled by user.")
+        assert trace.status_label.text() == "Stopped."
+        assert trace.stream_box.toPlainText() == "partial"
+        assert ("abandon", "osint", "cancelled") in trace.host.calls
+        assert trace.analyse_btn.isEnabled() is True
+
+    def test_a_cancelled_non_streaming_reply_never_reports_finished(self):
+        from ui.workers import ChatWorker
+
+        holder = {}
+
+        def backend(*_args):
+            holder["worker"].cancel()      # Stop arrives while the reply is in hand
+            return "a whole reply"
+
+        worker = ChatWorker(backend, "ollama", "m", [], "p")
+        holder["worker"] = worker
+        finished, errors = [], []
+        worker.finished_signal.connect(finished.append)
+        worker.error_signal.connect(errors.append)
+        worker.run()
+        assert finished == [] and errors == []
+
+    def test_a_second_live_research_cannot_replace_a_running_worker(
+            self, trace, monkeypatch):
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+        trace.live_research()
+        first = trace.worker
+        trace.stop()
+        first.running = True           # the source in flight has not returned yet
+
+        # Stop must not hand the controls back while the worker is alive.
+        assert trace.live_btn.isEnabled() is False
+        assert trace.status_label.text().startswith("Stopping")
+        # A click that gets through anyway (shortcut, queued event) is refused.
+        trace.live_research()
+        assert trace.worker is first
+        assert len(FakeLookupWorker.instances) == 1
+
+        first.finished_signal.emit({
+            "type": "domain", "query": "acme.com", "cancelled": True,
+            "sources_contacted": [{"source": "WHOIS", "status": "checked"}],
+        })
+        assert trace.status_label.text() == "Stopped — partial results retained."
+        assert trace.live_btn.isEnabled() and trace.exposure_btn.isEnabled()
+        assert trace.analyse_btn.isEnabled() and not trace.stop_btn.isEnabled()
+
+    def test_a_second_exposure_check_cannot_replace_a_running_worker(
+            self, trace, monkeypatch):
+        monkeypatch.setattr(
+            trace, "_choose_exposure_sources", lambda target, kind: ("ransomware_live",))
+        trace.exposure_check()
+        first = trace.worker
+        assert first is FakeExposureLookupWorker.instances[-1]
+        trace.stop()
+        first.running = True
+
+        assert trace.exposure_btn.isEnabled() is False
+        trace.exposure_check()
+        trace.live_research()
+        assert trace.worker is first
+        assert len(FakeExposureLookupWorker.instances) == 1
+        assert FakeLookupWorker.instances == []
+
+        first.error_signal.emit("boom")        # the other way a worker ends
+        assert trace.exposure_btn.isEnabled() and trace.live_btn.isEnabled()
+
+    def test_the_exposure_worker_passes_an_empty_selection_through(self, monkeypatch):
+        """An empty tuple is "nothing selected"; the worker used to turn it into
+        None, which the provider reads as every default source."""
+        from providers import exposure_lookup
+        from ui.workers import ExposureLookupWorker
+
+        seen = []
+        monkeypatch.setattr(
+            exposure_lookup, "lookup",
+            lambda target, kind, **kwargs: seen.append(kwargs) or {"type": "exposure"})
+        ExposureLookupWorker("acme.com", "Domain", ()).run()
+        assert seen[0]["selected_sources"] == ()
+
+    def _exposure_verdict(self, trace, monkeypatch, **result):
+        shown = {}
+        monkeypatch.setattr(trace.sections, "show_sections",
+                            lambda cards, raw=None: shown.update(cards=dict(
+                                (c[0], c[1]) for c in cards)))
+        trace._show_lookup_result({
+            "type": "exposure", "query": "acme.com", "summary": {}, **result,
+        }, save=False)
+        return shown["cards"]["Exposure verdict"]
+
+    def test_the_exposure_verdict_is_clean_only_when_every_source_answered(
+            self, trace, monkeypatch):
+        answered = [{"source": "Ransomware.live", "status": "checked"},
+                    {"source": "Ahmia", "status": "checked"}]
+        clean = self._exposure_verdict(
+            trace, monkeypatch, sources_contacted=answered)
+        assert clean.startswith("No exposure found")
+
+        errored = self._exposure_verdict(trace, monkeypatch, sources_contacted=[
+            {"source": "Ransomware.live", "status": "checked"},
+            {"source": "Ahmia", "status": "error"}])
+        assert errored.startswith("Incomplete") and "Ahmia" in errored
+        assert "No exposure found" not in errored
+
+        stopped = self._exposure_verdict(
+            trace, monkeypatch, sources_contacted=answered[:1], cancelled=True)
+        assert stopped.startswith("Incomplete") and "stopped" in stopped
+
+        nothing = self._exposure_verdict(trace, monkeypatch, sources_contacted=[
+            {"source": "Ransomware.live", "status": "error"}])
+        assert nothing.startswith("Not checked")
+
+        none_ran = self._exposure_verdict(trace, monkeypatch, sources_contacted=[])
+        assert none_ran.startswith("Not checked")
+
+    def test_a_listing_still_outranks_the_incomplete_note(self, trace, monkeypatch):
+        verdict = self._exposure_verdict(
+            trace, monkeypatch,
+            summary={"on_ransomware_leak_site": True, "ransomware_victim_matches": 1},
+            sources_contacted=[{"source": "Ahmia", "status": "error"}])
+        assert verdict.startswith("⚠ On a ransomware leak site")
+
     def test_clear_empties_the_form_and_the_output(self, trace):
         trace.analyse()
         trace.worker.finished_signal.emit("## SUMMARY\nx")
@@ -2101,6 +2298,16 @@ class TestTraceSectionParsing:
     def test_headings_are_matched_case_insensitively(self):
         from ui.panels.osint import OsintPanel
         assert OsintPanel.parse_sections("## google dorks\nx")["dorks"] == "x"
+
+    def test_the_real_summary_header_leaves_no_remnant_in_the_card(self):
+        """The prompt asks for "## SUMMARY & NEXT STEPS"; the card began
+        with "& NEXT STEPS" because the rest of the header line was kept."""
+        from ui.panels.osint import OsintPanel
+        parsed = OsintPanel.parse_sections(
+            "## PUBLIC SOURCES\nwhois\n## SUMMARY & NEXT STEPS\nCheck the registrar.\nThen the dorks."
+        )
+        assert parsed["summary"] == "Check the registrar.\nThen the dorks."
+        assert parsed["sources"] == "whois"
 
 
 class TestWindowStopButton:

@@ -126,7 +126,7 @@ class ExposureLookupWorker(QThread):
             result = lookup(
                 self.target,
                 self.target_type,
-                selected_sources=self.sources or None,
+                selected_sources=self.sources,
                 on_progress=lambda source, status: self.progress_signal.emit(
                     source, status
                 ),
@@ -242,11 +242,15 @@ class ChatWorker(QThread):
             elif isinstance(result, tuple):
                 response, usage = result
                 self._emit_as_tokens(response)
+                if self._cancel_requested:
+                    return
 
             # ===== NORMAL STRING RESPONSE =====
             else:
                 response = result
                 self._emit_as_tokens(response)
+                if self._cancel_requested:
+                    return
 
             if usage:
                 self.usage_signal.emit(usage)

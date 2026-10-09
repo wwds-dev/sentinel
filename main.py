@@ -4476,6 +4476,15 @@ class GodAI(QWidget):
             panel.target_input.setText(target)
 
             query_type = data.get("command", "Auto-detect")
+            live = str(query_type).startswith("Live Research")
+            stored = json.loads(data.get("response", "")) if live else None
+            if live:
+                # A live save is titled "Live Research · Domain"; the type box
+                # only knows the part after the dot. An Exposure Check has no
+                # item of its own, so it comes back as the kind of target.
+                query_type = query_type.partition(" · ")[2]
+                if query_type == "Exposure":
+                    query_type = str(stored.get("target_type", "")).capitalize()
             if panel.type_box.findText(query_type) >= 0:
                 panel.type_box.setCurrentText(query_type)
 
@@ -4489,14 +4498,16 @@ class GodAI(QWidget):
             response = data.get("response", "")
             panel._clear_output()
             panel._last_response = response
-            if str(data.get("command", "")).startswith("Live Research"):
-                panel._show_lookup_result(json.loads(response), save=False)
+            if live:
+                panel._show_lookup_result(stored, save=False)
             else:
                 panel._populate_sections(response)
             panel._reset_activity()
+            kind = ("stored live-source record" if live
+                    else "stored query-planning result")
             panel._append_activity(
-                "Opened a saved Trace search. This is a stored query-planning "
-                "result; no external sources were queried while reopening it."
+                f"Opened a saved Trace search. This is a {kind}; "
+                "no external sources were queried while reopening it."
             )
             panel.status_label.setText("Saved search loaded.")
         except Exception as exc:

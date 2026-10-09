@@ -27,8 +27,8 @@ It does not contact research sources. With Ollama, the target remains local.
 With a cloud model, the prompt is sent to that provider after you confirm the
 request. Separately, Sentinel refreshes a public list of OSINT tools from
 GitHub at most once a week; that request carries no target. **Stop** cancels
-a plan, but a stopped plan ends as an error message: the partial text is not
-kept and nothing is saved.
+a plan: the status reads "Stopped.", the partial text stays on screen and
+nothing is saved.
 
 **Live Research** contacts supported public sources after showing exactly what
 will be shared. It calls no model, so Sentinel bills nothing for it (a keyed
@@ -67,7 +67,8 @@ tick.
 
 The Activity trail distinguishes validation, contacted sources, skipped
 sources, partial failures, model work and cancellation. Domain and IP lookups
-leave out a keyed service whose key is not saved without listing it as skipped.
+list a keyed service whose key is not saved as skipped, because it is never
+contacted.
 A source returning no match is not proof that the subject does not exist. Treat
 model summaries as interpretation and live-source records as evidence that
 still needs context. Live results are plain-text (JSON) records, one card per
@@ -75,21 +76,21 @@ source, with a Research summary card first.
 
 Know the rough edges before you rely on a result:
 
-- The Exposure verdict reads "No exposure found" even when every source
-  failed or you pressed Stop; read the Errors line of the Research summary
-  card. A "direct victim match" is a loose name match, so verify each listing.
-- An IP lookup normally lists DNS as an error, because Trace does no reverse
-  lookup, and it sends private and loopback addresses like any other.
-- BreachDirectory's reply is shown exactly as the service sent it; Sentinel
-  does not filter it.
-- The Summary and next steps card of a plan begins with "& NEXT STEPS".
+- The Exposure verdict reads "Incomplete" or "Not checked", not "No exposure
+  found", when a source failed or you pressed Stop first; a "direct victim
+  match" is a whole-word name match or the same domain, so still verify each
+  listing.
+- An IP lookup sends private and loopback addresses like any other; its DNS
+  step asks for the reverse (PTR) record.
+- BreachDirectory is reduced to breach names and counts; whether its keyless
+  endpoint still works has not been confirmed.
 
 Saved searches (the **Saved searches** toggle near the bottom of the left rail
 while Trace is selected) can be reopened with a click, renamed with a
-double-click, filtered or deleted. Reopening never sends anything. A reopened
-live record does not restore the query type, and the trail line says it is a
-stored query-planning result either way. A saved live record keeps everything
-the sources returned, such as WHOIS contact emails, until you delete it.
+double-click, filtered or deleted. Reopening never sends anything and restores
+the query type; the trail line says whether the entry is a stored plan or a
+stored live record. A saved live record keeps everything the sources returned,
+such as WHOIS contact emails, until you delete it.
 
 ## Best practices
 

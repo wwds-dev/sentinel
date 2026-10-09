@@ -101,15 +101,15 @@ OSINT_TOOL_INFO = {
                  "and its certificates.",
         "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
         "key": KEY_NEEDED,
+        "key_hint": "Platform personal access token",
+        "note": ("Use a Censys Platform personal access token. The free account allows "
+                 "100 lookups a month. Paid organisations also set CENSYS_ORG_ID in .env."),
     },
     "criminalip": {
         "about": "IP reputation score, VPN, proxy, Tor and hosting flags, open "
                  "ports and the network owner. Each lookup spends credits.",
         "agents": {TRACE: EXTRA, BLOODHOUND: EXTRA},
         "key": KEY_NEEDED,
-        "key_hint": "Platform personal access token",
-        "note": ("Use a Censys Platform personal access token. The free account allows "
-                 "100 lookups a month. Paid organisations also set CENSYS_ORG_ID in .env."),
     },
     "securitytrails": {
         "about": "Current DNS records of a domain, when each was first seen, and "

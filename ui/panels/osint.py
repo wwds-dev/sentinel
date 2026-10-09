@@ -43,6 +43,11 @@ class OsintPanel(AgentPanel):
         self._last_response = ""
         self._activity_entries: list[str] = []
         self._received_first_token = False
+        # Set by Stop on a Structure Query: the cancelled thread may still send a
+        # token, an answer or the cancel error, and none of them may land.
+        self._stopped = False
+        # True while a Live Research or Exposure Check worker owns the panel.
+        self._lookup_active = False
         self._build()
         self.polish_workspace()
         self.hide()
@@ -158,7 +163,18 @@ class OsintPanel(AgentPanel):
         layout.addLayout(bottom_row)
 
     # ── Running ─────────────────────────────────────────────────────────
+    def _busy_with_previous_request(self) -> bool:
+        """A worker that is still finishing must not be replaced by a new one."""
+        if self.is_running():
+            self.status_label.setText(
+                "Still finishing the previous request — try again in a moment."
+            )
+            return True
+        return False
+
     def analyse(self) -> None:
+        if self._busy_with_previous_request():
+            return
         target = self.target_input.text().strip()
         query_type = self.type_box.currentText()
 
@@ -186,6 +202,7 @@ class OsintPanel(AgentPanel):
         self._clear_output()
         self._last_response = ""
         self._received_first_token = False
+        self._stopped = False
         self._reset_activity()
         detected_note = " (auto-detected)" if query_type == "Auto-detect" else ""
         self._append_activity(
@@ -222,6 +239,8 @@ class OsintPanel(AgentPanel):
         )
 
     def _on_token(self, token: str) -> None:
+        if self._stopped:
+            return
         # While tokens arrive there are no sections to show yet, so the raw
         # stream is the view; the cards replace it once the answer is whole.
         self._last_response += token
@@ -234,6 +253,8 @@ class OsintPanel(AgentPanel):
         self.stream_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
+        if self._stopped:
+            return
         self._last_response = full_response
         self.record(full_response)
         self.stream_box.setVisible(False)
@@ -247,6 +268,15 @@ class OsintPanel(AgentPanel):
         self._set_trace_busy(False)
 
     def _on_error(self, error: str) -> None:
+        if self._stopped or error == "Request cancelled by user.":
+            # The worker reports a cancel as an error. It is a stop, not a
+            # failure: the partial text stays and the request is not billed.
+            if not self._stopped:
+                self._stopped = True
+                self.abandon("cancelled")
+                self.status_label.setText("Stopped.")
+                self._set_trace_busy(False)
+            return
         self.abandon()
         balance_error = is_insufficient_balance_error(error)
         if balance_error:
@@ -293,7 +323,23 @@ class OsintPanel(AgentPanel):
         )
 
     def stop(self) -> None:
-        self.stop_worker()
+        running = self.stop_worker()
+        if running and self._lookup_active:
+            # A lookup checks the stop flag between sources, so the source in
+            # flight finishes first. The controls stay locked until the worker
+            # reports back; a second run now would replace a live thread.
+            self.stop_btn.setEnabled(False)
+            self.status_label.setText("Stopping — waiting for the source in flight…")
+            self._append_activity(
+                "Stop requested. The source already running will finish; "
+                "results collected so far are kept."
+            )
+            return
+        if running:
+            # A Structure Query: the partial text stays on screen, the request
+            # is closed as cancelled, and nothing the thread sends later lands.
+            self._stopped = True
+            self.abandon("cancelled")
         self._append_activity("Stopped by the user. No further processing was performed.")
         self.status_label.setText("Stopped.")
         self._set_trace_busy(False)
@@ -308,6 +354,8 @@ class OsintPanel(AgentPanel):
 
     # ── Explicit live public-source research ───────────────────────────
     def live_research(self) -> None:
+        if self._busy_with_previous_request():
+            return
         target = self.target_input.text().strip()
         validation = self.agent().validate_target(target, self.type_box.currentText())
         if not validation.valid:
@@ -405,6 +453,7 @@ class OsintPanel(AgentPanel):
         worker.finished_signal.connect(self._on_lookup_finished)
         worker.error_signal.connect(self._on_lookup_error)
         self.worker = worker
+        self._lookup_active = True
         worker.start()
 
     def _choose_email_sources(self, target: str) -> tuple[str, ...]:
@@ -482,6 +531,8 @@ class OsintPanel(AgentPanel):
     def exposure_check(self) -> None:
         """Check whether a domain, company or email is in a leak or on a
         ransomware leak site, using clearnet services behind explicit consent."""
+        if self._busy_with_previous_request():
+            return
         target = self.target_input.text().strip()
         validation = self.agent().validate_target(target, self.type_box.currentText())
         if not validation.valid:
@@ -522,6 +573,7 @@ class OsintPanel(AgentPanel):
         worker.finished_signal.connect(self._on_lookup_finished)
         worker.error_signal.connect(self._on_lookup_error)
         self.worker = worker
+        self._lookup_active = True
         worker.start()
 
     def _choose_exposure_sources(self, target: str, query_type: str) -> tuple[str, ...]:
@@ -634,6 +686,7 @@ class OsintPanel(AgentPanel):
         return json.dumps(value, indent=2, ensure_ascii=False, default=str)
 
     def _on_lookup_finished(self, result: dict) -> None:
+        self._lookup_active = False
         self._show_lookup_result(result, save=True)
 
     def _show_lookup_result(self, result: dict, *, save: bool) -> None:
@@ -739,6 +792,25 @@ class OsintPanel(AgentPanel):
                     "Possible exposure — matches found in dark-web / leak sources. "
                     "Review each hit below; a mention is a lead, not proof."
                 )
+            elif result.get("cancelled") or failed or not checked:
+                # Nothing was found, but the run did not cover what was asked
+                # for: that is not a clean result and must not read as one.
+                reasons = []
+                if result.get("cancelled"):
+                    reasons.append("the run was stopped before every source answered")
+                if failed:
+                    reasons.append(f"{', '.join(failed)} returned an error")
+                if not reasons:
+                    reasons.append("no source answered")
+                headline = (
+                    f"{'Incomplete' if checked else 'Not checked'} — "
+                    f"{'; '.join(reasons)}. "
+                    + ("Nothing was found in the sources that did answer, but this is "
+                       "not a clean result." if checked else
+                       "This is not a clean result.")
+                    + " Run the check again, and read the Errors line of the "
+                      "Research summary."
+                )
             else:
                 headline = (
                     "No exposure found in the sources that were queried. This is not a "
@@ -796,6 +868,7 @@ class OsintPanel(AgentPanel):
         self._set_trace_busy(False)
 
     def _on_lookup_error(self, error: str) -> None:
+        self._lookup_active = False
         self._append_activity(f"Live Research failed before completion: {error}")
         self.stream_box.setPlainText(f"Live Research error\n\n{error}")
         self.stream_box.setVisible(True)
@@ -857,7 +930,7 @@ class OsintPanel(AgentPanel):
             "structure": r"##\s*QUERY STRUCTURE(.*?)(?=##\s*GOOGLE DORKS|$)",
             "dorks":     r"##\s*GOOGLE DORKS(.*?)(?=##\s*PUBLIC SOURCES|$)",
             "sources":   r"##\s*PUBLIC SOURCES(.*?)(?=##\s*SUMMARY|$)",
-            "summary":   r"##\s*SUMMARY.*?(.*?)$",
+            "summary":   r"##\s*SUMMARY[^\n]*\n(.*)$",
         }
         result = {}
         for key, pat in patterns.items():

@@ -157,6 +157,31 @@ def _core_label(keyword: str) -> str:
     return kw
 
 
+def _whole_word(core: str, text: str) -> bool:
+    """Whether ``core`` stands in ``text`` as a word of its own.
+
+    "apple" is a word of "Apple Inc" but not of "Pineapple Holdings"; a plain
+    substring test counted both as the target.
+    """
+    return bool(core) and re.search(
+        rf"(?<![a-z0-9]){re.escape(core)}(?![a-z0-9])", text.lower()) is not None
+
+
+def _same_domain(keyword: str, core: str, domain: str) -> bool:
+    """Whether a victim's domain is the target's own, not merely alike.
+
+    A domain target must equal the victim's domain (or be its parent); a company
+    name must equal one whole label of it ("acme" for acme.com).
+    """
+    host = _bare_host(domain)
+    host = host[4:] if host.startswith("www.") else host
+    if not host:
+        return False
+    if "." in keyword and " " not in keyword:
+        return host == keyword or host.endswith("." + keyword)
+    return core in host.split(".")
+
+
 # ── ransomware.live ─────────────────────────────────────────────────────────────
 
 def _ransomware_live(keyword: str) -> dict:
@@ -196,9 +221,9 @@ def _ransomware_live(keyword: str) -> dict:
             name = (entry.get("victim") or "").strip()
             domain = (entry.get("domain") or "").strip().lower()
             description = entry.get("description") or ""
-            if core and core in name.lower():
+            if _whole_word(core, name):
                 match = "victim-name"
-            elif core and core in domain:
+            elif _same_domain(keyword, core, domain):
                 match = "domain"
             elif core and core in description.lower():
                 match = "description-only"
@@ -775,7 +800,8 @@ def lookup(target: str, target_type: str = "", *, selected_sources=None,
         result["error"] = "Empty target — skipping exposure check."
         return result
 
-    selected = set(selected_sources or DEFAULT_SOURCES)
+    # None means "the defaults"; an empty selection is nothing, not everything.
+    selected = set(DEFAULT_SOURCES if selected_sources is None else selected_sources)
     source_calls = [
         ("ransomware_live", "Ransomware.live", "ransomware_live",
          lambda: _ransomware_live(terms["keyword"])),

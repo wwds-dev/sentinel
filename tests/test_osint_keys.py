@@ -88,6 +88,33 @@ def test_every_key_an_agent_reads_has_a_row():
     assert read - model_keys <= listed, read - model_keys - listed
 
 
+def _vendor_word(display_name: str) -> str:
+    """"Criminal IP" -> "criminalip", "URLScan.io" -> "urlscan"."""
+    return display_name.lower().replace(".io", "").replace(" ", "")
+
+
+def test_a_rows_hint_and_note_are_about_its_own_vendor():
+    """The Criminal IP row carried the Censys placeholder and note, so its key
+    field and hover told the user to paste a Censys token."""
+    vendors = {row[0]: _vendor_word(row[1]) for row in _tools()}
+    checked = 0
+    for tool_id, info in osint_keys.OSINT_TOOL_INFO.items():
+        text = " ".join(info.get(k, "") for k in ("key_hint", "note"))
+        squashed = text.lower().replace(" ", "")
+        if not squashed:
+            continue
+        named = {other for other, word in vendors.items() if word in squashed}
+        assert not named - {tool_id}, f"{tool_id} text names {named - {tool_id}}"
+        checked += 1
+    assert checked >= 5
+    # Only the Censys row says it takes a Censys token.
+    assert "Censys" in osint_keys.OSINT_TOOL_INFO["censys"]["note"]
+    assert osint_keys.OSINT_TOOL_INFO["censys"]["key_hint"] == "Platform personal access token"
+    assert "key_hint" not in osint_keys.OSINT_TOOL_INFO["criminalip"]
+    assert "Censys" not in osint_keys.explain("criminalip")
+    assert "Censys" in osint_keys.explain("censys")
+
+
 def test_explanation_names_agents_and_key():
     text = osint_keys.explain("ahmia")
     assert ".onion" in text and "Trace" in text and "Bloodhound" in text

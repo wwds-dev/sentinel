@@ -4,7 +4,8 @@ transparency, web archive, and (for IPs) attack reports.
 
 Zero-cost stack:
   • python-whois  → registrar, dates, nameservers, registrant org/country
-  • dnspython     → A, AAAA, MX, NS, TXT, SOA records
+  • dnspython     → A, AAAA, MX, NS, TXT, SOA records (an IP gets its reverse
+                    PTR record instead)
   • Team Cymru    → IP-to-ASN: network owner, prefix, country — asked over DNS
                     (TXT records under asn.cymru.com), so no web request
   • Mnemonic PDNS → passive DNS: what a name resolved to over time, or which
@@ -103,6 +104,18 @@ def _whois(domain: str) -> dict:
 def _dns(domain: str) -> dict:
     try:
         import dns.resolver  # dnspython
+        if _is_ip(domain):
+            # An address has no A/MX/NS records of its own; the DNS question
+            # that makes sense for it is the reverse (PTR) name.
+            import dns.reversename
+
+            try:
+                answer = dns.resolver.resolve(
+                    dns.reversename.from_address(domain), "PTR", lifetime=5)
+            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+                return {"PTR": [],
+                        "note": "No reverse (PTR) record is published for this address."}
+            return {"PTR": [str(r) for r in answer][:10]}
         records: dict = {}
         for rtype in ("A", "AAAA", "MX", "NS", "TXT", "SOA"):
             try:
@@ -493,6 +506,7 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
       type, query, whois, dns, network, passive_dns, certificates, archive   (domain)
       type, query, whois, dns, network, attack_reports, host_exposure,
         ip_details, ip_reputation, passive_dns                               (IP)
+      sources_contacted, sources_skipped (keyed services with no key saved)
     """
     target = _normalize(domain)
     is_ip = _is_ip(target)
@@ -500,6 +514,7 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
         "type": "ip" if is_ip else "domain",
         "query": target,
         "sources_contacted": [],
+        "sources_skipped": [],
     }
 
     sources = [
@@ -507,25 +522,40 @@ def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
         ("DNS", "dns", _dns),
         ("Team Cymru IP-to-ASN", "network", _asn),
     ]
+    skipped: list[str] = []
     if is_ip:
         sources.append(("SANS DShield", "attack_reports", _dshield))
         sources.append(("Shodan InternetDB", "host_exposure", _shodan_internetdb))
         # IPinfo refuses anonymous access and Criminal IP is credit-metered, so
-        # both are only worth contacting when a key is set. Unlike the exposure
-        # provider (where key-gated sources run and report a "skipped" status),
-        # domain_lookup has no sources_skipped list, so a keyless source is simply
-        # omitted from the run rather than listed as skipped.
+        # both are only worth contacting when a key is set. Without one the
+        # source is not contacted and is recorded as skipped, not dropped.
         if os.getenv("IPINFO_API_KEY", "").strip():
             sources.append(("IPinfo", "ip_details", _ipinfo))
+        else:
+            skipped.append("IPinfo")
         if os.getenv("CRIMINALIP_API_KEY", "").strip():
             sources.append(("Criminal IP", "ip_reputation", _criminalip))
+        else:
+            skipped.append("Criminal IP")
     sources.append(("Mnemonic passive DNS", "passive_dns", _passive_dns))
     if not is_ip:
         sources.append(("Certificate transparency (crt.sh)", "certificates", _crtsh))
         sources.append(("Wayback Machine", "archive", _wayback))
-    for keyed in intel_sources.configured("ip" if is_ip else "domain"):
+    kind = "ip" if is_ip else "domain"
+    keyed_now = intel_sources.configured(kind)
+    for keyed in keyed_now:
         sources.append((keyed.label, keyed.result_key,
                         lambda t, k=keyed: intel_sources.call(k, t)))
+    skipped += [s.label for s in intel_sources.SOURCES
+                if kind in s.kinds and s not in keyed_now]
+
+    # Decided before any request: a keyed service with no key saved is never
+    # contacted, and the run says so.
+    for label in skipped:
+        result["sources_skipped"].append(
+            {"source": label, "status": "skipped", "reason": "no API key saved"})
+        if on_progress:
+            on_progress(label, "skipped")
 
     for label, key, source_lookup in sources:
         if should_stop and should_stop():
