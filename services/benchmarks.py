@@ -323,17 +323,23 @@ def _get_json(url: str) -> dict:
 
 # ── Loading ──────────────────────────────────────────────────────────────────
 
-def _read(path: Path) -> dict | None:
+def _read_raw(path: Path) -> dict | None:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) and data.get("categories") else None
+    return data if isinstance(data, dict) else None
+
+
+def _read(path: Path) -> dict | None:
+    """The cache or snapshot only when it actually holds rating tables."""
+    data = _read_raw(path)
+    return data if data and data.get("categories") else None
 
 
 def load(cache_file: Path, snapshot_file: Path = SNAPSHOT_FILE) -> RatingTable:
     """The cached fetch if there is one, else the shipped snapshot."""
-    cached = _read(cache_file)
+    cached = _read(cache_file)        # a stamp-only file is not a cache of ratings
     if cached:
         return RatingTable(cached, origin="cache")
     shipped = _read(snapshot_file)
@@ -346,14 +352,34 @@ def is_stale(cache_file: Path, now: datetime | None = None) -> bool:
 
 
 def _older_than_max_age(cache_file: Path, now: datetime | None = None) -> bool:
-    cached = _read(cache_file)
+    cached = _read_raw(cache_file)      # stamps count even with no tables yet
     if not cached:
         return True
-    try:
-        fetched = datetime.fromisoformat(cached.get("fetched", ""))
-    except ValueError:
+    stamps = []
+    for key in ("fetched", "attempted"):
+        try:
+            stamps.append(datetime.fromisoformat(cached.get(key, "")))
+        except ValueError:
+            pass
+    if not stamps:
         return True
-    return (now or datetime.now()) - fetched > MAX_AGE
+    # A failed attempt counts too: "refreshed at most daily" also means
+    # "tried at most daily", or an offline Mac re-tried on every launch.
+    return (now or datetime.now()) - max(stamps) > MAX_AGE
+
+
+def note_attempt(cache_file: Path, now: datetime | None = None) -> None:
+    """Record that a refresh was tried and failed, keeping any cached tables."""
+    cache_file = Path(cache_file)
+    data = _read_raw(cache_file) or {}
+    data["attempted"] = (now or datetime.now()).isoformat(timespec="seconds")
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(cache_file)
+    except OSError:
+        pass
 
 
 def refresh(cache_file: Path, **kwargs) -> RatingTable:

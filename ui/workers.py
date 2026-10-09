@@ -671,5 +671,6 @@ class ModelScanWorker(QThread):
                 try:
                     ratings = benchmarks.refresh(self._ratings_cache)
                 except Exception as e:      # the service is often "loading"
+                    benchmarks.note_attempt(self._ratings_cache)
                     ratings = str(e)
         self.finished_signal.emit(listings, ratings)

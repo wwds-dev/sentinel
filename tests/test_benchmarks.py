@@ -286,3 +286,59 @@ def test_a_partial_fetch_keeps_its_publish_date(tmp_path):
 
     data = b.fetch_live(get=limited, sleep=lambda s: None)
     assert data["published"] == "2026-10-05"
+
+
+def test_a_failed_attempt_counts_as_a_daily_try(tmp_path):
+    """Offline, the fetch used to be retried on every launch (and block start
+    for the connect timeout each time): note_attempt makes a failure wait a day
+    like a success does, without losing any cached table."""
+    cache = tmp_path / "ratings.json"
+    cache.write_text(json.dumps({"fetched": "2000-01-01T00:00:00", "categories": {"coding": {"x": 1}}}))
+    assert b._older_than_max_age(cache)
+    tried = datetime(2026, 10, 9, 12, 0)
+    b.note_attempt(cache, now=tried)
+    assert not b._older_than_max_age(cache, now=tried + timedelta(hours=23))
+    assert b._older_than_max_age(cache, now=tried + timedelta(hours=25))
+    assert json.loads(cache.read_text())["categories"] == {"coding": {"x": 1}}
+
+
+def test_note_attempt_on_a_missing_cache_creates_only_the_stamp(tmp_path):
+    cache = tmp_path / "sub" / "ratings.json"
+    b.note_attempt(cache, now=datetime(2026, 10, 9, 12, 0))
+    data = json.loads(cache.read_text())
+    assert set(data) == {"attempted"}
+    # No tables: not a usable cache, so the shipped snapshot still serves the router.
+    assert b.load(cache).origin == "snapshot"
+    assert b._older_than_max_age(cache, now=datetime(2026, 10, 9, 13, 0)) is False
+
+
+def test_scan_worker_stamps_a_failed_refresh(tmp_path, monkeypatch):
+    from ui import workers
+    monkeypatch.setattr("services.model_watch.list_live", lambda classes: {})
+    monkeypatch.setattr(b, "is_stale", lambda cache: True)
+    def boom(cache):
+        raise RuntimeError("leaderboard is loading")
+    monkeypatch.setattr(b, "refresh", boom)
+    stamped = []
+    monkeypatch.setattr(b, "note_attempt", lambda cache: stamped.append(cache))
+    worker = workers.ModelScanWorker({}, tmp_path / "r.json")
+    got = []
+    worker.finished_signal.connect(lambda listings, ratings: got.append(ratings))
+    worker.run()
+    assert stamped == [tmp_path / "r.json"]
+    assert got == ["leaderboard is loading"]
+
+
+def test_public_ratings_refresh_can_be_switched_off_and_is_off_in_local_only(monkeypatch):
+    from types import SimpleNamespace
+    from main import GodAI
+    import main as app_module
+    setting = {"value": "on"}
+    monkeypatch.setattr(app_module, "get_setting", lambda key, default="": setting["value"])
+    stub = SimpleNamespace(execution_mode_box=SimpleNamespace(currentText=lambda: "Hybrid allowed"))
+    assert GodAI.public_ratings_refresh_enabled(stub) is True
+    stub.execution_mode_box = SimpleNamespace(currentText=lambda: "Local only")
+    assert GodAI.public_ratings_refresh_enabled(stub) is False
+    stub.execution_mode_box = SimpleNamespace(currentText=lambda: "Cloud only")
+    setting["value"] = "off"
+    assert GodAI.public_ratings_refresh_enabled(stub) is False
