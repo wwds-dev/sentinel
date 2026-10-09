@@ -133,10 +133,14 @@ class SentryPanel(AgentPanel):
 
         ai_row = QHBoxLayout()
         self.ai_checkbox = QCheckBox("Explain findings with AI")
-        self.ai_checkbox.setChecked(True)
+        # Off by default: findings carry LAN IPs, MAC addresses and process
+        # names, and the selected provider may be a paid cloud one (D5).
+        self.ai_checkbox.setChecked(False)
         self.ai_checkbox.setToolTip(
-            "After a pass with findings, send them to the selected model for a "
-            "calibrated read. Nothing is sent when there is nothing to report."
+            "After a pass with findings, send them — LAN IPs, MAC addresses and "
+            "process names included — to the selected provider and model for a "
+            "calibrated read. Off by default; nothing is sent when there is "
+            "nothing to report."
         )
         ai_row.addWidget(self.ai_checkbox)
         ai_row.addStretch()

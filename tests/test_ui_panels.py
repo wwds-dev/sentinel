@@ -3148,6 +3148,11 @@ def beacon(qapp, monkeypatch):
 
 class TestBeaconPanel:
 
+    def test_ai_analysis_is_off_by_default(self, beacon):
+        # D5: docs/agents/wifi.md and the Beacon lesson promise "off by default".
+        assert beacon.ai_checkbox.isChecked() is False
+        assert "scan" in beacon.ai_checkbox.toolTip().lower()
+
     def test_it_builds_hidden_with_the_kali_form_collapsed(self, beacon):
         from PySide6.QtWidgets import QTabWidget
         assert beacon.isHidden() is True
@@ -3194,6 +3199,7 @@ class TestBeaconPanel:
             "4. RECOMMENDATIONS\nKeep WPA2 enabled"
         )
         beacon.mode_box.setCurrentText("Scan Networks")
+        beacon.ai_checkbox.setChecked(True)          # opt in; off by default (D5)
         beacon.run()
         beacon.scan_worker.finished_signal.emit("agrCtlRSSI: -55")
         beacon.worker.token_signal.emit("1. SUMMARY\nConnected")
@@ -3377,6 +3383,24 @@ class TestSentryPanel:
         assert sentry_panel.isHidden() is True
         assert sentry_panel.stop_btn.isEnabled() is False
 
+    def test_ai_explanation_is_off_by_default(self, sentry_panel):
+        # D5: findings carry LAN IPs, MACs and process names; the lesson says
+        # "tick to enable", so the box must not ship ticked.
+        assert sentry_panel.ai_checkbox.isChecked() is False
+        assert "IP" in sentry_panel.ai_checkbox.toolTip()
+
+    def test_a_watch_pass_with_findings_does_not_call_a_model_unless_ticked(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False,
+            "findings": [{"severity": "alert", "kind": "gateway_mac_change",
+                          "title": "Gateway hardware changed", "detail": "d", "evidence": {}}],
+            "device_count": 4, "listener_count": 10, "connection_count": 12,
+            "taken_at": "2026-09-28T00:00:00+00:00",
+        }
+        sentry_panel.run_pass(persist=True)
+        assert "ALERT" in sentry_panel.findings_box.toPlainText()
+        assert not [c for c in sentry_panel.host.calls if c[0] == "authorize"]
+
     def test_a_watch_pass_with_findings_feeds_the_ai_when_ticked(self, sentry_panel):
         FakeSentryWatchWorker.next_summary = {
             "baseline_established": False,
@@ -3399,6 +3423,7 @@ class TestSentryPanel:
                           "title": "New device 10.0.0.5", "detail": "", "evidence": {}}],
             "device_count": 1, "listener_count": 0, "connection_count": 0,
         }
+        sentry_panel.ai_checkbox.setChecked(True)    # opt in; off by default (D5)
         sentry_panel.run_pass(persist=True)
         sentry_panel.worker.finished_signal.emit("Looks benign.")
         assert [c for c in sentry_panel.host.calls if c[0] == "record"]

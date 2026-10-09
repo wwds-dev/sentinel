@@ -183,7 +183,14 @@ class WifiPanel(AgentPanel):
 
         ai_row = QHBoxLayout()
         self.ai_checkbox = QCheckBox("AI Analysis — feed results to LLM for interpretation")
-        self.ai_checkbox.setChecked(True)
+        # Off by default, as the Beacon lesson promises: a scan's SSIDs, signal
+        # and security data go to the selected model only when the operator
+        # ticks this, and the selected provider may be a paid cloud one (D5).
+        self.ai_checkbox.setChecked(False)
+        self.ai_checkbox.setToolTip(
+            "Sends the raw scan output (network names, signal, security) to the "
+            "selected provider and model. Off by default; prefer a local model."
+        )
         ai_row.addWidget(self.ai_checkbox)
         ai_row.addStretch()
         layout.addLayout(ai_row)
