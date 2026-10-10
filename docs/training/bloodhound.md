@@ -67,7 +67,7 @@ Bloodhound first runs live public-source collection and feeds those records to
 the model, which is told to treat them as confirmed facts (a service can still
 be wrong or out of date): network, exposure and attack records for
 infrastructure (the same collection Trace uses); the GLEIF registry plus
-CourtListener court dockets, ICIJ Offshore Leaks and sanctions screening for
+CourtListener court dockets (only when you tick its box), ICIJ Offshore Leaks and sanctions screening for
 organisations; leak and dark-web exposure checks, with breach names, counts and
 kinds of data from DeHashed, Snusbase and LeakCheck when their keys are set;
 URLScan, GitHub and Keybase for usernames; and, for a Bitcoin or Ethereum

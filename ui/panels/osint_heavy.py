@@ -167,6 +167,10 @@ class OsintHeavyPanel(AgentPanel):
         self.scope_box.setCurrentText("Standard Investigation")
         brief_layout.addWidget(self.scope_box, 1, 3)
 
+        self.courtlistener_box = QCheckBox("Include CourtListener court records (Organisation)")
+        self.courtlistener_box.setChecked(False)
+        brief_layout.addWidget(self.courtlistener_box, 1, 4)
+
         brief_layout.addWidget(QLabel("Objective:"), 2, 0)
         self.objective_input = QTextEdit()
         self.objective_input.setPlaceholderText(
@@ -556,7 +560,8 @@ class OsintHeavyPanel(AgentPanel):
 
         # Name every public source the target will be sent to, and ask —
         # Trace does, and the Bloodhound lesson says the same rule applies.
-        if not self._confirm_live_sources(target, target_type, scope):
+        options = self._live_options()
+        if not self._confirm_live_sources(target, target_type, scope, options):
             self.abandon("cancelled")
             self.status_label.setText("Cancelled before any public source was contacted.")
             self.set_busy(self.investigate_btn, self.stop_btn, False)
@@ -572,7 +577,7 @@ class OsintHeavyPanel(AgentPanel):
             else "Collecting live public-source data…"
         )
         self._collecting = True
-        worker = self.collection_worker_class(collect, target, target_type, scope)
+        worker = self.collection_worker_class(collect, target, target_type, scope, options)
         worker.progress_signal.connect(self._on_collection_progress)
         worker.finished_signal.connect(
             lambda results: self._on_collection_finished(worker, brief, results))
@@ -581,9 +586,15 @@ class OsintHeavyPanel(AgentPanel):
         self.worker = worker
         worker.start()
 
-    def _confirm_live_sources(self, target: str, target_type: str, scope: str) -> bool:
+    def _live_options(self) -> dict:
+        """Opt-in sources. Empty when nothing extra is ticked, so the agent's
+        own defaults (court records off) apply."""
+        return {"court_records": True} if self.courtlistener_box.isChecked() else {}
+
+    def _confirm_live_sources(self, target: str, target_type: str, scope: str,
+                              options: dict | None = None) -> bool:
         planned = getattr(self.agent(), "planned_sources", None)
-        sources = planned(target, target_type, scope) if planned else []
+        sources = planned(target, target_type, scope, **(options or {})) if planned else []
         if not sources:
             return True            # nothing will be contacted for this type
         answer = QMessageBox.question(

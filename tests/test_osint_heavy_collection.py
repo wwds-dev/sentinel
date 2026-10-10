@@ -162,7 +162,16 @@ def test_organisation_targets_also_check_offshore_leaks(monkeypatch):
     heavy._run_providers("Acme Corporation", "Organisation")
     assert seen[-1]["offshore_leaks"] is True
     assert seen[-1]["sanctions"] is True       # skipped inside without a key
-    assert seen[-1]["court_records"] is True   # CourtListener, metadata-only
+    assert seen[-1]["court_records"] is False  # CourtListener is opt-in
+    heavy._run_providers("Acme Corporation", "Organisation", court_records=True)
+    assert seen[-1]["court_records"] is True   # ticked: metadata-only dockets
+
+
+def test_courtlistener_is_named_only_when_opted_in():
+    off = heavy.planned_sources("Acme Corporation", "Organisation")
+    on = heavy.planned_sources("Acme Corporation", "Organisation", court_records=True)
+    assert "CourtListener court records" not in off
+    assert "CourtListener court records" in on
 
 
 @pytest.mark.parametrize("label,target", [

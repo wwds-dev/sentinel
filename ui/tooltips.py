@@ -114,6 +114,7 @@ def seed_tooltips(app):
     app._set_tooltips({
         "osint_heavy.target_input":     "Target identifier (person, username, email, domain, IP, organisation, phone number or crypto address).",
         "osint_heavy.type_box":         "Target type — guides which tools and pivots are used.",
+        "osint_heavy.courtlistener_box": "Organisation targets only. Off by default: when ticked, the organisation name is also sent to CourtListener (U.S. court dockets; metadata only) and the consent dialog lists it. Not remembered between sessions.",
         "osint_heavy.scope_box":        "Investigation depth: Quick Scan / Standard / Deep Dive.",
         "osint_heavy.objective_input":  "Investigation objective / context for the analyst.",
         "osint_heavy.browse_btn":      "Optional — image to read EXIF metadata from. The metadata stays on this Mac unless you tick the metadata box below.",

@@ -2919,9 +2919,10 @@ class FakeCollectionWorker(QObject):
     error_signal = Signal(str)
     instances = []
 
-    def __init__(self, collect, target, target_type, scope):
+    def __init__(self, collect, target, target_type, scope, options=None):
         super().__init__()
         self.args = (collect, target, target_type, scope)
+        self.options = dict(options or {})
         self.cancelled = False
         self.running = True
         FakeCollectionWorker.instances.append(self)

@@ -151,8 +151,10 @@ class LiveCollectionWorker(QThread):
     finished_signal = Signal(list)
     error_signal = Signal(str)
 
-    def __init__(self, collect, target: str, target_type: str, scope: str):
+    def __init__(self, collect, target: str, target_type: str, scope: str,
+                 options: dict | None = None):
         super().__init__()
+        self.options = dict(options or {})
         self.collect = collect
         self.target = target
         self.target_type = target_type
@@ -168,6 +170,7 @@ class LiveCollectionWorker(QThread):
                 self.target, self.target_type, self.scope,
                 on_progress=self.progress_signal.emit,
                 should_stop=lambda: self._cancel_requested,
+                **self.options,
             )
             self.finished_signal.emit(list(results or []))
         except Exception as error:

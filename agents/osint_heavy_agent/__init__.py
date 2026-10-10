@@ -320,7 +320,8 @@ def real_source_count(live_results: list[dict]) -> int:
     return total
 
 
-def planned_sources(target: str, target_type: str, scope: str = "") -> list[str]:
+def planned_sources(target: str, target_type: str, scope: str = "", *,
+                    court_records: bool = False) -> list[str]:
     """Human labels of every public source _run_providers() will contact for
     this target, for the consent dialog. Keyed by the same dispatch key, so
     the dialog and the lookup cannot drift apart on target type; key-gated
@@ -347,8 +348,9 @@ def planned_sources(target: str, target_type: str, scope: str = "") -> list[str]
                        "Certificate transparency (crt.sh)", "Wayback Machine"]
         return sources + exposure
     if tt == "organisation":
-        return ["GLEIF Legal Entity Index", "ICIJ Offshore Leaks", "OpenSanctions",
-                "CourtListener court records"] + exposure
+        return (["GLEIF Legal Entity Index", "ICIJ Offshore Leaks", "OpenSanctions"]
+                + (["CourtListener court records"] if court_records else [])
+                + exposure)
     if tt == "email":
         return ["EmailRep", "Gravatar", "Have I Been Pwned", "BreachDirectory", "Hunter"] + exposure
     if tt == "username":
@@ -365,7 +367,8 @@ def planned_sources(target: str, target_type: str, scope: str = "") -> list[str]
 
 
 def _run_providers(target: str, target_type: str, scope: str = "", *,
-                   on_progress=None, should_stop=None) -> list[dict]:
+                   on_progress=None, should_stop=None,
+                   court_records: bool = False) -> list[dict]:
     """
     Dispatch live lookups based on target_type.
 
@@ -424,7 +427,7 @@ def _run_providers(target: str, target_type: str, scope: str = "", *,
     elif tt == "organisation":
         try:
             collected.append(_company_prov.lookup(
-                target, offshore_leaks=True, sanctions=True, court_records=True,
+                target, offshore_leaks=True, sanctions=True, court_records=court_records,
                 **tracking))
         except Exception as exc:
             collected.append({"type": "company", "query": target,
@@ -533,11 +536,13 @@ class OsintHeavyAgent:
         self.last_live_results: list[dict] = []
         self.last_source_count: int = 0
 
-    def planned_sources(self, target: str, target_type: str, scope: str = "") -> list[str]:
-        return planned_sources(target, target_type, scope)
+    def planned_sources(self, target: str, target_type: str, scope: str = "", *,
+                        court_records: bool = False) -> list[str]:
+        return planned_sources(target, target_type, scope, court_records=court_records)
 
     def collect_live(self, target: str, target_type: str, scope: str = "", *,
-                     on_progress=None, should_stop=None) -> list[dict]:
+                     on_progress=None, should_stop=None,
+                     court_records: bool = False) -> list[dict]:
         """Run the real live lookups for this target and remember the outcome.
 
         Separated from ``build_messages`` so that (a) message construction stays
@@ -550,7 +555,8 @@ class OsintHeavyAgent:
         self.last_live_results = []
         self.last_source_count = 0
         results = _run_providers(target, target_type, scope,
-                                 on_progress=on_progress, should_stop=should_stop)
+                                 on_progress=on_progress, should_stop=should_stop,
+                                 court_records=court_records)
         self.last_live_results = results
         self.last_source_count = real_source_count(results)
         return results

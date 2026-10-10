@@ -131,9 +131,10 @@ class FakeCollectionWorker(QObject):
     error_signal = Signal(str)
     instances = []
 
-    def __init__(self, collect, target, target_type, scope):
+    def __init__(self, collect, target, target_type, scope, options=None):
         super().__init__()
         self.args = (collect, target, target_type, scope)
+        self.options = dict(options or {})
         self.cancelled = False
         self.running = True
         FakeCollectionWorker.instances.append(self)
@@ -1114,3 +1115,37 @@ class TestStopContract:
         hound.shutdown()
         assert collector.cancelled is True
         assert ("abandon", "osint_heavy", "cancelled") in hound.host.calls
+
+
+class TestCourtListenerConsent:
+    """CourtListener is opt-in, like Trace: off by default, listed and contacted
+    only when the box is ticked."""
+
+    def _run(self, panel, dialogs, tick):
+        panel.target_input.setText("Acme Corporation")
+        panel.type_box.setCurrentText("Organisation")
+        panel.courtlistener_box.setChecked(tick)
+        seen = {}
+        agent = panel.agent()
+        agent.planned_sources = lambda t, tt, s, **kw: (
+            seen.setdefault("planned", kw) and ["GLEIF"]) or ["GLEIF"]
+        panel.investigate()
+        return seen
+
+    def test_box_is_off_by_default(self, hound):
+        assert hound.courtlistener_box.isChecked() is False
+
+    def test_unticked_passes_no_court_option(self, hound, dialogs):
+        self._run(hound, dialogs, False)
+        worker = FakeCollectionWorker.instances[-1]
+        assert worker.options == {}
+
+    def test_ticked_passes_the_option_to_dialog_and_worker(self, hound, dialogs):
+        seen = self._run(hound, dialogs, True)
+        assert seen["planned"] == {"court_records": True}
+        assert FakeCollectionWorker.instances[-1].options == {"court_records": True}
+
+    def test_declining_with_the_box_ticked_collects_nothing(self, hound, dialogs):
+        dialogs.answer = QMessageBox.No
+        self._run(hound, dialogs, True)
+        assert FakeCollectionWorker.instances == []
