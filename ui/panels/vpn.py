@@ -457,7 +457,7 @@ class VpnPanel(AgentPanel):
         self.set_busy(self.run_btn, self.stop_btn, False)
 
     def _on_error(self, error: str) -> None:
-        self.abandon()
+        self.abandon(error=error)
         separator = "─" * 50
         self.advisor_box.setPlainText(f"⚠  ERROR\n{separator}\n{error}\n{separator}")
         self.status_label.setText("Error.")

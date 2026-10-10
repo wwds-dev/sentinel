@@ -676,7 +676,7 @@ class OsintHeavyPanel(AgentPanel):
                 self.status_label.setText("Stopped.")
                 self.set_busy(self.investigate_btn, self.stop_btn, False)
             return
-        self.abandon()
+        self.abandon(error=error)
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
         self.stream_box.setPlainText(f"[Error] {error}")

@@ -68,6 +68,11 @@ class AgentHost(Protocol):
         """Drop a failed request so it is not billed."""
         ...
 
+    def note_request_error(self, agent: str, error: str,
+                           request_id: str | None = None) -> None:
+        """Why the request is about to be abandoned (shown in the Run log)."""
+        ...
+
     def note_request_usage(self, agent: str, usage: dict,
                            request_id: str | None = None) -> None:
         """Real token counts, when the worker reports them."""

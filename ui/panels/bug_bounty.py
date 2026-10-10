@@ -552,7 +552,7 @@ class BugBountyPanel(AgentPanel):
             # a failure: keep "Stopped." and the partial text.
             self.abandon("cancelled")
             return
-        self.abandon()
+        self.abandon(error=error)
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
         self.stream_box.setPlainText(f"[Error] {error}")

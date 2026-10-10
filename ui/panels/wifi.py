@@ -522,7 +522,7 @@ class WifiPanel(AgentPanel):
         self.save_btn.setEnabled(True)
 
     def _on_error(self, error: str) -> None:
-        self.abandon()
+        self.abandon(error=error)
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
         self.stream_box.setPlainText(f"[Error] {error}")

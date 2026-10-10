@@ -200,7 +200,7 @@ class ManagerPanel(AgentPanel):
                 raw=response)
 
     def _on_error(self, error: str) -> None:
-        self.abandon()
+        self.abandon(error=error)
         self.analyze_btn.setEnabled(True)
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)

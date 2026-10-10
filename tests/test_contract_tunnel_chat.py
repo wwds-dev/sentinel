@@ -1200,6 +1200,9 @@ def use_cloud(win, provider="openai"):
     assert idx >= 0
     win.provider_box.setCurrentIndex(idx)
     getattr(win, f"allow_{provider}_checkbox").setChecked(True)
+    # Chat now refuses a keyless cloud provider up front; these tests are about
+    # what happens after that gate, so the provider holds a key here.
+    win.provider_key_available = lambda _provider: True
 
 
 @pytest.fixture

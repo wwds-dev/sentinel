@@ -400,7 +400,7 @@ class AgentPanel(QWidget):
         if recheck(self.agent_key, self.provider, self.model, text,
                    request_id=self._request_id):
             return True
-        self.abandon("blocked")
+        self.abandon("blocked", error="Blocked by the budget re-check before sending.")
         return False
 
     def record(self, response: str, messages: list | None = None) -> None:
@@ -410,8 +410,15 @@ class AgentPanel(QWidget):
         )
         self._request_id = None
 
-    def abandon(self, reason: str = "error") -> None:
+    def abandon(self, reason: str = "error", error: str | None = None) -> None:
         request_id = self._request_id
+        if error:
+            # Lets the Run log's "errors" column say what went wrong. A host
+            # without the hook (older callers, test doubles) just records the
+            # status.
+            noter = getattr(self.host, "note_request_error", None)
+            if callable(noter):
+                noter(self.agent_key, error, request_id=request_id)
         self.host.abandon_request(
             self.agent_key, reason, request_id=request_id,
         )

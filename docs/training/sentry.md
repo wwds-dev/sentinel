@@ -146,6 +146,16 @@ that is not proof that it is not there.
 read-only. Nothing leaves the Mac unless you tick the AI box, which sends the
 findings to the selected model as described above.
 
+## Exercise
+
+On your own network, press **Reset baseline**, then **Run watch pass** to record a
+baseline and write down how many devices, listeners and connections it reports. Press
+**Dry run** and confirm it reports "nothing saved". Then explain, in your own words,
+which of those counts could change without anything being wrong (for example a browser
+opening a new connection) and which would deserve a closer look (a device you do not
+recognise). Finish by finding out whether the background watch is on, and say what
+leaves your Mac when **Explain findings with AI** is ticked.
+
 ## Best practices
 
 - Take the first baseline on a network you trust, and **Reset baseline** when you

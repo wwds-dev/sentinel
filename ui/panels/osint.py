@@ -294,7 +294,7 @@ class OsintPanel(AgentPanel):
                 self.status_label.setText("Stopped.")
                 self._set_trace_busy(False)
             return
-        self.abandon()
+        self.abandon(error=error)
         balance_error = is_insufficient_balance_error(error)
         if balance_error:
             error = self._prepare_balance_recovery()

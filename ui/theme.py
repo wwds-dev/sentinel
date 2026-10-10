@@ -1,4 +1,4 @@
-"""Two themes, one stylesheet.
+"""Three themes (green, red, blue), one stylesheet.
 
 Sentinel is authored in green. Every colour in ``ui/style.py`` — and in the
 chrome that a few call sites still set inline — is written once, in the green

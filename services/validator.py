@@ -97,7 +97,7 @@ class Validator:
             if not api_permissions.get(perm_key, False):
                 return ValidationResult(
                     False,
-                    f"API access for '{provider}' is not enabled. Enable it in the API Permissions panel."
+                    f"API access for '{provider}' is not enabled. Tick it under Chat → Options → Paid provider access."
                 )
 
         budget = self.validate_budget(

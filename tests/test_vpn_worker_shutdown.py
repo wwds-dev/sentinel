@@ -116,7 +116,9 @@ def test_close_joins_the_model_scan_worker(monkeypatch):
 
     monkeypatch.setattr("ui.dialogs.shutdown_panels", lambda app: joined.append("panels"))
     win = SimpleNamespace(chat_worker=None, model_scan_worker=Thread("scan"),
-                          model_pull_worker=Thread("pull"), _note_failure=lambda *a: None)
+                          model_pull_worker=Thread("pull"), _note_failure=lambda *a: None,
+                          _pending_requests={}, active_run_id=None)
+    win.stop_background_work = lambda: GodAI.stop_background_work(win)
     event = SimpleNamespace(accept=lambda: joined.append("accept"))
     GodAI.closeEvent(win, event)
     assert joined == ["scan", "pull", "panels", "accept"]

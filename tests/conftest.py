@@ -222,3 +222,41 @@ def pytest_unconfigure(config):
     if _TEST_ROOT is not None:
         shutil.rmtree(_TEST_ROOT, ignore_errors=True)
         _TEST_ROOT = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _dispose_windows_a_module_leaked():
+    """Destroy the top-level windows a test module created and left behind.
+
+    Building a main window re-applies the global stylesheet to every live
+    widget, so each leaked window made every later window slower (the suite
+    went from ~11 minutes to stalling for minutes per test around the
+    Tunnel tests). Only widgets that did not exist when the module started
+    are touched, after the module's own fixtures have finished.
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    app = QApplication.instance()
+    before = {id(w) for w in app.topLevelWidgets()} if app else set()
+    yield
+    app = QApplication.instance()
+    if not app:
+        return
+    import shiboken6
+    for widget in list(app.topLevelWidgets()):
+        if id(widget) in before:
+            continue
+        try:
+            if hasattr(widget, "stop_background_work"):
+                widget.stop_background_work()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            widget.hide()
+            shiboken6.delete(widget)
+        except Exception:  # noqa: BLE001
+            pass
+    app.processEvents()

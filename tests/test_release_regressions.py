@@ -394,13 +394,8 @@ def test_notice_helpers_mark_messages_ui_only():
 
 
 def test_switching_the_tool_mid_chat_replaces_the_system_prompt():
-    """The merge step of send_prompt, isolated."""
+    """The merge step of a Chat turn (`_assemble_chat_messages`), isolated."""
     from main import GodAI
-    import inspect
-    src = inspect.getsource(GodAI.send_prompt)
-    start = src.index("            prior = list(self.current_messages)")
-    end = src.index("            self.pending_messages = prior + fresh") + len("            self.pending_messages = prior + fresh")
-    block = "\n".join(line[12:] for line in src[start:end].splitlines())
     stub = SimpleNamespace(_message_timestamp=staticmethod(lambda v=None: "t"))
     stub._timestamped_message = lambda *a, **k: GodAI._timestamped_message(stub, *a, **k)
     stub._normalise_chat_messages = lambda msgs, fallback=None: GodAI._normalise_chat_messages(stub, msgs, fallback)
@@ -409,10 +404,12 @@ def test_switching_the_tool_mid_chat_replaces_the_system_prompt():
         {"role": "user", "content": "draft this", "timestamp": "t"},
         {"role": "assistant", "content": "Here is a draft.", "timestamp": "t"},
     ]
-    ns = {"self": stub, "selected_agent": "chat",
-          "messages": [{"role": "system", "content": "You are Coding."},
-                       {"role": "user", "content": "now fix this bug"}]}
-    exec(block, ns)
+    stub.tool_prompts = {}
+    stub.agent_instances = {"chat": SimpleNamespace(build_messages=lambda prompt: [
+        {"role": "system", "content": "You are Coding."},
+        {"role": "user", "content": prompt}])}
+    stub.pending_messages = GodAI._assemble_chat_messages(
+        stub, "chat", "General Chat", "now fix this bug")
     roles = [(m["role"], m["content"]) for m in stub.pending_messages]
     assert roles[0] == ("system", "You are Coding.")           # replaced, not dropped
     assert roles.count(("system", "You are Writing.")) == 0

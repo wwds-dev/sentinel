@@ -336,7 +336,7 @@ class TestRecommendationsStillReachThePanels:
 
         assert authorised == []
         assert "deepseek permission is off" in trace.status_label.text()
-        assert "Inspector" in trace.status_label.text()
+        assert "Paid provider access" in trace.status_label.text()
         assert trace.analyse_btn.isEnabled()
 
     def test_trace_local_balance_retry_bypasses_auto_routing_once(
