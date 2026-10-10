@@ -102,7 +102,8 @@ def seed_tooltips(app):
     # OSINT (Trace) — moved to ui/panels/osint.py, so the names are dotted.
     app._set_tooltips({
         "osint.target_input":   "The identifier to research: a name, username, email, domain, IP address, company or phone number. Identifier only — there is no context field, and extra words around an email, domain or IP fail validation.",
-        "osint.type_box":       "Choose the kind of identifier, or leave Auto-detect, which guesses locally and never picks Company. A dotted handle reads as a domain and a crypto address as a username, so set the type yourself before a live lookup.",
+        "osint.type_box":       "Choose the kind of identifier, or leave Auto-detect, which guesses locally and never picks Company. A dotted handle reads as a domain and a crypto address as a username, so set the type yourself before a live lookup. The consent dialog states the type it treats the target as and hints when the text looks like another type; it never changes your selection.",
+        "osint.courtlistener_box": "Company Live Research only. Off by default: when ticked, the company name is also sent to CourtListener (U.S. court dockets; metadata only) and the consent dialog lists it. When unticked CourtListener is not contacted and not listed. The choice is not remembered between sessions.",
         "osint.provider_box":   "Provider for Structure Query. Live Research and Exposure Check call no model.",
         "osint.model_box":      "Model for Structure Query. BEST FIT marks the recommended one; Auto-route picks one for the current input.",
         "osint.analyse_btn":    "Structure Query: ask the selected model for an investigation plan. Contacts no research source; a cloud model receives the prompt only after you confirm the request.",

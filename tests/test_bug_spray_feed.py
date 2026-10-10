@@ -239,3 +239,43 @@ def test_parse_sections_still_accepts_heading_form():
 def test_extract_cvss_score_skips_the_version(text, expected):
     from ui.panels.bug_bounty import extract_cvss_score
     assert extract_cvss_score(text) == expected
+
+
+# ── Nothing enabled: no scan, no spawn, a clear status line ─────────────────
+
+@pytest.fixture
+def empty_radar(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    settings = config.Settings(enabled_platforms=[], data_dir=str(tmp_path))
+    monkeypatch.setattr(config, "load", lambda path=None: settings)
+    widget = BugSprayFeed()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("a scan process must not be started")
+
+    monkeypatch.setattr(widget._scan, "start", forbidden)
+    yield widget
+    widget.deleteLater()
+
+
+NO_PLATFORMS = "No platforms enabled: open Watchlist to choose."
+
+
+def test_scan_now_with_no_platform_enabled_spawns_nothing(empty_radar, monkeypatch):
+    monkeypatch.setattr(feed_module, "PYTHON", feed_module.Path(sys.executable))
+    empty_radar.scan_now()
+    assert empty_radar.status.text() == NO_PLATFORMS
+    empty_radar.scan_now(full=True)
+    assert empty_radar.status.text() == NO_PLATFORMS
+    assert empty_radar.scan_button.isEnabled()
+
+
+def test_auto_scan_with_no_platform_enabled_says_so_and_spawns_nothing(empty_radar, monkeypatch):
+    monkeypatch.setattr(feed_module, "PYTHON", feed_module.Path(sys.executable))
+    empty_radar._maybe_scan()
+    assert empty_radar.status.text() == NO_PLATFORMS
+
+
+def test_refresh_with_no_platform_enabled_keeps_the_message(empty_radar):
+    empty_radar.refresh()
+    assert empty_radar.status.text() == NO_PLATFORMS

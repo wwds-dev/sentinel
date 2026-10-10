@@ -17,7 +17,9 @@ the **Program** field in the form below; it does not choose a target for you.
 **First-time setup.** The radar only shows what a scan has saved, and out of the
 box nothing is scanned: no platform is enabled until you choose some. Open
 **Watchlist…**, tick the platforms to scan and save (this writes Bug Spray's
-`config.json` in the `agents/bug_spray` folder), then press **Scan now**. The
+`config.json` in the `agents/bug_spray` folder), then press **Scan now**. Until
+you do, the radar says "No platforms enabled: open Watchlist to choose." and
+neither starts a scan nor contacts the network. The
 scanner runs in Bug Spray's own Python environment; if it is missing, the
 radar says "Bug Spray Python environment is missing", and the setup commands are
 in `agents/bug_spray/README.md`. The radar belongs to a source checkout: the
@@ -69,8 +71,10 @@ Enter the exact **Target URL / IP**, the **Program** name and the **Scope Type**
 (for example Web Application, API / REST or Network / Infrastructure). The
 screen states this plainly: **program and scope are declared by you and are not
 verified or enforced.** Bug Spray does not check the target against the
-program's scope, not before Nmap runs and not before the model is called, and it
-asks for no confirmation that you are authorised. It drafts a report from what
+program's scope, not before Nmap runs and not before the model is called. Before
+every Nmap run it asks you to confirm "I'm authorised to test this target under
+this program's rules" (the default answer is No) and it will not run Nmap while
+the Program field is empty; **Analyse** has no such prompt. It drafts a report from what
 you enter; staying inside a program you are authorised to test is your
 responsibility, not a check the tool performs. Paste evidence into **Findings /
 Burp Suite Output / Notes**: relevant requests/responses, behaviour,
@@ -84,8 +88,12 @@ as a result.
 
 The **Nmap Recon Scan** section is optional and always visible. It runs a real
 local process. As the caption under it warns, it runs on your machine with no
-scope check and outside the budget or authorisation guard, and it touches
-whatever host you give it. How it behaves:
+scope check (Sentinel does not verify scope; the confirmation is your
+statement) and outside the budget or authorisation guard, and it touches
+whatever host you give it. Each press of **Run Nmap** needs a Program and a Yes
+to the authorisation question, which names the target, the program and the
+command; declining starts nothing. Every attempt (refused, declined or started)
+is written to `data/logs/bug_spray_audit.jsonl`. How it behaves:
 
 - With the command field empty, **Run Nmap** builds `nmap -sV -sC -T4 --open <host>`
   from your Target (the scheme and path are removed; a `:port` is kept), puts it

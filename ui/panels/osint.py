@@ -26,6 +26,7 @@ from ui.widgets import MenuComboBox, SectionView
 from ui.panels.base import AgentPanel
 from services import osint_catalog
 from services.deepseek_client import is_insufficient_balance_error
+from agents.osint_agent import classify_target
 from ui.workers import DomainLookupWorker, ExposureLookupWorker, IdentityLookupWorker
 
 
@@ -84,6 +85,22 @@ class OsintPanel(AgentPanel):
             "Domain", "Company", "Phone", "IP Address",
         ])
         setup_layout.addWidget(self.type_box, 1, 1)
+
+        # Off by default and never remembered: Trace persists no option between
+        # runs, so every session starts without contacting CourtListener.
+        self.courtlistener_box = QCheckBox("Include CourtListener court records (Company)")
+        self.courtlistener_box.setChecked(False)
+        setup_layout.addWidget(self.courtlistener_box, 1, 2, 1, 2)
+
+        # Advisory only: names the type Trace will use and, when the text looks
+        # like another type, suggests it. It never changes the Query Type.
+        self.type_hint_label = QLabel("")
+        self.type_hint_label.setWordWrap(True)
+        self.type_hint_label.setStyleSheet("font-size: 11px; color: #c9a227;")
+        self.type_hint_label.hide()
+        setup_layout.addWidget(self.type_hint_label, 3, 0, 1, 4)
+        self.target_input.textChanged.connect(lambda _text: self._refresh_type_hint())
+        self.type_box.currentTextChanged.connect(lambda _text: self._refresh_type_hint())
 
         self.analyse_btn = QPushButton("Structure Query")
         self.analyse_btn.setMinimumWidth(150)
@@ -352,6 +369,25 @@ class OsintPanel(AgentPanel):
                 button.setVisible(not busy)
                 button.setEnabled(not busy)
 
+    def _type_hint_text(self, target: str, resolved_type: str) -> str:
+        hint = classify_target(target, resolved_type)
+        return hint.message if hint else ""
+
+    def _refresh_type_hint(self) -> None:
+        target = self.target_input.text().strip()
+        text = ""
+        if target:
+            validation = self.agent().validate_target(target, self.type_box.currentText())
+            text = self._type_hint_text(target, validation.query_type)
+        self.type_hint_label.setText(text)
+        self.type_hint_label.setVisible(bool(text))
+
+    def _treated_as_lines(self, target: str, resolved_type: str) -> str:
+        """'Treated as: <type>' plus, when it fits, a one-line better-type hint."""
+        lines = f"Treated as: {resolved_type}"
+        hint = self._type_hint_text(target, resolved_type)
+        return lines + (f"\nHint: {hint}" if hint else "")
+
     # ── Explicit live public-source research ───────────────────────────
     def live_research(self) -> None:
         if self._busy_with_previous_request():
@@ -411,7 +447,7 @@ class OsintPanel(AgentPanel):
                 "Domain": ("WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, "
                            "crt.sh, and the Wayback Machine"),
                 "Username": "URLScan, GitHub, and Keybase",
-                "Company": "GLEIF Legal Entity Index and CourtListener court records",
+                "Company": "GLEIF Legal Entity Index",
             }
             sources = source_map[validation.query_type]
             if validation.query_type in {"IP Address", "Domain"}:
@@ -427,16 +463,23 @@ class OsintPanel(AgentPanel):
                 from providers.company_lookup import opensanctions_key
 
                 # OpenSanctions needs a key for every call; without one it is
-                # neither named here nor contacted. CourtListener always runs.
+                # neither named here nor contacted. CourtListener has its own
+                # checkbox (off by default): it is named and contacted only when ticked.
+                names = ["GLEIF Legal Entity Index"]
                 if opensanctions_key():
                     selected_sources = ("opensanctions",)
-                    sources = ("GLEIF Legal Entity Index, OpenSanctions, and "
-                               "CourtListener court records")
+                    names.append("OpenSanctions")
+                if self.courtlistener_box.isChecked():
+                    selected_sources += ("courtlistener",)
+                    names.append("CourtListener court records")
+                sources = (names[0] if len(names) == 1
+                           else ", ".join(names[:-1]) + " and " + names[-1])
             consent = QMessageBox.question(
                 self,
                 "Confirm Live Research",
                 f"Trace will send this target to public research services:\n\n"
-                f"{target}\n\nSources: {sources}\n\n"
+                f"{target}\n\n{self._treated_as_lines(target, validation.query_type)}\n\n"
+                f"Sources: {sources}\n\n"
                 "This is a real external lookup, not local model processing. Continue?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
@@ -477,7 +520,8 @@ class OsintPanel(AgentPanel):
         layout = QVBoxLayout(dialog)
         explanation = QLabel(
             f"The complete address {target} will be sent only to the services "
-            "selected below. Breach services are off by default."
+            "selected below. Breach services are off by default.\n"
+            + self._treated_as_lines(target, "Email")
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
@@ -600,7 +644,8 @@ class OsintPanel(AgentPanel):
         explanation = QLabel(
             f"'{target}' will be sent only to the clearnet services selected "
             "below. Each does its own crawling under its own legal setup; Sentinel "
-            "receives text results only and never contacts an onion site."
+            "receives text results only and never contacts an onion site.\n"
+            + self._treated_as_lines(target, query_type)
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)

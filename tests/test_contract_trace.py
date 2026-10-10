@@ -671,7 +671,7 @@ class TestLiveResearch:
         if kind == "Email":
             assert seen[0][3]["selected_sources"] == ("emailrep",)
         if kind == "Company":
-            assert seen[0][3]["sanctions"] is False and seen[0][3]["court_records"] is True
+            assert seen[0][3]["sanctions"] is False and seen[0][3]["court_records"] is False
         assert sync_trace.status_label.text() == "Live Research complete."
         assert sync_trace.live_btn.isEnabled() and sync_trace.analyse_btn.isEnabled()
         assert json.loads(sync_trace.sections._raw) == LIVE_RESULTS[kind]
@@ -1038,3 +1038,120 @@ class TestStop:
         panel.stop()
         panel.worker.run()
         assert panel.live_btn.isEnabled()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CourtListener consent checkbox and "treated as" / type hints
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestCourtListenerConsent:
+    def _run(self, sync_trace, monkeypatch, dialogs, tick):
+        seen = []
+        _patch_providers(monkeypatch, results=_live_provider_results(), seen=seen)
+        sync_trace.type_box.setCurrentText("Company")
+        sync_trace.target_input.setText("Acme Holdings")
+        sync_trace.courtlistener_box.setChecked(tick)
+        sync_trace.live_research()
+        return seen
+
+    def test_the_box_exists_and_is_off_by_default(self, sync_trace):
+        assert sync_trace.courtlistener_box.isChecked() is False
+
+    def test_unticked_is_neither_listed_nor_contacted(self, sync_trace, monkeypatch, dialogs):
+        seen = self._run(sync_trace, monkeypatch, dialogs, tick=False)
+        (_, text), = dialogs["question"]
+        assert "CourtListener" not in text and "GLEIF" in text
+        assert len(seen) == 1 and seen[0][3]["court_records"] is False
+        assert "CourtListener" not in sync_trace.activity_box.toPlainText()
+
+    def test_ticked_is_listed_and_contacted(self, sync_trace, monkeypatch, dialogs):
+        seen = self._run(sync_trace, monkeypatch, dialogs, tick=True)
+        (_, text), = dialogs["question"]
+        assert "CourtListener" in text
+        assert seen[0][3]["court_records"] is True
+        assert "CourtListener" in sync_trace.activity_box.toPlainText()
+
+    def test_declining_with_the_box_ticked_contacts_nothing(self, sync_trace, monkeypatch, dialogs):
+        dialogs["answer"] = QMessageBox.No
+        seen = self._run(sync_trace, monkeypatch, dialogs, tick=True)
+        assert seen == []
+
+    def test_ticked_with_sanctions_key_lists_all_three(self, sync_trace, monkeypatch, dialogs):
+        from providers import company_lookup
+        monkeypatch.setattr(company_lookup, "opensanctions_key", lambda: "k")
+        seen = self._run(sync_trace, monkeypatch, dialogs, tick=True)
+        (_, text), = dialogs["question"]
+        assert "GLEIF Legal Entity Index, OpenSanctions and CourtListener" in text
+        assert seen[0][3]["sanctions"] is True and seen[0][3]["court_records"] is True
+
+    def test_the_box_does_not_leak_into_other_types(self, sync_trace, monkeypatch, dialogs):
+        seen = []
+        _patch_providers(monkeypatch, results=_live_provider_results(), seen=seen)
+        sync_trace.courtlistener_box.setChecked(True)
+        sync_trace.type_box.setCurrentText("Domain")
+        sync_trace.target_input.setText("acme.test")
+        sync_trace.live_research()
+        (_, text), = dialogs["question"]
+        assert "CourtListener" not in text
+
+
+class TestTreatedAsAndHints:
+    def _consent_text(self, sync_trace, monkeypatch, dialogs, kind, target):
+        _patch_providers(monkeypatch, results=_live_provider_results(), seen=[])
+        sync_trace.type_box.setCurrentText(kind)
+        sync_trace.target_input.setText(target)
+        sync_trace.live_research()
+        return dialogs["question"][-1][1]
+
+    def test_consent_states_the_resolved_type(self, sync_trace, monkeypatch, dialogs):
+        text = self._consent_text(sync_trace, monkeypatch, dialogs, "Auto-detect", "acme.test")
+        assert "Treated as: Domain" in text and "Hint" not in text
+
+    def test_dotted_name_is_hinted_but_still_treated_as_chosen(
+            self, sync_trace, monkeypatch, dialogs):
+        seen = []
+        _patch_providers(monkeypatch, results=_live_provider_results(), seen=seen)
+        sync_trace.type_box.setCurrentText("Auto-detect")
+        sync_trace.target_input.setText("john.smith")
+        sync_trace.live_research()
+        text = dialogs["question"][-1][1]
+        assert "Treated as: Domain" in text and "use Username or Person" in text
+        assert sync_trace.type_box.currentText() == "Auto-detect"   # selection untouched
+        assert seen and seen[0][0] == "domain"                      # not re-routed
+
+    def test_crypto_address_typed_as_username_is_hinted_not_rerouted(
+            self, sync_trace, monkeypatch, dialogs):
+        seen = []
+        _patch_providers(monkeypatch, results=_live_provider_results(), seen=seen)
+        sync_trace.type_box.setCurrentText("Username")
+        sync_trace.target_input.setText("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed")
+        sync_trace.live_research()
+        text = dialogs["question"][-1][1]
+        assert "Treated as: Username" in text and "Ethereum address" in text
+        assert sync_trace.type_box.currentText() == "Username"
+        assert seen and seen[0][0] == "username"
+
+    def test_domain_typed_as_username_suggests_domain(self, sync_trace, monkeypatch, dialogs):
+        text = self._consent_text(sync_trace, monkeypatch, dialogs, "Username", "example.com")
+        assert "Treated as: Username" in text and "use Domain" in text
+
+    def test_ordinary_username_gets_no_hint(self, sync_trace, monkeypatch, dialogs):
+        text = self._consent_text(sync_trace, monkeypatch, dialogs, "Username", "alice_dev")
+        assert "Treated as: Username" in text and "Hint" not in text
+
+    def test_panel_hint_label_follows_the_input_and_never_edits_the_type(self, sync_trace):
+        sync_trace.type_box.setCurrentText("Username")
+        sync_trace.target_input.setText("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+        assert not sync_trace.type_hint_label.isHidden()
+        assert "Bitcoin address" in sync_trace.type_hint_label.text()
+        assert sync_trace.type_box.currentText() == "Username"
+        sync_trace.target_input.setText("alice_dev")
+        assert sync_trace.type_hint_label.isHidden()
+
+    def test_email_picker_states_the_type(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QDialog
+        seen = {}
+        monkeypatch.setattr(QDialog, "exec", lambda dialog: seen.update(
+            labels=" ".join(l.text() for l in dialog.findChildren(QLabel))) or QDialog.Rejected)
+        assert trace._choose_email_sources("analyst@acme.test") == ()
+        assert "Treated as: Email" in seen["labels"]

@@ -478,6 +478,10 @@ def spray(qapp, tmp_path, monkeypatch, started):
     host.agent_instances["bug_bounty"] = FakeBugBountyAgent()
     panel = BugBountyPanel(host)
     panel.target_input.setText("https://target.example.com/app")
+    # Every Nmap run needs a Program and a "Yes" to the default-No authorisation
+    # question; the runner tests answer both here, TestNmapAuthorisation varies them.
+    panel.program_input.setText("HackerOne — Acme")
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     yield panel
     panel.deleteLater()
 
@@ -1061,3 +1065,89 @@ class TestBugSprayAuditFixes:
         messages = rec[3]
         assert messages and messages[0]["role"] == "system"
         assert "HISTORY-MARKER" in messages[-1]["content"]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Bug Spray — Nmap authorisation confirmation and audit
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestNmapAuthorisation:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path, spray):
+        monkeypatch.setattr("ui.panels.bug_bounty.shutil.which", lambda n: "/usr/bin/nmap")
+        self.audit = tmp_path / "bug_spray_audit.jsonl"
+        import ui.panels.bug_bounty as mod
+        real = mod.record_nmap_attempt
+        monkeypatch.setattr(
+            mod, "record_nmap_attempt",
+            lambda *a, **k: real(*a, **{**k, "audit_path": self.audit}))
+        self.asked = []
+        self.warned = []
+        self.answer = QMessageBox.No
+
+        def question(parent, title, text, buttons=None, default=None):
+            self.asked.append((title, text, buttons, default))
+            return self.answer
+
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+        monkeypatch.setattr(QMessageBox, "warning",
+                            staticmethod(lambda *a, **k: self.warned.append(a[1:3])))
+
+    def lines(self):
+        if not self.audit.exists():
+            return []
+        return [json.loads(line) for line in self.audit.read_text().splitlines()]
+
+    def test_dialog_names_target_and_program_and_defaults_to_no(self, spray, started):
+        spray.program_input.setText("HackerOne — Acme")
+        spray.run_nmap()
+        (title, text, buttons, default), = self.asked
+        assert "I'm authorised to test this target under this program's rules" in text
+        assert "target.example.com" in text and "HackerOne — Acme" in text
+        assert default == QMessageBox.No
+        assert started == []                       # No is the answer given: nothing starts
+
+    def test_declining_starts_no_process_and_is_recorded(self, spray, started):
+        spray.program_input.setText("HackerOne — Acme")
+        spray.run_nmap()
+        assert started == [] and spray._nmap_process is None
+        assert spray.nmap_run_btn.isEnabled()
+        (entry,) = self.lines()
+        assert entry["outcome"] == "declined" and entry["action"] == "nmap"
+        assert entry["program"] == "HackerOne — Acme"
+        assert "target.example.com" in entry["target"]
+
+    def test_accepting_starts_nmap_and_records_started(self, spray, started):
+        spray.program_input.setText("HackerOne — Acme")
+        self.answer = QMessageBox.Yes
+        spray.run_nmap()
+        assert started == [("/usr/bin/nmap", ["-sV", "-sC", "-T4", "--open", "target.example.com"])]
+        assert [e["outcome"] for e in self.lines()] == ["started"]
+
+    @pytest.mark.parametrize("program", ["", "   "])
+    def test_empty_program_refuses_without_asking_or_starting(self, spray, started, program):
+        spray.program_input.setText(program)
+        self.answer = QMessageBox.Yes
+        spray.run_nmap()
+        assert started == [] and spray._nmap_process is None
+        assert self.asked == []                    # refused before the question
+        assert self.warned and "Program" in self.warned[0][1]
+        assert spray.nmap_run_btn.isEnabled()
+        (entry,) = self.lines()
+        assert entry["outcome"] == "refused"
+
+    def test_invalid_command_is_not_audited_as_started_or_asked(self, spray, started):
+        spray.program_input.setText("HackerOne — Acme")
+        spray.nmap_cmd_input.setText("/bin/sh -c nmap")
+        spray.run_nmap()
+        assert started == [] and self.asked == [] and self.lines() == []
+
+    def test_analyse_has_no_authorisation_prompt(self, spray):
+        spray.program_input.setText("HackerOne — Acme")
+        spray.analyse()
+        assert self.asked == []
+        assert len(FakeWorker.instances) == 1
+
+    def test_tooltip_note_states_the_confirmation(self, spray):
+        notes = " ".join(label.text() for label in spray.findChildren(QLabel))
+        assert "confirm you are authorised" in notes

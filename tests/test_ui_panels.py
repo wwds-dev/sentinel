@@ -1780,10 +1780,11 @@ class TestTracePanel:
         assert "Breach databases (Snusbase)" in titles
         assert "Breaches and leaked data types (LeakCheck)" in titles
 
-    def test_company_consent_names_courtlistener(self, trace, monkeypatch):
-        """Company Live Research always contacts CourtListener, so the consent
-        text (and the audit line built from it) must name it. Regression: the
-        target was POSTed to CourtListener without disclosure."""
+    def test_company_consent_names_courtlistener_only_when_ticked(self, trace, monkeypatch):
+        """CourtListener has its own checkbox (off by default). The consent text,
+        and the audit line built from it, name it exactly when it is ticked.
+        Regression: the target was POSTed to CourtListener without disclosure,
+        and later on every company lookup without a choice."""
         seen = {}
         monkeypatch.setattr(
             QMessageBox, "question",
@@ -1791,6 +1792,11 @@ class TestTracePanel:
         )
         trace.type_box.setCurrentText("Company")
         trace.target_input.setText("Acme Ltd")
+        assert trace.courtlistener_box.isChecked() is False
+        trace.live_research()
+        assert "CourtListener" not in seen["text"]
+        assert "Treated as: Company" in seen["text"]
+        trace.courtlistener_box.setChecked(True)
         trace.live_research()
         assert "CourtListener" in seen["text"]
 

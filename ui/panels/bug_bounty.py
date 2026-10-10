@@ -20,7 +20,7 @@ from PySide6.QtCore import QProcess, Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QSplitter, QTextBrowser, QTextEdit,
+    QLineEdit, QMessageBox, QPushButton, QSplitter, QTextBrowser, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -66,6 +66,34 @@ def extract_cvss_score(text: str) -> str | None:
 
 NMAP_TIMEOUT_MS = 10 * 60 * 1000     # a scan the operator has not killed by then is stuck
 NMAP_OUTPUT_LIMIT = 256 * 1024       # characters kept; enough for any single-host -sV -sC
+
+
+NMAP_AUDIT_FILENAME = "bug_spray_audit.jsonl"
+AUTHORISATION_STATEMENT = "I'm authorised to test this target under this program's rules"
+
+
+def record_nmap_attempt(outcome: str, target: str, program: str, command: str,
+                        detail: str = "", audit_path: Path | None = None) -> Path | None:
+    """Append one audit line for an Nmap attempt: declined, refused or started.
+
+    Uses the same local JSON-lines facility as Tunnel's consent audit
+    (``vpn_execution.append_audit``: one line per attempt, mode 0600, never
+    raises) in its own file next to it. Sentinel does not verify the scope, so
+    the line records only what the operator said and entered.
+    """
+    from services import vpn_execution
+
+    path = audit_path or (vpn_execution.default_audit_path().parent / NMAP_AUDIT_FILENAME)
+    return vpn_execution.append_audit({
+        "time": vpn_execution._now(),
+        "action": "nmap",
+        "protocol": "bug-spray",
+        "target": vpn_execution.redact_secrets(target)[:200],
+        "program": vpn_execution.redact_secrets(program)[:200],
+        "command": vpn_execution.redact_secrets(command)[:500],
+        "outcome": outcome,
+        "detail": vpn_execution.redact_secrets(detail)[:500],
+    }, path)
 
 
 class BugBountyPanel(AgentPanel):
@@ -164,7 +192,8 @@ class BugBountyPanel(AgentPanel):
         nmap_note = QLabel(
             "Runs this command on your machine (the first word is the program to "
             "launch), with no scope check and outside the budget/authorisation guard. "
-            "Only scan targets you are authorised to test."
+            "Each run asks you to confirm you are authorised to test the target under "
+            "the named program's rules, and needs the Program field filled in."
         )
         nmap_note.setWordWrap(True)
         nmap_note.setStyleSheet("font-size: 11px; color: #999;")
@@ -301,6 +330,33 @@ class BugBountyPanel(AgentPanel):
         except ValueError as exc:
             self.nmap_output.setPlainText(f"[Error] {exc}")
             return
+
+        scan_target = self.target_input.text().strip() or (shlex.split(cmd_text) or [""])[-1]
+        program_name = self.program_input.text().strip()
+        if not program_name:
+            reason = ("Enter the Program (for example 'HackerOne — Acme Corp') before running "
+                      "Nmap. Sentinel does not verify scope, so it will not scan until you "
+                      "have named the program whose rules authorise this target.")
+            record_nmap_attempt("refused", scan_target, program_name, cmd_text,
+                                "Program field is empty.")
+            self.nmap_output.setPlainText("[Refused] Program field is empty; nothing was run.")
+            self.status_label.setText("Nmap not run: enter the Program first.")
+            QMessageBox.warning(self, "Program required", reason + "\n\nNothing was run.")
+            return
+        answer = QMessageBox.question(
+            self, "Confirm authorisation",
+            f"{AUTHORISATION_STATEMENT}.\n\nTarget: {scan_target}\n"
+            f"Program: {program_name}\nCommand: {cmd_text}\n\n"
+            "Sentinel does not verify scope. Continue only if you have checked the "
+            "program's current rules.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            record_nmap_attempt("declined", scan_target, program_name, cmd_text,
+                                "Operator declined the authorisation confirmation.")
+            self.nmap_output.setPlainText("[Not run] Authorisation was not confirmed.")
+            self.status_label.setText("Nmap not run: authorisation not confirmed.")
+            return
+        record_nmap_attempt("started", scan_target, program_name, cmd_text)
 
         self._nmap_scan_text = ""
         self._nmap_truncated = False

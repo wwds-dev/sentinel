@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import ipaddress
 import re
 from urllib.parse import urlsplit
@@ -87,6 +88,145 @@ def catalog_block(query_type: str) -> str:
         "is not contacted). Choose from these and the reference list above; never "
         "invent a URL:\n" + osint_catalog.format_block(picks)
     )
+
+
+# ── Target-type hints (advisory only) ───────────────────────────────────────
+#
+# Trace never re-routes a target: the type the user picked (or Auto-detect
+# resolved) is what the lookup uses. These pure helpers only notice input that
+# is probably aimed at the wrong type, so the consent dialog can say so.
+
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+#: base58check version bytes -> chain (a 25-byte payload: version + 20 + 4 checksum).
+_B58_VERSIONS = {
+    0x00: "Bitcoin", 0x05: "Bitcoin", 0x30: "Litecoin", 0x32: "Litecoin",
+    0x1E: "Dogecoin", 0x16: "Dogecoin", 0x41: "Tron",
+}
+#: Plausible domain endings. A dotted pair whose last label is not here (and is
+#: not a two-letter country code in _CCTLDS) is more likely a name or handle.
+_GTLDS = frozenset(
+    "com net org info biz edu gov mil int name pro mobi asia tel travel jobs museum coop "
+    "aero xxx app dev ai xyz online site tech store shop blog cloud page link live news "
+    "media email space top club agency digital network systems solutions services company "
+    "group team world today life one academy works zone studio design art bank church "
+    "city center community consulting education energy events expert finance fund global "
+    "health help host io law legal money partners press red school software support "
+    "tools university vip website wiki work zip "
+    "test example invalid localhost local internal lan home corp intranet onion".split()
+)
+_CCTLDS = frozenset(
+    "ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bm bn bo br "
+    "bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do "
+    "dz ec ee eg er es et eu fi fj fk fm fo fr ga gd ge gf gg gh gi gl gm gn gp gq gr gs gt "
+    "gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn "
+    "kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mg mh mk ml mm mn mo mp mq "
+    "mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl "
+    "pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sk sl sm sn so sr ss st "
+    "su sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug uk us uy uz va vc "
+    "ve vg vi vn vu wf ws ye yt za zm zw".split()
+)
+
+
+@dataclass(frozen=True)
+class TypeHint:
+    """A one-line suggestion that the input suits a different target type."""
+
+    suggested: str   # "Crypto Address", "Domain", "Username or Person"
+    message: str
+
+
+def _base58_chain(value: str) -> str:
+    """The chain of a base58check address (checksum verified), or ""."""
+    if not 26 <= len(value) <= 35 or any(ch not in _B58 for ch in value):
+        return ""
+    number = 0
+    for ch in value:
+        number = number * 58 + _B58.index(ch)
+    raw = number.to_bytes(25, "big") if number < 1 << 200 else b""
+    if len(raw) != 25:
+        return ""
+    # Leading '1's encode leading zero bytes; the 25-byte form already has them.
+    if hashlib.sha256(hashlib.sha256(raw[:21]).digest()).digest()[:4] != raw[21:]:
+        return ""
+    return _B58_VERSIONS.get(raw[0], "")
+
+
+def _bech32_valid(value: str) -> bool:
+    """Bech32 / Bech32m checksum of a segwit-style address (single case)."""
+    if value != value.lower() and value != value.upper():
+        return False
+    value = value.lower()
+    sep = value.rfind("1")
+    if sep < 1 or sep + 7 > len(value) or len(value) > 90:
+        return False
+    if any(ch not in _BECH32 for ch in value[sep + 1:]):
+        return False
+    hrp = value[:sep]
+    values = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+    values += [_BECH32.index(c) for c in value[sep + 1:]]
+    generator = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+    check = 1
+    for item in values:
+        top = check >> 25
+        check = (check & 0x1FFFFFF) << 5 ^ item
+        for bit in range(5):
+            check ^= generator[bit] if (top >> bit) & 1 else 0
+    return check in (1, 0x2BC830A3)
+
+
+def crypto_address_chain(value: str) -> str:
+    """Name the chain when ``value`` is a Bitcoin, Ethereum, Litecoin, Dogecoin
+    or Tron address, else "". Pure: no lookup. Base58 and bech32 addresses must
+    pass their checksum, so an ordinary handle that only resembles one is not
+    reported; an Ethereum address is 0x plus 40 hex digits."""
+    text = value.strip()
+    if re.fullmatch(r"0x[0-9a-fA-F]{40}", text):
+        return "Ethereum"
+    lowered = text.lower()
+    if lowered.startswith(("bc1", "ltc1")) and _bech32_valid(text):
+        return "Bitcoin" if lowered.startswith("bc1") else "Litecoin"
+    return _base58_chain(text)
+
+
+def _plausible_domain(host: str) -> bool:
+    labels = host.lower().split(".")
+    last = labels[-1]
+    return len(labels) >= 2 and (last in _GTLDS or last in _CCTLDS)
+
+
+def classify_target(value: str, resolved_type: str) -> TypeHint | None:
+    """Suggest a better target type for ``value`` — never change the type.
+
+    Returns None for ordinary input. ``resolved_type`` is the type Trace will
+    actually use; the hint is shown next to it and the lookup is unaffected.
+    """
+    text = value.strip()
+    if not text or resolved_type == "Crypto Address":
+        return None
+    chain = crypto_address_chain(text)
+    if chain:
+        return TypeHint(
+            "Crypto Address",
+            f"Looks like {'an' if chain[0] in 'AEIOU' else 'a'} {chain} address - "
+            "Trace has no wallet type; "
+            "use Bloodhound's Crypto Address.",
+        )
+    if resolved_type in {"Email", "IP Address", "Phone"} or "@" in text:
+        return None
+    host = OSINTAgent._domain_host(text)
+    dotted_name = re.fullmatch(r"[a-z]{2,}(?:\.[a-z]+)?\.[a-z]{2,}", host)
+    if resolved_type == "Domain":
+        if dotted_name and "://" not in text and not _plausible_domain(host):
+            return TypeHint(
+                "Username or Person",
+                f"Looks like a name or username, not a domain ('.{host.rsplit('.', 1)[-1]}' "
+                "is not a known domain ending) - use Username or Person.",
+            )
+        return None
+    if OSINTAgent._DOMAIN.fullmatch(host) and _plausible_domain(host) and " " not in text:
+        return TypeHint("Domain", "Looks like a domain - use Domain.")
+    return None
 
 
 @dataclass(frozen=True)

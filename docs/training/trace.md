@@ -43,14 +43,19 @@ AbuseIPDB, GreyNoise, VirusTotal, AlienVault OTX, Shodan and Censys; for a
 domain, VirusTotal, OTX, SecurityTrails, DomainTools, Shodan, URLScan and
 Hunter (role addresses and a count of named people, never their addresses).
 Usernames go to URLScan, GitHub and Keybase. Companies use the GLEIF
-legal-entity registry and U.S. court dockets from CourtListener, which is part
-of every company lookup (metadata only — never document text or PDFs), and,
-with a key, sanctions and watchlist screening. Email services are chosen one by
+legal-entity registry and, only if you tick **Include CourtListener court records
+(Company)** (off by default, and not remembered between sessions), U.S. court
+dockets from CourtListener (metadata only — never document text or PDFs), and,
+with a key, sanctions and watchlist screening. The confirmation dialog states
+the type it treats your target as ("Treated as: Domain") and adds a one-line
+hint when the text looks like another type, for example a crypto address or a
+name such as john.smith typed where a domain is expected; it never changes the
+type you chose. Email services are chosen one by
 one in a dialog: EmailRep and Gravatar start ticked, Have I Been Pwned and
 BreachDirectory start unticked, and Hunter is ticked once its key is saved.
 Person and phone targets remain planning-only to avoid data-broker and
 reverse-phone disclosure; that rests on the type you choose, so a personal name
-entered as a Company is sent to GLEIF and CourtListener.
+entered as a Company is sent to GLEIF (and to CourtListener if you ticked it).
 
 A separate **Exposure Check** (domain, company or email) asks which leak and
 dark-web indexes may receive the target: Ransomware.live and Ahmia are free,

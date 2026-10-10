@@ -85,9 +85,10 @@ class IdentityLookupWorker(QThread):
                 result = lookup(
                     self.target,
                     sanctions="opensanctions" in self.sources,
-                    # CourtListener is free, keyless and metadata-only, so Trace
-                    # runs it for every company lookup, like the GLEIF base search.
-                    court_records=True,
+                    # CourtListener has its own consent checkbox in Trace (off by
+                    # default); the panel adds "courtlistener" to the sources only
+                    # when it is ticked and named in the consent dialog.
+                    court_records="courtlistener" in self.sources,
                     on_progress=progress, should_stop=stopped,
                 )
             else:
