@@ -442,6 +442,13 @@ class BugSprayFeed(QGroupBox):
         args = [str(PROJECT / "main.py"), "scan", "--json"] + (["--full"] if full else [])
         self._scan.start(str(PYTHON), args)
 
+    def shutdown(self, timeout_ms: int = 2000) -> None:
+        """Stop the background scan and its timer before the widgets go."""
+        self._timer.stop()
+        if self._scan.state() != QProcess.NotRunning:
+            self._scan.kill()
+            self._scan.waitForFinished(timeout_ms)
+
     def _drain_scan_output(self) -> None:
         self._scan.readAllStandardOutput()
 

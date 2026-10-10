@@ -437,14 +437,9 @@ class WifiPanel(AgentPanel):
         self._last_response = cmds
         self.save_btn.setEnabled(True)
         self.status_label.setText(f"Kali commands generated: {op}")
-
-        if self.ai_checkbox.isEnabled() and self.ai_checkbox.isChecked() and self.model:
-            prompt = (
-                "Explain the following Kali Linux Wi-Fi attack command sequence for an "
-                "authorised penetration test. Break down what each step does and what to "
-                f"watch for:\n\n{cmds}"
-            )
-            self._start_ai_pass(prompt)
+        # AI Analysis is disabled while Kali Command Builder is the active mode
+        # (see `_on_mode_changed`), so this generator never routes the command
+        # text to a model — Kali-mode data never leaves the Mac.
 
     def _format_scan_output(self, raw: str) -> str:
         """Turn system_profiler JSON into a readable report; pass other output

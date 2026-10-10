@@ -1546,6 +1546,10 @@ class FakeOsintAgent:
         from agents.osint_agent import OSINTAgent
         return OSINTAgent.validate_target(target, query_type)
 
+    def non_public_ip_reason(self, target):
+        from agents.osint_agent import OSINTAgent
+        return OSINTAgent.non_public_ip_reason(target)
+
 
 class FakeLookupWorker(QObject):
     progress_signal = Signal(str, str)
@@ -1697,7 +1701,7 @@ class TestTracePanel:
         monkeypatch.setenv("IPINFO_API_KEY", "tok")
         monkeypatch.setenv("CRIMINALIP_API_KEY", "cip")
         trace.type_box.setCurrentText("IP Address")
-        trace.target_input.setText("203.0.113.5")
+        trace.target_input.setText("8.8.8.8")
         trace.live_research()
         assert "Shodan InternetDB" in seen["text"]
         assert "IPinfo" in seen["text"]
@@ -1723,7 +1727,7 @@ class TestTracePanel:
         assert "AbuseIPDB" not in seen["text"]     # an IP-only source
 
         trace.type_box.setCurrentText("IP Address")
-        trace.target_input.setText("203.0.113.5")
+        trace.target_input.setText("8.8.8.8")
         trace.live_research()
         for label in ("AbuseIPDB", "GreyNoise", "VirusTotal", "AlienVault OTX",
                       "Shodan", "Censys"):
@@ -1760,7 +1764,7 @@ class TestTracePanel:
         monkeypatch.setattr(trace.sections, "show_sections",
                             lambda cards, raw=None: shown.update(cards=cards))
         trace._show_lookup_result({
-            "type": "ip", "query": "203.0.113.5", "sources_contacted": [],
+            "type": "ip", "query": "8.8.8.8", "sources_contacted": [],
             "abuse_reports": {"abuse_confidence": 87}, "shodan_host": {"ports": [22]},
         }, save=False)
         titles = [card[0] for card in shown["cards"]]
@@ -1825,7 +1829,7 @@ class TestTracePanel:
 
     def test_live_research_stop_retains_partial_results(
             self, trace, monkeypatch):
-        trace.target_input.setText("192.0.2.10")
+        trace.target_input.setText("8.8.4.4")
         monkeypatch.setattr(
             QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
         )
@@ -1834,7 +1838,7 @@ class TestTracePanel:
         trace.stop()
         assert worker.cancelled
         worker.finished_signal.emit({
-            "type": "ip", "query": "192.0.2.10", "cancelled": True,
+            "type": "ip", "query": "8.8.4.4", "cancelled": True,
             "whois": {"country": "ZZ"},
             "sources_contacted": [{"source": "WHOIS", "status": "checked"}],
         })
@@ -1925,11 +1929,11 @@ class TestTracePanel:
             QMessageBox, "question",
             staticmethod(lambda *a, **k: prompts.append(a[2]) or QMessageBox.Yes),
         )
-        trace.target_input.setText("192.0.2.10")
+        trace.target_input.setText("8.8.4.4")
         trace.live_research()
         assert "Team Cymru" in prompts[-1] and "DShield" in prompts[-1]
         FakeLookupWorker.instances[-1].finished_signal.emit({
-            "type": "ip", "query": "192.0.2.10",
+            "type": "ip", "query": "8.8.4.4",
             "network": {"asn": "AS64500"}, "attack_reports": {"reports": 4},
             "passive_dns": {"records": []},
             "sources_contacted": [{"source": "SANS DShield", "status": "checked"}],
@@ -2291,7 +2295,7 @@ class TestDeclinedConsentContactsNothing:
 
     @pytest.mark.parametrize("qtype,target", [
         ("Domain", "example.com"),
-        ("IP Address", "203.0.113.5"),
+        ("IP Address", "8.8.8.8"),
         ("Username", "sapio1337"),
         ("Company", "Acme Holdings"),
     ])
@@ -2632,8 +2636,9 @@ class FakeBugBountyAgent:
     def __init__(self):
         self.calls = []
 
-    def build_messages(self, target, program, scope_type, findings, nmap_output):
+    def build_messages(self, target, program, scope_type, findings, nmap_output, severity=""):
         self.calls.append((target, program, scope_type, findings, nmap_output))
+        self.severity = severity
         # Shaped like the real agent: the request carries far more than the target.
         return [{"role": "user", "content": "\n".join(filter(None, [target, findings, nmap_output]))}]
 

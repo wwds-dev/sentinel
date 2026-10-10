@@ -77,10 +77,10 @@ Burp Suite Output / Notes**: relevant requests/responses, behaviour,
 reproduction notes and observed impact. Remove secrets and unrelated user data;
 Bug Spray does not redact anything before your text goes to the model you chose.
 
-The form also has a **Severity Target** menu. **Known limitation:** it is not
-read. Nothing you choose there reaches the model or changes the report, so leave
-it alone; the severity in the report comes from the model's reading of your
-evidence.
+The form also has a **Severity Target** menu. Your choice is sent to the model
+as an unverified expectation; the severity in the report and in the Severity tile
+still comes from the model's reading of your evidence, so do not treat the menu
+as a result.
 
 The **Nmap Recon Scan** section is optional and always visible. It runs a real
 local process. As the caption under it warns, it runs on your machine with no
@@ -132,10 +132,9 @@ Three tiles beside the report are read from the reply by simple text matching:
 **Severity**, **CVSS Score** (the first number from 0 to 10 after the word
 "CVSS", skipping a version such as `v3.1` and vector strings) and **Bounty
 Estimate** (a dollar amount after the word "bounty"). The instructions do not
-ask for a bounty estimate, so that tile usually stays "—". **Known limitation:**
-a version written without a "v" (`CVSS 3.1: 7.5`) is still read as the score, and
-a score right after a vector string can be misread; always check the number in
-the report.
+ask for a bounty estimate, so that tile usually stays "—". A version
+written with or without a "v" (`CVSS v3.1: 7.5`, `CVSS 3.1: 7.5`) is skipped, as
+is a vector string; still check the number in the report.
 
 CVSS and CWE suggestions require human review. Sentinel does not compute or
 check either, and nothing on screen marks them for review, so that step is yours.
@@ -143,9 +142,9 @@ The built-in instructions tell the model to use only the evidence you supply and
 to avoid speculation, but nothing checks the reply: cut any claim your evidence
 does not show.
 
-**Stop** cancels the request. **Known limitation:** after Stop the panel can show
-"[Error] Request cancelled by user." instead of "Stopped.", and a reply that was
-already on its way can still appear.
+**Stop** cancels the request and the status stays "Stopped.". The worker's
+"Request cancelled" echo and a reply that was already on its way are ignored:
+they are not shown, saved or recorded as a finished analysis.
 
 Every completed analysis is also saved automatically to Saved Chats, with the
 full request text (including your Findings and any Nmap output) and the reply,
@@ -174,8 +173,8 @@ one reflected-input observation into a submittable report.
 
 1. In **Program radar**, filter for the program if you track it, or just type the
    name into **Program** below. Radar never contacts the program's assets.
-2. Under **Target & Program**, enter the target, program and scope type. Leave
-   **Severity Target** alone; it is not used. Remember the caption: scope is
+2. Under **Target & Program**, enter the target, program and scope type. Set
+   **Severity Target** to what you expect (it is only a hint to the model). Remember the caption: scope is
    declared by you and is not enforced.
 3. Leave **Nmap Recon Scan** empty and do not press **Run Nmap** for this example;
    it runs on your machine outside the guard and this finding needs no port scan.

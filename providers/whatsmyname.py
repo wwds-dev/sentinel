@@ -154,7 +154,8 @@ def check_site(site: dict, username: str, session=None) -> dict:
     except Exception as exc:
         return {**outcome, "status": "unclear", "reason": type(exc).__name__}
 
-    if resp.status_code == site.get("e_code") and site.get("e_string", "") in text:
+    e_string = site.get("e_string", "")
+    if resp.status_code == site.get("e_code") and e_string and e_string in text:
         pretty = site.get("uri_pretty") or site["uri_check"]
         return {**outcome, "status": "found",
                 "url": pretty.replace("{account}", quote(account, safe=""))}

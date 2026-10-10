@@ -200,6 +200,34 @@ class OSINTAgent:
             return "Enter a valid IPv4 or IPv6 address."
 
     @staticmethod
+    def non_public_ip_reason(value: str) -> str:
+        """Why ``value`` is not a publicly routable address, or "" if it is.
+
+        Called before Live Research contacts a real WHOIS/DNS/threat-intel
+        service for an "IP Address" target: a private, loopback, link-local,
+        reserved, multicast or unspecified address has no meaningful public
+        footprint, and pasting one (e.g. from an internal network) should not
+        silently go out to third-party services.
+        """
+        try:
+            addr = ipaddress.ip_address(value.strip().strip("[]"))
+        except ValueError:
+            return ""
+        if addr.is_loopback:
+            return "a loopback address"
+        if addr.is_link_local:
+            return "a link-local address"
+        if addr.is_private:
+            return "a private (RFC 1918 / RFC 4193) address"
+        if addr.is_multicast:
+            return "a multicast address"
+        if addr.is_unspecified:
+            return "an unspecified address"
+        if addr.is_reserved:
+            return "a reserved address"
+        return ""
+
+    @staticmethod
     def _validate_phone(value: str) -> str:
         digits = re.sub(r"\D", "", value)
         if not re.fullmatch(r"\+?[0-9() .-]+", value) or not 7 <= len(digits) <= 15:

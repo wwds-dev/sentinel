@@ -517,6 +517,24 @@ class TestImageExifContract:
         plain_hound.set_image(str(path))
         assert "may have been stripped" in plain_hound.image_details.toHtml()
 
+    def test_a_crafted_exif_value_or_file_name_cannot_inject_html_into_the_image_pane(
+            self, plain_hound, tmp_path):
+        """QA audit (Bloodhound) must-fix #12: the file name and EXIF text
+        fields reach the image details pane as raw f-string text; a crafted
+        value (e.g. an EXIF Model containing markup, or an attacker-chosen
+        file name) must not inject a tag or forge a link there."""
+        from PIL import Image
+        payload = '<img src=x onerror=alert(1)><a href="https://evil.test">click</a>'
+        exif = Image.Exif()
+        exif[0x0110] = payload                       # Model
+        path = tmp_path / '<img src=x onerror=alert(2)>evil.jpg'
+        Image.new("RGB", (8, 8)).save(path, exif=exif)
+        plain_hound.set_image(str(path))
+        rendered = plain_hound.image_details.toHtml()
+        assert "<img src=x onerror=" not in rendered
+        assert '<a href="https://evil.test">' not in rendered
+        assert "<img src=x onerror=alert(2)>" not in rendered   # from the file name
+
     def test_denied_consent_gps_never_reaches_the_assembled_prompt(self, qapp, monkeypatch, dialogs, tmp_path):
         from agents.osint_heavy_agent import OsintHeavyAgent
         agent = OsintHeavyAgent()

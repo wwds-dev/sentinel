@@ -9,6 +9,7 @@ be tested against a real JPEG without building a panel at all.
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime
 from pathlib import Path
@@ -1094,7 +1095,12 @@ class OsintHeavyPanel(AgentPanel):
 
     def _populate_image_details(self, path: str) -> None:
         exif = extract_exif(path)
-        fname = Path(path).name
+        # The file name and EXIF text fields come from the chosen file, which
+        # may have travelled through other hands — escape both before they
+        # reach this pane's HTML, so a crafted name or metadata value (e.g.
+        # Software/Model containing markup) cannot inject a tag or forge a
+        # link (QA audit, Bloodhound must-fix #12).
+        fname = html.escape(Path(path).name)
         gps_block = ""
         gps = exif.get("GPSInfo", {})
         if gps.get("GPSLatitude") and gps.get("GPSLongitude"):
@@ -1112,15 +1118,16 @@ class OsintHeavyPanel(AgentPanel):
                     "Make", "Model", "Software", "LensMake", "LensModel",
                     "ImageWidth", "ImageLength", "Orientation", "Flash", "FocalLength"):
             if key in exif:
+                safe_value = html.escape(str(exif[key]))
                 exif_rows += (f"<tr><td style='color:#888;padding-right:14px;'>{key}</td>"
-                              f"<td>{exif[key]}</td></tr>")
+                              f"<td>{safe_value}</td></tr>")
         no_exif = (
             "<p style='color:#ff8888;'>No EXIF data found — the image may have been stripped "
             "(common with screenshots, social media downloads, and edited files). "
             "This itself can be a signal.</p>"
             if not exif else ""
         )
-        html = (
+        page_html = (
             "<html><body style='font-family:monospace;font-size:12px;color:#ccc;background:#1a1a1a;padding:8px;'>"
             f"<h2 style='color:#dd88ff;'>Image OSINT &mdash; {fname}</h2>"
             f"{no_exif}{gps_block}"
@@ -1143,5 +1150,5 @@ class OsintHeavyPanel(AgentPanel):
             + "<br><p style='color:#555;font-size:11px;'>For authorised investigative use only.</p>"
             "</body></html>"
         )
-        self.image_details.setHtml(html)
+        self.image_details.setHtml(page_html)
         self.image_details.setVisible(True)

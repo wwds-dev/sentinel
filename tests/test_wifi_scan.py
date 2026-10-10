@@ -114,3 +114,43 @@ def test_scan_wifi_handles_a_missing_tool(monkeypatch):
         raise FileNotFoundError("no system_profiler")
     monkeypatch.setattr(wifi.subprocess, "run", _boom)
     assert wifi.scan_wifi().startswith("[Error]")
+
+
+# ── Kali command builder: injection gate (QA audit must-fix #5) ─────────────
+#
+# `build_kali_commands()` must refuse to generate an injection-class step when
+# the selected adapter cannot inject, for every operation that emits one —
+# not just "Deauth Attack". "Handshake Capture" also forces a deauth
+# (`aireplay-ng -0 10 ...`) to provoke the WPA handshake, so it needs the same
+# gate; without it, a passive-only adapter (e.g. TL-WN725N V3) was handed a
+# command sequence it cannot run.
+
+NON_INJECT_ADAPTER = {
+    "name": "TL-WN725N V3", "chipset": "RTL8188EU", "monitor": True, "inject": False,
+    "kali_iface": "wlan0",
+}
+INJECT_ADAPTER = {
+    "name": "TL-WN722N", "chipset": "AR9271", "monitor": True, "inject": True,
+    "kali_iface": "wlan0",
+}
+
+
+def test_handshake_capture_refuses_a_non_injecting_adapter():
+    cmds = wifi.build_kali_commands(
+        "Handshake Capture", NON_INJECT_ADAPTER, "AA:BB:CC:DD:EE:FF", "6", "LabNet")
+    assert "does not support packet injection" in cmds
+    assert "aireplay-ng" not in cmds
+
+
+def test_handshake_capture_runs_normally_on_an_injecting_adapter():
+    cmds = wifi.build_kali_commands(
+        "Handshake Capture", INJECT_ADAPTER, "AA:BB:CC:DD:EE:FF", "6", "LabNet")
+    assert "aireplay-ng -0 10" in cmds
+    assert "does not support packet injection" not in cmds
+
+
+def test_deauth_attack_still_refuses_a_non_injecting_adapter():
+    cmds = wifi.build_kali_commands(
+        "Deauth Attack", NON_INJECT_ADAPTER, "AA:BB:CC:DD:EE:FF", "6", "LabNet")
+    assert "does not support packet injection" in cmds
+    assert "aireplay-ng" not in cmds

@@ -98,6 +98,16 @@ def test_a_moved_url_is_followed_when_no_signature_is_a_redirect():
     assert http.follows == [False, True]
 
 
+def test_an_empty_e_string_never_counts_as_a_hit():
+    """QA audit (Bloodhound) must-fix #14: a site entry with no "exists" marker
+    text must not be reported "found" on status code alone — "" is a substring
+    of everything, so `"" in text` is always true regardless of the real page
+    content."""
+    http = FakeHttp(Response(200, "this page could say literally anything"))
+    outcome = wmn.check_site(site(e_string=""), "alice", http)
+    assert outcome["status"] != "found"
+
+
 def test_a_redirect_that_means_no_such_user_is_never_followed():
     http = RedirectingHttp(redirect_code=302)
     outcome = wmn.check_site(site(m_code=302, m_string=""), "bob", http)

@@ -156,7 +156,7 @@ def seed_tooltips(app):
         "bug_bounty.target_input":       "Asset the report is about (URL or IP). Free text: not checked against the program's scope.",
         "bug_bounty.program_input":      "Name of the bug bounty program (HackerOne, Bugcrowd, etc.). Declared by you; not verified.",
         "bug_bounty.scope_box":          "Scope category sent to the model — Web, Mobile, API, Network, etc. Not checked against anything.",
-        "bug_bounty.severity_box":       "Not used: this choice is not sent to the model and does not change the report.",
+        "bug_bounty.severity_box":       "Severity you expect; sent to the model as an unverified hint. The Severity tile shows what the model rates.",
         "bug_bounty.findings_input":     "Paste raw findings: HTTP responses, Burp output, source snippets, recon notes.",
         "bug_bounty.nmap_cmd_input":     "An nmap command; only nmap will start. Leave empty to build one from the Target. Runs on your machine with no scope check.",
         "bug_bounty.nmap_run_btn":       "Run nmap and capture its output below; stops after 10 minutes or 256 KB. With an empty field it builds and starts a default scan of the Target's host (nmap -sV -sC -T4 --open) immediately.",

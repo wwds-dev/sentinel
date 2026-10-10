@@ -19,7 +19,7 @@ Nothing in Bug Spray can submit a report to a platform: you copy the draft and s
 | Target URL / IP | The asset the report is about. Free text; not validated. |
 | Program | Bug bounty program name. Free text; not verified. |
 | Scope Type | Web Application · API / REST · Mobile (Android) · Mobile (iOS) · Network / Infrastructure · Source Code Review · Cloud Config · Other. Sent to the model as "Scope Type"; not checked against anything. |
-| Severity Target | Critical (P1) … Informational. **Known limitation:** the choice is never read. It is not sent to the model and does not change the report or the Severity tile. |
+| Severity Target | Critical (P1) … Informational. Sent to the model as an unverified "severity expectation" line; it does not change the Severity tile, which reads the model's reply. |
 | Nmap Recon Scan | Optional, always shown (not collapsed): command field, **Run Nmap** (replaced by **Kill** while a scan runs) and an output box. Details below. |
 | Findings / Burp Suite Output / Notes | Paste HTTP responses, Burp output, source snippets, recon notes. |
 | Run bar | Workflow chip "Analysis", provider and model boxes, **Auto-route**, then **Analyse** (replaced by **Stop** while a request runs). Provider and model start on Sentinel's recommendation for this agent (baseline: anthropic / claude-sonnet-5, "capability baseline for security and coding analysis"). There is no separate "Model override" section; change them here. |
@@ -42,7 +42,7 @@ Nothing in Bug Spray can submit a report to a platform: you copy the draft and s
 ## Nmap Recon Scan (manual, local)
 - **Run Nmap with an empty command field** builds `nmap -sV -sC -T4 --open <host>` from the Target (scheme and path removed; a `:port` is kept), writes it into the field and starts it in the same click, with no review step. `-sC` runs nmap's default scripts and `-T4` is nmap's "aggressive" timing; edit the command first for gentler traffic. For a target with a port, type the command yourself (nmap takes ports with `-p`).
 - **Only nmap starts.** The field is split shell-style but no shell is involved. The first word must be `nmap` or a path ending in `nmap`; anything else is refused with "Only nmap can be run from here (got '…')". The binary used is always the nmap found on `PATH`, else `/opt/homebrew/bin/nmap`, else `/usr/local/bin/nmap`; a different path typed as the first word is ignored. If none exists the box says "nmap is not installed (brew install nmap)." and nothing starts.
-- **Bounded:** a scan is killed after 10 minutes and when its output reaches 256 KB (counted in characters); the box says which. If nmap cannot start, **Run Nmap** comes back and the box prints "[Error] nmap could not be started …". **Kill** ends the process. Closing Sentinel kills a running scan (`shutdown()`); the window-level Stop only cancels the model request and does not reach the scan.
+- **Bounded:** a scan is killed after 10 minutes and when its output reaches 256 KB (counted in characters); the box says which. If nmap cannot start, **Run Nmap** comes back and the box prints "[Error] nmap could not be started …". **Kill** ends the process. Closing Sentinel kills a running Nmap scan and the radar's background scan (`shutdown()`); the window-level Stop only cancels the model request and does not reach the scan.
 - **Output:** stdout and stderr are merged in the box, which also shows the panel's own `[Running]`, `[Done]` and `[Error]` lines. Only the scanner's text (capped as above) is kept for Analyse; the panel's markers are never sent to the model. A killed or capped scan still passes on what it printed.
 - **No scope check, no confirmation, and outside the budget/authorisation guard.** It touches whatever host you give it.
 
@@ -53,16 +53,16 @@ The built-in prompt asks for the proof of concept and remediation as numbered bo
 
 Three tiles show values read from the reply by text matching:
 - **Severity:** the first severity word (Critical, High, Medium, Low, Informational) on the same line after `**Severity**`.
-- **CVSS Score:** the first number from 0 to 10 after the word "CVSS", after dropping version tokens such as `v3.1` or `version 3.1` and `CVSS:3.1/AV:…` vector strings. **Known limitation:** a version written without a leading "v" (`CVSS 3.1: 7.5`) is still read as the score, and a score written right after a vector string can be misread or missed. Check the number against the report.
+- **CVSS Score:** the first number from 0 to 10 after the word "CVSS", after dropping version tokens such as `v3.1` or `version 3.1` and `CVSS:3.1/AV:…` vector strings. A version with or without a leading "v" (`CVSS 3.1: 7.5`) is skipped, as is a vector string; still check the number against the report.
 - **Bounty Estimate:** a `$` amount or range that follows the word "bounty" on the same line. The prompt does not ask for an estimate, so this usually stays "—".
 
 ## How it works
-`BugBountyAgent.build_messages(target, program, scope_type, findings, nmap_output)` composes only the evidence present (Scope Type is always present) and requests the fixed report + submission format. **Analyse** needs a Target, Findings or scanner output ("Enter a target, paste findings, or run a scan first.") and a selected model. It then:
+`BugBountyAgent.build_messages(target, program, scope_type, findings, nmap_output, severity="")` composes only the evidence present (Scope Type is always present) and requests the fixed report + submission format. **Analyse** needs a Target, Findings or scanner output ("Enter a target, paste findings, or run a scan first.") and a selected model. It then:
 1. Prices the whole assembled request (built-in instructions plus Program, Scope Type, Target, scanner output and Findings) against the budget caps; the Target is only the label. A cloud model also gets a "Confirm External API Request" dialog with the approximate tokens and estimated cost; a local Ollama model does not. A refused request leaves the status at "Blocked before sending." and the buttons usable.
 2. Streams the reply into the panel, then builds the cards and tiles and enables **Save Report**.
 3. Stores the run automatically: Saved Chats gets the full request text (including Findings and scanner output) and the reply, and the run log and usage history record it. Findings and scanner output go to the selected model verbatim, with no redaction.
 
-**Stop** cancels the request. **Known limitation:** after Stop the panel can show "[Error] Request cancelled by user." with the status "Error." instead of "Stopped.", and a reply from a provider that does not stream can still arrive, be shown and be recorded.
+**Stop** cancels the request and the status stays "Stopped.". The cancellation echo and a late reply from a provider that does not stream are ignored (abandoned, not shown, not recorded).
 
 **Save Report** writes the raw model reply (not the cards) to a file you choose, default `~/Downloads/bb_report_<target>_<time>.md`, with Markdown and Text filters. **Clear** empties Target, Program, Findings, the Nmap command and output, the results and the tiles; it does not reset Scope Type, Severity Target or the radar. **Known limitation:** Clear does not stop a running analysis or Nmap scan, and output that arrives afterwards still appears.
 

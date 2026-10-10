@@ -361,6 +361,18 @@ class OsintPanel(AgentPanel):
         if not validation.valid:
             QMessageBox.warning(self, "Invalid Target", validation.message)
             return
+        if validation.query_type == "IP Address":
+            non_public = self.agent().non_public_ip_reason(target)
+            if non_public:
+                QMessageBox.warning(
+                    self, "Not a Public Address",
+                    f"'{target}' is {non_public}. It has no meaningful public "
+                    "footprint, so Live Research will not contact WHOIS, DNS, "
+                    "or threat-intelligence services for it. Live Research "
+                    "stopped before contacting anything.",
+                )
+                self.status_label.setText("Live Research cancelled: not a public address.")
+                return
         if validation.query_type not in {
             "Domain", "IP Address", "Username", "Email", "Company"
         }:

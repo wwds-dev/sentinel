@@ -48,7 +48,7 @@ SOURCES = [{"source": "Synthetic source", "status": "checked"}]
 LIVE_RESULTS = {
     "Domain": {"type": "domain", "query": "acme.test",
                "whois": {"registrar": "Registrar-Zeta"}, "sources_contacted": SOURCES},
-    "IP Address": {"type": "ip", "query": "203.0.113.7",
+    "IP Address": {"type": "ip", "query": "8.8.8.8",
                    "network": {"asn": "AS64500"}, "sources_contacted": SOURCES},
     "Username": {"type": "username", "query": "researcher_1",
                  "github": {"found": True, "marker": "GH-ETA"},
@@ -60,7 +60,7 @@ LIVE_RESULTS = {
               "reputation": {"score": "SCORE-IOTA"}, "sources_contacted": SOURCES},
 }
 LIVE_TARGETS = {
-    "Domain": "acme.test", "IP Address": "203.0.113.7", "Username": "@researcher_1",
+    "Domain": "acme.test", "IP Address": "8.8.8.8", "Username": "@researcher_1",
     "Company": "Acme Holdings", "Email": "analyst@acme.test",
 }
 LIVE_TYPES = list(LIVE_RESULTS)
@@ -696,6 +696,36 @@ class TestLiveResearch:
         assert sync_trace.worker is None
         assert dialogs["warning"] or dialogs["information"]
 
+    @pytest.mark.parametrize("target", [
+        "127.0.0.1", "10.1.2.3", "192.168.0.5", "172.16.3.4", "169.254.1.1",
+        "::1", "fe80::1", "0.0.0.0", "224.0.0.1",
+    ])
+    def test_a_non_public_ip_never_contacts_anything_and_asks_no_consent(
+            self, sync_trace, monkeypatch, dialogs, target):
+        """QA audit must-fix #14: a private/loopback/link-local/reserved IP has
+        no public footprint, so Live Research must refuse before asking
+        consent or touching WHOIS/DNS/threat-intel sources."""
+        seen = []
+        _patch_providers(monkeypatch, results=_live_provider_results(), seen=seen)
+        sync_trace.type_box.setCurrentText("IP Address")
+        sync_trace.target_input.setText(target)
+        sync_trace.live_research()
+        assert seen == []
+        assert dialogs["question"] == []
+        assert sync_trace.host.of("external") == []
+        assert sync_trace.worker is None
+        assert dialogs["warning"]
+
+    def test_a_public_ip_is_unaffected_by_the_non_public_check(
+            self, sync_trace, monkeypatch, dialogs):
+        seen = []
+        _patch_providers(monkeypatch, results=_live_provider_results(), seen=seen)
+        sync_trace.type_box.setCurrentText("IP Address")
+        sync_trace.target_input.setText("8.8.8.8")
+        sync_trace.live_research()
+        assert len(seen) == 1
+        assert dialogs["warning"] == []
+
     @pytest.mark.parametrize("kind", LIVE_TYPES)
     def test_declined_consent_leaves_nothing_behind_and_a_later_yes_still_works(
             self, sync_trace, monkeypatch, dialogs, kind):
@@ -876,7 +906,7 @@ class TestExposureCheck:
         assert dialogs["warning"] or dialogs["information"]
 
     @pytest.mark.parametrize("query_type,target", [
-        ("IP Address", "203.0.113.7"), ("Username", "researcher_1"),
+        ("IP Address", "8.8.8.8"), ("Username", "researcher_1"),
         ("Person", "Jane Example"), ("Phone", "+353 1 234 5678"),
     ])
     def test_a_target_type_the_check_cannot_answer_is_explained_not_run(

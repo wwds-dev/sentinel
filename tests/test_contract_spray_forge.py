@@ -120,8 +120,9 @@ class FakeBugBountyAgent:
     def __init__(self):
         self.calls = []
 
-    def build_messages(self, target, program, scope_type, findings, nmap_output):
+    def build_messages(self, target, program, scope_type, findings, nmap_output, severity=""):
         self.calls.append((target, program, scope_type, findings, nmap_output))
+        self.severity = severity
         return [{"role": "user", "content": "\n".join(filter(None, [target, findings, nmap_output]))}]
 
 
@@ -899,3 +900,164 @@ class TestBugSprayFeed:
         assert feed.programs.topLevelItemCount() == 0
         feed.show_all.setChecked(True)
         assert feed.programs.topLevelItemCount() == 1
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Bug Spray — audit follow-ups (docs/qa_audit/bug_spray.md section 5)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class _Bytes:
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def data(self):
+        return self._data
+
+
+class TestBugSprayAuditFixes:
+    @pytest.fixture(autouse=True)
+    def _nmap_present(self, monkeypatch):
+        monkeypatch.setattr("ui.panels.bug_bounty.shutil.which", lambda n: "/usr/bin/nmap")
+
+    def _real_agent(self, spray):
+        from agents.bug_spray.sentinel_chat_agent import BugBountyAgent
+        spray.host.agent_instances["bug_bounty"] = BugBountyAgent()
+
+    # #5 the budget gate prices the whole outgoing request
+    def test_authorize_sees_system_prompt_findings_and_scan_not_just_target(self, spray):
+        from agents.bug_spray.sentinel_chat_agent import SYSTEM_PROMPT
+        self._real_agent(spray)
+        spray._nmap_scan_text = "8443/tcp open https-alt"
+        spray.findings_input.setPlainText("FINDING-MARKER-XYZ " * 50)
+        spray.analyse()
+        auth = [c for c in spray.host.calls if c[0] == "authorize"][0]
+        assert SYSTEM_PROMPT in auth[4]
+        assert "FINDING-MARKER-XYZ" in auth[4] and "8443/tcp open https-alt" in auth[4]
+        assert auth[6] == "https://target.example.com/app"       # label stays the target
+        sent = FakeWorker.instances[0].args[2]
+        assert all(str(m["content"]) in auth[4] for m in sent)
+
+    # #8 Severity Target is no longer dead
+    def test_severity_target_reaches_the_model_request(self, spray):
+        self._real_agent(spray)
+        spray.severity_box.setCurrentText("Low (P4)")
+        spray.analyse()
+        sent = FakeWorker.instances[0].args[2]
+        assert "Low (P4)" in sent[-1]["content"]
+
+    def test_severity_target_is_passed_to_build_messages(self, spray):
+        spray.severity_box.setCurrentText("Critical (P1)")
+        spray.analyse()
+        assert spray.host.agent_instances["bug_bounty"].severity == "Critical (P1)"
+
+    def test_agent_without_severity_adds_no_severity_line(self):
+        from agents.bug_spray.sentinel_chat_agent import BugBountyAgent
+        text = BugBountyAgent().build_messages("t", "", "Other", "f", "")[-1]["content"]
+        assert "severity" not in text.lower()
+
+    # #6 nmap robustness
+    def test_start_failure_frees_the_buttons_and_says_so(self, spray, started):
+        spray.run_nmap()
+        assert not spray.nmap_run_btn.isEnabled()
+        spray._nmap_error(QProcess.FailedToStart)
+        assert spray.nmap_run_btn.isEnabled() and not spray.nmap_stop_btn.isEnabled()
+        assert "could not be started" in spray.nmap_output.toPlainText()
+
+    def test_output_is_capped_and_the_scan_killed(self, spray, started, monkeypatch):
+        import ui.panels.bug_bounty as bb
+        monkeypatch.setattr(bb, "NMAP_OUTPUT_LIMIT", 100)
+        spray.run_nmap()
+        killed = []
+        spray._nmap_process.kill = lambda: killed.append(1)
+        spray._nmap_process.readAll = lambda: _Bytes(b"x" * 500)
+        spray._nmap_read()
+        assert len(spray.nmap_scan_text) == 100 and killed
+        spray._nmap_read()                                     # later chunks are dropped
+        assert len(spray.nmap_scan_text) == 100
+        assert "capped" in spray.nmap_output.toPlainText()
+
+    def test_gui_launch_without_path_finds_homebrew_nmap(self, spray, started, monkeypatch):
+        monkeypatch.setattr("ui.panels.bug_bounty.shutil.which", lambda n: None)
+        monkeypatch.setattr("ui.panels.bug_bounty.Path.is_file",
+                            lambda self: str(self) == "/opt/homebrew/bin/nmap")
+        spray.run_nmap()
+        assert started[0][0] == "/opt/homebrew/bin/nmap"
+
+    def test_panel_markers_never_reach_the_model(self, spray, started):
+        spray.run_nmap()
+        spray._nmap_process.readAll = lambda: _Bytes(b"22/tcp open ssh\n")
+        spray._nmap_read()
+        spray._nmap_finished(0)
+        assert "[Running]" in spray.nmap_output.toPlainText()
+        spray.analyse()
+        nmap_arg = spray.host.agent_instances["bug_bounty"].calls[-1][4]
+        assert nmap_arg == "22/tcp open ssh"
+
+    # #9 Stop semantics
+    def test_late_finished_after_stop_is_ignored(self, spray):
+        spray.analyse()
+        worker = spray.worker
+        spray.stop()
+        worker.finished_signal.emit(REPORT)
+        assert spray.status_label.text() == "Stopped."
+        assert spray.host.count("record") == 0
+        assert not spray.save_btn.isEnabled()
+        assert spray.severity_label.text() == "—"
+        assert spray.analyse_btn.isEnabled() and not spray.stop_btn.isEnabled()
+
+    def test_cancel_echo_after_stop_keeps_stopped_status(self, spray):
+        spray.analyse()
+        worker = spray.worker
+        spray.stop()
+        worker.error_signal.emit("Request cancelled by user.")
+        assert spray.status_label.text() == "Stopped."
+        assert "[Error]" not in spray.stream_box.toPlainText()
+        assert spray.analyse_btn.isEnabled()
+
+    def test_late_token_after_stop_is_not_shown(self, spray):
+        spray.analyse()
+        worker = spray.worker
+        spray.stop()
+        worker.token_signal.emit("late")
+        assert spray.stream_box.toPlainText() == ""
+
+    def test_a_new_analysis_after_stop_works_normally(self, spray):
+        spray.analyse()
+        spray.stop()
+        spray.worker.running = False
+        spray.analyse()
+        spray.worker.finished_signal.emit(REPORT)
+        assert spray.status_label.text() == "Analysis complete."
+        assert spray.host.count("record") == 1
+
+    # #12 shutdown contract
+    def test_shutdown_kills_nmap_and_the_radar_scan(self, spray, started):
+        spray.run_nmap()
+        nmap_calls = []
+        spray._nmap_process.state = lambda: QProcess.Running
+        spray._nmap_process.kill = lambda: nmap_calls.append("kill")
+        spray._nmap_process.waitForFinished = lambda ms=0: nmap_calls.append("wait")
+        feed_calls = []
+        scan = spray.program_feed._scan
+        scan.state = lambda: QProcess.Running
+        scan.kill = lambda: feed_calls.append("kill")
+        scan.waitForFinished = lambda ms=0: feed_calls.append("wait")
+        spray.shutdown()
+        assert nmap_calls == ["kill", "wait"]
+        assert feed_calls == ["kill", "wait"]
+        assert not spray.program_feed._timer.isActive()
+
+    def test_feed_shutdown_with_nothing_running_is_harmless(self, spray):
+        spray.program_feed.shutdown()
+        spray.shutdown()
+
+    # #13 history fidelity
+    def test_history_gets_the_full_request_not_just_the_target(self, spray):
+        self._real_agent(spray)
+        spray.findings_input.setPlainText("HISTORY-MARKER")
+        spray.analyse()
+        spray.worker.finished_signal.emit(REPORT)
+        rec = [c for c in spray.host.calls if c[0] == "record"][0]
+        messages = rec[3]
+        assert messages and messages[0]["role"] == "system"
+        assert "HISTORY-MARKER" in messages[-1]["content"]

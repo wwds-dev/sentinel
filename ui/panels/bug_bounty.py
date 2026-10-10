@@ -77,6 +77,8 @@ class BugBountyPanel(AgentPanel):
         super().__init__(host, parent)
         self.setObjectName("BugBountyPanel")
         self._last_response = ""
+        self._messages: list = []
+        self._stopped = False
         self._nmap_process: QProcess | None = None
         self._nmap_scan_text = ""
         self._nmap_truncated = False
@@ -399,6 +401,7 @@ class BugBountyPanel(AgentPanel):
 
     def shutdown(self, timeout_ms: int = 2000) -> None:
         """Kill a running scan and cancel the model worker before the widgets go."""
+        self.program_feed.shutdown(timeout_ms)
         self._nmap_stop_timer()
         process = self._nmap_process
         if process is not None and process.state() != QProcess.NotRunning:
@@ -429,7 +432,10 @@ class BugBountyPanel(AgentPanel):
             return
 
         messages = self.agent().build_messages(
-            target, program, scope_type, findings, nmap_output)
+            target, program, scope_type, findings, nmap_output,
+            severity=self.severity_box.currentText())
+        self._messages = messages
+        self._stopped = False
 
         self._last_response = ""
         self._clear_results()
@@ -459,6 +465,8 @@ class BugBountyPanel(AgentPanel):
         )
 
     def _on_token(self, token: str) -> None:
+        if self._stopped:
+            return
         self._last_response += token
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
@@ -466,7 +474,13 @@ class BugBountyPanel(AgentPanel):
         self.stream_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
-        self.record(full_response)
+        if self._stopped:
+            # A non-streaming reply can still land after Stop; the operator
+            # asked for the request to end, so it is neither shown nor billed
+            # as a finished analysis.
+            self.abandon("cancelled")
+            return
+        self.record(full_response, self._messages)
         self._last_response = full_response
         self.stream_box.setVisible(False)
         self.sections.setVisible(True)
@@ -477,6 +491,11 @@ class BugBountyPanel(AgentPanel):
         self.save_btn.setEnabled(True)
 
     def _on_error(self, error: str) -> None:
+        if self._stopped:
+            # The worker's "Request cancelled" error is the echo of Stop, not
+            # a failure: keep "Stopped." and the partial text.
+            self.abandon("cancelled")
+            return
         self.abandon()
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
@@ -485,7 +504,8 @@ class BugBountyPanel(AgentPanel):
         self.set_busy(self.analyse_btn, self.stop_btn, False)
 
     def stop(self) -> None:
-        self.stop_worker()
+        if self.stop_worker():
+            self._stopped = True
         self.status_label.setText("Stopped.")
         self.set_busy(self.analyse_btn, self.stop_btn, False)
 
