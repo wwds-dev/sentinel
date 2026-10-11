@@ -17,6 +17,8 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive      # agents/bug_spray is a submodule the suite imports
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
