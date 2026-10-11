@@ -1,5 +1,9 @@
 # Sentinel — instructions for Claude
 
+@AGENTS.md
+
+`AGENTS.md` is the company pipeline (installed from `software_company`); app facts are in `docs/company/app-context.md`. The rules below are this app's own and win on conflict.
+
 ## Task lists
 - `TODO.md` and `SUGGESTIONS.md` in this folder feed the Lab Projects Monitor. Keep their existing format exactly.
 - TODO items look like: - [ ] `P1` `bug` `@me` Task text. Priority P0-P3, category from the legend at the top of TODO.md, owner `@me` (needs the user) or `@ai` (Claude can do it). Longer reasoning goes under the **Detail** section, not in the checklist line. Mark finished items - [x].
