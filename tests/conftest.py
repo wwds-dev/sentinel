@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -241,14 +242,28 @@ def _real_env_file_is_never_written(tmp_path_factory):
     from services.runtime_paths import user_data_base
     from ui import dialogs
 
-    real = user_data_base() / ".env"
-    digest = lambda: hashlib.sha256(real.read_bytes()).hexdigest() if real.exists() else None
-    before = digest()
+    # Content and mode, for the checkout .env and the Application Support one
+    # (resolved now, before the per-test home redirect below).
+    reals = [
+        user_data_base() / ".env",
+        Path.home() / "Library" / "Application Support" / "Sentinel" / ".env",
+    ]
+
+    def state(path):
+        if not path.exists():
+            return None
+        return (hashlib.sha256(path.read_bytes()).hexdigest(),
+                stat.S_IMODE(path.stat().st_mode))
+
+    real = reals[0]
+    before = [state(p) for p in reals]
     scratch = tmp_path_factory.mktemp("env") / ".env"
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(dialogs, "_osint_env_path", lambda: scratch)
         yield scratch
-    assert digest() == before, f"the test run modified {real}"
+    after = [state(p) for p in reals]
+    for path, was, now in zip(reals, before, after):
+        assert now == was, f"the test run modified {path} (content or mode)"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -258,6 +273,14 @@ def _no_osint_keys_for_the_session():
         for name in OSINT_SOURCE_KEYS:
             patch.delenv(name, raising=False)
         yield
+
+
+@pytest.fixture(autouse=True)
+def _home_is_a_scratch_directory(monkeypatch, tmp_path_factory):
+    """No test can reach the real ~/Library/Application Support/Sentinel/.env."""
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 
 
 @pytest.fixture(autouse=True)
