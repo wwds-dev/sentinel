@@ -876,6 +876,13 @@ class TestWorkspaceLayoutRegressions:
         panel = getattr(win, panel_name)
         assert not [b for b in panel.findChildren(QPushButton) if b.text() == "Help"]
 
+    def test_nmap_run_tooltip_states_the_program_and_confirmation_gates(self, win):
+        # The Run button never starts a scan on its own: a Program entry and a
+        # Yes in the confirmation (default No) come first.
+        tip = win.bug_bounty_panel.nmap_run_btn.toolTip()
+        assert "Program" in tip and "confirmation" in tip and "default No" in tip
+        assert "immediately" not in tip
+
     @pytest.mark.parametrize("panel_name,primary,stop", [
         ("osint_panel", "analyse_btn", "stop_btn"),
         ("osint_heavy_panel", "investigate_btn", "stop_btn"),
@@ -1682,6 +1689,14 @@ class TestTracePanel:
         assert "target stays on this Mac" in activity
         assert "No websites or public databases are contacted" in activity
         assert "Google dorks" in activity
+
+    def test_activity_tracker_does_not_claim_scope_was_confirmed(self, trace):
+        # Only the target's format is checked; nothing confirms authorisation.
+        trace.provider_box.setCurrentText("ollama")
+        trace.analyse()
+        activity = trace.activity_box.toPlainText()
+        assert "Target format accepted" in activity
+        assert "Scope confirmed" not in activity
 
     def test_live_domain_research_requires_explicit_confirmation(
             self, trace, monkeypatch):

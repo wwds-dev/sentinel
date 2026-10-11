@@ -234,7 +234,7 @@ class OsintPanel(AgentPanel):
                 f"Using {self.provider} · {self.model} after the provider permission check."
             )
         self._append_activity(
-            "Scope confirmed: planning queries only. No websites or public databases "
+            "Target format accepted: planning queries only. No websites or public databases "
             "are contacted by Trace in this mode."
         )
         self._append_activity(
