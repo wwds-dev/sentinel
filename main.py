@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from services.runtime_paths import (
     RuntimeDataError, ensure_seeded, is_frozen, is_portable,
-    resource_base, user_data_base,
+    resource_base, tighten_env_files, user_data_base,
 )
 try:
     ensure_seeded()
@@ -27,6 +27,7 @@ except RuntimeDataError as exc:
         )
     raise SystemExit(2) from exc
 
+tighten_env_files()  # keys must not stay world-readable from an older write
 from dotenv import load_dotenv
 # API keys: user-data .env when frozen, project .env in dev. Real env vars still win.
 load_dotenv(user_data_base() / ".env")

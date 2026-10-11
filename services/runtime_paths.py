@@ -138,6 +138,55 @@ def user_data_base() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def write_private_text(path: Path, text: str) -> None:
+    """Write `text` to `path` so the file is 0600 from its first byte.
+
+    A temp file in the same directory is opened with mode 0600 and moved over
+    the target, so a reader never sees a world-readable copy and a crash never
+    leaves a half-written file. Used for the .env that holds the API keys.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def tighten_private_file(path: Path) -> bool:
+    """Make an existing file owner-only (0600). True if the mode was changed."""
+    try:
+        mode = os.stat(path).st_mode & 0o777
+        if mode == 0o600:
+            return False
+        os.chmod(path, 0o600)
+        return True
+    except OSError:
+        return False
+
+
+def tighten_env_files() -> None:
+    """Re-tighten the .env files that hold API keys (checkout and app data)."""
+    candidates = {
+        Path(__file__).resolve().parent.parent / ".env",
+        Path.home() / "Library" / "Application Support" / APP_NAME / ".env",
+    }
+    try:
+        candidates.add(user_data_base() / ".env")
+    except RuntimeDataError:
+        pass
+    for candidate in candidates:
+        tighten_private_file(candidate)
+
+
 def ensure_seeded() -> None:
     """Seed missing defaults without replacing user configuration or secrets."""
     if not is_frozen() and not is_portable():

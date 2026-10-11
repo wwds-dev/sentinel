@@ -29,7 +29,9 @@ from services.kimi_client import KimiClientWrapper
 from services.openai_client import OpenAIClientWrapper
 from services.provider_catalog import CLOUD_PROVIDERS
 from services.registry import Registry
-from services.runtime_paths import PortableRuntimeError, is_portable, user_data_base
+from services.runtime_paths import (
+    PortableRuntimeError, is_portable, user_data_base, write_private_text,
+)
 from services.validator import Validator, parse_money
 from ui.style import global_stylesheet, polish_combo_box
 from ui.theme import LABELS as THEME_LABELS, THEMES
@@ -689,10 +691,8 @@ def show_settings(app):
         value = value.replace("\r", "").replace("\n", "").strip()
         try:
             lines = env_path.read_text(encoding="utf-8").splitlines()
-            existed = True
         except FileNotFoundError:
             lines = []
-            existed = False
         new_line = f"{key}={value}"
         replaced = False
         for idx, line in enumerate(lines):
@@ -705,13 +705,8 @@ def show_settings(app):
                 break
         if not replaced:
             lines.append(new_line)
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        if not existed:
-            try:
-                os.chmod(env_path, 0o600)
-            except OSError:
-                pass
+        # Every write ends in 0600, not just the first: an older file may be 0644.
+        write_private_text(env_path, "\n".join(lines) + "\n")
         # Make the new key visible to the running app without a restart.
         if value:
             os.environ[key] = value
