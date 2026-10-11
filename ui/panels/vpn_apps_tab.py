@@ -25,6 +25,13 @@ MULLVAD_INFO = (
     "Mullvad runs its own firewall rules while connected, so Tunnel's kill switch stays "
     "off for it."
 )
+PROTON_INFO = (
+    "Asks macOS to start or stop ProtonVPN's own VPN service. It connects to the server "
+    "ProtonVPN used last; choose another in the ProtonVPN app, because Tunnel cannot. "
+    "Tunnel never sees your Proton login. A Proton account is tied to your identity (an "
+    "email address and a payment record). To use a Proton WireGuard or OpenVPN file "
+    "yourself, download it from your Proton account and use Import config… on the main tab."
+)
 CURRENT_LOCATION = "Mullvad's current location"
 
 
@@ -89,6 +96,22 @@ class AppsTab(GatedTab):
         v.addLayout(row)
         layout.addWidget(box)
 
+        proton_box = QGroupBox("ProtonVPN")
+        p = QVBoxLayout(proton_box)
+        p.addWidget(self._info(PROTON_INFO))
+        self.proton_state_label = QLabel("")
+        self.proton_state_label.setWordWrap(True)
+        p.addWidget(self.proton_state_label)
+        row = QHBoxLayout()
+        self.proton_connect_btn = QPushButton("Connect…")
+        self.proton_connect_btn.clicked.connect(self.connect_proton)
+        self.proton_disconnect_btn = QPushButton("Disconnect…")
+        self.proton_disconnect_btn.clicked.connect(self.disconnect_proton)
+        row.addWidget(self.proton_connect_btn)
+        row.addWidget(self.proton_disconnect_btn)
+        p.addLayout(row)
+        layout.addWidget(proton_box)
+
         layout.addWidget(self.status_label)
         layout.addStretch(1)
 
@@ -97,12 +120,18 @@ class AppsTab(GatedTab):
         installed = getattr(self, "_mullvad_installed", False)
         for button in (self.mullvad_connect_btn, self.mullvad_disconnect_btn):
             button.setEnabled(enabled and installed)
+        has_proton = getattr(self, "_proton_ready", False)
+        for button in (self.proton_connect_btn, self.proton_disconnect_btn):
+            button.setEnabled(enabled and has_proton)
         self.mullvad_refresh_btn.setEnabled(enabled)
 
     def _after_finish(self) -> None:
         self.refresh()
 
     def refresh(self) -> None:
+        proton = vpn_apps.detect_proton()
+        self._proton_ready = bool(proton.installed and control.proton_service_name())
+        self.proton_state_label.setText(proton.line())
         app = vpn_apps.detect_mullvad()
         self._mullvad_installed = bool(app.installed and vpn_apps.mullvad_cli())
         self.mullvad_state_label.setText(app.line())
@@ -144,3 +173,18 @@ class AppsTab(GatedTab):
                 "you reconnect).")
         self._gated("mullvad-disconnect", "mullvad", "Disconnect Mullvad", text,
                     control.mullvad_disconnect)
+
+    def connect_proton(self) -> None:
+        text = ("Connect ProtonVPN?\n\nmacOS will start ProtonVPN's own VPN service, which "
+                "connects to the server ProtonVPN used last and takes over all of this Mac's "
+                "traffic. If a Tunnel profile is connected, two VPNs will stack.\n\nTunnel "
+                "never sees your Proton login. If the ProtonVPN app has to be open or signed "
+                "in, this can fail; Tunnel then says so. Traffic protection is not verified: "
+                "check the exit address under Your IP & DNS.")
+        self._gated("proton-connect", "proton", "Connect ProtonVPN", text, control.proton_connect)
+
+    def disconnect_proton(self) -> None:
+        text = ("Disconnect ProtonVPN?\n\nTraffic returns to your ordinary network in the "
+                "clear, unless ProtonVPN's own kill switch holds it.")
+        self._gated("proton-disconnect", "proton", "Disconnect ProtonVPN", text,
+                    control.proton_disconnect)

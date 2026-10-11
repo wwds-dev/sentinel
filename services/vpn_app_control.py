@@ -146,3 +146,66 @@ def mullvad_disconnect(*, run: Runner = vpn_apps._run, sleep: Sleep = time.sleep
         return True, ("Mullvad VPN: disconnected. If its lockdown mode is on, traffic stays blocked "
                       "until you reconnect.")
     return False, f"Mullvad VPN still reports {app.state}."
+
+
+# ── ProtonVPN (a macOS system VPN service) ──────────────────────────────────
+
+def proton_service_name(run: Runner = vpn_apps._run) -> str | None:
+    """The name of ProtonVPN's system VPN service, or None."""
+    code, out = run([vpn_apps.SCUTIL, "--nc", "list"], 2.0)
+    if code != 0:
+        return None
+    for service in vpn_apps.parse_scutil_services(out):
+        if "protonvpn" in service["provider"].lower():
+            return service["name"]
+    return None
+
+
+def _proton_state(run: Runner, name: str) -> str:
+    code, out = run([vpn_apps.SCUTIL, "--nc", "status", name], 2.0)
+    first = next((ln.strip().lower() for ln in out.splitlines() if ln.strip()), "")
+    return vpn_apps._proton_state(first) if code == 0 else vpn_apps.UNKNOWN
+
+
+def proton_connect(*, run: Runner = vpn_apps._run, sleep: Sleep = time.sleep) -> tuple[bool, str]:
+    """Ask macOS to start ProtonVPN's VPN service (the server it last used)."""
+    name = proton_service_name(run)
+    if not name:
+        return False, ("ProtonVPN has no VPN service set up in macOS yet. Open the ProtonVPN "
+                       "app and sign in once.")
+    if _proton_state(run, name) == vpn_apps.CONNECTED:
+        return True, "ProtonVPN is already connected."
+    code, out = run([vpn_apps.SCUTIL, "--nc", "start", name], 10.0)
+    if code != 0:
+        return False, "macOS could not start the ProtonVPN service: " + out.strip()[:200]
+    state = _proton_state(run, name)
+    for attempt in range(CONNECT_WAIT_ATTEMPTS):
+        if state == vpn_apps.CONNECTED:
+            break
+        if attempt + 1 < CONNECT_WAIT_ATTEMPTS:
+            sleep(1.0)
+            state = _proton_state(run, name)
+    if state == vpn_apps.CONNECTED:
+        return True, ('ProtonVPN: connected (the server it used last). Confirm the exit '
+                      'address under Your IP & DNS.')
+    return False, (f"ProtonVPN reports {state} after the start request. The ProtonVPN app may "
+                   "need to be open or signed in; connect from the app instead. Traffic "
+                   "protection is not verified.")
+
+
+def proton_disconnect(*, run: Runner = vpn_apps._run, sleep: Sleep = time.sleep) -> tuple[bool, str]:
+    name = proton_service_name(run)
+    if not name:
+        return False, "ProtonVPN has no VPN service set up in macOS."
+    code, out = run([vpn_apps.SCUTIL, "--nc", "stop", name], 10.0)
+    if code != 0:
+        return False, "macOS could not stop the ProtonVPN service: " + out.strip()[:200]
+    state = _proton_state(run, name)
+    for _ in range(5):
+        if state == vpn_apps.DISCONNECTED:
+            break
+        sleep(1.0)
+        state = _proton_state(run, name)
+    if state == vpn_apps.DISCONNECTED:
+        return True, "ProtonVPN: disconnected. Traffic returns to your ordinary network."
+    return False, f"ProtonVPN still reports {state}."
