@@ -50,9 +50,14 @@ and, if it matters, an external IP check, rather than trusting the button alone.
 
 ### Kill switch
 
-**Arm** installs a firewall rule that blocks all traffic except the selected
-tunnel's endpoint, so a dropped tunnel cannot leak; it needs macOS `pf` and your
-administrator password, and refuses to arm if the endpoint cannot be exempted.
+**Arm** installs a firewall rule that blocks all traffic except loopback, your
+local network, traffic already inside the tunnel, and the selected server's
+endpoint on the tunnel's own transport: UDP for WireGuard, the `proto` line of an
+OpenVPN config, on the port from the profile, else the config file, else the
+protocol default (51820 for WireGuard, 1194 for OpenVPN). A dropped tunnel cannot
+leak, and the tunnel can still reach its server. Arming needs macOS `pf` and your
+administrator password, and refuses for a template, a profile with no endpoint,
+or an endpoint that cannot be resolved.
 **Disarm** restores ordinary traffic. Arm the kill switch against a real server
 profile, not a template. Treat arming, connecting, and verifying no-leak as three
 separate steps: an armed kill switch proves traffic is blocked when the tunnel is
@@ -172,7 +177,10 @@ snapshot rather than relying on old status.
 If Sentinel is closed or Portable Emergency Reset is used during a check, the
 app first cancels and finishes the background worker before closing or erasing
 Sentinel-owned portable data. This avoids leaving the check running after its
-screen has gone away.
+screen has gone away. A Connect or Disconnect already past the administrator
+prompt cannot be interrupted safely, so it is not: Tunnel drops its result
+instead of reporting into a closing screen. Run Connection Check next time to see
+the state it left.
 
 ![Tunnel action preview](docs/training/images/tunnel-action-preview.png)
 
@@ -218,6 +226,84 @@ clearly marked key placeholders. It does not create real keys, connect to a
 server or change system settings. Generate keys locally, protect private keys,
 back up working configurations and keep an independent recovery session open
 when changing a remote firewall.
+
+## How-to: get a working tunnel
+
+Tunnel does not implement WireGuard or OpenVPN. It drives the `wg-quick` and
+`openvpn` programs installed on your Mac, so the tunnel is the real thing and
+Tunnel is the reviewed, verified way to start and check it. There is no
+field-by-field editor: a profile is a `.conf` or `.ovpn` file, which you edit in a
+text editor or in the official WireGuard app.
+
+1. **Install the tools** (once): `brew install wireguard-tools openvpn`. Without
+   them Connection Check reports the program as missing and Connect refuses.
+2. **Get a config.** Pick one source:
+   - *A commercial VPN* (Mullvad, Proton and similar): download a WireGuard
+     `.conf` or OpenVPN `.ovpn` file from the provider's account page.
+   - *Your own server* (a rented VPS or a home router that runs WireGuard):
+     use **Build Config** for the templates and runbook, generate the keys
+     yourself (see the command list), fill in the placeholders and apply the
+     server side by hand. Tools such as PiVPN or wg-easy create a working server
+     for you.
+   - *The official WireGuard app* (Mac App Store) can also create and edit
+     tunnels, with its own key generator.
+3. **Inspect before you trust it.** Use **Inspect config…** on a WireGuard file.
+   Check the endpoint, DNS, `AllowedIPs` (full tunnel is `0.0.0.0/0, ::/0`) and
+   that no peer is one you do not recognise.
+4. **Import.** Select **Import config…** and choose the file. The profile is saved
+   locally and selected. Keep the file readable only by you (`chmod 600`).
+5. **Check the starting state.** Run **Check Connection** with no tunnel active
+   and note the default interface and DNS servers.
+6. **Connect.** Read the Execution review, confirm, enter the administrator
+   password. Then run **Check Connection** again: a recent handshake and a
+   default interface that matches the profile are the evidence you want.
+7. **Verify.** In **Your IP & DNS**, run **Check public IP** (the exit address
+   should differ from step 5) and **Run test** (the resolvers should not belong
+   to your ISP). One passing result does not prove the other.
+8. **Arm the kill switch** only after the tunnel is up and verified, against a
+   real server profile. Then disconnect once on purpose and confirm that traffic
+   stops, and that **Disarm** restores it.
+9. **To change a setting**, edit the file (endpoint, DNS, `AllowedIPs`,
+   keepalive), save it and import it again.
+
+If you are locked out, use the recovery command below. It works without Sentinel.
+
+## Command reference
+
+Run these in Terminal. Commands marked `sudo` change or read privileged state.
+Replace `wg0` and file paths with your own; never paste a private key into a chat
+or an AI request.
+
+| Task | Command |
+| --- | --- |
+| Install the tools | `brew install wireguard-tools openvpn` |
+| Create a key pair | `umask 077; wg genkey \| tee private.key \| wg pubkey > public.key` |
+| Create a preshared key | `wg genpsk` |
+| Lock down a config | `chmod 600 profile.conf` |
+| Start WireGuard | `sudo wg-quick up /full/path/profile.conf` |
+| Stop WireGuard | `sudo wg-quick down /full/path/profile.conf` |
+| Show peers, handshake, transfer | `sudo wg show` |
+| List active WireGuard interfaces | `sudo wg show interfaces` |
+| Start OpenVPN | `sudo openvpn --config /full/path/profile.ovpn` |
+| Show the default route | `route -n get default` |
+| Show all routes | `netstat -rn` |
+| Show interfaces (tunnels are `utunN`) | `ifconfig \| grep -A4 utun` |
+| Show the DNS servers in use | `scutil --dns \| grep nameserver` |
+| List network devices | `networksetup -listallhardwareports` |
+| Public IPv4 address | `curl -4 https://api.ipify.org` |
+| Public IPv6 address (should fail or match the VPN) | `curl -6 https://api.ipify.org` |
+| Reachability and latency | `ping -c 4 1.1.1.1` |
+| Show the kill switch rules | `sudo pfctl -a vpn-agent-killswitch -s rules` |
+| **Recovery: remove the kill switch** | `sudo pfctl -a vpn-agent-killswitch -F all && sudo pfctl -F all -f /etc/pf.conf` |
+
+On a Linux server:
+
+| Task | Command |
+| --- | --- |
+| Enable forwarding | `sudo sysctl -w net.ipv4.ip_forward=1` |
+| Open the WireGuard port | `sudo ufw allow 51820/udp` |
+| Start the tunnel at boot | `sudo systemctl enable --now wg-quick@wg0` |
+| Show peers and handshakes | `sudo wg show` |
 
 ## Beginner exercise
 
