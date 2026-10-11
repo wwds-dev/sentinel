@@ -215,76 +215,18 @@ def test_disconnect_asks_first(tab_env):
     assert tab_env.connects == ["off"]
 
 
-# ── ProtonVPN through its macOS system VPN service ──
+# ── ProtonVPN is shown, not controlled ──
 
-SCUTIL_LIST = (
-    "Available network connection services in the current set (*=enabled):\n"
-    '* (Disconnected)   11111111-2222-3333-4444-555555555555 VPN (com.example.vpn) "Work VPN"   [VPN:com.example.vpn]\n'
-    '* (Disconnected)   21DAE34C-9193-483A-8273-7FA0B570051F VPN (ch.protonvpn.mac) "ProtonVPN"   [VPN:ch.protonvpn.mac]\n')
-
-
-class FakeScutil:
-    def __init__(self, states=("Disconnected",), list_text=SCUTIL_LIST, start_rc=0):
-        self.states, self.list_text, self.start_rc = list(states), list_text, start_rc
-        self.calls, self.i = [], 0
-
-    def __call__(self, argv, timeout=2.0):
-        self.calls.append(argv[1:])
-        sub = argv[1:]
-        if sub == ["--nc", "list"]:
-            return 0, self.list_text
-        if sub[:2] == ["--nc", "status"]:
-            text = self.states[min(self.i, len(self.states) - 1)]
-            self.i += 1
-            return 0, text + "\nExtended Status <dictionary> {\n}\n"
-        if sub[:2] == ["--nc", "start"]:
-            return self.start_rc, "" if self.start_rc == 0 else "Error"
-        if sub[:2] == ["--nc", "stop"]:
-            self.states, self.i = ["Disconnected"], 0
-            return 0, ""
-        return 2, ""
+def test_tunnel_has_no_way_to_start_or_stop_protonvpn():
+    """A real start request was accepted by macOS and ignored by Proton's extension."""
+    assert not hasattr(control, "proton_connect") and not hasattr(control, "proton_disconnect")
+    from ui.panels.vpn_apps_tab import AppsTab
+    assert not hasattr(AppsTab, "connect_proton") and not hasattr(AppsTab, "disconnect_proton")
 
 
-def test_proton_connect_starts_only_the_proton_service_and_waits():
-    run = FakeScutil(states=("Disconnected", "Disconnected", "Connecting", "Connected"))
-    slept = []
-    ok, message = control.proton_connect(run=run, sleep=slept.append)
-    assert ok and "connected" in message and slept
-    starts = [c for c in run.calls if c[:2] == ["--nc", "start"]]
-    assert starts == [["--nc", "start", "ProtonVPN"]]               # never the other VPN
-    assert not any(c[:2] == ["--nc", "stop"] for c in run.calls)
-
-
-def test_proton_that_never_connects_is_reported_honestly():
-    run = FakeScutil(states=("Disconnected",))
-    ok, message = control.proton_connect(run=run, sleep=lambda s: None)
-    assert ok is False and "disconnected" in message and "not verified" in message
-
-
-def test_proton_without_a_service_or_with_a_failing_start_connects_nothing():
-    none = FakeScutil(list_text="Available network connection services in the current set (*=enabled):\n")
-    assert control.proton_connect(run=none, sleep=lambda s: None)[0] is False
-    assert not any(c[:2] == ["--nc", "start"] for c in none.calls)
-    failing = FakeScutil(start_rc=1)
-    ok, message = control.proton_connect(run=failing, sleep=lambda s: None)
-    assert ok is False and "could not start" in message
-
-
-def test_proton_disconnect_stops_only_its_service():
-    run = FakeScutil(states=("Connected",))
-    ok, message = control.proton_disconnect(run=run, sleep=lambda s: None)
-    assert ok and "disconnected" in message
-    assert [c for c in run.calls if c[:2] == ["--nc", "stop"]] == [["--nc", "stop", "ProtonVPN"]]
-
-
-def test_the_proton_buttons_ask_first_and_call_the_service(tab_env, monkeypatch):
-    calls = []
-    monkeypatch.setattr(control, "proton_connect", lambda **k: (calls.append("on") or (True, "ProtonVPN: connected")))
-    monkeypatch.setattr(control, "proton_disconnect", lambda **k: (calls.append("off") or (True, "ProtonVPN: disconnected.")))
-    tab_env.tab.connect_proton()
-    assert calls == [] and "stack" in tab_env.asked[-1][1] and "Proton login" in tab_env.asked[-1][1]
-    tab_env.answers = [True]
-    tab_env.tab.connect_proton()
-    tab_env.answers = [True]
-    tab_env.tab.disconnect_proton()
-    assert calls == ["on", "off"]
+def test_the_proton_card_only_reports_state(tab_env, monkeypatch):
+    monkeypatch.setattr(vpn_apps, "detect_proton", lambda run=None: vpn_apps.VpnApp(
+        "proton", "ProtonVPN", True, vpn_apps.DISCONNECTED, 'system VPN service "ProtonVPN"'))
+    tab_env.tab.refresh()
+    assert "ProtonVPN: disconnected" in tab_env.tab.proton_state_label.text()
+    assert not hasattr(tab_env.tab, "proton_connect_btn")

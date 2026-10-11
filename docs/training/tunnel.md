@@ -487,10 +487,10 @@ The **VPN Apps** tab can also start and stop Mullvad for you (through Mullvad's
 own command-line tool) and choose its country or city. Log in with the Mullvad app
 first: Tunnel never asks for or keeps your account number, and Connect refuses
 while you are logged out, because Mullvad would otherwise block all traffic. The
-same tab can ask macOS to start or stop ProtonVPN's own VPN service; it connects
-to the server Proton used last (choose another in the ProtonVPN app) and says so
-if Proton does not reach Connected. After connecting either one, confirm the exit
-address under **Your IP & DNS**.
+same tab shows ProtonVPN's state, but it cannot start or stop Proton: macOS accepts
+the request and Proton's extension ignores it, so use the ProtonVPN app for that
+(or download a Proton config and use **Import config…**). After connecting either
+one, confirm the exit address under **Your IP & DNS**.
 
 ### B. No VPN is running
 
