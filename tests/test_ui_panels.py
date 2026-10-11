@@ -3395,7 +3395,10 @@ def tunnel(qapp, monkeypatch, tmp_path):
     host.agent_instances["vpn"] = FakeVpnAgent()
     panel = VpnPanel(host)
     panel.question_input.setText("hotel wifi blocks UDP")
-    return panel
+    yield panel
+    # Construction starts a local-IP worker thread; a QThread destroyed while it
+    # runs aborts the interpreter (seen on the macOS CI runner).
+    panel.shutdown()
 
 
 class TestTunnelPanel:

@@ -301,13 +301,22 @@ def tunnel(qapp, monkeypatch, gate, guard):
                         lambda: VpnProfileCatalog(profiles=(), active_profile="", source="test"))
     monkeypatch.setattr(VpnPanel, "connection_worker_class", _sync_worker_class(VpnConnectionWorker))
 
+    made = []
+
     def make():
         with guard.open():                       # construction reads ifconfig
-            return VpnPanel(FakeHost())
+            panel = VpnPanel(FakeHost())
+        made.append(panel)
+        return panel
     base = set(QApplication.topLevelWidgets())
     panel = make()
     panel.make_another = make                     # a "restart": a brand-new panel
     yield panel
+    # Construction starts a local-IP worker thread. Join every panel's workers
+    # before dropping it: a QThread destroyed while running aborts the whole
+    # interpreter (seen on the macOS CI runner).
+    for built in made:
+        built.shutdown()
     for widget in set(QApplication.topLevelWidgets()) - base:
         widget.deleteLater()
     QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
@@ -679,6 +688,9 @@ class TestConnectDisconnect:
         class Busy:
             def isRunning(self):          # noqa: N802
                 return True
+
+            def cancel(self):
+                pass
         tunnel._connection_worker = Busy()
         pick(tunnel, wg_profile(write_conf(tmp_path), "NL"))
         tunnel.connect_vpn()
@@ -960,6 +972,9 @@ class TestDnsLeak:
 
             def isRunning(self):          # noqa: N802
                 return True
+
+            def cancel(self):
+                pass
         monkeypatch.setattr(VpnPanel, "dns_leak_worker_class", Hanging)
         dns.panel.run_dns_leak_test()
         dns.panel.run_dns_leak_test()
