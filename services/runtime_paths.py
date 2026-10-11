@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -141,17 +142,30 @@ def user_data_base() -> Path:
 def write_private_text(path: Path, text: str) -> None:
     """Write `text` to `path` so the file is 0600 from its first byte.
 
-    A temp file in the same directory is opened with mode 0600 and moved over
-    the target, so a reader never sees a world-readable copy and a crash never
-    leaves a half-written file. Used for the .env that holds the API keys.
+    A temp file in the same directory (mkstemp creates it 0600) is flushed,
+    synced and moved over the target, so a reader never sees a world-readable
+    copy and a crash never leaves a half-written file. A symlinked `path` keeps
+    its link: the real file is replaced. The inode is replaced, so owner, ACLs
+    and extended attributes of the old file are not preserved. If the directory
+    is not writable the text is written in place instead, then chmod 0600 as
+    well as the volume allows. Used for the .env that holds the API keys.
     """
-    path = Path(path)
+    path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    except OSError:
+        path.write_text(text, encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            os.fchmod(handle.fileno(), 0o600)
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except BaseException:
         try:
@@ -162,15 +176,26 @@ def write_private_text(path: Path, text: str) -> None:
 
 
 def tighten_private_file(path: Path) -> bool:
-    """Make an existing file owner-only (0600). True if the mode was changed."""
+    """Make an existing regular file owner-only (0600). True if the mode changed.
+
+    A symlink is skipped, not followed: the link's target is not ours to chmod.
+    A file that cannot be tightened is reported by path only, never by content.
+    """
     try:
-        mode = os.stat(path).st_mode & 0o777
-        if mode == 0o600:
-            return False
-        os.chmod(path, 0o600)
-        return True
+        info = os.lstat(path)
     except OSError:
         return False
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return False
+    if stat.S_IMODE(info.st_mode) == 0o600:
+        return False
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        print(f"Sentinel: could not restrict {path} to owner-only (0600).",
+              file=sys.stderr)
+        return False
+    return True
 
 
 def tighten_env_files() -> None:
