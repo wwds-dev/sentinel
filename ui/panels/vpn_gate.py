@@ -1,9 +1,9 @@
 """Shared gate for the Tunnel companion tabs (Privacy, Servers).
 
 One pattern for every action that changes something or contacts something:
-optional default-No confirmation, an off-thread worker, and one audit line for
-every attempt (declined and refused ones included). Secrets are redacted before
-anything is shown or logged.
+optional default-No confirmation and an off-thread worker. Nothing is logged,
+not even a declined or refused attempt. Secrets are redacted before anything is
+shown.
 """
 
 from __future__ import annotations
@@ -33,25 +33,18 @@ class GatedTab(QWidget):
             QMessageBox.No) == QMessageBox.Yes
 
     def _refuse(self, action: str, target: str, reason: str) -> None:
-        vpn_execution.record_companion(action, "refused", reason, target=target)
         self._say("Refused: " + reason)
         QMessageBox.warning(self, "Tunnel", reason + "\n\nNothing was changed.")
 
     def _gated(self, action: str, target: str, title: str, text: str | None,
                func, after=None) -> bool:
-        """Confirm (when ``text``), audit, run ``func`` off-thread, audit result."""
+        """Confirm (when ``text``), then run ``func`` off-thread."""
         if self.busy:
             QMessageBox.information(self, "Busy", "A Tunnel action is already running.")
             return False
         if text is not None and not self._ask(title, text):
-            vpn_execution.record_companion(action, "declined",
-                                           "Operator declined the confirmation.",
-                                           target=target)
             self._say("Not run: confirmation declined.")
             return False
-        # Recorded before anything runs: if the app is closed while a privileged
-        # step is in flight, the log still shows that it was attempted.
-        vpn_execution.record_companion(action, "started", "", target=target)
         self._say(f"{title}…")
         self._set_enabled(False)
         worker = CallWorker(func)
@@ -60,14 +53,11 @@ class GatedTab(QWidget):
 
         def done(result):
             ok, message = result if isinstance(result, tuple) else (bool(result), str(result))
-            vpn_execution.record_companion(
-                action, "succeeded" if ok else "failed", message, target=target)
             self._finish(f"{message}")
             if after:
                 after(ok)
 
         def failed(error):
-            vpn_execution.record_companion(action, "failed", error, target=target)
             self._finish(f"Failed: {error}")
 
         worker.finished_signal.connect(done)

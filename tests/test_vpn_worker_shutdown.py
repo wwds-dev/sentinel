@@ -35,7 +35,6 @@ def test_cancelled_connection_worker_drops_its_result(monkeypatch):
     from services import vpn_connection, vpn_execution
 
     monkeypatch.setattr(vpn_connection, "arm_killswitch", lambda profile: (True, "ARMED"))
-    monkeypatch.setattr(vpn_execution, "record_killswitch", lambda *a, **k: None)
     worker = workers.VpnConnectionWorker("arm", {"endpoint": "203.0.113.7"})
     emitted = []
     worker.finished_signal.connect(emitted.append)
@@ -51,7 +50,6 @@ def test_uncancelled_connection_worker_still_reports(monkeypatch):
     from services import vpn_connection, vpn_execution
 
     monkeypatch.setattr(vpn_connection, "arm_killswitch", lambda profile: (True, "ARMED"))
-    monkeypatch.setattr(vpn_execution, "record_killswitch", lambda *a, **k: None)
     worker = workers.VpnConnectionWorker("arm", {"endpoint": "203.0.113.7"})
     emitted = []
     worker.finished_signal.connect(emitted.append)

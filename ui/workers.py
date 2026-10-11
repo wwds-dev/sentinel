@@ -402,8 +402,8 @@ class VpnConnectionWorker(QThread):
 
     The privileged step raises the macOS authorisation dialog inside
     vpn_connection, so this must not run on the interface thread. Connect and
-    Disconnect go through vpn_execution's gate (re-review, post-change check,
-    local audit); kill-switch changes are audited too.
+    Disconnect go through vpn_execution's gate (re-review, post-change check).
+    Nothing is logged.
     """
 
     finished_signal = Signal(dict)
@@ -437,7 +437,6 @@ class VpnConnectionWorker(QThread):
                     ok, message = vpn_connection.arm_killswitch(self._profile)
                 else:
                     ok, message = vpn_connection.disarm_killswitch()
-                vpn_execution.record_killswitch(self._action, ok, message)
                 result = {"success": ok, "protocol": "Kill switch",
                           "output": message, "error": None if ok else message}
             else:

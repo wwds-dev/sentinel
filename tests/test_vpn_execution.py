@@ -2,7 +2,7 @@
 
 Nothing here runs wg-quick, openvpn, route, pfctl, sudo or osascript: the
 privileged runner, the local-state probe and the kill-switch state are all
-injected, and the audit log is written under tmp_path.
+injected, and nothing is written to disk.
 """
 
 from __future__ import annotations
@@ -194,22 +194,19 @@ def test_rollback_is_a_command_a_person_can_type(tmp_path, monkeypatch):
     assert r.rollback[0].endswith(f"sudo wg-quick down '{path}'")
 
 
-# ── Execution, post-change check and audit ──────────────────────────────────
+# ── Execution and post-change check ────────────────────────────────────────
 
-def test_a_blocked_action_runs_nothing_and_is_audited(tmp_path):
+def test_a_blocked_action_runs_nothing(tmp_path):
     run = Recorder()
-    audit = tmp_path / "audit.jsonl"
     outcome = vpn_execution.execute(
         "connect", {"name": "Example", "protocol": "WireGuard", "endpoint": "<SERVER_IP>",
                     "interface": "wgjp", "placeholder": True},
-        run_as_root=run, probe=Probe(), killswitch_armed=lambda: False, audit_path=audit)
+        run_as_root=run, probe=Probe(), killswitch_armed=lambda: False)
     assert run.scripts == []
     assert outcome.ran is False
     assert outcome.as_result()["success"] is False
     assert outcome.status_line.startswith("Refused")
-    entry = json.loads(audit.read_text().splitlines()[-1])
-    assert entry["outcome"] == "refused"
-    assert entry["blockers"]
+    assert outcome.review.blockers
 
 
 def test_verified_full_tunnel_connect(tmp_path):
@@ -221,10 +218,8 @@ def test_verified_full_tunnel_connect(tmp_path):
         probe.up.add("wgnl")          # the tunnel comes up when the command runs
         return run(script, prompt, timeout)
 
-    audit = tmp_path / "audit.jsonl"
     outcome = vpn_execution.execute("connect", profile_for(path), run_as_root=runner,
-                                    probe=probe, killswitch_armed=lambda: False,
-                                    audit_path=audit, sleep=lambda s: None)
+                                    probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
     assert run.scripts == [f"wg-quick up '{path}'"]
     assert outcome.success and outcome.verified is True
     assert "utun7" in outcome.verification
@@ -232,20 +227,15 @@ def test_verified_full_tunnel_connect(tmp_path):
     result = outcome.as_result()
     assert result["success"] is True and result["sections"]
     assert "verified locally" in result["status_line"]
-    text = audit.read_text()
-    assert PRIVATE_KEY not in text
-    entry = json.loads(text.splitlines()[-1])
-    assert entry["outcome"] == "succeeded" and entry["verified"] is True
-    assert entry["interface"] == "wgnl"
-    assert oct(audit.stat().st_mode & 0o777) == "0o600"
+    assert PRIVATE_KEY not in json.dumps(result)
+    assert outcome.review.interface == "wgnl"
 
 
 def test_command_success_without_the_interface_is_not_verified(tmp_path):
     slept = []
     outcome = vpn_execution.execute(
         "connect", profile_for(write_conf(tmp_path)), run_as_root=Recorder(),
-        probe=Probe(), killswitch_armed=lambda: False,
-        audit_path=tmp_path / "a.jsonl", sleep=slept.append)
+        probe=Probe(), killswitch_armed=lambda: False, sleep=slept.append)
     assert outcome.success is True
     assert outcome.verified is False
     assert "NOT verified" in outcome.status_line
@@ -261,8 +251,7 @@ def test_full_tunnel_whose_route_bypasses_the_tunnel_is_not_verified(tmp_path):
         return True, ""
 
     outcome = vpn_execution.execute("connect", profile_for(path), run_as_root=runner,
-                                    probe=probe, killswitch_armed=lambda: False,
-                                    audit_path=tmp_path / "a.jsonl", sleep=lambda s: None)
+                                    probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.verified is False
     assert "en0" in outcome.verification
 
@@ -277,53 +266,18 @@ def test_verified_disconnect(tmp_path):
     outcome = vpn_execution.execute(
         "disconnect", {"name": "VPS", "protocol": "WireGuard",
                        "endpoint": "203.0.113.7", "interface": "wg0"},
-        run_as_root=runner, probe=probe, killswitch_armed=lambda: False,
-        audit_path=tmp_path / "a.jsonl", sleep=lambda s: None)
+        run_as_root=runner, probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.verified is True
     assert "no longer recorded as up" in outcome.verification
 
 
-def test_a_failed_command_is_reported_and_audited(tmp_path):
-    audit = tmp_path / "a.jsonl"
+def test_a_failed_command_is_reported(tmp_path):
     outcome = vpn_execution.execute(
         "connect", profile_for(write_conf(tmp_path)),
         run_as_root=Recorder(ok=False, output="Cancelled."), probe=Probe(),
-        killswitch_armed=lambda: False, audit_path=audit, sleep=lambda s: None)
+        killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.success is False
     assert outcome.status_line.startswith("Failed: Cancelled.")
-    assert json.loads(audit.read_text())["outcome"] == "failed"
-
-
-def test_audit_failure_never_breaks_the_action(tmp_path):
-    blocked = tmp_path / "file"
-    blocked.write_text("x")
-    outcome = vpn_execution.execute(
-        "connect", {"name": "Example", "protocol": "WireGuard", "endpoint": "<SERVER_IP>",
-                    "placeholder": True, "interface": "wgjp"},
-        run_as_root=Recorder(), probe=Probe(), killswitch_armed=lambda: False,
-        audit_path=blocked / "audit.jsonl")
-    assert outcome.audit_path is None
-    assert "could not be written" in json.dumps(outcome.sections())
-
-
-def test_kill_switch_changes_are_audited(tmp_path):
-    audit = tmp_path / "a.jsonl"
-    vpn_execution.record_killswitch("arm", True, "Kill switch ARMED", audit_path=audit)
-    entry = json.loads(audit.read_text())
-    assert entry["action"] == "killswitch-arm" and entry["outcome"] == "succeeded"
-
-
-def test_suite_never_writes_the_operators_audit_log():
-    """conftest's `_isolated_tunnel_audit` must stay in place.
-
-    Without it, any test that omits `audit_path` appends fake kill-switch
-    records to the real data/logs/tunnel_audit.jsonl.
-    """
-    from services import runtime_paths
-
-    real = runtime_paths.user_data_base() / "data" / "logs" / vpn_execution.AUDIT_FILENAME
-    assert vpn_execution.default_audit_path() != real
-    assert not vpn_execution.default_audit_path().is_relative_to(runtime_paths.user_data_base())
 
 
 def test_openvpn_post_check_reads_the_tracked_process(tmp_path, monkeypatch):
@@ -335,8 +289,7 @@ def test_openvpn_post_check_reads_the_tracked_process(tmp_path, monkeypatch):
                         lambda path, run_as_root: (setattr(probe, "openvpn", True)
                                                    or {"success": True, "output": ""}))
     outcome = vpn_execution.execute("connect", profile_for(conf), probe=probe,
-                                    run_as_root=Recorder(), killswitch_armed=lambda: False,
-                                    audit_path=tmp_path / "a.jsonl", sleep=lambda s: None)
+                                    run_as_root=Recorder(), killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.verified is True
 
 
@@ -348,37 +301,6 @@ def test_interface_state_reads_wg_quick_run_records(tmp_path):
     assert vpn_execution.wireguard_interface_state("wg0", tmp_path)["up"] is False  # stale: no socket
     (tmp_path / "utun5.sock").write_text("")
     assert vpn_execution.wireguard_interface_state("wg0", tmp_path) == {"up": True, "device": "utun5"}
-
-
-# ── Refusals before execute() are audited too ────────────────────────────────
-
-def test_record_refusal_matches_the_execute_entry_shape(tmp_path):
-    import json
-    audit = tmp_path / "audit.jsonl"
-    review = vpn_execution.review_execution(
-        "connect", {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7",
-                    "interface": "wg0"},
-        probe=Probe(), killswitch_armed=lambda: False)
-    vpn_execution.record_refusal("connect", {"name": "VPS"}, "Operator declined.",
-                                 review=review, outcome="declined", audit_path=audit)
-    entry = json.loads(audit.read_text().splitlines()[-1])
-    assert set(entry) >= {"time", "action", "protocol", "profile", "target", "interface",
-                          "command", "outcome", "blockers", "warnings", "verified",
-                          "verification", "error"}
-    assert entry["outcome"] == "declined" and entry["profile"] == "VPS"
-    assert entry["command"] == review.command and entry["verified"] is None
-    assert oct(audit.stat().st_mode & 0o777) == "0o600"
-
-
-def test_record_refusal_without_a_review_uses_the_profile(tmp_path):
-    import json
-    audit = tmp_path / "audit.jsonl"
-    vpn_execution.record_refusal(
-        "connect", {"name": "Example — Japan", "protocol": "OpenVPN", "endpoint": "<SERVER_IP>"},
-        "Template profile.", audit_path=audit)
-    entry = json.loads(audit.read_text().splitlines()[-1])
-    assert entry["outcome"] == "refused" and entry["protocol"] == "OpenVPN"
-    assert entry["target"] == "<SERVER_IP>" and entry["command"] == ""
 
 
 # ── Hooks that run as root are named and confirmed separately ───────────────
@@ -455,7 +377,7 @@ def test_disconnect_review_does_not_rescan_hooks(tmp_path):
     assert r.root_hooks == ()
 
 
-# ── Key material never reaches the Execution tab or the audit log ───────────
+# ── Key material never reaches the Execution tab ───────────
 
 CANARY = "cGFub3B0aWNvbi1zZWNyZXQta2V5LWNhbmFyeS0wMDAxMjM="   # 44-char base64
 
@@ -482,15 +404,13 @@ def test_redact_secrets_leaves_ordinary_output_alone():
 def test_execute_redacts_tool_output_and_error_everywhere(tmp_path):
     import json
     conf = write_conf(tmp_path)
-    audit = tmp_path / "audit.jsonl"
     leaked = f"wg-quick: Line unrecognized: `PrivateKey = {PRIVATE_KEY}`"
 
     def run(script, prompt, timeout=30):
         return False, leaked
     outcome = vpn_execution.execute("connect", profile_for(conf), run_as_root=run,
-                                    probe=Probe(), killswitch_armed=lambda: False,
-                                    audit_path=audit, sleep=lambda s: None)
-    everything = json.dumps(outcome.as_result()) + audit.read_text()
+                                    probe=Probe(), killswitch_armed=lambda: False, sleep=lambda s: None)
+    everything = json.dumps(outcome.as_result())
     assert PRIVATE_KEY not in everything
     assert "[redacted]" in everything
 

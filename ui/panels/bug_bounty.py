@@ -76,24 +76,40 @@ def record_nmap_attempt(outcome: str, target: str, program: str, command: str,
                         detail: str = "", audit_path: Path | None = None) -> Path | None:
     """Append one audit line for an Nmap attempt: declined, refused or started.
 
-    Uses the same local JSON-lines facility as Tunnel's consent audit
-    (``vpn_execution.append_audit``: one line per attempt, mode 0600, never
-    raises) in its own file next to it. Sentinel does not verify the scope, so
-    the line records only what the operator said and entered.
+    One JSON line per attempt in ``bug_spray_audit.jsonl``, mode 0600, and it
+    never raises. This is Bug Spray's own record: Tunnel keeps no log. Sentinel
+    does not verify the scope, so the line records only what the operator said
+    and entered.
     """
-    from services import vpn_execution
+    import json
+    from datetime import datetime, timezone
 
-    path = audit_path or (vpn_execution.default_audit_path().parent / NMAP_AUDIT_FILENAME)
-    return vpn_execution.append_audit({
-        "time": vpn_execution._now(),
+    from services import runtime_paths
+    from services.vpn_execution import redact_secrets
+
+    path = Path(audit_path) if audit_path else (
+        runtime_paths.user_data_base() / "data" / "logs" / NMAP_AUDIT_FILENAME)
+    entry = {
+        "time": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "action": "nmap",
         "protocol": "bug-spray",
-        "target": vpn_execution.redact_secrets(target)[:200],
-        "program": vpn_execution.redact_secrets(program)[:200],
-        "command": vpn_execution.redact_secrets(command)[:500],
+        "target": redact_secrets(target)[:200],
+        "program": redact_secrets(program)[:200],
+        "command": redact_secrets(command)[:500],
         "outcome": outcome,
-        "detail": vpn_execution.redact_secrets(detail)[:500],
-    }, path)
+        "detail": redact_secrets(detail)[:500],
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return path
+    except OSError:
+        return None
 
 
 class BugBountyPanel(AgentPanel):

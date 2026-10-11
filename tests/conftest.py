@@ -164,24 +164,6 @@ def _no_osint_keys(monkeypatch):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _isolated_tunnel_audit():
-    """Point Tunnel's audit log at _TEST_ROOT instead of data/logs/.
-
-    `data/logs/tunnel_audit.jsonl` is the operator's record of real
-    connect/disconnect and kill-switch attempts. Any test that reaches
-    `append_audit` without its own `audit_path` (the kill-switch worker tests
-    did) was appending made-up "ARMED ok" / "pfctl error" lines to it. Session
-    scope for the same reason as above: `win` is built first.
-    """
-    from services import vpn_execution
-
-    audit = _TEST_ROOT / "data" / "logs" / vpn_execution.AUDIT_FILENAME
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(vpn_execution, "default_audit_path", lambda: audit)
-        yield
-
-
-@pytest.fixture(scope="session", autouse=True)
 def _offline_osint_catalog(tmp_path_factory):
     """No OSINT Framework download, and no machine-specific cached copy.
 

@@ -242,21 +242,21 @@ The next steps need macOS, an owned WireGuard config and an administrator accoun
 
 10. Import and templates (no administrator access needed).
 
-- [ ] Choose "Example — Netherlands (template)" and press Connect: a dialog explains it is a template; no password is requested; the Execution tab shows no command run; a `refused` line is appended to `data/logs/tunnel_audit.jsonl`.
+- [ ] Choose "Example — Netherlands (template)" and press Connect: a dialog explains it is a template; no password is requested; the Execution tab shows no command run; nothing is written to disk.
 - [ ] Press Disconnect on the same template: it is not blocked by the template rule.
-- [ ] Import config... a WireGuard .conf: the profile is selected, its endpoint matches the file, and the file is not copied. Move the file and press Connect: refused ("no longer exists"), logged `refused`.
+- [ ] Import config... a WireGuard .conf: the profile is selected, its endpoint matches the file, and the file is not copied. Move the file and press Connect: refused ("no longer exists").
 - [ ] Import a .conf whose name has a space or is longer than 15 characters: Connect is refused with the rename message.
 - [ ] Import an .ovpn: it is typed OpenVPN. Reload the Compare profile picker to see it there (Import does not refresh it).
 - [ ] The starter profiles Home Server / GL-iNet Flint 2 are connectable by interface name: their review shows no routing, DNS or hook lines (record this; first import on a clean state also hides the starter profiles).
 
 11. Gated Connect / Disconnect (WireGuard, a config you wrote).
 
-- [ ] Connect fills the Execution tab (target, exact command, routing/DNS intent, warnings, rollback) before any question; the question defaults to No; pressing No logs `declined` and runs nothing.
-- [ ] Yes raises the macOS authorisation dialog even if a sudo session was used in Terminal moments earlier; the password is not stored; cancelling the dialog is reported as Failed and logged.
+- [ ] Connect fills the Execution tab (target, exact command, routing/DNS intent, warnings, rollback) before any question; the question defaults to No; pressing No runs nothing and logs nothing.
+- [ ] Yes raises the macOS authorisation dialog even if a sudo session was used in Terminal moments earlier; the password is not stored; cancelling the dialog is reported as Failed.
 - [ ] After success the status line and the Post-change check say verified or NOT verified; a full tunnel also reports which interface the public route uses; the text says handshake/DNS/leak are not verified.
-- [ ] Pressing Connect again while the interface is up is refused (blocker), logged `refused`.
+- [ ] Pressing Connect again while the interface is up is refused (blocker).
 - [ ] Disconnect warns about clear traffic (or the armed kill switch), runs after Yes, and the post-check reports the interface no longer recorded as up.
-- [ ] `tunnel_audit.jsonl` has one line per attempt, mode 600, with no key text. Use a config whose PrivateKey is a recognisable fake value and confirm it appears nowhere in the Execution tab, status line or audit file, including after forcing a wg-quick parse error.
+- [ ] After several attempts (success, failure, refusal, declined), no `tunnel_audit.jsonl` and no other Tunnel log exists under `data/logs/` or `vpn/`. Use a config whose PrivateKey is a recognisable fake value and confirm it appears nowhere in the Execution tab, status line or any file Sentinel wrote.
 - [ ] A config with a PostUp line (harmless command): the Connect review lists it in "Runs commands as administrator", the confirmation repeats it, a second dialog asks again with default No, and declining either is logged `declined`. The same lines are NOT listed on Disconnect or in Inspect config.
 - [ ] Record whether Connection Check, run right after a verified Connect, reports the selected profile as active (the interface may appear as a utunN name).
 
@@ -268,7 +268,7 @@ The next steps need macOS, an owned WireGuard config and an administrator accoun
 
 13. Kill switch (WireGuard profile, tunnel up).
 
-- [ ] Arm shows a confirmation that defaults to No, names the protocol/port and endpoint, and prints the recovery command; No logs `declined` and changes nothing.
+- [ ] Arm shows a confirmation that defaults to No, names the protocol/port and endpoint, and prints the recovery command; No arms nothing.
 - [ ] Arm for a template or an unresolvable endpoint is refused.
 - [ ] Armed with the tunnel up, the tunnel keeps working and the endpoint stays reachable; with the tunnel dropped, other traffic is blocked; LAN access still works.
 - [ ] Arm before the tunnel exists: the result warns that nothing is exempt; connect, then re-arm.
@@ -281,16 +281,16 @@ The next steps need macOS, an owned WireGuard config and an administrator accoun
 
 - [ ] With the macOS password prompt open, close Sentinel: no crash or Python error; reopen and run Connection Check to learn the real state.
 - [ ] In a portable build, start a Connect, then run Settings > General > Emergency Reset: the reset either completes or shows "Reset refused" with the reason; it never fails silently.
-- [ ] Record whether the interrupted attempt appears in the audit log.
+- [ ] Record whether the Execution tab shows the interrupted attempt's result after reopening (it should not: nothing is kept).
 
 15. Privacy tab (needs the Mac; use a USB Ethernet adapter for the MAC test).
 
 - [ ] The tab lists interfaces with current and hardware addresses; Refresh updates them.
-- [ ] Randomise… shows `old → new`, defaults to No; No changes nothing and logs `declined`. Yes asks for the macOS password (not a cached sudo), then the interface reports the new address. Restore puts the hardware address back. `tunnel_audit.jsonl` has `mac-set` lines for each.
+- [ ] Randomise… shows `old → new`, defaults to No; No changes nothing. Yes asks for the macOS password (not a cached sudo), then the interface reports the new address. Restore puts the hardware address back. `tunnel_audit.jsonl` has `mac-set` lines for each.
 - [ ] Randomise on Wi-Fi warns that Wi-Fi will be cycled; record whether macOS accepts the change and whether Private Wi-Fi Address overrides it.
 - [ ] With Tor not installed the card shows `brew install tor` and Start is disabled. After installing: Start asks first; bootstrap completes; Check confirms "exiting through Tor"; New identity changes the exit; Stop stops it; a Tor you started yourself (Tor Browser) is left alone.
 - [ ] Start Tor with Sentinel's data folder under a path with a space: Tor starts (torrc quoting).
-- [ ] Proxy chain: add a SOCKS proxy you control; Test chain… names api.ipify.org and each hop and shows the exit address; a wrong password fails at the right hop; passwords never appear in the table, status line or audit log. Move up/down and Remove persist after restart.
+- [ ] Proxy chain: add a SOCKS proxy you control; Test chain… names api.ipify.org and each hop and shows the exit address; a wrong password fails at the right hop; passwords never appear in the table or status line. Move up/down and Remove persist after restart.
 - [ ] Write proxychains.conf creates an owner-only file; record whether a Homebrew-installed program honours it and that /usr/bin/curl does not.
 
 16. Servers tab (deploy needs a throwaway VPS you control).
@@ -303,7 +303,7 @@ The next steps need macOS, an owned WireGuard config and an administrator accoun
 - [ ] Teardown… needs the site name typed; afterwards the server no longer answers.
 - [ ] Back up this site… with a short passphrase warns; the backup restores on a second account (Import backup…); restoring over an existing site asks first.
 - [ ] Delete site… needs the name typed, and without a backup asks again; then the site is gone and its exports folder too.
-- [ ] While Tunnel is open, drop the tunnel from outside (`wg-quick down`): within about 30 s the status line warns and the audit log has `tunnel-dropped`. Hide Tunnel: no monitor activity.
+- [ ] While Tunnel is open, drop the tunnel from outside (`wg-quick down`): within about 30 s the status line warns. Hide Tunnel: no monitor activity.
 
 ## 8. Forge (`manager`)
 

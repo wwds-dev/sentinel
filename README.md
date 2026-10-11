@@ -197,12 +197,10 @@ Inspect config…. Afterwards Tunnel re-reads local state — the `/var/run/wire
 records, Sentinel's tracked OpenVPN process and, for a full tunnel, which
 interface the route to the internet uses — and reports **verified** or **not
 verified** in the **Execution** tab.
-Every attempt is appended to the local audit log `data/logs/tunnel_audit.jsonl`
-(mode 600 where the volume supports it) — including a template, a blocker or a
-declined confirmation (outcome refused or declined) — and so is every
-kill-switch arm or disarm result. Key fields, inline key blocks and long
+Tunnel keeps no log: no attempt, refusal, declined confirmation or
+kill-switch result is written to disk. Key fields, inline key blocks and long
 key-like strings are scrubbed from tool output, errors and refusal reasons
-first; the profile name and config path are logged. The post-change check does
+before they are shown. The post-change check does
 not verify a handshake, DNS, or leak behaviour. OpenVPN shutdown refuses if
 Sentinel cannot identify its tracked process; it never stops all OpenVPN
 processes by name. Identity is the full, untruncated `ps -ww` command line (Sentinel's `--daemon sentinel-ovpn` tag and its own pid file), so it holds in packaged and portable builds whose data path contains spaces, and `openvpn` is run by absolute path because the authorisation dialog's PATH has no Homebrew directory. OpenVPN is a basic client: configs that prompt for a username
@@ -242,7 +240,7 @@ model cost; only Ask Advisor does.
 Normal app close and Portable Emergency Reset cancel every Tunnel worker and wait
 about two seconds for each, then end any still running. A Connect in flight is
 not interrupted (the macOS prompt and any command already handed to macOS
-continue); its result is dropped, so it may be neither shown nor audited.
+continue); its result is dropped, so it may not be shown.
 Packaged builds include a non-secret starter profile
 catalog so Tunnel does not depend on source-tree files.
 
@@ -288,7 +286,7 @@ The main runtime is organised around:
   `config_inspection`, DNS/latency/public-IP checks); the `server/`
   server provisioning, deploy, backup, Tor, proxy-chain, MAC and health-monitor
   code, reached from Tunnel's **Privacy** and **Servers** tabs (every action there
-  is gated and audited; `server/paths.py` locates the state folder under
+  is gated and none of it is logged; `server/paths.py` locates the state folder under
   Sentinel's data folder).
   The real connect path lives in `services/vpn_connection.py` and
   `services/openvpn_manager.py`

@@ -38,7 +38,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | #23, the last identity gap: the app is named Sentinel in the Dock, Cmd-Tab, Force Quit and Activity Monitor, and the second windowless Dock tile is gone. `scripts/app_launcher.c` runs the interpreter inside `Contents/MacOS/Sentinel` (linked against the venv's libpython) instead of exec'ing `.venv/bin/python`; still live from the checkout | Oct 2026 |
 | Live OSINT source expansion (v2.002): Shodan InternetDB, IPinfo and Criminal IP for IPs; CourtListener court dockets (metadata-only) for companies/orgs; DeHashed breach metadata for exposure — all key-gated where paid and metadata-only | Sep 2026 |
 | Tunnel "Your IP & DNS" readout (local/tunnel + public exit IP with VPN/hosting flags) and a real bash.ws DNS-leak test | Sep 2026 |
-| Tunnel gated Connect/Disconnect, Import config, pf kill switch and local audit log | Oct 2026 |
+| Tunnel gated Connect/Disconnect, Import config, pf kill switch (its local audit log was removed on purpose; Tunnel keeps no log) | Oct 2026 |
 | addy.io burner-alias minting in the OSINT Keys tab (user-triggered write) | Sep 2026 |
 | Saved Chats: agent filter and rename | Aug 2026 |
 | `authorize_request` / `record_request` guard applied to all 19 unguarded `ChatWorker` sites | Aug 2026 |

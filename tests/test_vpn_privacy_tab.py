@@ -1,4 +1,4 @@
-"""Tunnel › Privacy: MAC changer, Tor and proxy chain — gate, audit, secrets."""
+"""Tunnel › Privacy: MAC changer, Tor and proxy chain — gate, secrets."""
 from __future__ import annotations
 
 import json
@@ -51,9 +51,6 @@ class Env:
 @pytest.fixture()
 def env(monkeypatch, tmp_path):
     e = Env()
-    audit = tmp_path / "audit.jsonl"
-    monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: audit)
-    e.audit = audit
     monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path / "st"))
     monkeypatch.setattr(vpn_gate, "CallWorker", SyncWorker)
 
@@ -82,34 +79,27 @@ def env(monkeypatch, tmp_path):
     return e
 
 
-def audit_lines(e):
-    return [json.loads(l) for l in e.audit.read_text().splitlines()] if e.audit.exists() else []
 
-
-def test_declined_mac_change_touches_nothing_and_is_audited(env, monkeypatch):
+def test_declined_mac_change_touches_nothing(env, monkeypatch):
     monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "x")))
     env.tab.randomise_mac()
     assert env.calls == []
     text = env.asked[0][1]
     assert "en0" in text and "Wi-Fi will be switched off" in text and "→" in text
-    [line] = audit_lines(env)
-    assert line["action"] == "mac-set" and line["outcome"] == "declined"
 
 
-def test_approved_mac_change_runs_and_audits(env, monkeypatch):
+def test_approved_mac_change_runs(env, monkeypatch):
     monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "en0 is now x")))
     env.answers = [True]
     env.tab.randomise_mac()
     assert env.calls == ["set_mac"]
-    assert audit_lines(env)[-1]["outcome"] == "succeeded"
     assert "en0 is now x" in env.tab.status_label.text()
 
 
-def test_failed_mac_change_is_reported_and_audited(env, monkeypatch):
+def test_failed_mac_change_is_reported(env, monkeypatch):
     monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (False, "refused")))
     env.answers = [True]
     env.tab.randomise_mac()
-    assert audit_lines(env)[-1]["outcome"] == "failed"
 
 
 def test_restore_only_when_changed(env, monkeypatch):
@@ -126,17 +116,16 @@ def test_no_interface_is_a_refusal(env):
     env.ifaces.clear()
     env.tab.refresh_interfaces()
     env.tab.randomise_mac()
-    assert audit_lines(env)[-1]["outcome"] == "refused" and env.asked == []
 
 
 def test_tor_start_declined_and_approved(env, monkeypatch):
     monkeypatch.setattr(tor, "start", env.net("start", (True, "up")))
     env.tab.start_tor()
-    assert env.calls == [] and audit_lines(env)[-1]["outcome"] == "declined"
+    assert env.calls == []
     assert "not anonymity" in env.asked[0][1]
     env.answers = [True]
     env.tab.start_tor()
-    assert env.calls == ["start"] and audit_lines(env)[-1]["action"] == "tor-start"
+    assert env.calls == ["start"]
 
 
 def test_tor_missing_is_refused_with_install_hint(env, monkeypatch):
@@ -146,24 +135,21 @@ def test_tor_missing_is_refused_with_install_hint(env, monkeypatch):
     assert "brew install tor" in env.tab.tor_state_label.text()
     assert not env.tab.tor_start_btn.isEnabled()
     env.tab.start_tor()
-    assert env.calls == [] and audit_lines(env)[-1]["outcome"] == "refused"
+    assert env.calls == []
 
 
-def test_tor_stop_and_newnym_need_no_confirm_but_are_audited(env, monkeypatch):
+def test_tor_stop_and_newnym_need_no_confirm(env, monkeypatch):
     monkeypatch.setattr(tor, "stop", env.net("stop", (True, "stopped")))
     monkeypatch.setattr(tor, "new_identity", env.net("newnym", (True, "new")))
     env.tab.stop_tor()
     env.tab.new_tor_identity()
     assert env.calls == ["stop", "newnym"] and env.asked == []
-    assert [l["action"] for l in audit_lines(env) if l["outcome"] != "started"] == ["tor-stop", "tor-newnym"]
-    assert [l["outcome"] for l in audit_lines(env)] == ["started", "succeeded", "started", "succeeded"]
 
 
 def test_tor_check_names_the_site_and_declines_cleanly(env, monkeypatch):
     monkeypatch.setattr(tor, "check", env.net("check", (True, "ok")))
     env.tab.check_tor()
     assert tor.CHECK_HOST in env.asked[0][1] and env.calls == []
-    assert audit_lines(env)[-1]["outcome"] == "declined"
 
 
 def _add_hop(tab, host="10.0.0.1", port=1080, user="", pw=""):
@@ -206,7 +192,7 @@ def test_probe_is_gated_and_names_hops_and_site(env, monkeypatch):
     env.tab.test_chain()
     text = env.asked[0][1]
     assert proxychain.PROBE_HOST in text and "10.0.0.1" in text and CANARY not in text
-    assert env.calls == [] and audit_lines(env)[-1]["outcome"] == "declined"
+    assert env.calls == []
     env.answers = [True]
     env.tab.test_chain()
     assert env.calls == ["probe"] and "1.2.3.4" in env.tab.status_label.text()
@@ -215,10 +201,10 @@ def test_probe_is_gated_and_names_hops_and_site(env, monkeypatch):
 def test_empty_chain_probe_is_refused_without_contact(env, monkeypatch):
     monkeypatch.setattr(proxychain, "probe", env.net("probe", None))
     env.tab.test_chain()
-    assert env.calls == [] and audit_lines(env)[-1]["outcome"] == "refused"
+    assert env.calls == []
 
 
-def test_canary_never_reaches_audit_or_conf_modes(env, monkeypatch):
+def test_canary_never_reaches_the_screen_or_conf_modes(env, monkeypatch):
     import stat
     _add_hop(env.tab, user="bob", pw=CANARY)
     monkeypatch.setattr(proxychain, "probe",
@@ -226,7 +212,6 @@ def test_canary_never_reaches_audit_or_conf_modes(env, monkeypatch):
     env.answers = [True]
     env.tab.test_chain()
     env.tab.write_conf()
-    assert CANARY not in env.audit.read_text()
     assert CANARY not in env.tab.status_label.text()
     path = proxychain.chain_path()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -241,12 +226,11 @@ def test_busy_blocks_second_action(env, monkeypatch):
     assert env.calls == []
 
 
-def test_worker_exception_is_audited_as_failed(env, monkeypatch):
+def test_worker_exception_is_reported_as_failed(env, monkeypatch):
     def boom():
         raise RuntimeError("kaboom")
     monkeypatch.setattr(tor, "stop", boom)
     env.tab.stop_tor()
-    assert audit_lines(env)[-1]["outcome"] == "failed"
     assert "kaboom" in env.tab.status_label.text()
     assert env.tab.busy is False
 

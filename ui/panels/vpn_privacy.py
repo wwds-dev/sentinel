@@ -2,9 +2,8 @@
 
 Every action here that changes the machine or contacts something is gated the
 way Connect is: a review that says exactly what will happen, a confirmation
-that defaults to No, an off-thread worker, and one line in the Tunnel audit log
-for every attempt (declined and refused ones included). Nothing on this tab
-talks to an AI provider, and proxy passwords are never shown or logged.
+that defaults to No and an off-thread worker. Nothing on this tab is logged,
+nothing on it talks to an AI provider, and proxy passwords are never shown.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 Local, reversible edits (create a site, add a peer, change a port) run without a
 prompt. Anything that makes issued configs stop working, writes a private key
 to disk or onto the screen, or deletes a site asks first (default No), runs off
-the interface thread and is audited. Private keys, the CA key and backup
+the interface thread. Nothing is logged. Private keys, the CA key and backup
 passphrases are never shown in text, logged or sent to a model; the QR dialog
 renders from memory and nothing it shows is saved.
 """
@@ -353,13 +353,11 @@ class ServersTab(GatedTab):
                 store.save_site(s)
         except Exception as exc:
             self._say(f"Not saved: {exc}")
-            vpn_execution.record_companion("site-edit", "failed", str(exc), target=s.name)
             try:                       # drop the half-applied edit; the file is unchanged
                 self._site = store.load_site(s.name)
             except Exception:
                 self._site = None
             return
-        vpn_execution.record_companion("site-edit", "succeeded", "settings saved", target=s.name)
         self._say("Settings saved. They apply to the next deploy.")
         self._fill_editor()
 
@@ -379,8 +377,6 @@ class ServersTab(GatedTab):
             self._say("Select a peer first.")
             return
         provision.set_peer_enabled(s, peer.name, not peer.enabled)
-        vpn_execution.record_companion("peer-toggle", "succeeded",
-                                       f"enabled={peer.enabled}", target=f"{s.name}/{peer.name}")
         self._say(f"{peer.name} is now {'enabled' if peer.enabled else 'disabled'}; "
                   "this applies at the next deploy.")
         self._refresh_peers()
@@ -436,25 +432,16 @@ class ServersTab(GatedTab):
                 "key. Anyone who can see or photograph the screen can use it. It is drawn "
                 "from memory and never saved.")
         if not self._ask("Show QR code", text):
-            vpn_execution.record_companion("export-qr", "declined",
-                                           "Operator declined the confirmation.",
-                                           target=f"{s.name}/{peer.name}")
             self._say("Not shown: confirmation declined.")
             return
         try:
             pixmap = self._qr_pixmap(render.wg_client_config(s, peer))
         except Exception as exc:
-            vpn_execution.record_companion("export-qr", "failed", str(exc),
-                                           target=f"{s.name}/{peer.name}")
             self._say(f"Could not draw the QR code: {exc}")
             return
         if pixmap is None:
-            vpn_execution.record_companion("export-qr", "refused", "config too large for a QR code",
-                                           target=f"{s.name}/{peer.name}")
             self._say("This config is too large for a QR code. Use Export files instead.")
             return
-        vpn_execution.record_companion("export-qr", "succeeded", "QR shown",
-                                       target=f"{s.name}/{peer.name}")
         self._show_qr_dialog(peer.name, pixmap)
 
     @staticmethod
@@ -505,17 +492,14 @@ class ServersTab(GatedTab):
             return
         passphrase = self._ask_passphrase(confirm=True)
         if not passphrase:
-            vpn_execution.record_companion("backup", "declined", "No (matching) passphrase given.", target=s.name)
             self._say("Not backed up: no matching passphrase.")
             return
         problems = backup.passphrase_problems(passphrase)
         if problems and not self._ask("Weak passphrase", "\n".join(problems) + "\n\nUse it anyway?"):
-            vpn_execution.record_companion("backup", "declined", "Weak passphrase refused.", target=s.name)
             self._say("Not backed up: choose a stronger passphrase.")
             return
         path = self._ask_save_path(f"{paths.slugify(s.name)}{backup.SUFFIX}")
         if not path:
-            vpn_execution.record_companion("backup", "declined", "No file chosen.", target=s.name)
             self._say("Not backed up: no file chosen.")
             return
         site = s
@@ -532,14 +516,12 @@ class ServersTab(GatedTab):
             return
         passphrase = self._ask_passphrase(confirm=False)
         if not passphrase:
-            vpn_execution.record_companion("restore", "declined", "No passphrase given.", target=path)
             self._say("Not restored: no passphrase.")
             return
         from pathlib import Path
         try:
             existing = backup.read_backup(Path(path), passphrase)
         except Exception as exc:
-            vpn_execution.record_companion("restore", "failed", str(exc), target=path)
             self._say(f"Could not read the backup: {exc}")
             return
         overwrite = False
@@ -547,8 +529,6 @@ class ServersTab(GatedTab):
             if not self._ask("Replace existing site",
                              f"A site named {existing.name!r} already exists.\n\nRestoring "
                              "replaces its keys and invalidates every config issued from it."):
-                vpn_execution.record_companion("restore", "declined",
-                                               "Operator declined to replace.", target=existing.name)
                 self._say("Not restored: existing site kept.")
                 return
             overwrite = True
@@ -566,16 +546,12 @@ class ServersTab(GatedTab):
                                f"keys. Every config issued stops working for good.\n\n"
                                f"Type the site name ({name}) to confirm:")
         if typed != name:
-            vpn_execution.record_companion("site-delete", "declined",
-                                           "Name not typed or not matching.", target=name)
             self._say("Not deleted: the name was not confirmed.")
             return
         if not has_backup(name) and not self._ask(
                 "No backup",
                 "No backup or export exists for this site. If you delete it the keys are gone "
                 "for good.\n\nI have no backup and accept this."):
-            vpn_execution.record_companion("site-delete", "declined",
-                                           "No backup and not accepted.", target=name)
             self._say("Not deleted: make a backup first.")
             return
         self._gated("site-delete", name, "Delete site", None,
@@ -725,8 +701,6 @@ class ServersTab(GatedTab):
             "every device loses its VPN until you deploy again. Local keys and the site "
             f"stay. Packages are left installed.\n\nType the site name ({name}) to confirm:")
         if typed != name:
-            vpn_execution.record_companion("teardown", "declined",
-                                           "Name not typed or not matching.", target=name)
             self._say("Not run: the name was not confirmed.")
             return
         site = s

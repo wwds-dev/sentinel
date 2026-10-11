@@ -13,7 +13,7 @@ Everything is offline. An autouse guard makes ``socket.connect``,
 AssertionError, so a real wg-quick / openvpn / pfctl / sudo / osascript /
 route / networksetup call (or any network) fails the test instead of
 happening. Privilege is injected as a recording fake, the pf service's
-``_run_privileged`` is a recording fake, the audit log, VPN state dir, chat
+``_run_privileged`` is a recording fake, no log, VPN state dir, chat
 history and report folder all live under tmp_path.
 
 Helpers are copied from tests/test_vpn_execution.py, tests/test_ui_panels.py
@@ -35,7 +35,7 @@ import pytest
 from PySide6.QtCore import QEvent, QObject, Signal
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLabel, QMessageBox
 
-from services import vpn_connection, vpn_execution
+from services import runtime_paths, vpn_connection, vpn_execution
 from services.database import get_connection
 
 PRIVATE_KEY = "cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWsxMjM0NTY3OA=="
@@ -222,7 +222,7 @@ class Gate:
     """Everything Connect/Disconnect/Kill switch may touch, injected."""
 
     def __init__(self, tmp_path):
-        self.audit_path = tmp_path / "audit" / "tunnel_audit.jsonl"
+        self.data_root = tmp_path / "audit"
         self.run = Recorder()
         self.probe = Probe(route="utun7")
         self.armed = False
@@ -240,9 +240,8 @@ class Gate:
         return ok, output
 
     def entries(self):
-        if not self.audit_path.exists():
-            return []
-        return [json.loads(line) for line in self.audit_path.read_text().splitlines()]
+        """Every log file Tunnel wrote under the data folder (it must be none)."""
+        return sorted(str(p) for p in self.data_root.rglob("*") if p.is_file())
 
 
 @pytest.fixture
@@ -257,7 +256,7 @@ def gate(tmp_path, monkeypatch, state_dir):
     from agents.vpn_agent.services import privileged
 
     g = Gate(tmp_path)
-    monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: g.audit_path)
+    monkeypatch.setattr(runtime_paths, "user_data_base", lambda: g.data_root)
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
@@ -566,7 +565,7 @@ class TestConnectionCheck:
 # ── 3. Connect / Disconnect review dialog ───────────────────────────────────
 
 class TestConnectDisconnect:
-    def test_positive_yes_runs_exactly_one_wg_quick_up_and_verifies_and_audits(
+    def test_positive_yes_runs_exactly_one_wg_quick_up_and_and_verifies(
             self, tunnel, gate, dialogs, tmp_path):
         conf = write_conf(tmp_path)
         gate.bring_up = "wgnl"
@@ -578,9 +577,7 @@ class TestConnectDisconnect:
         assert len(gate.run.scripts) == 1 and gate.run.scripts[0].endswith(f"up '{conf}'")
         assert "verified locally" in tunnel.connection_status_label.text()
         assert tunnel.connect_btn.isEnabled() and tunnel.disconnect_btn.isEnabled()
-        (entry,) = gate.entries()
-        assert entry["outcome"] == "succeeded" and entry["verified"] is True
-        assert PRIVATE_KEY not in gate.audit_path.read_text()
+        assert gate.entries() == []
 
     def test_positive_disconnect_runs_exactly_one_wg_quick_down(self, tunnel, gate, dialogs, tmp_path):
         conf = write_conf(tmp_path)
@@ -590,7 +587,7 @@ class TestConnectDisconnect:
         tunnel.disconnect_vpn()
         assert len(gate.run.scripts) == 1 and " down " in gate.run.scripts[0]
         assert "wgnl" not in gate.probe.up
-        assert [e["action"] for e in gate.entries()] == ["disconnect"]
+        assert gate.entries() == []
 
     def test_invalid_interface_name_is_blocked_before_any_prompt(
             self, tunnel, gate, dialogs, tmp_path):
@@ -600,8 +597,7 @@ class TestConnectDisconnect:
         assert dialogs.questions == [] and gate.run.scripts == [] and gate.workers == []
         (title, text), = dialogs.warnings
         assert "not a valid WireGuard interface name" in text and "Nothing was executed" in text
-        (entry,) = gate.entries()
-        assert entry["outcome"] == "refused" and entry["blockers"]
+        assert gate.entries() == []
 
     def test_invalid_connecting_an_interface_that_is_already_up_is_refused(
             self, tunnel, gate, dialogs, tmp_path):
@@ -625,14 +621,13 @@ class TestConnectDisconnect:
         assert "no longer exists" in dialogs.warnings[-1][1]
 
     @pytest.mark.parametrize("which", ["connect", "disconnect"])
-    def test_denied_no_means_zero_privileged_calls_and_a_declined_audit_entry(
+    def test_denied_no_means_zero_privileged_calls_and_logs_nothing(
             self, tunnel, gate, dialogs, tmp_path, which):
         dialogs.answer = QMessageBox.No
         pick(tunnel, wg_profile(write_conf(tmp_path), "NL"))
         getattr(tunnel, f"{which}_vpn")()
         assert gate.run.scripts == [] and gate.workers == []
-        (entry,) = gate.entries()
-        assert (entry["action"], entry["outcome"]) == (which, "declined")
+        assert gate.entries() == []
         assert tunnel.connection_status_label.text() == "Not run: confirmation declined."
         assert tunnel.connect_btn.isEnabled() and tunnel.disconnect_btn.isEnabled()
 
@@ -647,7 +642,7 @@ class TestConnectDisconnect:
         assert len(dialogs.questions) == 1 and len(warned) == 1
         assert "curl" in warned[0] and "administrator" in warned[0]
         assert gate.run.scripts == [] and gate.workers == []
-        assert gate.entries()[-1]["outcome"] == "declined"
+        assert gate.entries() == []
 
     def test_cancel_the_authorisation_dialog_is_a_failed_unverified_attempt(
             self, tunnel, gate, dialogs, tmp_path):
@@ -657,7 +652,7 @@ class TestConnectDisconnect:
         assert len(gate.run.scripts) == 1
         assert tunnel.connection_status_label.text().startswith("Failed: Cancelled.")
         assert tunnel.connect_btn.isEnabled() and tunnel.disconnect_btn.isEnabled()
-        assert gate.entries()[-1]["outcome"] == "failed"
+        assert gate.entries() == []
 
     def test_error_an_exception_in_the_worker_re_enables_the_buttons(
             self, tunnel, gate, dialogs, tmp_path, monkeypatch):
@@ -691,7 +686,7 @@ class TestConnectDisconnect:
         assert dialogs.questions == [] and gate.run.scripts == []
         assert len(dialogs.infos) == 2
 
-    def test_persist_profiles_and_audit_survive_a_restart_and_the_tunnel_state_is_re_read(
+    def test_persist_profiles_survive_a_restart_and_the_tunnel_state_is_re_read(
             self, tunnel, gate, dialogs, tmp_path, monkeypatch):
         conf = write_conf(tmp_path)
         gate.bring_up = "wgnl"
@@ -707,13 +702,13 @@ class TestConnectDisconnect:
         index = again.connect_profile_box.findText("Imported — wgnl")
         assert index >= 0
         again.connect_profile_box.setCurrentIndex(index)
-        # ...the audit log is still there, and the interface being up (read
+        # ...nothing was logged, and the interface being up (read
         # fresh from the machine, not remembered) now refuses a second connect.
-        assert [e["outcome"] for e in gate.entries()] == ["succeeded"]
+        assert gate.entries() == []
         again.connect_vpn()
         assert len(gate.run.scripts) == 1
         assert again.connection_status_label.text().startswith("Refused")
-        assert gate.entries()[-1]["outcome"] == "refused"
+        assert gate.entries() == []
 
 
 # ── 4. Kill switch arm / disarm ─────────────────────────────────────────────
@@ -762,8 +757,7 @@ class TestKillSwitch:
         assert pf.ks.status().armed is True
         assert "ARMED" in tunnel.kill_switch_status_label.text()
         assert tunnel.arm_ks_btn.isEnabled() and tunnel.disarm_ks_btn.isEnabled()
-        assert gate.entries()[-1]["action"] == "killswitch-arm"
-        assert gate.entries()[-1]["outcome"] == "succeeded"
+        assert gate.entries() == []
 
     def test_positive_disarm_flushes_only_the_anchor_and_clears_the_marker(
             self, tunnel, pf, dialogs, gate):
@@ -774,7 +768,7 @@ class TestKillSwitch:
         assert pf.scripts[1].startswith("pfctl -a ") and "-F rules" in pf.scripts[1]
         assert "disarmed" in tunnel.kill_switch_status_label.text().lower()
         assert pf.ks.status().armed is False
-        assert [e["action"] for e in gate.entries()] == ["killswitch-arm", "killswitch-disarm"]
+        assert gate.entries() == []
 
     def test_invalid_template_profile_and_missing_profile_never_reach_pf(
             self, tunnel, pf, dialogs):
@@ -804,14 +798,13 @@ class TestKillSwitch:
         assert dialogs.questions == [] and pf.scripts == []
         assert "needs macOS pf" in dialogs.infos[-1][1]
 
-    def test_denied_no_arms_nothing_and_is_audited_as_declined(self, tunnel, pf, dialogs, gate):
+    def test_denied_no_arms_nothing(self, tunnel, pf, dialogs, gate):
         dialogs.answer = QMessageBox.No
         pick(tunnel, VPS)
         tunnel.arm_kill_switch()
         assert pf.scripts == [] and gate.workers == []
         assert not pf.ks.rules_path().exists() and pf.ks.status().armed is False
-        (entry,) = gate.entries()
-        assert (entry["action"], entry["outcome"]) == ("killswitch-arm", "declined")
+        assert gate.entries() == []
         assert "declined" in tunnel.kill_switch_status_label.text()
 
     def test_cancel_a_cancelled_authorisation_leaves_it_disarmed_and_names_the_recovery(
@@ -823,7 +816,7 @@ class TestKillSwitch:
         label = tunnel.kill_switch_status_label.text()
         assert "failed" in label.lower() and "Cancelled." in label
         assert pf.ks.status().armed is False
-        assert gate.entries()[-1]["outcome"] == "failed"
+        assert gate.entries() == []
         assert tunnel.arm_ks_btn.isEnabled() and tunnel.disarm_ks_btn.isEnabled()
 
     def test_error_a_worker_exception_re_enables_both_buttons(self, tunnel, pf, dialogs, monkeypatch):
@@ -1888,11 +1881,10 @@ class TestCompanionWiring:
         tunnel._watch_selected_profile()
         assert tunnel.health_monitor._watched_interfaces == ["openvpn"]
 
-    def test_a_dropped_tunnel_warns_and_is_audited(self, tunnel, gate):
+    def test_a_dropped_tunnel_warns_and_logs_nothing(self, tunnel, gate):
         m = tunnel.health_monitor
         m.set_watched_interfaces(["wgtest"])
         m._on_tunnels(["wgtest"])
         m._on_tunnels([])
         assert "TUNNEL DROPPED" in tunnel.connection_status_label.text()
-        actions = [json.loads(l)["action"] for l in gate.audit_path.read_text().splitlines()]
-        assert "tunnel-dropped" in actions and "health-warning" in actions
+        assert gate.entries() == []

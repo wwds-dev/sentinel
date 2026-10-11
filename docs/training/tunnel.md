@@ -54,12 +54,11 @@ asks a Yes/No question that defaults to **No**. The gate has fixed stages:
    prompt is reported as a failed attempt.
 4. **Post-change check** re-reads local state after the command so the result
    reflects what actually happened, not what was requested.
-5. **Local audit** records one JSON line per attempt — including refused ones
-   (a template, a blocker) and confirmations you declined — in
-   `tunnel_audit.jsonl`, under `data/logs/` in Sentinel's data folder (the
-   `Sentinel Data` folder on a portable install). Kill-switch results are
-   recorded too. Key-like values are scrubbed from tool output and error text
-   before they are shown or stored.
+5. **No log.** Tunnel writes nothing down about an attempt: not a success, a
+   failure, a refusal (a template, a blocker), a confirmation you declined or a
+   kill-switch result. The result is shown once and not kept. Key-like values are
+   scrubbed from tool output and error text before they are shown. macOS keeps
+   its own records, which Tunnel cannot remove.
 6. **Rollback guidance** travels with every review and outcome, so you always
    have the step that undoes what you just did.
 
@@ -94,7 +93,7 @@ not flagged.
 
 When the command completes, Tunnel re-reads local state and the status line says
 **verified locally** or **NOT verified**; the Execution tab shows the same with
-the review, the tool output and a note on where the attempt was audited. For
+the review, the tool output and a note that nothing was logged. For
 WireGuard it looks for the tunnel's run records and, for a full tunnel, checks
 which interface the route to a public address now uses (a routing lookup; no
 traffic is sent). For OpenVPN it checks that the process Sentinel started exists.
@@ -111,7 +110,7 @@ OpenVPN is a basic client. Connect starts it as a background process, with a log
 and a pid file in Sentinel's data folder; the log is not shown in the panel.
 Disconnect stops only the process Sentinel started and can identify as its own.
 If it cannot, it refuses, stops nothing, and tells you to use the client that
-started the connection — that refusal comes after you answer Yes and is audited
+started the connection — that refusal comes after you answer Yes and is shown
 as a failure. Tunnel never stops OpenVPN by process name. The review shows an
 abbreviated command and no routing or DNS lines for OpenVPN, and configs that
 ask for a username and password, pushed DNS and live status are not supported.
@@ -121,7 +120,7 @@ ask for a username and password, pushed DNS and live status are not supported.
 Normal app close and Portable Emergency Reset cancel every Tunnel worker, wait
 about two seconds for each, then end any that is still running. Cancelling does
 not interrupt the macOS prompt or a command already handed to macOS: Sentinel
-drops the result, so it may be neither shown nor audited, and a change that
+drops the result, so it may not be shown, and a change that
 already happened is not undone. After reopening, run Connection Check before
 relying on the tunnel.
 
@@ -143,8 +142,7 @@ verifying no-leak as three separate steps: an armed kill switch proves traffic
 is blocked when the tunnel is down, not that the tunnel itself is protecting you.
 
 If something goes wrong, the recovery command printed by the Arm confirmation
-(also in the first lines of the rules file in Sentinel's `vpn/` folder, and in
-the audit log) is:
+(also in the first lines of the rules file in Sentinel's `vpn/` folder) is:
 
 ```
 sudo pfctl -a vpn-agent-killswitch -F all && sudo pfctl -F all -f /etc/pf.conf
@@ -342,8 +340,7 @@ is ignored by Apple's own tools such as `/usr/bin/curl`, which looks exactly lik
 success, so always check the exit address. Passwords are stored owner-only and
 never shown or logged.
 
-Everything on this tab is audited (`mac-set`, `tor-*`, `chain-probe`), including
-actions you declined.
+Nothing on this tab is logged, including actions you declined.
 
 ## Servers tab — a VPN server you own
 
@@ -362,7 +359,7 @@ gives you; Deploy is refused until this has been done), *Preview deploy* (nothin
 replaced by `<redacted N bytes>`), *Deploy…*, then *Server status…* to see which
 devices have handshaked. *Teardown…* removes the server (type the site name).
 *Use for Connect…* adds one peer as a profile so Tunnel's Connect can use it from
-this Mac. Everything is audited (`deploy`, `teardown`, `export`, `backup`, …).
+this Mac. Nothing here is logged (`deploy`, `teardown`, `export`, `backup`, …).
 
 While Tunnel is on screen a local health monitor watches the selected profile's
 tunnel and your DNS resolvers and warns in the status line if the tunnel drops. It
@@ -564,7 +561,7 @@ remains unchanged after generating the preview.
 
 Finally, choose an **Example** profile marked `(template)` under **Server** and
 select **Connect**. Confirm that Tunnel refuses without asking for a password,
-then find the matching `refused` line in `tunnel_audit.jsonl`.
+and that the Execution tab says nothing was logged.
 
 ## Independent exercise
 

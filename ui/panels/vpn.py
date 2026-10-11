@@ -4,7 +4,7 @@ Fifth vertical moved out of `main.py` (phase 4, `docs/refactor_plan.md`).
 
 The panel keeps its paths visibly separate: **VPN Connection** runs a real
 WireGuard/OpenVPN tunnel through ``vpn_execution``'s gate (target review, explicit
-confirm, administrator prompt, post-change check, local audit, rollback steps),
+confirm, administrator prompt, post-change check, rollback steps; nothing is logged),
 **Connection Check** is read-only, **Action Preview** shows commands without
 running them, **Ask Advisor** is a paid request that goes through the guard, and
 **Build Config** renders WireGuard files locally.
@@ -682,8 +682,6 @@ class VpnPanel(AgentPanel):
             QMessageBox.information(self, "No profile", "Choose a server profile first.")
             return
         if vpn_connection.is_placeholder(profile):
-            vpn_execution.record_refusal(
-                "connect", profile, "Template profile: no real endpoint or config.")
             QMessageBox.information(
                 self, "Template profile",
                 "This is an example/template. Import a real WireGuard .conf or "
@@ -712,8 +710,6 @@ class VpnPanel(AgentPanel):
         self.execution_view.show_sections(review.sections())
         self.tabs.setCurrentWidget(self.execution_view)
         if not review.allowed:
-            vpn_execution.record_refusal(
-                action, profile, "; ".join(review.blockers), review=review)
             self.connection_status_label.setText(
                 ("Refused: " + "; ".join(review.blockers))[:300])
             QMessageBox.warning(
@@ -736,9 +732,6 @@ class VpnPanel(AgentPanel):
                 + "\n\nOnly continue if you wrote these or trust their source.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
-            vpn_execution.record_refusal(
-                action, profile, "Operator declined the confirmation.",
-                review=review, outcome="declined")
             self.connection_status_label.setText("Not run: confirmation declined.")
             return False
         return True
@@ -820,9 +813,6 @@ class VpnPanel(AgentPanel):
             f"If Sentinel cannot disarm it, run in Terminal:\n{recovery}",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
-            vpn_execution.record_refusal(
-                "killswitch-arm", profile, "Operator declined the confirmation.",
-                outcome="declined")
             self.kill_switch_status_label.setText("Kill switch: not armed (declined).")
             return
         self._start_killswitch("arm", profile, "Arming kill switch…")
@@ -955,7 +945,6 @@ class VpnPanel(AgentPanel):
         self.health_monitor = HealthMonitor(30, self, tunnel_source=self._local_tunnels)
         self.health_monitor.warning.connect(self._on_health_warning)
         self.health_monitor.info.connect(self._on_health_info)
-        self.health_monitor.tunnel_dropped.connect(self._on_tunnel_dropped)
         self.connect_profile_box.currentIndexChanged.connect(self._watch_selected_profile)
 
     @staticmethod
@@ -988,14 +977,9 @@ class VpnPanel(AgentPanel):
 
     def _on_health_warning(self, text: str) -> None:
         self.connection_status_label.setText(text[:300])
-        vpn_execution.record_companion("health-warning", "observed", text)
 
     def _on_health_info(self, text: str) -> None:
         self.connection_status_label.setText(text[:300])
-
-    def _on_tunnel_dropped(self, name: str) -> None:
-        vpn_execution.record_companion("tunnel-dropped", "observed",
-                                       f"{name} went offline unexpectedly", target=name)
 
     def shutdown(self, timeout_ms: int = 2000) -> None:
         """Cancel and join Tunnel workers before their widgets are destroyed."""

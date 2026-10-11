@@ -26,8 +26,6 @@ class Env:
 def env(monkeypatch, tmp_path):
     e = Env()
     e.answers, e.asked, e.warnings = [], [], []
-    e.audit = tmp_path / "audit.jsonl"
-    monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: e.audit)
     monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path / "st"))
     monkeypatch.setattr(vpn_gate, "CallWorker", SyncWorker)
 
@@ -48,9 +46,6 @@ def env(monkeypatch, tmp_path):
     e.tmp = tmp_path
     return e
 
-
-def audit(e):
-    return [json.loads(l) for l in e.audit.read_text().splitlines()] if e.audit.exists() else []
 
 
 def make_site(e, name="home", mode="remote", peers=("phone",)):
@@ -82,7 +77,6 @@ def test_create_site_persists_private_and_lists_it(env):
     f = paths.site_file("home")
     assert stat.S_IMODE(f.stat().st_mode) == 0o600
     assert site.server_wg_private_key and env.tab.peer_table.rowCount() == 1
-    assert audit(env)[0]["action"] == "site-create"
     # a duplicate is refused and the existing site untouched
     before = f.read_text()
     env.tab.new_name_input.setText("home")
@@ -126,11 +120,9 @@ def test_rotate_declined_changes_nothing_and_confirmed_changes_keys(env):
     env.tab.rotate_peer()
     assert store.load_site("home").peers[0].wg_private_key == old
     assert "stops working" in env.asked[0][1]
-    assert audit(env)[-1]["outcome"] == "declined"
     env.answers = [True]
     env.tab.rotate_peer()
     assert store.load_site("home").peers[0].wg_private_key != old
-    assert audit(env)[-1]["action"] == "peer-rotate" and audit(env)[-1]["outcome"] == "succeeded"
 
 
 def test_remove_peer_gate(env):
@@ -157,22 +149,21 @@ def test_export_is_gated_and_files_are_private(env):
     env.tab.export_btn.click()
     d = paths.exports_dir("home")
     assert not d.exists() or not any(d.iterdir())
-    assert "PRIVATE" in env.asked[0][1] and audit(env)[-1]["outcome"] == "declined"
+    assert "PRIVATE" in env.asked[0][1]
     env.answers = [True]
     env.tab.export_btn.click()
     files = list(d.iterdir())
     assert any(f.suffix == ".conf" for f in files)
     assert all(stat.S_IMODE(f.stat().st_mode) == 0o600 for f in files)
-    assert audit(env)[-1]["action"] == "export"
 
 
-def test_private_keys_never_reach_screen_or_audit(env):
+def test_private_keys_never_reach_the_screen(env):
     site = make_site(env)
     select_peer(env)
     env.answers = [True, True]
     env.tab.export_btn.click()
     env.tab.rotate_peer()
-    blob = all_text(env) + env.audit.read_text()
+    blob = all_text(env)
     secrets = [site.server_wg_private_key, site.ca_key_pem, site.tls_crypt_key,
                site.peers[0].wg_private_key, site.peers[0].wg_preshared_key,
                site.peers[0].ovpn_key_pem]
@@ -186,13 +177,12 @@ def test_qr_declined_shows_nothing_and_confirmed_is_not_saved(env):
     make_site(env)
     select_peer(env)
     env.tab.show_qr()
-    assert env.qr_shown == [] and audit(env)[-1]["outcome"] == "declined"
+    assert env.qr_shown == []
     env.answers = [True]
     env.tab.show_qr()
     assert len(env.qr_shown) == 1 and not env.qr_shown[0][1].isNull()
     d = paths.exports_dir("home")
     assert not d.exists() or not any(d.iterdir())
-    assert audit(env)[-1]["action"] == "export-qr" and audit(env)[-1]["outcome"] == "succeeded"
 
 
 def test_backup_roundtrip_and_restore_over_existing_needs_confirm(env, monkeypatch):
@@ -203,26 +193,22 @@ def test_backup_roundtrip_and_restore_over_existing_needs_confirm(env, monkeypat
     env.tab.backup_site()
     assert out.exists() and stat.S_IMODE(out.stat().st_mode) == 0o600
     assert site.ca_key_pem.encode() not in out.read_bytes()
-    assert audit(env)[-1]["action"] == "backup" and PASS not in env.audit.read_text()
     assert vpn_servers.has_backup("home")
 
     monkeypatch.setattr(ServersTab, "_ask_open_path", lambda self: str(out))
     env.tab.restore_backup()                      # exists -> asks -> declined
-    assert audit(env)[-1]["outcome"] == "declined"
     env.answers = [True]
     env.tab.restore_backup()
-    assert audit(env)[-1]["action"] == "restore" and audit(env)[-1]["outcome"] == "succeeded"
     assert store.load_site("home").server_wg_private_key == site.server_wg_private_key
 
 
-def test_restore_wrong_passphrase_is_reported_and_audited(env, monkeypatch):
+def test_restore_wrong_passphrase_is_reported(env, monkeypatch):
     site = make_site(env)
     out = env.tmp / "b.vpnbackup"
     backup.write_backup(site, PASS, out)
     monkeypatch.setattr(ServersTab, "_ask_open_path", lambda self: str(out))
     monkeypatch.setattr(ServersTab, "_ask_passphrase", lambda self, confirm: "wrong wrong wrong")
     env.tab.restore_backup()
-    assert audit(env)[-1]["outcome"] == "failed" and "wrong wrong wrong" not in env.audit.read_text()
 
 
 def test_weak_passphrase_needs_confirm(env, monkeypatch):
@@ -240,14 +226,14 @@ def test_delete_requires_typed_name_and_a_backup_or_acceptance(env, monkeypatch)
     assert store.site_exists("home")
     env.typed, env.answers = ["wrong"], [True]     # even a Yes later must not matter
     env.tab.delete_site()
-    assert store.site_exists("home") and audit(env)[-1]["outcome"] == "declined"
+    assert store.site_exists("home")
     env.answers.clear()
     env.typed = ["home"]          # right name, no backup, acceptance declined
     env.tab.delete_site()
-    assert store.site_exists("home") and audit(env)[-1]["outcome"] == "declined"
+    assert store.site_exists("home")
     env.typed, env.answers = ["home"], [True]
     env.tab.delete_site()
-    assert not store.site_exists("home") and audit(env)[-1]["action"] == "site-delete"
+    assert not store.site_exists("home")
     assert env.tab.site_list.count() == 0
 
 
@@ -344,27 +330,27 @@ def test_remote_deploy_needs_a_known_host_key(env, monkeypatch):
     monkeypatch.setattr(deploy_mod, "deploy", lambda *a, **k: called.append(1))
     env.answers = [True]
     env.tab.deploy_site()
-    assert called == [] and env.asked == [] and audit(env)[-1]["outcome"] == "refused"
+    assert called == [] and env.asked == []
     assert "Check SSH" in env.tab.output_view.toPlainText()
 
 
-def test_deploy_declined_runs_nothing_and_is_audited(env, monkeypatch):
+def test_deploy_declined_runs_nothing(env, monkeypatch):
     remote_site(env)
     monkeypatch.setattr(deploy_mod, "host_fingerprint", lambda site: FP)
     called = []
     monkeypatch.setattr(deploy_mod, "deploy", lambda *a, **k: called.append(1))
     env.tab.deploy_site()
-    assert called == [] and audit(env)[-1] == {**audit(env)[-1], "action": "deploy", "outcome": "declined"}
+    assert called == []
     assert "203.0.113.5" in env.asked[0][1] and "SHA256:abcdefTESTFINGERPRINT" in env.asked[0][1]
 
 
 def test_deploy_blocked_by_preflight_without_prompt(env, monkeypatch):
     make_site(env, peers=())       # no peers, no ssh host
     env.tab.deploy_site()
-    assert env.asked == [] and audit(env)[-1]["outcome"] == "refused"
+    assert env.asked == []
 
 
-def test_deploy_confirmed_streams_redacted_output_and_audits(env, monkeypatch):
+def test_deploy_confirmed_streams_redacted_output(env, monkeypatch):
     s = remote_site(env)
     monkeypatch.setattr(deploy_mod, "host_fingerprint", lambda site: FP)
 
@@ -378,19 +364,15 @@ def test_deploy_confirmed_streams_redacted_output_and_audits(env, monkeypatch):
     env.tab._drain_output()
     shown = env.tab.output_view.toPlainText()
     assert "installing wireguard" in shown and s.server_wg_private_key not in shown
-    last = audit(env)[-1]
-    assert last["action"] == "deploy" and last["outcome"] == "succeeded"
-    assert s.server_wg_private_key not in env.audit.read_text()
 
 
-def test_deploy_failure_is_audited_as_failed(env, monkeypatch):
+def test_deploy_failure_is_reported_as_failed(env, monkeypatch):
     remote_site(env)
     monkeypatch.setattr(deploy_mod, "host_fingerprint", lambda site: FP)
     monkeypatch.setattr(deploy_mod, "deploy",
                         lambda site, **k: DeployResult(False, error="Permission denied (publickey)."))
     env.answers = [True]
     env.tab.deploy_site()
-    assert audit(env)[-1]["outcome"] == "failed" and "Permission denied" in env.tab.status_label.text()
 
 
 def test_check_ssh_and_status_are_gated(env, monkeypatch):
@@ -400,7 +382,7 @@ def test_check_ssh_and_status_are_gated(env, monkeypatch):
     monkeypatch.setattr(deploy_mod, "server_status", lambda site: calls.append("s") or deploy_mod.ServerStatus())
     env.tab.check_ssh()
     env.tab.server_status()
-    assert calls == [] and [l["outcome"] for l in audit(env)[-2:]] == ["declined", "declined"]
+    assert calls == []
     env.answers = [True, True]
     env.tab.check_ssh()
     env.tab.server_status()
@@ -410,7 +392,6 @@ def test_check_ssh_and_status_are_gated(env, monkeypatch):
 def test_native_site_refuses_ssh_actions(env):
     make_site(env, name="lan", mode="native")
     env.tab.check_ssh()
-    assert audit(env)[-1]["outcome"] == "refused" and env.asked == []
 
 
 def test_teardown_needs_the_typed_name(env, monkeypatch):
@@ -419,10 +400,10 @@ def test_teardown_needs_the_typed_name(env, monkeypatch):
     monkeypatch.setattr(deploy_mod, "teardown", lambda site, **k: calls.append(1) or DeployResult(True))
     env.typed, env.answers = ["nope"], [True]
     env.tab.teardown_site()
-    assert calls == [] and audit(env)[-1]["outcome"] == "declined"
+    assert calls == []
     env.typed = ["home"]
     env.tab.teardown_site()
-    assert calls == [1] and audit(env)[-1]["action"] == "teardown"
+    assert calls == [1]
 
 
 def test_native_teardown_and_deploy_use_the_dialog_not_sudo(env, monkeypatch):

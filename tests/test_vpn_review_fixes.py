@@ -174,24 +174,6 @@ def test_runner_refuses_an_installer_swapped_after_writing(state, monkeypatch, s
         assert "changed before it ran" in result.output
 
 
-def test_gate_audits_started_before_the_worker_runs(state, monkeypatch, tmp_path):
-    from ui.panels import vpn_gate
-    from ui.panels.vpn_privacy import PrivacyTab
-    from tests.test_vpn_privacy_tab import SyncWorker
-    audit = tmp_path / "a.jsonl"
-    monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: audit)
-    seen = []
-
-    def stop():
-        seen.append([json.loads(l)["outcome"] for l in audit.read_text().splitlines()])
-        return True, "ok"
-    monkeypatch.setattr(vpn_gate, "CallWorker", SyncWorker)
-    monkeypatch.setattr(tor, "stop", stop)
-    monkeypatch.setattr(tor, "is_installed", lambda: False)
-    PrivacyTab().stop_tor()
-    assert seen == [["started"]]
-
-
 # ── 7. tls-crypt and other PEM keys are redacted ──
 def test_pem_private_blocks_are_redacted_but_certificates_kept(state):
     s = site()
@@ -209,7 +191,6 @@ def test_use_for_connect_files_are_unique_per_site(state, monkeypatch, tmp_path)
     from ui.panels import vpn_gate
     from ui.panels.vpn_servers import ServersTab
     from tests.test_vpn_privacy_tab import SyncWorker
-    monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: tmp_path / "a.jsonl")
     monkeypatch.setattr(vpn_gate, "CallWorker", SyncWorker)
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     for name in ("Office London", "Office Londonderry"):
