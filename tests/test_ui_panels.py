@@ -1180,9 +1180,14 @@ class TestWorkspaceLayoutRegressions:
         ]
         win._render_chat_conversation(force_tail=True)
         transcript = win.output_box.toPlainText()
-        assert "YOU · 31 Aug 2026 · 10:15" in transcript
-        assert "ASSISTANT · 31 Aug 2026 · 10:15" in transcript
-        assert "SYSTEM · 31 Aug 2026 · 10:15" in transcript
+        # The transcript shows local time, so the expected text depends on the
+        # machine's timezone (CI runs in UTC).
+        from datetime import datetime
+        shown = datetime.fromisoformat("2026-08-31T10:15:00+01:00").astimezone().strftime(
+            "%d %b %Y · %H:%M")
+        assert f"YOU · {shown}" in transcript
+        assert f"ASSISTANT · {shown}" in transcript
+        assert f"SYSTEM · {shown}" in transcript
         assert win.output_box.verticalScrollBar() is not None
 
     def test_shared_document_search_counts_and_clears_matches(self, win):
