@@ -78,11 +78,11 @@ def seed_tooltips(app):
         "cost_history_btn":         "Open the Cost History dialog (charts and tables of past spending).",
         "run_log_btn":              "Open the Run Log dialog (every request with status, duration, cost).",
         "settings_btn":             "Open the Settings dialog (pricing, agents, tools, EUR/USD rate).",
-        "openai_key_label":         "Whether an OpenAI API key is configured. Set OPENAI_API_KEY in .env or ~/.zshrc.",
-        "deepseek_key_label":       "Whether a DeepSeek API key is configured. Set DEEPSEEK_API_KEY in .env or ~/.zshrc.",
-        "kimi_key_label":           "Whether a Kimi (Moonshot AI) API key is configured. Set KIMI_API_KEY in .env or ~/.zshrc.",
-        "gemini_key_label":         "Whether a Google Gemini API key is configured. Set GOOGLE_API_KEY in .env or ~/.zshrc.",
-        "anthropic_key_label":      "Whether an Anthropic API key is configured. Set ANTHROPIC_API_KEY in .env or ~/.zshrc.",
+        "openai_key_label":         "Whether an OpenAI API key is configured. Add it in Settings → API Keys.",
+        "deepseek_key_label":       "Whether a DeepSeek API key is configured. Add it in Settings → API Keys.",
+        "kimi_key_label":           "Whether a Kimi (Moonshot AI) API key is configured. Add it in Settings → API Keys.",
+        "gemini_key_label":         "Whether a Google Gemini API key is configured. Add it in Settings → API Keys.",
+        "anthropic_key_label":      "Whether an Anthropic API key is configured. Add it in Settings → API Keys.",
     })
 
     # ── Per-agent panel tooltips ─────────────────────────────────────

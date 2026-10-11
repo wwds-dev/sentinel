@@ -42,6 +42,14 @@ provider unticked. In Local only mode a cloud provider chosen in the run bar is
 replaced by Ollama; Hybrid allowed and Cloud only require the provider to be
 ticked under Paid provider access.
 
+**Local only** means Ollama with an Ollama model. If a cloud provider is still
+selected in the run bar, Chat does not contact it: the request uses your saved
+Ollama default model, the run-bar estimate reads `free · … · local only`, and
+hovering it names the substitution. In **Hybrid allowed** or **Cloud only**, a
+cloud provider whose permission is not ticked blocks the request: the estimate
+reads `blocked · see route` (hover for the reason) and Send shows **Request
+blocked**.
+
 ## Settings — General
 
 - **EUR/USD rate** converts provider USD pricing into displayed euro estimates.
@@ -69,6 +77,17 @@ such as Writing or Coding inside Chat. The prompt preview helps identify the
 tool but is not an editor in this screen. Changes to the enabled list reach
 Chat's Tool selector after a restart, and Chat accepts only its five built-in
 Tools.
+
+## Settings — API Keys
+
+One row per cloud AI provider (OpenAI, Anthropic, Google Gemini, DeepSeek, Kimi,
+Qwen). Paste the key, press **Save**, and Sentinel writes it to the `.env` file
+and uses it from the next request, with no restart. Hover a provider name for
+its variable name and where to create the key. The eye shows or hides the key;
+saving an empty field removes it. The status beside each field and the
+**API KEYS** card in the left rail read **ready** once a key is stored. Save
+does not test the key with the provider. Keys for OSINT services are in the
+separate **OSINT Keys** tab. See [API keys and new models](api_keys.md).
 
 ## Settings — Pricing
 

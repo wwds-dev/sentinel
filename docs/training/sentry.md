@@ -71,8 +71,11 @@ no confirmation.
 ## Reading the findings
 
 Most findings on a busy home or office network are benign: a phone joining Wi-Fi,
-a Mac service opening an AirPlay port, a normal software-update connection. Tick
-**Explain findings with AI** to get a calibrated read — a verdict, each finding
+a Mac service opening an AirPlay port, a normal software-update connection.
+**Explain findings with AI** is off by default, because ticking it sends the
+findings — LAN IPs, MAC addresses and process names included — to the selected
+provider and model, which may be a paid cloud one; prefer a local model. Tick it
+to get a calibrated read — a verdict, each finding
 explained both the benign and the malicious way, and safe checks you can run
 yourself, such as confirming a MAC against a device's own Wi-Fi settings or
 looking up its vendor.

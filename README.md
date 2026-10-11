@@ -38,7 +38,7 @@ pip install -r requirements-dev.txt
 python main.py
 ```
 
-API keys are read from the process environment or from a `.env` file: the project's own when Sentinel runs from this checkout (`python main.py` or the installed thin launcher), `~/Library/Application Support/Sentinel/.env` for a packaged build, and `Sentinel Data/.env` in portable mode. Copy `.env.example` there, paste each key after its `=`, and restart. AI provider keys are read once, at startup. Step by step, with where to create each key: the Learning Centre lesson [API keys and new models](docs/training/api_keys.md). Supported provider variables include:
+API keys are read from the process environment or from a `.env` file: the project's own when Sentinel runs from this checkout (`python main.py` or the installed thin launcher), `~/Library/Application Support/Sentinel/.env` for a packaged build, and `Sentinel Data/.env` in portable mode. The easiest way is **Settings → API Keys**: paste a provider's key, press Save, and it is written to that `.env` and used from the next request, with no restart. (OSINT source keys have their own **OSINT Keys** tab.) To edit the file by hand instead, copy `.env.example` there, paste each key after its `=`, and restart; the file is read once, at startup. Step by step, with where to create each key: the Learning Centre lesson [API keys and new models](docs/training/api_keys.md). Supported provider variables include:
 
 ```text
 OPENAI_API_KEY
@@ -79,6 +79,15 @@ Paid provider access), so a cloud provider picked in the run bar runs on Ollama
 until you switch to Hybrid allowed or Cloud only and tick that provider; while
 that substitution applies, the cost beside Run ends with "local only" and
 hovering it names the substitution.
+
+Chat's **Options → Execution mode** is enforced at send time. In **Local only**
+a cloud provider still selected in the run bar is never contacted and its model
+name is never sent to Ollama: the request goes to Ollama with the saved Ollama
+default model, the run-bar estimate reads `free · … · local only`, and hovering
+it names the substitution. In **Hybrid allowed** or **Cloud only**, a cloud
+provider whose permission is not ticked blocks the request: the estimate reads
+`blocked · see route` (hover for the reason) and **Send** shows **Request
+blocked** instead of failing silently.
 
 Each Chat conversation is one saved file that is updated after every reply; saved chats can be searched by title (not by reply text) and filtered by agent and by Chat Project, and a chat can be renamed, assigned to a project or deleted from its row. The two side rails split by what they carry rather than by left/right habit: the right rail is the live request inspector — Current Route, Cost, Budget, System, in that order, so the cards read top-to-bottom in the order a request actually happens — while API Keys, Model Updates and Actions (Cost history, Run log, Settings) sit in the left rail with the agent list, since those are global setup rather than per-request state. **Model Updates** asks every provider with a key for its live model list at each start (or on **Check now**), lists the models that appeared since the last check as rows you click to select, and **Update** brings in only the selected ones (`services/model_watch.py`). **Routing chooses on value, not novelty** (`services/benchmarks.py`, `route_request`): each request is classified (coding, writing, reasoning, research, vision, general), every usable model is looked up on the public LMArena leaderboard for that kind of work (CC BY 4.0, refreshed at most daily, with a shipped snapshot in `config/lmarena_snapshot.json`), and the cheapest model rated within 20 points of the best wins. Each agent's BEST FIT is that same assessment for the agent's kind of work, over the providers that have keys. Requests are classified on whole words, not substrings ("withdraw" is not "draw", "postcode" is not "code"), and the prompt's estimated size (characters ÷ 4, the figure the cost estimate uses) drops every model whose context window cannot hold it. **The bill and the router price a model the same way** (`services/price_resolution.py`): its own row in Settings → Pricing, else the row of the model it is a dated snapshot of (`gpt-4o-2024-08-06` bills as `gpt-4o`), else its provider's `default` row, which holds that provider's dearest current rate so an unpriced model is over- rather than under-estimated against the budget caps. A rate of zero means unknown, never free; a cloud model with no usable price is never treated as cheap; an unrated model (including local Ollama models) is not chosen over rated ones, except in Local only or Privacy first, where Sentinel's own scoring decides. Refresh the snapshot with `python -m services.benchmarks --snapshot`. Every sidebar tile is a small screen (`ui.widgets.ScreenCard`): a header strip with a status light and a short status, over aligned monospace readouts. Settings controls registered agents, tools, pricing, and provider permissions.
 
@@ -122,7 +131,9 @@ For a removable, self-contained macOS copy, see
 history, logs and API-key storage on the removable volume and never silently
 mixes them with the Lab checkout or Application Support. Its portable-only
 **Settings → General → Emergency Reset** can erase Sentinel-owned data and API
-keys after two confirmations. It is a privacy reset, not a Tails-style amnesic
+keys after two confirmations. If any step fails, it reports **Reset refused**
+and Sentinel does not quit, so a failed reset never looks like a successful one.
+It is a privacy reset, not a Tails-style amnesic
 session or forensic wipe: macOS, network equipment and providers may retain
 separate records, and files deliberately exported elsewhere are not removed.
 
@@ -194,7 +205,7 @@ key-like strings are scrubbed from tool output, errors and refusal reasons
 first; the profile name and config path are logged. The post-change check does
 not verify a handshake, DNS, or leak behaviour. OpenVPN shutdown refuses if
 Sentinel cannot identify its tracked process; it never stops all OpenVPN
-processes by name. OpenVPN is a basic client: configs that prompt for a username
+processes by name. Identity is the full, untruncated `ps -ww` command line (Sentinel's `--daemon sentinel-ovpn` tag and its own pid file), so it holds in packaged and portable builds whose data path contains spaces, and `openvpn` is run by absolute path because the authorisation dialog's PATH has no Homebrew directory. OpenVPN is a basic client: configs that prompt for a username
 and password, pushed DNS and live status are not supported, and its log is
 written to Sentinel's data folder but not shown. **Import
 config…** loads a `.conf`/`.ovpn`, reads its real server endpoint out of the
@@ -245,17 +256,30 @@ Tunnel compares the file's intended full/split routing and DNS with that snapsho
 
 Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Bug Spray does not verify a program or scope; the Program and Scope Type fields are declared by the operator. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Before Bloodhound sends a target to public sources it lists them and asks, with No as the default; image metadata (EXIF, GPS) is sent to a model only if you tick the box. Generated commands and findings require human review before execution or submission. One exception to flag: Bug Spray's **Run Nmap** with an empty command field builds `nmap -sV -sC -T4 --open <host>` and starts it in the same click; only nmap can start, and no scope check runs.
 
-Forge writes an agent scaffold and inactive registry entries after review. Sentinel does not dynamically load it or add it to the sidebar; inspect, test, and deliberately integrate generated code before enabling it. The scaffold contains only the agent's name, description and system prompt; its registry rows stay disabled, and Chat's tool list is fixed, so the generated prompt cannot be used from Chat.
+Beacon's **AI Analysis** and Sentry's **Explain findings with AI** are off by
+default. Ticking them sends the scan output (network names, signal and security)
+or the findings (LAN IPs, MAC addresses, process names) to the selected provider
+and model, which may be a paid cloud one; each checkbox's hover text says so.
+Prefer a local model.
+
+Forge writes an agent scaffold and inactive registry entries after review. Every value from the spec is written into the scaffold as a Python string literal, and the module is compiled before anything is saved; if it would not parse, creation fails and neither the file nor the registry rows are left behind. Sentinel does not dynamically load it or add it to the sidebar; inspect, test, and deliberately integrate generated code before enabling it. The scaffold contains only the agent's name, description and system prompt; its registry rows stay disabled, and Chat's tool list is fixed, so the generated prompt cannot be used from Chat.
 
 ## Architecture
 
 The main runtime is organised around:
 
 - `main.py` — application window, Chat workflow, navigation, shared request controls
-- `agents/` — the Chat, Trace, Bloodhound, Beacon, Sentry, and Forge agent packages
-  (`agents/chat_agent/`, `agents/osint_agent/`, `agents/osint_heavy_agent/`,
-  `agents/wifi_agent/`, `agents/sentry/`, and `agents/manager_agent/`), tracked in
-  this repository
+- `agents/` — the built-in agent packages, tracked in-tree like `vpn_agent`
+  so a fresh clone imports `main.py` and collects the test suite with nothing
+  else to fetch: `agents/chat_agent/` (Chat), `agents/osint_agent/` (Trace),
+  `agents/osint_heavy_agent/` (Bloodhound), `agents/wifi_agent/` (Beacon),
+  `agents/manager_agent/` (Forge) and `agents/sentry/` (Sentry's collectors,
+  baseline, engine, CLI, its own `tests/` and the `launchd/` template for the
+  Continuous Background Watch). Each keeps its own README, TODO and SUGGESTIONS.
+  These were gitignored nested repos with no remote until 2026-10-09
+- `_archive/` — gitignored. `_archive/nested_git/` holds the six packages'
+  former nested `.git` directories, kept rather than deleted; nothing reads
+  from it
 - `agents/bug_spray/` — Bug Spray's nested repo: public program scanner,
   saved feed and the in-app `bug_bounty` message builder
 - `agents/vpn_agent/` — Tunnel's VPN library, merged in-tree (formerly a
@@ -398,7 +422,8 @@ and shared control to automated, packaged-app, and owned-lab checks, with
 priority and release gates. Sentinel's main test suite does not include the
 separate Bug Spray companion-repository suite (`agents/bug_spray/tests`) or
 Sentry's engine tests (`agents/sentry/tests`); run each from its own directory.
-(The VPN Agent code is now merged in-tree; its connect/disconnect layer is
+`keyring`, which the Bug Spray companion imports for its Keychain-only secrets, is in
+`requirements.txt`. (The VPN Agent code is now merged in-tree; its connect/disconnect layer is
 covered by `tests/test_vpn_connection.py`.)
 Tunnel's diagnostics and connection boundaries are covered by
 `tests/test_vpn_diagnostics.py`, `tests/test_vpn_connection.py`,
@@ -410,7 +435,8 @@ automated test runs wg-quick, openvpn, pfctl or the macOS password dialog.
 
 ## Further documentation
 
-Agent-specific reference guides live in `docs/agents/`: `chat.md`, `osint.md`, `osint_heavy.md`, `wifi.md`, `sentry.md`, `bug_bounty.md`, `vpn.md`, and `manager.md`.
+Agent-specific reference guides live in `docs/agents/`: `chat.md`, `osint.md`, `osint_heavy.md`, `wifi.md`, `sentry.md`, `bug_bounty.md`, `vpn.md`, and `manager.md`. Each in-tree package under `agents/` also has its own README.
 User training and the course roadmap live in [`docs/training/`](docs/training/).
+[`docs/qa_audit/`](docs/qa_audit/README.md) is the promise-by-promise audit of 2026-10-09: one requirements-traceability table per agent plus one for the shared controls, each promise with file:line evidence, cross-document contradictions and a must-fix list. Defects D1–D7 found by it are fixed (kill-switch transport, OpenVPN identity with spaces in the path, Local only, Forge scaffold rendering, Beacon/Sentry AI default-off, cancellable Tunnel connection worker, selector hover text); the audit tables record the state before those fixes.
 
 Documents describing the workspace split or earlier architecture are historical records. They explain how features moved between projects; they do not define current Sentinel behaviour.

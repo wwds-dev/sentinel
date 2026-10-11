@@ -1147,6 +1147,97 @@ def show_settings(app):
     update_reg_summary()
     tabs.addTab(osint_tab, "OSINT Keys")
 
+    # ── Tab: API Keys (AI providers) ──────────────────────────────
+    # Same .env file and writer as the OSINT Keys tab. The provider clients
+    # build their SDK client once, so saving also rebuilds the app's client for
+    # that provider: the new key applies from the next request, with no restart.
+    from services.qwen_client import QwenClientWrapper
+    # (label, env var, wrapper class, signup page, attribute on app, sidebar row)
+    llm_providers = [
+        ("OpenAI", "OPENAI_API_KEY", OpenAIClientWrapper, "platform.openai.com/api-keys", "openai", "OpenAI"),
+        ("Anthropic", "ANTHROPIC_API_KEY", AnthropicClientWrapper, "console.anthropic.com/settings/keys", "anthropic", "Anthropic"),
+        ("Google Gemini", "GOOGLE_API_KEY", GeminiClientWrapper, "aistudio.google.com/apikey", "gemini", "Gemini"),
+        ("DeepSeek", "DEEPSEEK_API_KEY", DeepSeekClientWrapper, "platform.deepseek.com/api_keys", "deepseek", "DeepSeek"),
+        ("Kimi (Moonshot)", "KIMI_API_KEY", KimiClientWrapper, "platform.moonshot.ai/console/api-keys", "kimi", "Kimi"),
+        ("Qwen (DashScope)", "DASHSCOPE_API_KEY", QwenClientWrapper, "bailian.console.alibabacloud.com", "qwen", "Qwen"),
+    ]
+    llm_tab = QWidget()
+    ll = QVBoxLayout(llm_tab)
+    ll.setContentsMargins(12, 12, 12, 12)
+    ll.setSpacing(8)
+    llm_intro = QLabel(
+        "Paste a key and press Save. Sentinel stores it in your private .env file "
+        "(owner-only permissions) and uses it straight away; no restart needed. "
+        "Clear the field and Save to remove a key."
+    )
+    llm_intro.setWordWrap(True)
+    llm_intro.setStyleSheet("color: #888; font-size: 11px;")
+    ll.addWidget(llm_intro)
+
+    llm_values = _read_env_values()
+    for name, env_key, wrapper, signup, attr, side_name in llm_providers:
+        row = QFrame()
+        row.setFrameShape(QFrame.StyledPanel)
+        rl2 = QHBoxLayout(row)
+        rl2.setContentsMargins(8, 4, 8, 4)
+        rl2.setSpacing(6)
+        lbl = QLabel(name)
+        lbl.setStyleSheet("font-weight: bold;")
+        lbl.setFixedWidth(130)
+        lbl.setToolTip(f"{env_key} · get a key at {signup}")
+        rl2.addWidget(lbl)
+        status = QLabel()
+        status.setFixedWidth(64)
+        rl2.addWidget(status)
+        edit = QLineEdit(llm_values.get(env_key, ""))
+        edit.setEchoMode(QLineEdit.Password)
+        edit.setPlaceholderText(f"Paste key · {signup}")
+        rl2.addWidget(edit, 1)
+        eye = QPushButton("👁")
+        eye.setCheckable(True)
+        eye.setFixedWidth(30)
+        eye.setToolTip("Show / hide key")
+        eye.toggled.connect(
+            lambda on, e=edit: e.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
+        rl2.addWidget(eye)
+        save_btn = QPushButton("Save")
+        rl2.addWidget(save_btn)
+
+        def refresh_status(w=wrapper, lab=status):
+            try:
+                ready = bool(w.key_available())
+            except Exception:
+                ready = False
+            lab.setText("ready" if ready else "no key")
+            lab.setStyleSheet("color: #3cff88;" if ready else "color: #9aa5a0;")
+
+        def save_llm_key(_checked=False, k=env_key, e=edit, refresh=refresh_status,
+                         w=wrapper, a=attr, side=side_name):
+            try:
+                _write_env_key(k, e.text())
+            except OSError as exc:
+                QMessageBox.warning(dialog, "Save failed", f"Could not write {k}:\n{exc}")
+                return
+            try:
+                setattr(app, a, w())          # new client, built with the new key
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Key saved",
+                                    f"Saved, but {a} could not start with it:\n{exc}")
+            row = getattr(app, "key_rows", {}).get(side)
+            if row is not None:
+                ready = bool(w.key_available())
+                row.value.setText("ready" if ready else "no key")
+                row.value.setObjectName("KVValueOn" if ready else "KVValueOff")
+                row.value.style().unpolish(row.value)
+                row.value.style().polish(row.value)
+            refresh()
+
+        save_btn.clicked.connect(save_llm_key)
+        refresh_status()
+        ll.addWidget(row)
+    ll.addStretch()
+    tabs.addTab(_scrolling(llm_tab), "API Keys")
+
     def emergency_reset():
         phrase, accepted = QInputDialog.getText(
             dialog,

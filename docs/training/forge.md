@@ -56,7 +56,10 @@ and run Analyze Idea again (a pending specification is discarded without asking)
 On Yes, Forge writes exactly three things, all or nothing: a Python scaffold
 `agents/<name>_agent.py`, one inactive row in the agents registry and one
 inactive row in the tools registry. The tools row carries the same providers,
-budget and approval flag you reviewed. If creation fails, the message says why
+budget and approval flag you reviewed. The spec's description, name and system prompt go into the file as plain string
+values and the file is compiled before it is saved: if it would not parse,
+**Creation Failed** names the error and neither the file nor the registry rows
+are left behind. If creation fails, the message says why
 and the specification stays on screen.
 
 It does not make the agent a built-in sidebar item or dynamically load it, and

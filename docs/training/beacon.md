@@ -66,11 +66,11 @@ commands, and that Save in Kali mode stores only the commands, not the
 Preflight warning shown above them.
 
 **AI interpretation** is optional and off by default because raw network output
-may reveal device names, addresses and infrastructure details. The provider
-dropdown still defaults to Sentinel's standard provider, which may be a paid
-cloud model — switching to a local model or redacting details is something
-you still have to do yourself; Beacon does not do either automatically before
-sending a scan to whichever provider is selected.
+may reveal device names, addresses and infrastructure details. Tick **AI
+Analysis — feed results to LLM for interpretation** to send the raw scan output
+(network names, signal, security) to the selected provider and model; hover the
+checkbox for the same reminder. Prefer a local
+model; redact unnecessary details before approving a cloud route.
 
 ## Exercise
 

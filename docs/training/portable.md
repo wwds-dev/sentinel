@@ -26,7 +26,7 @@ Quit Sentinel and wait for scans, model requests and saves to finish. Then eject
 
 ## Emergency Reset
 
-**Settings → General → Emergency Reset** is a last-resort privacy reset available only in portable mode. It requires typing `ERASE SENTINEL DATA` and approving a second warning. It erases Sentinel's portable chats, history, database, logs, settings, reports stored in the data folder and `.env` API keys, then quits. It does not format the drive, touch unrelated files, or delete reports you deliberately exported elsewhere.
+**Settings → General → Emergency Reset** is a last-resort privacy reset available only in portable mode. It requires typing `ERASE SENTINEL DATA` and approving a second warning. It erases Sentinel's portable chats, history, database, logs, settings, reports stored in the data folder and `.env` API keys, then quits. If any step fails, it shows **Reset refused** with the reason and does not quit, so a failed reset never looks like a finished one; some data may remain, so check the `Sentinel Data` folder before relying on it. It does not format the drive, touch unrelated files, or delete reports you deliberately exported elsewhere.
 
 This is not an amnesic or forensic-erasure feature. Flash media can retain remapped blocks, and macOS, networks and model providers may keep their own records. Use encrypted APFS from the beginning when strong data-at-rest protection matters.
 

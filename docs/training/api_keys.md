@@ -34,20 +34,24 @@ A key already set in the shell environment takes precedence over the file.
 
    A mainland-China Qwen account also needs `DASHSCOPE_BASE_URL=`; the
    comment in `.env.example` gives the address.
-2. If there is no `.env` yet, copy `.env.example` from the project folder to
-   the location in the table above and rename the copy to `.env`. Finder hides
-   names that start with a dot; press **⌘⇧.** to show them.
-3. Open `.env` in TextEdit and paste the key straight after the `=`: no
-   quotes, no spaces, one key per line. Save.
-4. **Quit Sentinel completely** with **Quit Sentinel** in its menu bar
-   item (closing the window is not enough), then start it again. AI provider
-   keys are read once, at startup.
-5. Check the **API KEYS** card in the left rail: the provider now reads
-   **ready**. **no key** means Sentinel did not find it. Check the file
-   location, the spelling of the name before `=`, and that you restarted.
-6. Allow the provider for Chat requests in **Options → Paid provider
+2. Open **Settings → API Keys**, paste the key into the provider's row and
+   press **Save**. Sentinel writes it to the `.env` named in the table above
+   (creating it, owner-only, if it does not exist) and starts using it with
+   the next request: no restart. The eye button shows or hides the key;
+   clearing the field and pressing **Save** removes the key.
+3. Check the **API KEYS** card in the left rail, or the status beside the
+   field: the provider now reads **ready**. **no key** means the field was
+   empty when you saved. Save does not test the key with the provider, so a
+   mistyped key still reads **ready** until a request fails.
+4. Allow the provider for Chat requests in **Options → Paid provider
    access**. A key proves Sentinel can sign in; this permission decides
    whether it may spend money there.
+
+To edit the file by hand instead: copy `.env.example` to the location above,
+rename the copy to `.env` (Finder hides dot-names; press **⌘⇧.**), paste the
+key straight after the `=` with no quotes or spaces, then **Quit Sentinel**
+from its menu bar item (closing the window is not enough) and start it again;
+the file is read once, at startup.
 
 OSINT source keys (HaveIBeenPwned, IPinfo and the others) can be entered
 inside the app instead, in **Settings → OSINT Keys → Save Key**. They are
