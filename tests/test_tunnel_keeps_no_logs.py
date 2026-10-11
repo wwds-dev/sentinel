@@ -79,3 +79,99 @@ def test_bug_spray_keeps_its_own_separate_nmap_record(tmp_path):
     assert written == target
     entry = json.loads(target.read_text().splitlines()[-1])
     assert entry["action"] == "nmap" and entry["outcome"] == "declined"
+
+
+# ── OpenVPN and Tor write a start-up log; it must not outlive the start ─────
+
+def _openvpn_in(tmp_path, monkeypatch):
+    from services import openvpn_manager
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    monkeypatch.setattr(openvpn_manager, "is_running", lambda: False)
+    return openvpn_manager
+
+
+def test_openvpn_keeps_only_the_device_name_not_the_log(tmp_path, monkeypatch):
+    ovpn = _openvpn_in(tmp_path, monkeypatch)
+    cfg = tmp_path / "srv.ovpn"
+    cfg.write_text("client\nremote 203.0.113.7 1194\n")
+
+    def run(script, prompt, timeout=30):
+        (tmp_path / "openvpn.log").write_text(
+            "TLS: Initial packet from [AF_INET]203.0.113.7:1194\nOpened utun device utun5\n")
+        return True, ""
+    result = ovpn.connect(str(cfg), run_as_root=run, sleep=lambda s: None)
+    assert result["success"] and result["device"] == "utun5"
+    assert not ovpn.log_file().exists()
+    assert ovpn.device_file().read_text() == "utun5"
+    assert "203.0.113.7" not in ovpn.device_file().read_text()
+    monkeypatch.setattr(ovpn, "is_running", lambda: True)
+    assert ovpn.tunnel_device() == "utun5"
+
+
+def test_a_failed_openvpn_start_is_explained_once_and_leaves_no_log(tmp_path, monkeypatch):
+    ovpn = _openvpn_in(tmp_path, monkeypatch)
+    cfg = tmp_path / "srv.ovpn"
+    cfg.write_text("client\nremote 203.0.113.7 1194\n")
+    slept = []
+
+    def run(script, prompt, timeout=30):
+        (tmp_path / "openvpn.log").write_text("Options error: Unrecognized option\n")
+        return True, ""
+    result = ovpn.connect(str(cfg), run_as_root=run, sleep=slept.append)
+    assert result["device"] is None
+    assert "Unrecognized option" in result["output"]
+    assert not ovpn.log_file().exists() and not ovpn.device_file().exists()
+    assert len(slept) == ovpn.DEVICE_WAIT_ATTEMPTS - 1
+
+
+def test_disconnecting_openvpn_forgets_the_device(tmp_path, monkeypatch):
+    ovpn = _openvpn_in(tmp_path, monkeypatch)
+    ovpn.device_file().write_text("utun5")
+    monkeypatch.setattr(ovpn, "_read_pid", lambda: 4242)
+    monkeypatch.setattr(ovpn, "_is_tracked_process", lambda pid: True)
+    result = ovpn.disconnect(run_as_root=lambda *a, **k: (True, ""))
+    assert result["success"] and not ovpn.device_file().exists()
+
+
+def test_tor_deletes_its_start_up_log_once_it_has_bootstrapped(tmp_path, monkeypatch):
+    from agents.vpn_agent.services import tor
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(tor, "is_installed", lambda: True)
+    monkeypatch.setattr(tor, "is_running", lambda: False)
+    monkeypatch.setattr(tor, "tor_binary", lambda: "/opt/homebrew/bin/tor")
+    monkeypatch.setattr(tor.time, "sleep", lambda s: None)
+    log = tor.data_dir() / "tor.log"
+
+    class Process:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    def popen(argv, **kwargs):
+        log.write_text("Bootstrapped 100% (done): Done\n")
+        return Process()
+    monkeypatch.setattr(tor.subprocess, "Popen", popen)
+    ok, message = tor.start(timeout=5)
+    assert ok, message
+    assert not log.exists()
+
+
+def test_old_log_files_are_removed_and_only_those(tmp_path, monkeypatch):
+    from services import tunnel_logs
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path / "state"))
+    from agents.vpn_agent.services import tor
+    keep = [tmp_path / "data" / "logs" / "runs.jsonl",
+            tmp_path / "data" / "logs" / "bug_spray_audit.jsonl",
+            tmp_path / "vpn" / "openvpn.pid"]
+    gone = [tmp_path / "data" / "logs" / "tunnel_audit.jsonl",
+            tmp_path / "vpn" / "openvpn.log",
+            tor.data_dir() / "tor.log"]
+    for path in keep + gone:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+    removed = tunnel_logs.purge_legacy_logs(tunnel_logs.legacy_log_paths(tmp_path))
+    assert sorted(removed) == sorted(str(p) for p in gone)
+    assert all(p.exists() for p in keep) and not any(p.exists() for p in gone)
+    assert tunnel_logs.purge_legacy_logs(tunnel_logs.legacy_log_paths(tmp_path)) == []

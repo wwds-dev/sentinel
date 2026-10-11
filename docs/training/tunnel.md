@@ -106,8 +106,12 @@ A config that splits the default route into two halves (`0.0.0.0/1` and
 
 ### OpenVPN
 
-OpenVPN is a basic client. Connect starts it as a background process, with a log
-and a pid file in Sentinel's data folder; the log is not shown in the panel.
+OpenVPN is a basic client. Connect starts it as a background process with a pid
+file in Sentinel's data folder. OpenVPN has to write a start-up log for a few
+seconds, because the tunnel device it opens is only reported there. Sentinel
+reads the device name from it, keeps only that name, and deletes the log (if the
+device never appears, the last lines are shown once, with the failure). Tor's
+start-up log is handled the same way.
 Disconnect stops only the process Sentinel started and can identify as its own.
 If it cannot, it refuses, stops nothing, and tells you to use the client that
 started the connection — that refusal comes after you answer Yes and is shown

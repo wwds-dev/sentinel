@@ -132,7 +132,7 @@ CookieAuthFile {_q(_cookie_path())}
 ClientOnly 1
 ExitRelay 0
 
-# Keep the log with the data rather than in a system location.
+# Start-up log only: Start deletes this file as soon as Tor has bootstrapped.
 Log notice file {_q(directory / "tor.log")}
 """
 
@@ -200,14 +200,15 @@ def start(timeout: float = STARTUP_TIMEOUT) -> tuple[bool, str]:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if process.poll() is not None:
-            return False, f"Tor exited immediately.\n{_tail_log()}"
+            return False, f"Tor exited immediately.\n{_discard_log()}"
         if log.exists() and "Bootstrapped 100%" in log.read_text(errors="replace"):
+            _discard_log()
             return True, f"Tor is up on 127.0.0.1:{SOCKS_PORT}."
         time.sleep(0.5)
 
     return False, (
         f"Tor did not finish bootstrapping within {int(timeout)}s. It may still "
-        f"come up — some networks throttle or block Tor.\n{_tail_log()}"
+        f"come up — some networks throttle or block Tor.\n{_discard_log()}"
     )
 
 
@@ -286,6 +287,19 @@ def _tail_log(lines: int = 8) -> str:
         return "(no Tor log was written)"
     tail = log.read_text(errors="replace").strip().splitlines()[-lines:]
     return "\n".join(f"  {line}" for line in tail)
+
+
+def _discard_log() -> str:
+    """Return the last lines of Tor's start-up log, then delete the file.
+
+    Tor must write a log while it starts, because bootstrap progress is only
+    reported there. Nothing needs it afterwards, so it is deleted as soon as
+    Start has an answer; Tor keeps writing to the unlinked file, which no
+    longer has a name on disk.
+    """
+    tail = _tail_log()
+    (data_dir() / "tor.log").unlink(missing_ok=True)
+    return tail
 
 
 def bootstrap_progress() -> str:

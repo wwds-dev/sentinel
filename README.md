@@ -204,8 +204,9 @@ before they are shown. The post-change check does
 not verify a handshake, DNS, or leak behaviour. OpenVPN shutdown refuses if
 Sentinel cannot identify its tracked process; it never stops all OpenVPN
 processes by name. Identity is the full, untruncated `ps -ww` command line (Sentinel's `--daemon sentinel-ovpn` tag and its own pid file), so it holds in packaged and portable builds whose data path contains spaces, and `openvpn` is run by absolute path because the authorisation dialog's PATH has no Homebrew directory. OpenVPN is a basic client: configs that prompt for a username
-and password, pushed DNS and live status are not supported, and its log is
-written to Sentinel's data folder but not shown. **Import
+and password, pushed DNS and live status are not supported. OpenVPN's start-up
+log is read for the tunnel device name and then deleted; Tor's is deleted the
+same way, and Sentinel removes logs older versions left behind. **Import
 config…** loads a `.conf`/`.ovpn`, reads its real server endpoint out of the
 file, and stores it as a connectable profile. The file's location is remembered,
 not a copy. Imported profiles, server sites, the Tor data folder and kill-switch state now

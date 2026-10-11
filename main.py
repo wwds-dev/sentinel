@@ -5238,6 +5238,13 @@ if __name__ == "__main__":
         except OSError as exc:
             print(f"settings migration skipped: {exc}", file=sys.stderr)
 
+    # Tunnel keeps no log; delete the ones an older version left on disk.
+    try:
+        from services import tunnel_logs
+        tunnel_logs.purge_legacy_logs()
+    except Exception as exc:
+        print(f"old Tunnel log cleanup skipped: {exc}", file=sys.stderr)
+
     window = GodAI()
     settings = QSettings("Sentinel", "Sentinel")
     saved_geometry = settings.value(WINDOW_SETTINGS_KEY)
