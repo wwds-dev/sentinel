@@ -388,6 +388,12 @@ included as context. Review the route before sending infrastructure details to a
 cloud model. The Advisor can explain Tor, proxy chains and MAC randomisation;
 the controls for them are on the Privacy tab.
 
+Tunnel does not save Advisor conversations: no Saved Chats entry and no Run log
+row is created. The Cost history still counts what the request cost (agent,
+provider, model, token counts and price, never any text), because the budget
+caps are computed from it. Your question still goes to the selected provider,
+which may keep its own records.
+
 ## Config Builder
 
 Build Config produces server/client templates and a deployment runbook with

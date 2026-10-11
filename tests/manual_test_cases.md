@@ -230,7 +230,7 @@ Use only a network you own. Start with the background watch off and **Explain fi
 
 8. Ask Advisor a question with a model selected.
 
-- [ ] The request goes through the guard, is logged under `vpn`, and Stop cancels it.
+- [ ] The request goes through the guard and Stop cancels it. No Saved Chats entry and no Run log row is created for it; the Cost history still counts its price (agent `vpn`, tokens and cost only).
 
 The next steps need macOS, an owned WireGuard config and an administrator account; run them on a lab network you can recover.
 

@@ -119,6 +119,11 @@ ALL_AGENTS_FILTER = "All agents"
 ALL_PROJECTS_FILTER = "All projects"
 UNFILED_PROJECT_FILTER = "Unfiled"
 NO_ACTIVE_PROJECT = "No project"
+# Agents whose requests leave no content behind: no Saved Chats entry and no
+# Run log row (its prompt summary quotes the prompt). The bill still gets its
+# usage row, because the budget caps are computed from it; that row holds the
+# agent name, provider, model, token counts and cost, never any text.
+NO_CONTENT_LOG_AGENTS = frozenset({"vpn"})
 
 # Shipped defaults (tracked, bundled, never written by the app) and this
 # machine's own picks laid over them (git-ignored). services/settings_store.py.
@@ -3799,7 +3804,7 @@ class GodAI(QWidget):
             "prompt": prompt,
             "usage": None,
             "started_at": time.monotonic(),
-            "run_id": self.run_logger.start(
+            "run_id": None if agent in NO_CONTENT_LOG_AGENTS else self.run_logger.start(
                 agent=agent,
                 tool=descriptor,
                 provider=provider,
@@ -3863,16 +3868,17 @@ class GodAI(QWidget):
         self.session_request_count += 1
         self.update_usage_labels()
 
-        if messages is None:
-            messages = [{"role": "user", "content": context["prompt"]}]
-        self.history.save_chat(
-            agent=context["agent"],
-            backend=context["provider"],
-            model=context["model"],
-            command=context["tool"],
-            messages=messages + [{"role": "assistant", "content": response}],
-            response=response,
-        )
+        if context["agent"] not in NO_CONTENT_LOG_AGENTS:
+            if messages is None:
+                messages = [{"role": "user", "content": context["prompt"]}]
+            self.history.save_chat(
+                agent=context["agent"],
+                backend=context["provider"],
+                model=context["model"],
+                command=context["tool"],
+                messages=messages + [{"role": "assistant", "content": response}],
+                response=response,
+            )
 
         if context["run_id"]:
             self.run_logger.finish(

@@ -175,3 +175,51 @@ def test_old_log_files_are_removed_and_only_those(tmp_path, monkeypatch):
     assert sorted(removed) == sorted(str(p) for p in gone)
     assert all(p.exists() for p in keep) and not any(p.exists() for p in gone)
     assert tunnel_logs.purge_legacy_logs(tunnel_logs.legacy_log_paths(tmp_path)) == []
+
+
+# ── The Advisor: no Saved Chats entry, no Run log row; the bill stays ───────
+
+from tests.test_audit_must_fix import qapp, win  # noqa: E402,F401  (a real window)
+
+def _count(table, **where):
+    from services.database import get_connection
+    clause = " AND ".join(f"{k} = ?" for k in where) or "1"
+    with get_connection() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {clause}",
+                            tuple(where.values())).fetchone()[0]
+
+
+def test_a_tunnel_advisor_request_leaves_no_chat_and_no_run_row(win):
+    chats_before = len(win.history.list_chats())
+    runs_before = _count("runs", agent="vpn")
+    usage_before = _count("usage", agent="vpn")
+
+    assert win.authorize_request("vpn", "ollama", "m", "my server is 203.0.113.7", label="advice",
+                                 request_id="adv-1")
+    assert win._pending_requests["adv-1"]["run_id"] is None
+    win.record_request("vpn", "use wireguard", request_id="adv-1")
+
+    assert len(win.history.list_chats()) == chats_before
+    assert _count("runs", agent="vpn") == runs_before
+    assert _count("usage", agent="vpn") == usage_before + 1      # the bill still exists
+    from services.database import get_connection
+    with get_connection() as conn:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(usage)").fetchall()]
+    assert not {"prompt", "response", "prompt_text", "response_text", "messages"} & set(columns)
+
+
+def test_other_agents_are_still_saved_as_before(win):
+    chats_before = len(win.history.list_chats())
+    runs_before = _count("runs", agent="sentry")
+    assert win.authorize_request("sentry", "ollama", "m", "prompt", label="x", request_id="s-1")
+    win.record_request("sentry", "answer", request_id="s-1")
+    assert len(win.history.list_chats()) == chats_before + 1
+    assert _count("runs", agent="sentry") == runs_before + 1
+
+
+def test_an_abandoned_tunnel_request_is_dropped_without_a_run_row(win):
+    runs_before = _count("runs", agent="vpn")
+    assert win.authorize_request("vpn", "ollama", "m", "prompt", label="advice", request_id="adv-2")
+    win.abandon_request("vpn", reason="error", request_id="adv-2")
+    assert "adv-2" not in win._pending_requests
+    assert _count("runs", agent="vpn") == runs_before
