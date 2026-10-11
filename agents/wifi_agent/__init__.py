@@ -360,6 +360,8 @@ def build_kali_commands(operation: str, adapter: dict, bssid: str, channel: str,
     )
 
     if operation == "Handshake Capture":
+        if not inject:
+            return header + f"# ❌ {adapter.get('name')} ({chipset}) does not support packet injection.\n# Use TL-WN722N or AWUS036ACH for handshake capture.\n"
         steps = [
             ("Kill conflicting processes", "sudo airmon-ng check kill"),
             ("Put adapter into monitor mode", f"sudo airmon-ng start {iface}"),

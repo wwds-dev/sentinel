@@ -51,25 +51,59 @@ A key already set in the shell environment takes precedence over the file.
 
 OSINT source keys (HaveIBeenPwned, IPinfo and the others) can be entered
 inside the app instead, in **Settings → OSINT Keys → Save Key**. They are
-written to the same `.env` and work without a restart.
+written to the same `.env` and work without a restart: Trace reads a key each
+time it runs a lookup, and Save Key keeps the key even if you then cancel
+Settings. A service that needs no key has no key field (EmailRep,
+BreachDirectory, Ransomware.live and Ahmia), and a service Trace uses without
+any key, such as GitHub, Keybase or GLEIF, has no row at all. Two settings
+have no field and are set in `.env`, followed by a restart of Sentinel:
+`CENSYS_ORG_ID` for paid Censys organisations, and `DOMAINTOOLS_API_USERNAME`,
+which you can skip by saving the DomainTools key as `username:key`.
+
+The tab also holds an **Operational email** field (with **Copy**), a **Mint
+addy.io alias** button, a progress bar of registered services and filter chips
+(All, Free, Paid, Email, Domain, Network, Breach, Threat, Dark Web, Legal). Each
+row has a Registered tick and a **Register →** button, which opens the
+service's signup page and copies the operational email to the clipboard.
+**Mint addy.io alias** creates a fresh burner address on your own addy.io
+account, puts it in the Operational email field and copies it; it runs only
+when you press it, and needs the addy.io key. A row's cost label is the price
+of its key, so Shodan sits under **Paid** although Trace uses Shodan's
+InternetDB summary without a key.
 
 Each row says who uses the key. A filled chip, such as **Trace**, means the
 service is part of that agent's default run. An outlined chip means it is an
 extra: the agent works without it and uses it once the key is saved or you
 tick it. Leave **Explain on hover** on and hover a service's name for what it
-does and what its key changes.
+does and what its key changes. **Known limitation:** the Criminal IP row
+currently carries Censys's key hint ("Platform personal access token") and
+note, and the Censys row carries none. A Censys Platform personal access token
+goes in the Censys row, and a Criminal IP key in the Criminal IP row.
 
 **Check whether a key works.** Save Key checks the key straight away, and each
 row's **Check** button does it again at any time. The button then reads
-**✓ Works**, **✗ Rejected**, **✗ Malformed** (the key cannot be right, for
-example a VirusTotal key that is not 64 hexadecimal characters; nothing is
-sent), **! Limited** (the key is fine but its quota or plan is the problem) or
-**? Offline**. Hover it for the details, such as the plan and what is left.
-**Check all keys** checks every saved key whose check is free. A few services
-have no free way to test a key, so their check spends one lookup or credit;
-Check all leaves those out and names them, and their tooltip says the cost. A
-check asks only about the key, never about a target. The last result is
-remembered until the key changes; the key itself is never stored with it.
+**✓ Works**, **✗ Rejected**, **✗ Malformed**, **! Limited** (the key is fine
+but its quota or plan is the problem), **? Offline** or **? Error** (the key
+could not be confirmed). Hover it for the details, such as the plan and what is
+left. **Malformed** means the key cannot be right: Sentinel judges the shape
+locally, sending nothing, only for HaveIBeenPwned (32 hexadecimal characters)
+and Intelligence X (an ID like `00000000-0000-0000-0000-000000000000`), and
+URLScan can answer that a key is not in its format. Any other key of the wrong
+shape, for example a VirusTotal key that is not 64 hexadecimal characters, is
+sent anyway; if the service refuses it the button reads **Rejected**, with a
+note on what keys of that service usually look like. **Check all keys** checks
+every saved key whose check is free. AbuseIPDB, DeHashed and Snusbase have no
+free way to test a key, so their check spends one lookup or credit; Check all
+leaves those out and names them, and their tooltip says the cost. A check asks
+only about the key: the few that must run a real query use a placeholder such
+as `example.com`, never a target of yours. The last result is remembered until
+the key changes; the key itself is never stored with it, only a short one-way
+fingerprint to tell whether it changed.
+
+Most services receive a key in a request header. Shodan takes it only in the
+URL's query string (for its lookups and its check), and the VirusTotal key
+check puts it in the URL path, so a proxy or server log on the way may keep
+it. Sentinel scrubs keys from the error text it shows.
 
 Never paste a key into a chat message, a report or a screenshot, and never
 commit `.env` to git.

@@ -288,3 +288,87 @@ def test_persistent_arp_conflict_is_reported_once_then_settles(tmp_path):
     # Same conflict again -> already folded into the baseline -> not re-reported.
     again = engine.run_watch(store, snapshot=conflict)
     assert not any(f["kind"] == "arp_spoof" for f in again["findings"])
+
+
+# ── Collector failures are visible; cancel persists nothing; state dir handoff ─
+
+def _snap(**kw):
+    return Snapshot(gateway_ip="192.168.10.1", gateway_mac="94:83:c4:a8:81:19",
+                    devices=[Device(ip="192.168.10.1", mac="94:83:c4:a8:81:19", interface="en0")],
+                    **kw)
+
+
+def test_a_missing_collector_binary_is_recorded(monkeypatch):
+    def boom(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+    monkeypatch.setattr(collectors.subprocess, "run", boom)
+    collectors.reset_errors()
+    assert collectors.collect_devices() == []
+    assert any("arp: not found" in e for e in collectors.collection_errors())
+
+
+def test_a_nonzero_exit_with_no_output_is_recorded(monkeypatch):
+    class P:
+        returncode, stdout, stderr = 1, "", "lsof: permission denied"
+    monkeypatch.setattr(collectors.subprocess, "run", lambda cmd, **k: P())
+    collectors.reset_errors()
+    collectors.collect_listeners()
+    assert any("permission denied" in e for e in collectors.collection_errors())
+
+
+def test_first_pass_with_failed_collectors_does_not_adopt_a_baseline(tmp_path, monkeypatch):
+    store = BaselineStore(tmp_path)
+    monkeypatch.setattr(engine, "collect_snapshot", lambda: Snapshot())
+    monkeypatch.setattr(collectors, "collection_errors", lambda: ["arp: not found"])
+    result = engine.run_watch(store)
+    assert result["baseline_established"] is False
+    assert result["baseline_refused"] is True
+    assert result["collector_errors"] == ["arp: not found"]
+    assert store.has_baseline() is False
+
+
+def test_a_cancelled_pass_persists_nothing(tmp_path, monkeypatch):
+    store = BaselineStore(tmp_path)
+    monkeypatch.setattr(engine, "collect_snapshot", _snap)
+    monkeypatch.setattr(collectors, "collection_errors", lambda: [])
+    result = engine.run_watch(store, should_stop=lambda: True)
+    assert result["cancelled"] is True
+    assert store.has_baseline() is False
+    assert store.load_findings() == []
+
+
+def test_collector_errors_ride_along_on_a_normal_pass(tmp_path, monkeypatch):
+    store = BaselineStore(tmp_path)
+    store.save_baseline(_snap())
+    monkeypatch.setattr(engine, "collect_snapshot", _snap)
+    monkeypatch.setattr(collectors, "collection_errors", lambda: ["ndp -an: timed out after 15s"])
+    result = engine.run_watch(store)
+    assert result["collector_errors"] == ["ndp -an: timed out after 15s"]
+    assert store.has_baseline()
+
+
+def test_selftest_fails_on_collector_errors_and_on_nothing_observed(monkeypatch, capsys):
+    from sentry import cli
+    monkeypatch.setattr(cli, "collect_snapshot", lambda: Snapshot())
+    monkeypatch.setattr(collectors, "collection_errors", lambda: ["arp: not found"])
+    assert cli.cmd_selftest(None) == 1
+    assert "collector error: arp: not found" in capsys.readouterr().out
+    monkeypatch.setattr(collectors, "collection_errors", lambda: [])
+    assert cli.cmd_selftest(None) == 1          # ran, but saw nothing
+    monkeypatch.setattr(cli, "collect_snapshot", _snap)
+    assert cli.cmd_selftest(None) == 0
+
+
+def test_state_dir_comes_from_the_environment_first(tmp_path, monkeypatch):
+    from sentry import baseline
+    monkeypatch.setenv(baseline.STATE_DIR_ENV, str(tmp_path / "shared"))
+    assert baseline.default_state_dir() == tmp_path / "shared"
+    assert (tmp_path / "shared").is_dir()
+
+
+def test_the_plist_hands_the_panel_state_dir_to_the_watcher(tmp_path, monkeypatch):
+    from sentry import baseline, watchd
+    monkeypatch.setattr(baseline, "default_state_dir", lambda: tmp_path / "state")
+    plist = watchd.build_plist(300)
+    assert plist["EnvironmentVariables"] == {baseline.STATE_DIR_ENV: str(tmp_path / "state")}
+    assert plist["ProgramArguments"][-1] == "--headless"

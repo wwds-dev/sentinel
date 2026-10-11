@@ -11,9 +11,12 @@ dead tunnel means no traffic rather than unprotected traffic.
 
 Three deliberate choices, all of them about not bricking your network:
 
-  Rules live in a named pf anchor, never the main ruleset. Apple owns
+  Rules live in a named pf anchor, not spliced into Apple's rules. Apple owns
   /etc/pf.conf and ships its own anchors in it; loading into `vpn-agent-killswitch`
-  means flushing ours can never disturb theirs.
+  means flushing ours can never disturb theirs. The one change to the main
+  file is a marked block that registers the anchor (a backup is kept as
+  /etc/pf.conf.vpn-agent.bak); it stays after Disarm and is harmless without
+  rules in the anchor.
 
   The switch does not survive a reboot. A kill switch that comes back on its
   own after a restart is one you cannot escape without knowing pfctl — the
@@ -29,6 +32,8 @@ this module reports state — see recovery_command().
 """
 
 from __future__ import annotations
+
+import re
 
 import ipaddress
 import os
@@ -316,9 +321,13 @@ def arm(
     allow: list[tuple[str, int]],
     *,
     allow_lan: bool = True,
+    extra_interfaces: list[str] | None = None,
 ) -> tuple[bool, str]:
     """
     Block everything that is not the tunnel.
+
+    ``extra_interfaces`` names tunnel devices that are not WireGuard's (an
+    OpenVPN utun); each must look like ``utunN``/``tunN``.
 
     Resolves endpoints, writes the anchor, registers it in /etc/pf.conf if
     needed, and loads it. Returns (ok, message); the message always carries the
@@ -335,6 +344,11 @@ def arm(
         )
 
     interfaces = active_tunnel_interfaces()
+    for device in extra_interfaces or []:
+        if not re.fullmatch(r"(?:utun|tun)\d{1,4}", str(device)):
+            return False, f"Refusing to arm — {device!r} is not a tunnel device name."
+        if device not in interfaces:
+            interfaces.append(device)
     rules = build_rules(addresses, allow, interfaces=interfaces, allow_lan=allow_lan)
     path = write_rules(rules)
 
@@ -353,6 +367,15 @@ def arm(
     ok, output = _run_privileged(script, "Arm the VPN Agent kill switch")
 
     if not ok:
+        if "may still have happened" in output:
+            # Approved, then timed out: pf may hold the rules now. Recording it
+            # as armed keeps Disarm offered; disarming rules that never loaded
+            # is harmless, while showing "Disarmed" over a live block is not.
+            (paths.state_dir() / "killswitch.armed").write_text("armed\n", encoding="utf-8")
+            return False, (
+                f"{output}\nTreating the kill switch as armed so Disarm stays available. "
+                f"If the network is now broken, press Disarm or run:\n  {recovery_command()}"
+            )
         return False, (
             f"Failed to arm: {output}\n\nIf the network is now broken, run:\n  {recovery_command()}"
         )
@@ -365,7 +388,7 @@ def arm(
         warning = f"\nWarning: could not resolve {', '.join(unresolved)} — those endpoints are not exempt."
     if not interfaces:
         warning += (
-            "\nWarning: no WireGuard tunnel detected, so nothing is exempt and "
+            "\nWarning: no tunnel device detected, so nothing is exempt and "
             "traffic is blocked now. Connect a tunnel, then re-arm."
         )
 
@@ -383,12 +406,15 @@ def disarm() -> tuple[bool, str]:
     ok, output = _run_privileged(
         f"pfctl -a {ANCHOR} -F rules", "Disarm the VPN Agent kill switch"
     )
+    if not ok:
+        # The anchor may still be loaded (a cancelled authorisation, a pfctl
+        # error), so the marker stays: status() must keep saying "armed" until
+        # the rules are really gone, never report a block that is still live.
+        return False, f"Failed to disarm: {output}\n\nRun manually:\n  {recovery_command()}"
+
     marker = paths.state_dir() / "killswitch.armed"
     if marker.exists():
         marker.unlink()
-
-    if not ok:
-        return False, f"Failed to disarm: {output}\n\nRun manually:\n  {recovery_command()}"
     return True, "Kill switch disarmed — traffic routes normally again."
 
 
@@ -429,28 +455,16 @@ def _ensure_registered_command() -> str:
 
 def _run_privileged(script: str, prompt: str) -> tuple[bool, str]:
     """
-    Run a command as root.
+    Run a command as root, through the macOS authorisation dialog.
 
-    Tries cached sudo credentials first; falls back to the native macOS
-    authorisation dialog, which is the only way a GUI can ask. Nothing secret
-    is ever passed here — these are firewall rules and file paths — so the
-    command being briefly visible in the process list costs nothing.
+    Arming and disarming pf is a Sentinel-gated action, so it never rides on a
+    cached sudo ticket; the shared runner in ``privileged`` owns the policy.
+    Nothing secret is ever passed here — these are firewall rules and file
+    paths — so the command being briefly visible in the process list costs
+    nothing.
     """
-    if os.geteuid() == 0:
-        return _run(["bash", "-c", script])
-
-    ok, output = _run(["sudo", "-n", "bash", "-c", script])
-    if ok:
-        return True, output
-
-    if "password" not in output.lower() and "sudo" not in output.lower():
-        return False, output
-
-    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
-    return _run([
-        "osascript", "-e",
-        f'do shell script "{escaped}" with prompt "{prompt}" with administrator privileges',
-    ])
+    from agents.vpn_agent.services import privileged
+    return privileged.run_as_root(script, prompt, TIMEOUT, allow_cached_sudo=False)
 
 
 def _run(command: list[str]) -> tuple[bool, str]:

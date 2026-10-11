@@ -24,7 +24,11 @@ from .models import (
 
 
 def collect_snapshot() -> Snapshot:
-    """Observe the live system, read-only, and return a timestamped snapshot."""
+    """Observe the live system, read-only, and return a timestamped snapshot.
+
+    collectors.collection_errors() lists what failed on the way, so a caller
+    can tell an empty network from a collector that could not run."""
+    collectors.reset_errors()
     devices = collectors.collect_devices()
     gateway_ip, _iface = collectors.collect_default_route()
     return Snapshot(
@@ -224,15 +228,23 @@ def merge_into_baseline(baseline: Snapshot, current: Snapshot) -> Snapshot:
     )
 
 
-def run_watch(store: BaselineStore | None = None, *, snapshot: Snapshot | None = None) -> dict:
+def run_watch(store: BaselineStore | None = None, *, snapshot: Snapshot | None = None,
+              should_stop=None) -> dict:
     """One watch pass: snapshot → diff → persist. Returns a summary dict.
 
     On the very first run there is no baseline, so the snapshot is adopted as the
     baseline and no findings are raised (everything is "new" only relative to
     nothing). Callers get ``{"baseline_established": True}`` so the UI can say so.
+    ``should_stop`` is checked after the snapshot: a cancelled pass persists
+    nothing and returns ``{"cancelled": True}``. A first pass whose collectors
+    failed is not adopted as the baseline — an empty baseline would make every
+    later device a "new device".
     """
     store = store or BaselineStore()
     current = snapshot if snapshot is not None else collect_snapshot()
+    errors = collectors.collection_errors() if snapshot is None else []
+    if should_stop and should_stop():
+        return {"cancelled": True, "findings": [], "collector_errors": errors}
 
     # Hold the store lock across the whole load→diff→merge→save so a concurrent
     # pass (in-app worker vs. launchd watcher) cannot load the same baseline and
@@ -240,15 +252,18 @@ def run_watch(store: BaselineStore | None = None, *, snapshot: Snapshot | None =
     with store.transaction():
         baseline = store.load_baseline()
         if baseline is None:
-            store.save_baseline(current)
-            return {
-                "baseline_established": True,
-                "findings": [],
+            counts = {
                 "device_count": len(current.devices),
                 "listener_count": len(current.listeners),
                 "connection_count": len(current.connections),
                 "taken_at": current.taken_at,
+                "collector_errors": errors,
             }
+            if errors:
+                return {"baseline_established": False, "baseline_refused": True,
+                        "findings": [], **counts}
+            store.save_baseline(current)
+            return {"baseline_established": True, "findings": [], **counts}
 
         findings = diff(baseline, current)
         store.append_findings(findings)
@@ -259,6 +274,7 @@ def run_watch(store: BaselineStore | None = None, *, snapshot: Snapshot | None =
         "baseline_established": False,
         "findings": [f.as_dict() for f in findings],
         "top_severity": top,
+        "collector_errors": errors,
         "device_count": len(current.devices),
         "listener_count": len(current.listeners),
         "connection_count": len(current.connections),

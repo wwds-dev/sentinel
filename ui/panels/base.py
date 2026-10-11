@@ -386,6 +386,23 @@ class AgentPanel(QWidget):
         self._request_id = request_id if allowed else None
         return allowed
 
+    def reauthorize(self, messages: list) -> bool:
+        """Check the budget caps again with the messages about to be sent.
+
+        Call it when the prompt was assembled after authorize() — otherwise
+        the caps only ever saw the target string. False means the request was
+        blocked and has been abandoned; the panel must not send it.
+        """
+        recheck = getattr(self.host, "recheck_budget", None)
+        if recheck is None:
+            return True
+        text = "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))
+        if recheck(self.agent_key, self.provider, self.model, text,
+                   request_id=self._request_id):
+            return True
+        self.abandon("blocked", error="Blocked by the budget re-check before sending.")
+        return False
+
     def record(self, response: str, messages: list | None = None) -> None:
         request_id = self._request_id
         self.host.record_request(
@@ -393,8 +410,15 @@ class AgentPanel(QWidget):
         )
         self._request_id = None
 
-    def abandon(self, reason: str = "error") -> None:
+    def abandon(self, reason: str = "error", error: str | None = None) -> None:
         request_id = self._request_id
+        if error:
+            # Lets the Run log's "errors" column say what went wrong. A host
+            # without the hook (older callers, test doubles) just records the
+            # status.
+            noter = getattr(self.host, "note_request_error", None)
+            if callable(noter):
+                noter(self.agent_key, error, request_id=request_id)
         self.host.abandon_request(
             self.agent_key, reason, request_id=request_id,
         )
@@ -437,8 +461,13 @@ class AgentPanel(QWidget):
         return self.worker is not None and self.worker.isRunning()
 
     def stop_worker(self) -> bool:
-        """Cancel the in-flight request, if there is one. True if it was running."""
-        if self.is_running():
+        """Cancel the in-flight model request, if there is one. True if it was running.
+
+        Checks the model worker directly rather than is_running(): panels that
+        own other workers (a file search, a Wi-Fi scan) widen is_running() to
+        cover them, and this method must only ever touch self.worker.
+        """
+        if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
             return True
         return False

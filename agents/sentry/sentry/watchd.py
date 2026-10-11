@@ -56,12 +56,17 @@ def _log_path() -> Path:
 def build_plist(interval: int) -> dict:
     interval = max(MIN_INTERVAL, int(interval))
     log = str(_log_path())
+    from .baseline import STATE_DIR_ENV, default_state_dir
+
     return {
         "Label": LABEL,
         "ProgramArguments": [_python_executable(), str(MAIN), "--headless"],
         "StartInterval": interval,
         "RunAtLoad": True,
         "WorkingDirectory": str(PROJECT),
+        # The headless process must read and write the same baseline and
+        # findings as the panel, whatever its working directory can import.
+        "EnvironmentVariables": {STATE_DIR_ENV: str(default_state_dir())},
         "StandardOutPath": log,
         "StandardErrorPath": log,
         "ProcessType": "Background",

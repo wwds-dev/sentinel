@@ -27,9 +27,10 @@ from services.deepseek_client import DeepSeekClientWrapper
 from services.gemini_client import GeminiClientWrapper
 from services.kimi_client import KimiClientWrapper
 from services.openai_client import OpenAIClientWrapper
+from services.provider_catalog import CLOUD_PROVIDERS
 from services.registry import Registry
 from services.runtime_paths import PortableRuntimeError, is_portable, user_data_base
-from services.validator import Validator
+from services.validator import Validator, parse_money
 from ui.style import global_stylesheet, polish_combo_box
 from ui.theme import LABELS as THEME_LABELS, THEMES
 from ui.theme import current as current_theme, set_current as set_theme
@@ -49,14 +50,28 @@ def _discard_detached_worker(worker) -> None:
         pass
 
 
+def esc(value) -> str:
+    """HTML-escape a logged value for the Cost history and Run log tables."""
+    return html.escape(str(value if value is not None else ""))
+
+
 def shutdown_panels(app) -> None:
-    """Stop panel work and join workers that provide a shutdown contract."""
-    for panel in getattr(app, "panels", {}).values():
-        shutdown = getattr(panel, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-        elif panel.is_running():
-            panel.stop()
+    """Stop panel work and join workers that provide a shutdown contract.
+
+    One panel's failure must not leave the others running: the exception is
+    noted and the loop goes on.
+    """
+    for key, panel in getattr(app, "panels", {}).items():
+        try:
+            shutdown = getattr(panel, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+            elif panel.is_running():
+                panel.stop()
+        except Exception as exc:  # noqa: BLE001
+            note = getattr(app, "_note_failure", None)
+            if callable(note):
+                note(f"shutdown: {key}", exc)
 
 
 def show_cost_history(app):
@@ -108,7 +123,7 @@ def show_cost_history(app):
         summary_label.setText(
             f"Requests: {total_requests} | "
             f"Tokens: {total_tokens:,} | "
-            f"Total Cost: €{total_cost:.2f}"
+            f"Total Cost: €{total_cost:.4f}"
         )
 
         if not filtered:
@@ -119,16 +134,16 @@ def show_cost_history(app):
         for e in reversed(filtered[-200:]):
             rows += f"""
             <tr>
-                <td>{e.get('timestamp', '')}</td>
-                <td>{e.get('agent', '')}</td>
-                <td>{e.get('backend', '')}</td>
-                <td>{e.get('model', '')}</td>
+                <td>{esc(e.get('timestamp', ''))}</td>
+                <td>{esc(e.get('agent', ''))}</td>
+                <td>{esc(e.get('backend', ''))}</td>
+                <td>{esc(e.get('model', ''))}</td>
                 <td>{e.get('input_tokens', 0)}</td>
                 <td>{e.get('cached_input_tokens', 0)}</td>
                 <td>{e.get('output_tokens', 0)}</td>
                 <td>{e.get('total_tokens', 0)}</td>
-                <td>€{float(e.get('cost_eur', e.get('estimated_cost', 0.0))):.2f}</td>
-                <td>{e.get('cost_type', '')}</td>
+                <td>€{float(e.get('cost_eur', e.get('estimated_cost', 0.0))):.4f}</td>
+                <td>{esc(e.get('cost_type', ''))}</td>
             </tr>
             """
 
@@ -270,16 +285,16 @@ def show_run_log(app):
         for e in reversed(filtered[-300:]):
             status_val = e.get("status", "")
             color = {"success": "#3cff88", "error": "#ff5555", "cancelled": "#ffaa00"}.get(status_val, "#ffffff")
-            error_cell = f'<span style="color:#ff5555">{e.get("error", "")}</span>' if e.get("error") else ""
+            error_cell = f'<span style="color:#ff5555">{esc(e.get("error", ""))}</span>' if e.get("error") else ""
             rows += f"""
             <tr>
-                <td>{e.get("timestamp", "")}</td>
-                <td>{e.get("run_id", "")}</td>
-                <td>{e.get("agent", "")}</td>
-                <td>{e.get("tool", "")}</td>
-                <td>{e.get("provider", "")}</td>
-                <td>{e.get("model", "")}</td>
-                <td><span style="color:{color}">{status_val}</span></td>
+                <td>{esc(e.get("timestamp", ""))}</td>
+                <td>{esc(e.get("run_id", ""))}</td>
+                <td>{esc(e.get("agent", ""))}</td>
+                <td>{esc(e.get("tool", ""))}</td>
+                <td>{esc(e.get("provider", ""))}</td>
+                <td>{esc(e.get("model", ""))}</td>
+                <td><span style="color:{color}">{esc(status_val)}</span></td>
                 <td>{e.get("input_tokens", 0)}</td>
                 <td>{e.get("output_tokens", 0)}</td>
                 <td>€{float(e.get("cost_eur", 0.0)):.4f}</td>
@@ -460,7 +475,7 @@ def show_settings(app):
 
     theme_note = QLabel(
         "Repaints the whole window, typed text included. Status colour keeps "
-        "its meaning in both themes — a destructive button stays red, a model "
+        "its meaning in every theme — a destructive button stays red, a model "
         "that costs money stays amber, and an adapter reporting monitor mode "
         "OK stays green."
     )
@@ -485,6 +500,15 @@ def show_settings(app):
     theme_box.currentIndexChanged.connect(preview_theme)
     dialog.rejected.connect(restore_theme)
 
+    ratings_check = QCheckBox(
+        "Refresh public model ratings (LMArena leaderboard) at most once a day")
+    ratings_check.setChecked(get_setting("public_ratings_refresh", "on") == "on")
+    ratings_check.setToolTip(
+        "On: each model scan also fetches the public leaderboard the router "
+        "ranks models by, when the cached copy is over a day old. Off, or in "
+        "Local only mode: no contact; the shipped snapshot is used instead.")
+    gl.addWidget(ratings_check, 5, 0, 1, 2)
+
     reset_heading = QLabel("Portable emergency reset")
     reset_heading.setStyleSheet("font-weight: 600; color: #ff6b6b;")
     reset_description = QLabel(
@@ -502,11 +526,11 @@ def show_settings(app):
     reset_heading.setVisible(is_portable())
     reset_description.setVisible(is_portable())
     emergency_reset_btn.setVisible(is_portable())
-    gl.addWidget(reset_heading, 5, 0, 1, 2)
-    gl.addWidget(reset_description, 6, 0, 1, 2)
-    gl.addWidget(emergency_reset_btn, 7, 0, 1, 2)
+    gl.addWidget(reset_heading, 6, 0, 1, 2)
+    gl.addWidget(reset_description, 7, 0, 1, 2)
+    gl.addWidget(emergency_reset_btn, 8, 0, 1, 2)
 
-    gl.setRowStretch(8, 1)
+    gl.setRowStretch(9, 1)
     tabs.addTab(_scrolling(general_tab), "General")
 
     # ── Tab 2: Agents ─────────────────────────────────────────────
@@ -608,6 +632,32 @@ def show_settings(app):
         pricing_widgets[key] = (in_edit, cached_edit, out_edit)
 
     pl.addLayout(pricing_grid)
+
+    # A model Sentinel has no price row for (an adopted one, say) bills at its
+    # provider's default until it gets its own row; this is where that row is
+    # added. Filled in and saved with Save All; a blank model name adds nothing.
+    pl.addWidget(QLabel("<b>Add a price</b> (for a model not listed above):"))
+    add_price_row = QHBoxLayout()
+    add_price_provider = MenuComboBox()
+    add_price_provider.setObjectName("AddPriceProvider")
+    add_price_provider.addItems(sorted(CLOUD_PROVIDERS))
+    polish_combo_box(add_price_provider)
+    add_price_model = QLineEdit()
+    add_price_model.setObjectName("AddPriceModel")
+    add_price_model.setPlaceholderText("model id, exactly as the provider lists it")
+    add_price_in = QLineEdit()
+    add_price_in.setObjectName("AddPriceInput")
+    add_price_in.setPlaceholderText("input /1M USD")
+    add_price_cached = QLineEdit()
+    add_price_cached.setObjectName("AddPriceCached")
+    add_price_cached.setPlaceholderText("cached (optional)")
+    add_price_out = QLineEdit()
+    add_price_out.setObjectName("AddPriceOutput")
+    add_price_out.setPlaceholderText("output /1M USD")
+    for widget in (add_price_provider, add_price_model, add_price_in,
+                   add_price_cached, add_price_out):
+        add_price_row.addWidget(widget)
+    pl.addLayout(add_price_row)
     pl.addStretch()
     tabs.addTab(_scrolling(pricing_tab), "Pricing")
 
@@ -1120,7 +1170,13 @@ def show_settings(app):
         try:
             if getattr(app, "chat_worker", None) is not None and app.chat_worker.isRunning():
                 app.stop_chat_worker()
-            shutdown_panels(app)
+            stopper = getattr(app, "stop_background_work", None)
+            if callable(stopper):
+                # Chat, model scan and pull, panels and open run-log rows: all
+                # quiet before the folder they write to is erased.
+                stopper()
+            else:
+                shutdown_panels(app)
             from services.portable_reset import erase_portable_user_data
             erase_portable_user_data()
         except Exception as exc:  # noqa: BLE001 - a failed reset must never
@@ -1145,29 +1201,30 @@ def show_settings(app):
 
         # General
         try:
-            eur = float(eur_input.text().strip())
-            sess = float(sess_input.text().strip())
-            daily = float(daily_input.text().strip())
+            eur = parse_money(eur_input.text(), field="EUR per USD", minimum=0.000001)
+            sess = parse_money(sess_input.text(), field="Session budget")
+            daily = parse_money(daily_input.text(), field="Daily budget")
             save_setting("eur_per_usd", str(eur))
             save_setting("session_budget_eur", str(sess))
             save_setting("daily_budget_eur", str(daily))
+            save_setting("public_ratings_refresh", "on" if ratings_check.isChecked() else "off")
             app.session_budget_eur = sess
             app.daily_budget_eur = daily
             if hasattr(app, "session_budget_input"):
                 app.session_budget_input.setText(str(sess))
             if hasattr(app, "daily_budget_input"):
                 app.daily_budget_input.setText(str(daily))
-        except ValueError:
-            errors.append("General: invalid number in EUR rate or budget fields.")
+        except ValueError as exc:
+            errors.append(f"General: {exc} Previous values kept.")
 
         # Agents
         with get_connection() as conn:
             for name, (chk, budget_edit) in agent_widgets.items():
                 raw = budget_edit.text().strip()
                 try:
-                    budget = float(raw) if raw else None
-                except ValueError:
-                    errors.append(f"Agent '{name}': invalid budget value '{raw}'.")
+                    budget = parse_money(raw, field=f"Agent '{name}' budget", allow_blank=True)
+                except ValueError as exc:
+                    errors.append(f"{exc} Previous value kept.")
                     continue
                 conn.execute(
                     "UPDATE agents SET enabled = ?, budget_limit_eur = ? WHERE name = ?",
@@ -1188,18 +1245,38 @@ def show_settings(app):
         with get_connection() as conn:
             for (backend, model), (in_edit, cached_edit, out_edit) in pricing_widgets.items():
                 try:
-                    in_val = float(in_edit.text().strip())
-                    cached_raw = cached_edit.text().strip()
-                    cached_val = float(cached_raw) if cached_raw else None
-                    out_val = float(out_edit.text().strip())
+                    label = f"Pricing {backend}/{model}"
+                    in_val = parse_money(in_edit.text(), field=f"{label} input")
+                    cached_val = parse_money(cached_edit.text(), field=f"{label} cached input",
+                                             allow_blank=True)
+                    out_val = parse_money(out_edit.text(), field=f"{label} output")
                     conn.execute(
                         "UPDATE pricing SET input_per_1m_usd = ?, "
                         "cached_input_per_1m_usd = ?, output_per_1m_usd = ? "
                         "WHERE backend = ? AND model = ?",
                         (in_val, cached_val, out_val, backend, model)
                     )
-                except ValueError:
-                    errors.append(f"Pricing {backend}/{model}: invalid number.")
+                except ValueError as exc:
+                    errors.append(f"{exc} Previous values kept.")
+            new_model = add_price_model.text().strip()
+            if new_model:
+                try:
+                    label = f"New price {add_price_provider.currentText()}/{new_model}"
+                    # Zero means unknown, never free: a new row needs real rates.
+                    in_val = parse_money(add_price_in.text(), field=f"{label} input",
+                                         minimum=0.000001)
+                    cached_val = parse_money(add_price_cached.text(),
+                                             field=f"{label} cached input", allow_blank=True)
+                    out_val = parse_money(add_price_out.text(), field=f"{label} output",
+                                          minimum=0.000001)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO pricing (backend, model, input_per_1m_usd, "
+                        "cached_input_per_1m_usd, output_per_1m_usd) VALUES (?,?,?,?,?)",
+                        (add_price_provider.currentText(), new_model,
+                         in_val, cached_val, out_val)
+                    )
+                except ValueError as exc:
+                    errors.append(f"{exc} Nothing was added.")
             conn.commit()
 
         # OSINT Keys (API keys are written to .env on "Save Key", not here)

@@ -13,6 +13,8 @@ returned, and ``is_running``/``status`` read the real pid file and process table
 
 from __future__ import annotations
 
+import re
+
 import shutil
 import shlex
 import subprocess
@@ -23,7 +25,11 @@ from services.runtime_paths import user_data_base
 
 # Injected in tests; the default raises the real admin prompt.
 try:  # pragma: no cover - exercised via the real app, mocked in tests
-    from agents.vpn_agent.services.privileged import run_as_root as _default_run_as_root
+    from functools import partial as _partial
+    from agents.vpn_agent.services.privileged import run_as_root as _privileged_run_as_root
+    # Sentinel's gated actions always go through the macOS dialog (never a
+    # cached sudo ticket) — that is what the README and the review promise.
+    _default_run_as_root = _partial(_privileged_run_as_root, allow_cached_sudo=False)
 except Exception:  # pragma: no cover
     def _default_run_as_root(script: str, prompt: str, timeout: float = 30):
         return False, "Privileged execution is unavailable."
@@ -79,6 +85,28 @@ def is_running() -> bool:
     """Whether the tracked Sentinel process exists; not a tunnel-health check."""
     pid = _read_pid()
     return pid is not None and _is_tracked_process(pid)
+
+
+_DEVICE_LINE = re.compile(
+    r"(?:Opened utun device|TUN/TAP device)\s+(utun\d+|tun\d+)\b")
+
+
+def tunnel_device() -> str | None:
+    """The utun/tun device of the tracked OpenVPN tunnel, or None.
+
+    OpenVPN logs the device it opened ("Opened utun device utun4", or
+    "TUN/TAP device tun0 opened"). The kill switch must pass traffic on exactly
+    that device; the name is validated so nothing else from the log can reach
+    a pf rule.
+    """
+    if not is_running():
+        return None
+    try:
+        text = log_file().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    matches = _DEVICE_LINE.findall(text)
+    return matches[-1] if matches else None
 
 
 def _quote(text: str) -> str:

@@ -18,6 +18,9 @@ hiddenimports = [
     "tiktoken_ext.openai_public",
     "whois",                         # lazy import in providers/domain_lookup
     "dns", "dns.resolver",           # lazy import in providers/domain_lookup
+    "segno",                         # QR export in the Tunnel Servers tab
+    "cryptography.hazmat.primitives.ciphers.aead",   # site backups
+    "cryptography.hazmat.primitives.kdf.scrypt",
 ]
 
 # SDKs / libs with data files or plugin discovery that static analysis can miss.

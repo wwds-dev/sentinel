@@ -79,7 +79,12 @@ def _hibp(email: str) -> dict:
 
 
 def _breachdirectory(email: str) -> dict:
-    """BreachDirectory open API — free, no key."""
+    """BreachDirectory open API — free, no key.
+
+    Metadata only, like the paid breach services: each entry the service sends
+    is reduced to the breach it came from, here, before anything is returned.
+    Any password, hash or other field on an entry is never read or passed on.
+    """
     try:
         r = requests.get(
             "https://breachdirectory.org/api",
@@ -89,13 +94,30 @@ def _breachdirectory(email: str) -> dict:
         )
         if r.status_code == 200:
             data = r.json()
-            sources = data.get("result", [])
+            data = data if isinstance(data, dict) else {}
+            rows = data.get("result", [])
+            rows = rows if isinstance(rows, list) else []
+            counts: dict[str, int] = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                names = row.get("sources")
+                for name in (names if isinstance(names, list) else [names]):
+                    if name:
+                        counts[str(name)[:100]] = counts.get(str(name)[:100], 0) + 1
+            databases = sorted(
+                ({"database": name, "records": count} for name, count in counts.items()),
+                key=lambda item: item["records"], reverse=True)
             return {
                 "source": "breachdirectory",
                 "status": "ok",
-                "found": data.get("found", False),
-                "result_count": len(sources) if isinstance(sources, list) else 0,
-                "sources": sources[:10] if isinstance(sources, list) else [],
+                "found": bool(data.get("found")),
+                "result_count": len(rows),
+                "breach_count": len(databases),
+                "breach_databases": databases[:50],
+                "note": ("Breach databases the address appears in, with a record count "
+                         "each. Metadata only — Sentinel drops every other field the "
+                         "service returns unread."),
             }
         return {"source": "breachdirectory", "status": "error", "code": r.status_code}
     except Exception as e:
@@ -225,7 +247,8 @@ def lookup(email: str, *, selected_sources=None, on_progress=None,
         result["error"] = "Invalid email format — skipping live lookup."
         return result
 
-    selected = set(selected_sources or DEFAULT_SOURCES)
+    # None means "the defaults"; an empty selection is nothing, not everything.
+    selected = set(DEFAULT_SOURCES if selected_sources is None else selected_sources)
     source_calls = [
         ("emailrep", "EmailRep", _emailrep),
         ("gravatar", "Gravatar", _gravatar),

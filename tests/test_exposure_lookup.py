@@ -49,6 +49,82 @@ def test_ransomware_live_flags_direct_victim_vs_mention(monkeypatch):
     ]
 
 
+def test_a_similar_looking_victim_is_not_the_target(monkeypatch):
+    """The target's name part was tested as a substring, so a victim called
+    "Pineapple Holdings" (pineapple.com) counted as a direct match for apple.com
+    and raised the red "likely breach" headline."""
+    payload = [
+        {"victim": "Pineapple Holdings", "domain": "pineapple.com", "group": "lockbit",
+         "description": "Retail group."},
+        {"victim": "Snapple Beverage", "domain": "snapple.example", "group": "akira"},
+        {"victim": "Applebee Rentals", "domain": "applebee.com", "group": "play"},
+    ]
+    monkeypatch.setattr(exposure_lookup.requests, "get",
+                        lambda *a, **k: _Response(payload))
+    result = exposure_lookup.lookup(
+        "apple.com", "Domain", selected_sources=("ransomware_live",))
+    rl = result["ransomware_live"]
+    assert rl["direct_victim_matches"] == 0
+    assert {v["match"] for v in rl["victims"]} == {"keyword"}
+    assert result["summary"]["on_ransomware_leak_site"] is False
+    assert result["summary"]["exposure_detected"] is True   # still a lead to review
+
+
+def test_a_whole_label_or_the_same_domain_is_a_direct_match(monkeypatch):
+    payload = [
+        {"victim": "Apple Inc.", "domain": "", "group": "a"},
+        {"victim": "Some Holding", "domain": "www.apple.com", "group": "b"},
+        {"victim": "Shop", "domain": "store.apple.com", "group": "c"},
+        {"victim": "Elsewhere", "domain": "apple.com.evil.example", "group": "d"},
+    ]
+    monkeypatch.setattr(exposure_lookup.requests, "get",
+                        lambda *a, **k: _Response(payload))
+    result = exposure_lookup.lookup(
+        "apple.com", "Domain", selected_sources=("ransomware_live",))
+    matches = {v["victim"]: v["match"] for v in result["ransomware_live"]["victims"]}
+    assert matches == {"Apple Inc.": "victim-name", "Some Holding": "domain",
+                       "Shop": "domain", "Elsewhere": "keyword"}
+    assert result["ransomware_live"]["direct_victim_matches"] == 3
+
+
+def test_a_company_name_matches_a_whole_domain_label_only(monkeypatch):
+    payload = [
+        {"victim": "Unrelated", "domain": "acme.com", "group": "a"},
+        {"victim": "Unrelated too", "domain": "acmehotels.com", "group": "b"},
+    ]
+    monkeypatch.setattr(exposure_lookup.requests, "get",
+                        lambda *a, **k: _Response(payload))
+    result = exposure_lookup.lookup(
+        "Acme", "Company", selected_sources=("ransomware_live",))
+    matches = {v["victim"]: v["match"] for v in result["ransomware_live"]["victims"]}
+    assert matches == {"Unrelated": "domain", "Unrelated too": "keyword"}
+
+
+def test_an_empty_selection_contacts_no_exposure_service(monkeypatch):
+    """None means the defaults; an empty selection used to mean all six."""
+    def refuse(*args, **kwargs):
+        raise AssertionError("no service may be contacted")
+
+    monkeypatch.setattr(exposure_lookup.requests, "get", refuse)
+    monkeypatch.setattr(exposure_lookup.requests, "post", refuse)
+    for nothing in ((), [], set()):
+        result = exposure_lookup.lookup(
+            "example.com", "Domain", selected_sources=nothing)
+        assert result["sources_contacted"] == [] and result["sources_skipped"] == []
+        assert result["summary"]["sources_queried"] == 0
+
+
+def test_no_selection_argument_still_means_the_default_sources(monkeypatch):
+    called = []
+    for name in ("_ransomware_live", "_ahmia", "_intelx", "_dehashed",
+                 "_snusbase", "_leakcheck"):
+        monkeypatch.setattr(
+            exposure_lookup, name,
+            lambda *a, name=name, **k: called.append(name) or {"status": "ok"})
+    exposure_lookup.lookup("example.com", "Domain")
+    assert len(called) == 6
+
+
 def test_ransomware_live_rate_limit_is_a_clean_error(monkeypatch):
     monkeypatch.setattr(exposure_lookup.requests, "get",
                         lambda *a, **k: _Response(status_code=429))

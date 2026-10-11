@@ -34,4 +34,4 @@ This is not an amnesic or forensic-erasure feature. Flash media can retain remap
 
 A native build matches the CPU architecture on which it was made unless it was explicitly built universal. Intel builds may need Rosetta on Apple silicon. A second Mac may apply Gatekeeper quarantine: use Finder's **Open** context menu and Privacy & Security only for a build you trust. Never clear quarantine on an unknown app. USB storage may launch and save more slowly than an internal disk.
 
-**Completion check:** locate `Sentinel Data/.env` and `data/sentinel.db` on the removable volume, confirm no new Sentinel data appeared under Application Support, quit the app, and eject safely.
+**Completion check:** locate `Sentinel Data/.env` and `data/sentinel.db` on the removable volume, confirm no new Sentinel data appeared under Application Support, quit the app, and eject safely. If you installed Sentry's background watch, it is a launch agent on the host Mac (not on the volume) that points into the volume; press Remove in Sentry before you eject.

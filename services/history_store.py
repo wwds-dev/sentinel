@@ -34,6 +34,39 @@ class HistoryStore:
 
         return filepath
 
+    def update_chat(self, filepath: str | Path, *, messages: list, response: str,
+                    backend: str | None = None, model: str | None = None,
+                    command: str | None = None, project: str | None = None) -> Path:
+        """Rewrite an existing saved chat with the conversation so far.
+
+        One conversation is one file: save_chat() creates it on the first
+        turn and this keeps it current on every later turn. Before this, every
+        turn wrote a new snapshot, so a ten-turn chat showed up ten times under
+        the same title, and a rename or a project move landed on one of them.
+        The title the user gave it and its original timestamp are kept.
+        """
+        path = Path(filepath)
+        payload = self.load_chat(str(path))
+        payload["messages"] = messages
+        payload["response"] = response
+        payload["updated"] = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+        if backend:
+            payload["backend"] = backend
+        if model:
+            payload["model"] = model
+        if command:
+            payload["command"] = command
+        if project is not None:
+            if project:
+                payload["project"] = project
+            else:
+                payload.pop("project", None)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        tmp.replace(path)
+        return path
+
     def list_chats(self):
         return sorted(self.folder.glob("*.json"), reverse=True)  # newest first
 

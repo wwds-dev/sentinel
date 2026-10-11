@@ -12,6 +12,7 @@ from PySide6.QtCore import QEvent, QObject, QSize, Qt, QUrl
 from ui.theme import accent, recolour
 from PySide6.QtGui import (
     QColor,
+    QDesktopServices,
     QFont,
     QFontMetrics,
     QImageReader,
@@ -61,7 +62,7 @@ LEARNING_CURRICULUM = (
         LearningTopic("Sentry", "sentry.md", "Read-only network anomaly watch and continuous background monitoring."),
         LearningTopic("Bug Spray", "bug_spray.md", "Authorised website assessment and reporting."),
         LearningTopic("Tunnel", "tunnel.md", "Profile-aware VPN checks, safe previews, design, and troubleshooting."),
-        LearningTopic("Forge", "forge.md", "Create and review agent scaffolds."),
+        LearningTopic("Forge", "forge.md", "Draft and approve agent scaffolds."),
     )),
     ("Across Sentinel", (
         LearningTopic("Agent workflows", "workflows.md", "Combine agents to complete larger goals."),
@@ -111,6 +112,18 @@ _CODE_BLOCK = re.compile(r"<pre><code[^>]*>(.*?)\n?</code></pre>", re.S)
 
 HEADER_ROLE = Qt.UserRole + 1
 TOPIC_ROLE = Qt.UserRole + 2
+
+
+def topic_index_for_link(url: QUrl) -> int | None:
+    """The index in LEARNING_TOPICS a relative `.md` link points at, if any."""
+    path = url.path()
+    if not path.endswith(".md"):
+        return None
+    name = path.rsplit("/", 1)[-1]
+    for index, topic in enumerate(LEARNING_TOPICS):
+        if topic.filename.rsplit("/", 1)[-1] == name:
+            return index
+    return None
 
 
 def load_learning_topic(resource_root: Path, topic: LearningTopic) -> str:
@@ -319,6 +332,25 @@ def build_learning_center(app) -> QDialog:
         search_box.clear()
 
     topic_list.currentItemChanged.connect(render_topic)
+
+    def follow_link(url: QUrl) -> None:
+        index = topic_index_for_link(url)
+        if index is not None:
+            for row in range(topic_list.count()):
+                if topic_list.item(row).data(TOPIC_ROLE) == index:
+                    topic_list.setCurrentRow(row)
+                    if url.hasFragment():
+                        browser.scrollToAnchor(url.fragment())
+                    return
+        if url.scheme() in ("http", "https", "mailto"):
+            QDesktopServices.openUrl(url)
+        elif url.hasFragment() and not url.path().endswith(".md"):
+            browser.scrollToAnchor(url.fragment())
+
+    # Relative links between lessons ("[Chat](chat.md)") switch topic; letting
+    # the browser follow them tried to open the file as a bare document.
+    browser.setOpenLinks(False)
+    browser.anchorClicked.connect(follow_link)
     app._wire_document_search(
         search_box, previous_btn, next_btn, match_label, browser
     )

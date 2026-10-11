@@ -53,11 +53,17 @@ def load_site(name: str, *, strict_permissions: bool = True) -> Site:
 
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
-    return Site.from_dict(data)
+    try:
+        site = Site.from_dict(data)
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"Site file {path.name} is malformed: {exc}") from exc
+    site.check_strict()
+    return site
 
 
 def save_site(site: Site) -> None:
     """Persist a site, replacing any previous version atomically."""
+    site.check_strict()
     path = paths.site_file(site.name)
     payload = json.dumps(site.to_dict(), indent=2, sort_keys=False)
 

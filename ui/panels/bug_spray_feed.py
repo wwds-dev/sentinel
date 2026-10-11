@@ -23,6 +23,7 @@ from ui.widgets import MenuComboBox
 
 PROJECT = Path(__file__).resolve().parents[2] / "agents" / "bug_spray"
 PYTHON = PROJECT / ".venv" / "bin" / "python"
+NO_PLATFORMS_TEXT = "No platforms enabled: open Watchlist to choose."
 
 
 def _event_label(event: dict) -> str:
@@ -334,7 +335,10 @@ class BugSprayFeed(QGroupBox):
         failed = [name for name, result in errors.items() if "error" in result]
         suffix = f" · errors: {', '.join(failed)}" if failed else ""
         shown = "saved programs, watchlist off" if self.show_all.isChecked() else "watched programs"
-        self.status.setText(f"Last scan: {stamp} · {len(data['programs'])} {shown}{suffix}")
+        self.status.setText(
+            NO_PLATFORMS_TEXT if not self._settings.enabled_platforms
+            else f"Last scan: {stamp} · {len(data['programs'])} {shown}{suffix}"
+        )
 
     def _filter(self, text: str) -> None:
         needle = text.casefold().strip()
@@ -414,7 +418,10 @@ class BugSprayFeed(QGroupBox):
         self._maybe_scan()
 
     def _maybe_scan(self) -> None:
-        if self._scan.state() != QProcess.NotRunning or not self._settings.enabled_platforms:
+        if self._scan.state() != QProcess.NotRunning:
+            return
+        if not self._settings.enabled_platforms:
+            self.status.setText(NO_PLATFORMS_TEXT)
             return
         if self._last_scan:
             try:
@@ -430,6 +437,12 @@ class BugSprayFeed(QGroupBox):
     def scan_now(self, full: bool = False) -> None:
         if self._scan.state() != QProcess.NotRunning:
             return
+        # Re-read the file: the terminal shares it, and a scan with nothing
+        # enabled must neither spawn the child nor reach any network.
+        self._settings = config.load()
+        if not self._settings.enabled_platforms:
+            self.status.setText(NO_PLATFORMS_TEXT)
+            return
         if not PYTHON.is_file():
             self.status.setText("Bug Spray Python environment is missing; see its README setup instructions.")
             return
@@ -441,6 +454,13 @@ class BugSprayFeed(QGroupBox):
         )
         args = [str(PROJECT / "main.py"), "scan", "--json"] + (["--full"] if full else [])
         self._scan.start(str(PYTHON), args)
+
+    def shutdown(self, timeout_ms: int = 2000) -> None:
+        """Stop the background scan and its timer before the widgets go."""
+        self._timer.stop()
+        if self._scan.state() != QProcess.NotRunning:
+            self._scan.kill()
+            self._scan.waitForFinished(timeout_ms)
 
     def _drain_scan_output(self) -> None:
         self._scan.readAllStandardOutput()

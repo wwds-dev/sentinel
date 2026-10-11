@@ -14,6 +14,32 @@ def estimate_prompt_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+# When nothing in the pricing table can price a cloud model: the ceiling of
+# frontier pricing at the time of writing, in USD per million tokens. Deliberately
+# high — a cloud request must never look cheaper than it could be.
+UNKNOWN_PRICE_ROW = {"input_per_1m_usd": 15.0, "cached_input_per_1m_usd": 0.0,
+                     "output_per_1m_usd": 75.0}
+
+
+def dearest_price_row(conn):
+    """The priced row with the highest blended rate across every provider, or None."""
+    rows = conn.execute(
+        "SELECT backend, model, input_per_1m_usd, cached_input_per_1m_usd, "
+        "output_per_1m_usd FROM pricing"
+    ).fetchall()
+    usable = [r for r in rows if _usable(r)]
+    if not usable:
+        return None
+    return max(usable, key=lambda r: 3 * float(r["input_per_1m_usd"]) + float(r["output_per_1m_usd"]))
+
+
+def _usable(row) -> bool:
+    try:
+        return float(row["input_per_1m_usd"] or 0) > 0 and float(row["output_per_1m_usd"] or 0) > 0
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+
+
 class UsageTracker:
     def estimate_tokens(self, prompt_text: str, response_text: str) -> tuple[int, int]:
         return estimate_prompt_tokens(prompt_text), estimate_prompt_tokens(response_text)
@@ -103,9 +129,13 @@ class UsageTracker:
             # snapshot or alias of, else the provider default — the same
             # resolution the router prices candidates with.
             row, _source = resolve_price_row(conn, backend, model)
-
-        if not row:
-            return 0.0
+            if not row:
+                # The provider has no usable row at all (every rate blank or
+                # zero). Zero means unknown, never free: a cloud request is
+                # billed at the dearest rate anywhere in the table, and failing
+                # that at a fixed ceiling, so it is over- not under-estimated
+                # against the caps. It used to return 0.0 here and bill €0.00.
+                row = dearest_price_row(conn) or UNKNOWN_PRICE_ROW
 
         total_input = max(0, int(input_tokens))
         cached_input = min(max(0, int(cached_input_tokens)), total_input)

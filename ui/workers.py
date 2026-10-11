@@ -85,9 +85,10 @@ class IdentityLookupWorker(QThread):
                 result = lookup(
                     self.target,
                     sanctions="opensanctions" in self.sources,
-                    # CourtListener is free, keyless and metadata-only, so Trace
-                    # runs it for every company lookup, like the GLEIF base search.
-                    court_records=True,
+                    # CourtListener has its own consent checkbox in Trace (off by
+                    # default); the panel adds "courtlistener" to the sources only
+                    # when it is ticked and named in the consent dialog.
+                    court_records="courtlistener" in self.sources,
                     on_progress=progress, should_stop=stopped,
                 )
             else:
@@ -126,7 +127,7 @@ class ExposureLookupWorker(QThread):
             result = lookup(
                 self.target,
                 self.target_type,
-                selected_sources=self.sources or None,
+                selected_sources=self.sources,
                 on_progress=lambda source, status: self.progress_signal.emit(
                     source, status
                 ),
@@ -150,8 +151,10 @@ class LiveCollectionWorker(QThread):
     finished_signal = Signal(list)
     error_signal = Signal(str)
 
-    def __init__(self, collect, target: str, target_type: str, scope: str):
+    def __init__(self, collect, target: str, target_type: str, scope: str,
+                 options: dict | None = None):
         super().__init__()
+        self.options = dict(options or {})
         self.collect = collect
         self.target = target
         self.target_type = target_type
@@ -167,6 +170,7 @@ class LiveCollectionWorker(QThread):
                 self.target, self.target_type, self.scope,
                 on_progress=self.progress_signal.emit,
                 should_stop=lambda: self._cancel_requested,
+                **self.options,
             )
             self.finished_signal.emit(list(results or []))
         except Exception as error:
@@ -242,11 +246,15 @@ class ChatWorker(QThread):
             elif isinstance(result, tuple):
                 response, usage = result
                 self._emit_as_tokens(response)
+                if self._cancel_requested:
+                    return
 
             # ===== NORMAL STRING RESPONSE =====
             else:
                 response = result
                 self._emit_as_tokens(response)
+                if self._cancel_requested:
+                    return
 
             if usage:
                 self.usage_signal.emit(usage)
@@ -441,6 +449,37 @@ class VpnConnectionWorker(QThread):
                 self.error_signal.emit(str(exc))
 
 
+class CallWorker(QThread):
+    """Run one blocking companion call (Tor, MAC, proxy probe, deploy) off the UI thread.
+
+    ``func`` returns anything; it is emitted as-is. Like the connection worker,
+    cancel() cannot interrupt a privileged call; it makes the worker drop its
+    result so a torn-down panel is never touched, and shutdown() joins it.
+    """
+
+    finished_signal = Signal(object)
+    error_signal = Signal(str)
+
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self._func = func
+        self._args = args
+        self._kwargs = kwargs
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            result = self._func(*self._args, **self._kwargs)
+            if not self._cancel_requested:
+                self.finished_signal.emit(result)
+        except Exception as exc:
+            if not self._cancel_requested:
+                self.error_signal.emit(str(exc))
+
+
 class VpnDiagnosticsWorker(QThread):
     """Collect Tunnel's read-only local snapshot off the interface thread."""
 
@@ -599,33 +638,41 @@ class SentryWatchWorker(QThread):
             from agents.sentry.sentry.baseline import BaselineStore
             from agents.sentry.sentry.engine import collect_snapshot, diff, run_watch
 
+            from agents.sentry.sentry import collectors
+
             if self._persist:
-                self.finished_signal.emit(run_watch())
+                summary = run_watch(should_stop=lambda: self._cancel_requested)
+                if not self._cancel_requested and not summary.get("cancelled"):
+                    self.finished_signal.emit(summary)
                 return
             # Dry run: compare against the stored baseline without writing.
             store = BaselineStore()
             baseline = store.load_baseline()
             current = collect_snapshot()
+            errors = collectors.collection_errors()
+            if self._cancel_requested:
+                return                      # Stop: nothing to report, nothing saved
+            counts = {
+                "device_count": len(current.devices),
+                "listener_count": len(current.listeners),
+                "connection_count": len(current.connections),
+                "taken_at": current.taken_at, "dry_run": True,
+                "collector_errors": errors,
+            }
             if baseline is None:
                 self.finished_signal.emit({
-                    "baseline_established": True, "findings": [],
-                    "device_count": len(current.devices),
-                    "listener_count": len(current.listeners),
-                    "connection_count": len(current.connections),
-                    "taken_at": current.taken_at, "dry_run": True,
+                    "baseline_established": False, "no_baseline": True,
+                    "findings": [], **counts,
                 })
                 return
             findings = diff(baseline, current)
             self.finished_signal.emit({
                 "baseline_established": False,
-                "findings": [f.as_dict() for f in findings],
-                "device_count": len(current.devices),
-                "listener_count": len(current.listeners),
-                "connection_count": len(current.connections),
-                "taken_at": current.taken_at, "dry_run": True,
+                "findings": [f.as_dict() for f in findings], **counts,
             })
         except Exception as exc:
-            self.error_signal.emit(str(exc))
+            if not self._cancel_requested:
+                self.error_signal.emit(str(exc))
 
 
 class ModelScanWorker(QThread):
@@ -663,5 +710,6 @@ class ModelScanWorker(QThread):
                 try:
                     ratings = benchmarks.refresh(self._ratings_cache)
                 except Exception as e:      # the service is often "loading"
+                    benchmarks.note_attempt(self._ratings_cache)
                     ratings = str(e)
         self.finished_signal.emit(listings, ratings)

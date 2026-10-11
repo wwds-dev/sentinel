@@ -66,11 +66,17 @@ def test_sheet_carries_no_derived_literals():
         assert literal not in _declarations()
 
 
+def _without_kept_lines(sheet: str) -> str:
+    """Lines marked /* keep */ are status claims (an ok light) and stay green
+    by design; every other line must turn."""
+    return "\n".join(l for l in sheet.splitlines() if theme.KEEP_MARK not in l)
+
+
 @pytest.mark.parametrize("name", sorted(DERIVED))
 def test_theme_replaces_every_accent(name):
     sheet = global_stylesheet(name)
     expected_accent, expected_phosphor = DERIVED[name]
-    assert ACCENT_GREEN not in sheet
+    assert ACCENT_GREEN not in _without_kept_lines(sheet)
     assert expected_accent in sheet
     assert PHOSPHOR_GREEN not in sheet
     assert expected_phosphor in sheet
@@ -201,9 +207,9 @@ def test_switching_theme_repaints_the_inline_sheets(win):
         theme.set_current(name)
         win.apply_global_style()
         for widget, _ in win._inline_sheets:
-            assert ACCENT_GREEN not in widget.styleSheet()
+            assert ACCENT_GREEN not in _without_kept_lines(widget.styleSheet())
             assert expected_accent in widget.styleSheet()
-        assert ACCENT_GREEN not in win.styleSheet()
+        assert ACCENT_GREEN not in _without_kept_lines(win.styleSheet())
 
     theme.set_current(theme.GREEN)
     win.apply_global_style()
@@ -313,3 +319,28 @@ def test_selector_menu_shows_action_tooltips():
     QApplication.instance() or QApplication([])
     menu = SelectorMenu()
     assert menu.toolTipsVisible() is True
+
+
+# ── Status claims keep their colour ──────────────────────────────────────────
+
+def test_the_ok_light_stays_green_under_every_theme():
+    """Under Red the whole sheet turns ~140°, which put the ok light on the
+    same red as the alert light. Marked lines are left alone."""
+    from ui.style import _GREEN_STYLESHEET
+    for name in theme.THEMES:
+        sheet = theme.recolour(_GREEN_STYLESHEET, name)
+        ok_line = next(l for l in sheet.splitlines() if 'ScreenLight[light="ok"]' in l)
+        alert_line = next(l for l in sheet.splitlines() if 'ScreenLight[light="alert"]' in l)
+        on_line = next(l for l in sheet.splitlines() if "QLabel#KVValueOn" in l)
+        on_colour = sheet[sheet.index("QLabel#KVValueOn"):].split("color:")[1].split(";")[0].strip()
+        assert "#3cff88" in ok_line, name
+        assert "#f85149" in alert_line, name
+        assert on_colour == "#3cff88", name
+
+
+def test_keep_marker_is_per_line_and_everything_else_still_turns():
+    css = "a { color: #3cff88; } /* keep */\nb { color: #3cff88; }"
+    out = theme.recolour(css, theme.RED)
+    kept, turned = out.splitlines()
+    assert "#3cff88" in kept
+    assert "#3cff88" not in turned
