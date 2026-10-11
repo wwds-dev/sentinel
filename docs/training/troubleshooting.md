@@ -14,7 +14,7 @@
 | File discovery permission error | The current local/SSH account cannot read a folder | Choose an accessible folder or correct account permissions outside Sentinel |
 | Unknown SSH host key | The machine is not trusted in `known_hosts` | Verify the fingerprint independently before adding it with normal SSH tools |
 | Stop appears ineffective | A provider/process may already be finishing | Wait briefly and check Run log; cancellation cannot recall data already sent |
-| Two Sentinel icons in the Dock, one marked *Running in Background* | The launcher's bundle stays registered after it starts Sentinel; it is one running app, not two copies | Use the tile with the window. This is a known issue, tracked as SUGGESTIONS #23 |
+| Two Sentinel icons in the Dock, one marked *Running in Background* | Seen with the older fork-and-exec launcher, which left its own bundle registered after it started Sentinel. Current builds run Sentinel inside the bundle and should show one tile | Update to a current build and use the tile with the window. If you still see two on a current build, quit and relaunch, and report it with your macOS version |
 | Portable volume unavailable/read-only/low-space | The USB drive was ejected, mounted without write access, or has under 256 MiB free | Stop, reconnect or repair the volume, free space, then restart; Sentinel will not redirect portable data elsewhere |
 | Emergency Reset is missing | Sentinel is running from the Lab checkout or a normal installed build | The reset is intentionally shown only in a marked portable distribution |
 | Emergency Reset was cancelled | The exact phrase or second confirmation was not accepted | Nothing was erased; repeat only after backing up anything you need |

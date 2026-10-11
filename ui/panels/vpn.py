@@ -4,7 +4,7 @@ Fifth vertical moved out of `main.py` (phase 4, `docs/refactor_plan.md`).
 
 The panel keeps its paths visibly separate: **VPN Connection** runs a real
 WireGuard/OpenVPN tunnel through ``vpn_execution``'s gate (target review, explicit
-confirm, administrator prompt, post-change check, local audit, rollback steps),
+confirm, administrator prompt, post-change check, rollback steps; nothing is logged),
 **Connection Check** is read-only, **Action Preview** shows commands without
 running them, **Ask Advisor** is a paid request that goes through the guard, and
 **Build Config** renders WireGuard files locally.
@@ -29,8 +29,11 @@ from services.vpn_diagnostics import (
     inspect_wireguard_config,
     load_vpn_profile_catalog,
 )
-from services import vpn_connection, vpn_execution
+from services import vpn_apps, vpn_connection, vpn_execution
 from ui.panels.base import AgentPanel
+from ui.panels.vpn_apps_tab import AppsTab
+from ui.panels.vpn_privacy import PrivacyTab
+from ui.panels.vpn_servers import ServersTab
 from ui.widgets import MenuComboBox, SectionView
 from ui.workers import (
     DnsLeakWorker, IpSnapshotWorker, VpnConnectionWorker, VpnDiagnosticsWorker,
@@ -56,6 +59,7 @@ class VpnPanel(AgentPanel):
         self._dns_worker = None
         self._public_ip_fetched = False
         self._build()
+        self._build_health_monitor()
         self.polish_workspace()
         self.hide()
 
@@ -115,8 +119,10 @@ class VpnPanel(AgentPanel):
         ks_row.addWidget(QLabel("Kill switch:"))
         self.arm_ks_btn = QPushButton("Arm")
         self.arm_ks_btn.setToolTip(
-            "Block all traffic except the selected tunnel's endpoint, so a dropped "
-            "tunnel cannot leak. Requires macOS pf and your administrator password.")
+            "Block network traffic except the tunnel interface, the tunnel's "
+            "transport to the server, loopback, DHCP and your LAN, so a dropped "
+            "tunnel cannot leak. Connect first, then arm. Only a WireGuard tunnel "
+            "interface is exempt. Requires macOS pf and your administrator password.")
         self.arm_ks_btn.clicked.connect(self.arm_kill_switch)
         ks_row.addWidget(self.arm_ks_btn)
         self.disarm_ks_btn = QPushButton("Disarm")
@@ -154,13 +160,15 @@ class VpnPanel(AgentPanel):
         self.public_ip_label.setWordWrap(True)
         self.public_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.public_ip_label.setToolTip(
-            "Your exit IP, its location and network owner, and whether it is "
-            "flagged as a VPN/proxy/hosting range.")
+            "Your exit IP, its location and network owner, and — only with an "
+            "IPinfo key on a plan that returns it — whether it is flagged as a "
+            "VPN/proxy/hosting range.")
         ip_layout.addWidget(self.public_ip_label, 1, 1)
         self.check_public_ip_btn = QPushButton("Check public IP")
         self.check_public_ip_btn.setToolTip(
-            "Optional: contacts api.ipify.org and IPinfo (or ipapi.co) to read "
-            "your exit IP. No AI provider is used.")
+            "Contacts api.ipify.org for your exit IP, then IPinfo (when IPINFO_API_KEY "
+            "is set) or ipapi.co for its location and network owner. Starts "
+            "immediately. No AI provider is used.")
         self.check_public_ip_btn.clicked.connect(self.check_public_ip)
         ip_layout.addWidget(self.check_public_ip_btn, 1, 2)
 
@@ -362,6 +370,15 @@ class VpnPanel(AgentPanel):
         self.execution_view = SectionView()
         self.tabs.addTab(self.execution_view, "Execution")
 
+        self.privacy_tab = PrivacyTab()
+        self.tabs.addTab(self.privacy_tab, "Privacy")
+
+        self.servers_tab = ServersTab()
+        self.tabs.addTab(self.servers_tab, "Servers")
+
+        self.apps_tab = AppsTab()
+        self.tabs.addTab(self.apps_tab, "VPN Apps")
+
         self.advisor_box.setPlaceholderText(
             "Troubleshooting advice will appear after you select Ask Advisor."
         )
@@ -444,7 +461,7 @@ class VpnPanel(AgentPanel):
         self.set_busy(self.run_btn, self.stop_btn, False)
 
     def _on_error(self, error: str) -> None:
-        self.abandon()
+        self.abandon(error=error)
         separator = "─" * 50
         self.advisor_box.setPlainText(f"⚠  ERROR\n{separator}\n{error}\n{separator}")
         self.status_label.setText("Error.")
@@ -708,7 +725,20 @@ class VpnPanel(AgentPanel):
         confirm = QMessageBox.question(
             self, title, review.confirmation_text(),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        return confirm == QMessageBox.Yes
+        if confirm == QMessageBox.Yes and review.root_hooks:
+            # A config with hooks is a script run as root, not just keys and
+            # routes; make that a decision of its own, default No.
+            confirm = QMessageBox.warning(
+                self, "This config runs commands as administrator",
+                "The config file contains hook directives that wg-quick/openvpn "
+                "will execute with administrator rights:\n\n"
+                + "\n".join(f"• {item}" for item in review.root_hooks)
+                + "\n\nOnly continue if you wrote these or trust their source.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            self.connection_status_label.setText("Not run: confirmation declined.")
+            return False
+        return True
 
     def _connection_busy(self) -> bool:
         worker = getattr(self, "_connection_worker", None)
@@ -772,15 +802,28 @@ class VpnPanel(AgentPanel):
                 "Choose a real server profile first — the kill switch must exempt "
                 "its endpoint, or it would block the tunnel too.")
             return
+        conflict = vpn_apps.killswitch_conflict()
+        if conflict:
+            QMessageBox.information(self, "Kill switch", conflict + "\n\nNothing was changed.")
+            self.kill_switch_status_label.setText(
+                "Kill switch: not armed (another VPN app is active).")
+            return
+        allow = vpn_connection.tunnel_allow_rules(profile)
+        allowed = ", ".join(f"{proto.upper()}/{port}" for proto, port in allow)
+        recovery = vpn_connection.killswitch_recovery_command()
         confirm = QMessageBox.question(
             self, "Arm kill switch",
-            "Arm a firewall kill switch?\n\nThis blocks all network traffic except "
-            f"the selected tunnel's endpoint ({profile.get('endpoint')}). If the "
-            "tunnel drops, traffic stays blocked until you disarm. It needs your "
-            "administrator password, and refuses to arm if the endpoint cannot be "
-            "resolved.",
-            QMessageBox.Yes | QMessageBox.No)
+            "Arm a firewall kill switch?\n\n"
+            "This loads a pf anchor that blocks all network traffic except "
+            f"{allowed} to the selected tunnel's endpoint ({profile.get('endpoint')}), "
+            "the tunnel interface itself, loopback, DHCP and your LAN. If the "
+            "tunnel drops, traffic stays blocked until you press Disarm.\n\n"
+            "It asks for your administrator password, and refuses to arm if the "
+            "endpoint cannot be resolved.\n\n"
+            f"If Sentinel cannot disarm it, run in Terminal:\n{recovery}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
+            self.kill_switch_status_label.setText("Kill switch: not armed (declined).")
             return
         self._start_killswitch("arm", profile, "Arming kill switch…")
 
@@ -906,10 +949,59 @@ class VpnPanel(AgentPanel):
             "Configuration inspected locally — key material discarded."
         )
 
+    # ── Health monitor (local only; it never changes anything) ──────────
+    def _build_health_monitor(self) -> None:
+        from agents.vpn_agent.services.health_monitor import HealthMonitor
+        self.health_monitor = HealthMonitor(30, self, tunnel_source=self._local_tunnels)
+        self.health_monitor.warning.connect(self._on_health_warning)
+        self.health_monitor.info.connect(self._on_health_info)
+        self.connect_profile_box.currentIndexChanged.connect(self._watch_selected_profile)
+
+    @staticmethod
+    def _local_tunnels() -> list[str]:
+        """Tunnels visible without contacting anything: WireGuard sockets + OpenVPN."""
+        from agents.vpn_agent.services import wireguard_manager
+        from services import openvpn_manager
+        names = list(wireguard_manager.list_active_tunnels())
+        if openvpn_manager.is_running():
+            names.append("openvpn")
+        return names
+
+    def _watch_selected_profile(self, *_args) -> None:
+        profile = self.selected_connect_profile() or {}
+        if str(profile.get("protocol") or "").lower() == "openvpn":
+            watched = ["openvpn"]
+        else:
+            iface = str(profile.get("interface") or "")
+            watched = [iface] if iface and not vpn_connection.is_placeholder(profile) else []
+        self.health_monitor.set_watched_interfaces(watched)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._watch_selected_profile()
+        self.health_monitor.start()
+
+    def hideEvent(self, event) -> None:
+        self.health_monitor.stop()
+        super().hideEvent(event)
+
+    def _on_health_warning(self, text: str) -> None:
+        self.connection_status_label.setText(text[:300])
+
+    def _on_health_info(self, text: str) -> None:
+        self.connection_status_label.setText(text[:300])
+
     def shutdown(self, timeout_ms: int = 2000) -> None:
         """Cancel and join Tunnel workers before their widgets are destroyed."""
+        monitor = getattr(self, "health_monitor", None)
+        if monitor is not None:
+            monitor.stop()
         workers = [self.worker, self._diagnostics_worker, self._ip_worker,
                    self._dns_worker, getattr(self, "_connection_worker", None)]
+        for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None),
+                    getattr(self, "apps_tab", None)):
+            if tab is not None:
+                tab.shutdown(timeout_ms)
         for worker in workers:
             if worker is not None and worker.isRunning():
                 worker.cancel()

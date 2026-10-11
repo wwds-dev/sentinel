@@ -136,6 +136,73 @@ def test_email_lookup_contacts_only_selected_source(monkeypatch):
     assert "breachdirectory" not in result
 
 
+def test_an_empty_selection_contacts_no_email_service(monkeypatch):
+    """None means the defaults; an empty selection used to mean all of them,
+    HIBP and BreachDirectory included."""
+    for name in ("_emailrep", "_gravatar", "_hibp", "_breachdirectory", "_hunter"):
+        monkeypatch.setattr(
+            email_lookup, name,
+            lambda email, name=name: (_ for _ in ()).throw(
+                AssertionError(f"{name} must not run")))
+    for nothing in ((), [], set()):
+        result = email_lookup.lookup("analyst@example.com", selected_sources=nothing)
+        assert result["sources_contacted"] == [] and result["sources_skipped"] == []
+
+
+def test_no_selection_argument_still_means_the_default_sources(monkeypatch):
+    called = []
+    for name in ("_emailrep", "_gravatar", "_hibp", "_breachdirectory", "_hunter"):
+        monkeypatch.setattr(
+            email_lookup, name,
+            lambda email, name=name: called.append(name) or {"status": "ok"})
+    email_lookup.lookup("analyst@example.com")
+    assert sorted(called) == sorted(
+        ["_emailrep", "_gravatar", "_hibp", "_breachdirectory", "_hunter"])
+
+
+def test_breachdirectory_returns_breach_names_and_counts_only(monkeypatch):
+    """The reply used to be passed on verbatim, so any password or hash field
+    the service attached reached the card and the Saved Search."""
+    secret = ("hunter2-plaintext", "5f4dcc3b5aa765d61d8327deb882cf99",
+              "analyst@example.com", "198.51.100.7")
+    payload = {
+        "success": True, "found": 3,
+        "result": [
+            {"sources": ["Adobe"], "password": secret[0], "sha1": "a", "hash": secret[1],
+             "email": secret[2], "ip": secret[3], "has_password": True},
+            {"sources": ["Adobe", "Collection #1"], "password": secret[0], "hash": secret[1]},
+            {"sources": "LinkedIn", "password": secret[0]},
+            "not a dict",
+        ],
+        "extra": {"token": "leaky"},
+    }
+    monkeypatch.setattr(
+        email_lookup.requests, "get", lambda *a, **k: _JsonResponse(payload))
+
+    result = email_lookup._breachdirectory("analyst@example.com")
+
+    assert result["status"] == "ok" and result["found"] is True
+    assert result["result_count"] == 4
+    assert result["breach_databases"] == [
+        {"database": "Adobe", "records": 2},
+        {"database": "Collection #1", "records": 1},
+        {"database": "LinkedIn", "records": 1},
+    ]
+    assert result["breach_count"] == 3
+    dumped = str(result)
+    for value in (*secret, "leaky", "sha1", "password"):
+        assert value not in dumped, value
+    assert "sources" not in result
+
+
+def test_breachdirectory_with_no_breaches_is_not_found(monkeypatch):
+    monkeypatch.setattr(
+        email_lookup.requests, "get",
+        lambda *a, **k: _JsonResponse({"success": False, "found": 0, "result": []}))
+    result = email_lookup._breachdirectory("analyst@example.com")
+    assert result["found"] is False and result["breach_databases"] == []
+
+
 def test_hibp_without_key_is_recorded_as_skipped_not_contacted(monkeypatch):
     monkeypatch.delenv("HIBP_API_KEY", raising=False)
     progress = []

@@ -30,7 +30,7 @@ class _CheckValue:
 
 
 def _routing_stub(mode: str, qwen_enabled: bool):
-    return SimpleNamespace(
+    stub = SimpleNamespace(
         provider_box=_TextValue("qwen"),
         model_box=_TextValue("qwen3-max"),
         execution_mode_box=_TextValue(mode),
@@ -40,7 +40,12 @@ def _routing_stub(mode: str, qwen_enabled: bool):
         allow_gemini_checkbox=_CheckValue(False),
         allow_anthropic_checkbox=_CheckValue(False),
         allow_qwen_checkbox=_CheckValue(qwen_enabled),
+        settings={},
+        notices=[],
     )
+    stub._set_route_notice = lambda text: stub.notices.append(text)
+    stub._local_default_model = lambda: "deepseek-r1:8b"
+    return stub
 
 
 @pytest.mark.parametrize("mode", ["Cloud only", "Hybrid allowed"])
@@ -234,3 +239,204 @@ def test_shared_panel_shutdown_prefers_join_contract_and_stops_fallbacks():
     shutdown_panels(app)
 
     assert calls == ["joined", "stopped"]
+
+
+# ── D3: Local only must never send a cloud model name to Ollama ─────────────
+
+def _local_only_stub(provider: str, model: str, saved_ollama: str = "llama3:8b"):
+    stub = _routing_stub("Local only", True)
+    stub.provider_box = _TextValue(provider)
+    stub.model_box = _TextValue(model)
+    stub.settings = {"default_model_ollama": saved_ollama}
+    stub._local_default_model = lambda: saved_ollama
+    return stub
+
+
+def test_local_only_with_a_cloud_pick_uses_the_saved_ollama_model():
+    from main import GodAI
+
+    stub = _local_only_stub("anthropic", "claude-sonnet-5")
+    assert GodAI.resolve_backend_model(stub) == ("ollama", "llama3:8b")
+    assert stub.notices and "Local only" in stub.notices[-1]
+    assert "claude-sonnet-5" in stub.notices[-1]       # the user is told what was swapped
+
+
+def test_local_only_with_an_ollama_pick_keeps_it_and_clears_the_notice():
+    from main import GodAI
+
+    stub = _local_only_stub("ollama", "mistral:7b")
+    assert GodAI.resolve_backend_model(stub) == ("ollama", "mistral:7b")
+    assert stub.notices == [""]
+
+
+def test_local_only_never_returns_a_cloud_model_name():
+    from main import GodAI
+
+    for provider, model in [("openai", "gpt-4.1-mini"), ("qwen", "qwen3-max"),
+                            ("gemini", "gemini-2.5-pro"), ("deepseek", "deepseek-chat")]:
+        backend, resolved = GodAI.resolve_backend_model(_local_only_stub(provider, model))
+        assert backend == "ollama"
+        assert resolved != model
+
+
+def test_blocked_route_does_not_escape_the_cost_estimate():
+    """resolve_backend_model raises for an unticked provider on every
+    keystroke; get_current_cost_estimate must absorb it."""
+    from main import GodAI
+
+    stub = _routing_stub("Hybrid allowed", False)          # qwen unticked
+    stub.input_box = SimpleNamespace(toPlainText=lambda: "hello")
+    stub.build_user_prompt = lambda raw: ("General", raw)
+    stub.runbar_cost = SimpleNamespace(setText=lambda t: stub.notices.append(f"bar:{t}"),
+                                       setToolTip=lambda t: None)
+    stub.resolve_backend_model = lambda: GodAI.resolve_backend_model(stub)
+
+    result = GodAI.get_current_cost_estimate(stub)
+
+    assert result == (0.0, 0, None, None)
+    assert any("not enabled" in n for n in stub.notices)
+
+
+# ── One conversation, one saved file ─────────────────────────────────────────
+
+def test_update_chat_rewrites_the_same_file_and_keeps_its_title(tmp_path):
+    from services.history_store import HistoryStore
+    store = HistoryStore(tmp_path)
+    path = store.save_chat(agent="chat", backend="ollama", model="m", command="General Chat",
+                           messages=[{"role": "user", "content": "hi"},
+                                     {"role": "assistant", "content": "hello"}],
+                           response="hello", project="p1")
+    data = store.load_chat(str(path))
+    data["title"] = "My thread"
+    path.write_text(__import__("json").dumps(data))
+
+    store.update_chat(path, messages=[{"role": "user", "content": "hi"},
+                                      {"role": "assistant", "content": "hello"},
+                                      {"role": "user", "content": "more"},
+                                      {"role": "assistant", "content": "sure"}],
+                      response="sure", backend="anthropic", model="claude")
+    assert store.list_chats() == [path]                     # still one file
+    after = store.load_chat(str(path))
+    assert after["title"] == "My thread" and after["project"] == "p1"
+    assert after["timestamp"] == data["timestamp"]
+    assert after["updated"] and after["backend"] == "anthropic"
+    assert len(after["messages"]) == 4 and after["response"] == "sure"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def _chat_finish_stub(tmp_path):
+    from services.history_store import HistoryStore
+    stub = SimpleNamespace(
+        history=HistoryStore(tmp_path), current_chat_path=None,
+        pending_agent="chat", pending_backend="ollama", pending_model="m",
+        pending_command="General Chat", pending_project=None,
+        current_messages=[], listed=0, failures=[],
+    )
+    stub.load_history_list = lambda: setattr(stub, "listed", stub.listed + 1)
+    stub._note_failure = lambda where, exc: stub.failures.append((where, exc))
+    return stub
+
+
+def test_a_second_turn_updates_the_first_turns_file(tmp_path):
+    """The persistence tail of handle_chat_finished, isolated: turn one creates
+    a file, turn two rewrites it, and the folder never holds two copies."""
+    from main import GodAI
+    import inspect
+    src = inspect.getsource(GodAI.handle_chat_finished)
+    tail = src[src.index("        current_path = getattr(self, \"current_chat_path\", None)"):
+               src.index("        self.load_history_list()")]
+    stub = _chat_finish_stub(tmp_path)
+    ns = {"Path": __import__("pathlib").Path}
+
+    def run_tail(self, response):
+        exec("def _t(self, response):\n" + tail, ns)
+        ns["_t"](self, response)
+
+    stub.current_messages = [{"role": "user", "content": "one"}, {"role": "assistant", "content": "a"}]
+    run_tail(stub, "a")
+    first = stub.current_chat_path
+    assert first and len(stub.history.list_chats()) == 1
+
+    stub.current_messages += [{"role": "user", "content": "two"}, {"role": "assistant", "content": "b"}]
+    run_tail(stub, "b")
+    assert stub.current_chat_path == first
+    assert len(stub.history.list_chats()) == 1
+    assert len(stub.history.load_chat(first)["messages"]) == 4
+    assert stub.failures == []
+
+
+# ── UI notices never reach the model; a tool switch replaces the system prompt ─
+
+def test_ui_notices_are_dropped_from_backend_messages():
+    from main import GodAI
+    convo = [
+        {"role": "system", "content": "You are Writing.", "timestamp": "t"},
+        {"role": "user", "content": "hi", "timestamp": "t"},
+        {"role": "system", "content": "Chat request stopped by user.", "timestamp": "t", "ui_only": True},
+        {"role": "user", "content": "again", "timestamp": "t"},
+    ]
+    sent = GodAI._backend_messages(convo)
+    assert [m["content"] for m in sent] == ["You are Writing.", "hi", "again"]
+    assert all(set(m) == {"role", "content"} for m in sent)
+
+
+def test_notice_helpers_mark_messages_ui_only():
+    from main import GodAI
+    stub = SimpleNamespace(_message_timestamp=staticmethod(lambda v=None: "2026-10-09T12:00"))
+    stub._timestamped_message = lambda *a, **k: GodAI._timestamped_message(stub, *a, **k)
+    notice = GodAI._ui_notice(stub, "Chat request stopped by user.")
+    assert notice["ui_only"] is True and notice["role"] == "system"
+    plain = GodAI._timestamped_message(stub, "user", "hi")
+    assert "ui_only" not in plain
+    # ...and the flag survives a save/reopen round trip through normalisation.
+    back = GodAI._normalise_chat_messages(stub, [notice, plain])
+    assert back[0]["ui_only"] is True and "ui_only" not in back[1]
+
+
+def test_switching_the_tool_mid_chat_replaces_the_system_prompt():
+    """The merge step of a Chat turn (`_assemble_chat_messages`), isolated."""
+    from main import GodAI
+    stub = SimpleNamespace(_message_timestamp=staticmethod(lambda v=None: "t"))
+    stub._timestamped_message = lambda *a, **k: GodAI._timestamped_message(stub, *a, **k)
+    stub._normalise_chat_messages = lambda msgs, fallback=None: GodAI._normalise_chat_messages(stub, msgs, fallback)
+    stub.current_messages = [
+        {"role": "system", "content": "You are Writing.", "timestamp": "t"},
+        {"role": "user", "content": "draft this", "timestamp": "t"},
+        {"role": "assistant", "content": "Here is a draft.", "timestamp": "t"},
+    ]
+    stub.tool_prompts = {}
+    stub.agent_instances = {"chat": SimpleNamespace(build_messages=lambda prompt: [
+        {"role": "system", "content": "You are Coding."},
+        {"role": "user", "content": prompt}])}
+    stub.pending_messages = GodAI._assemble_chat_messages(
+        stub, "chat", "General Chat", "now fix this bug")
+    roles = [(m["role"], m["content"]) for m in stub.pending_messages]
+    assert roles[0] == ("system", "You are Coding.")           # replaced, not dropped
+    assert roles.count(("system", "You are Writing.")) == 0
+    assert roles[-1] == ("user", "now fix this bug")
+    assert len(roles) == 4
+
+
+def test_ollama_is_streamed_when_the_client_can():
+    from main import GodAI
+    calls = []
+    class Ollama:
+        def stream_chat(self, model, messages):
+            calls.append(("stream", model)); yield "tok"
+        def chat(self, model, messages):
+            calls.append(("chat", model)); return "whole"
+    stub = SimpleNamespace(ollama=Ollama(), assess_local_model=lambda m: None)
+    result = GodAI.run_backend(stub, "ollama", "llama3", [{"role": "user", "content": "x"}], "x")
+    assert list(result) == ["tok"]
+    assert calls == [("stream", "llama3")]
+
+
+# ── Reopening another agent's record must not turn it into a Chat file ──────
+
+def test_only_chat_records_are_continued_in_place(tmp_path):
+    from main import GodAI
+    path = tmp_path / "x.json"
+    assert GodAI._continuable_chat_path({"agent": "chat"}, path) == str(path)
+    assert GodAI._continuable_chat_path({}, path) == str(path)            # legacy, no agent field
+    for other in ("osint", "osint_heavy", "wifi", "sentry", "bug_bounty", "vpn", "manager"):
+        assert GodAI._continuable_chat_path({"agent": other}, path) is None

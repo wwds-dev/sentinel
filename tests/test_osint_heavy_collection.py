@@ -162,7 +162,16 @@ def test_organisation_targets_also_check_offshore_leaks(monkeypatch):
     heavy._run_providers("Acme Corporation", "Organisation")
     assert seen[-1]["offshore_leaks"] is True
     assert seen[-1]["sanctions"] is True       # skipped inside without a key
-    assert seen[-1]["court_records"] is True   # CourtListener, metadata-only
+    assert seen[-1]["court_records"] is False  # CourtListener is opt-in
+    heavy._run_providers("Acme Corporation", "Organisation", court_records=True)
+    assert seen[-1]["court_records"] is True   # ticked: metadata-only dockets
+
+
+def test_courtlistener_is_named_only_when_opted_in():
+    off = heavy.planned_sources("Acme Corporation", "Organisation")
+    on = heavy.planned_sources("Acme Corporation", "Organisation", court_records=True)
+    assert "CourtListener court records" not in off
+    assert "CourtListener court records" in on
 
 
 @pytest.mark.parametrize("label,target", [
@@ -184,3 +193,53 @@ def test_crypto_addresses_go_to_the_crypto_provider(monkeypatch, label, target):
 
 def test_an_ordinary_handle_is_still_a_username():
     assert heavy._normalize_target_type("lonewolf", "Auto-detect") == "username"
+
+
+# ── Consent dialog and the real prompt size ──────────────────────────────────
+
+def test_planned_sources_follow_the_dispatch_key(monkeypatch):
+    from agents import osint_heavy_agent as mod
+    for key in ("IPINFO_API_KEY", "CRIMINALIP_API_KEY", "INTELX_API_KEY",
+                "DEHASHED_API_KEY", "SNUSBASE_API_KEY", "LEAKCHECK_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    domain = mod.planned_sources("acme.com", "Domain / IP")
+    assert {"WHOIS", "DNS", "Certificate transparency (crt.sh)", "Wayback Machine",
+            "ransomware.live"} <= set(domain)
+    assert "Intelligence X" not in domain                  # keyless: self-skips
+    assert mod.planned_sources("bob42", "Username", "Quick Scan") == ["URLScan", "GitHub", "Keybase"]
+    assert "WhatsMyName" in " ".join(mod.planned_sources("bob42", "Username", "Deep Dive"))
+    assert mod.planned_sources("+353 1 234 5678", "Phone") == []
+    assert "Blockstream" in " ".join(mod.planned_sources("bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", "Crypto"))
+
+
+def test_the_assembled_prompt_is_far_larger_than_the_target():
+    """Why the budget is re-checked after collection: the first estimate saw
+    the target string, the request carries the catalogue and the live JSON."""
+    from agents.osint_heavy_agent import OsintHeavyAgent
+    live = [{"type": "domain", "query": "acme.com",
+             "whois": {"registrar": "Example", "created": "2001-01-01"},
+             "dns": {"A": ["203.0.113.7"] * 4, "MX": ["mx.acme.com"]},
+             "sources_contacted": [{"source": "whois", "status": "ok"}]}]
+    messages = OsintHeavyAgent().build_messages("acme.com", "Domain / IP", "Standard Investigation",
+                                                "", "", live_results=live)
+    text = "\n".join(m["content"] for m in messages)
+    assert len(text) > 50 * len("acme.com")
+
+
+# ── Final review: the consent list is the list that is contacted ────────────
+
+@pytest.mark.parametrize("target", ["8.8.8.8", "2001:4860:4860::8888", "example.com"])
+def test_bloodhound_consent_names_exactly_what_domain_lookup_contacts(target, monkeypatch):
+    from agents.osint_heavy_agent import planned_sources
+    from providers import domain_lookup
+
+    contacted = []
+    sources, _ = domain_lookup._plan(domain_lookup._normalize(target),
+                                     domain_lookup._is_ip(domain_lookup._normalize(target)))
+    for label, key, _fn in sources:
+        contacted.append(label)
+    named = planned_sources(target, "Domain / IP", "Standard Investigation")
+    assert named[:len(contacted)] == contacted
+    if domain_lookup._is_ip(target):
+        assert "SANS DShield" in named and "Shodan InternetDB" in named
+        assert not any("crt.sh" in n or "Wayback" in n for n in named)

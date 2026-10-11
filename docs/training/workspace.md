@@ -8,8 +8,10 @@
 
 Choose **Chat, Trace, Bloodhound, Beacon, Sentry, Bug Spray, Tunnel,** or **Forge**.
 Only one agent is active at a time. The selected row is highlighted. **History**
-opens saved conversations; Trace has its own **Saved searches** area. Selecting
-saved work restores it but does not automatically rerun a request.
+(shown while Chat is selected) opens saved conversations; Trace has its own
+**Saved searches** area. Selecting saved work restores it but does not
+automatically rerun a request. A reopened Chat conversation does not re-select
+the tool, provider or model it used.
 
 Below them sit three small screens. Every sidebar tile is drawn the same way:
 a header strip with a status light and a short status on the right, then
@@ -32,9 +34,9 @@ a paid route stays amber.
 
 ## Centre workspace
 
-The title and subtitle identify the current agent. **Agent guide** opens its
-reference sheet. **Tips** enables or disables hover explanations. **Inspector**
-shows or hides the right rail. **•••** contains the Learning Centre, app docs,
+The title and subtitle identify the current agent. **Agent guide** (or **F1**)
+opens its reference sheet. **Tips** enables or disables hover explanations.
+**Inspector** shows or hides the right rail. **•••** contains the Learning Centre, app docs,
 model guide, logs and Settings.
 
 Inputs differ by agent, but provider, model, Auto-route, main action and Stop
@@ -43,10 +45,13 @@ advanced choices until needed; they do not disable work already entered.
 
 ## Inspector
 
-**Current Route** shows the provider/model intended for the next request; its
-light turns amber when that route is a paid cloud service. **Cost** shows the
-latest and session totals. **Budget** compares spending with your caps; its
-light turns amber at 60% of a cap and red at 90%. **System** shows device load,
+**Current Route** shows the router's recommendation for the active agent
+(provider, model, mode and price), which is not necessarily what the dropdowns
+have selected; its light turns amber when the route shown is a paid cloud
+service. In Chat it follows the Tool, your text and the **Options** settings as
+you type, so read the run bar for what **Run** will use. The route a request
+actually used is in the Run log. **Cost** shows the latest and session totals.
+**Budget** compares spending with your caps; its light turns amber at 60% of a cap and red at 90%. **System** shows device load,
 which is particularly useful for local models, as segmented meters. Values can
 change while a request is running.
 
@@ -65,11 +70,14 @@ keeps running in the menu bar.
 - Start a new chat when changing to an unrelated subject.
 - Use Stop when a task is no longer useful; stopping may not reverse a cloud
   request already received by its provider.
-- Save or export valuable results before clearing a panel.
+- Save or export valuable results before clearing a panel. Chat saves its
+  conversations to History automatically; **Options → Export current report**
+  writes the conversation as a plain-text file.
 
 ## Completion check
 
-Locate History, Agent guide, Learning Centre, Inspector, Settings and Stop.
-Switch the theme from the brand-row dots, then read the session cost from the
-menu bar item.
+Locate History, Agent guide, Learning Centre, Inspector and Settings. Send a
+short Chat message and find Stop beside **Run** (it is hidden while Chat is
+idle). Switch the theme from the brand-row dots, then read the session cost
+from the menu bar item.
 

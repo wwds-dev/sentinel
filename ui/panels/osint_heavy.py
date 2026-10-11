@@ -9,12 +9,13 @@ be tested against a real JPEG without building a panel at all.
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QTextCursor
+from PySide6.QtGui import QGuiApplication, QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QFileDialog,
     QGridLayout, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QLineEdit,
@@ -93,7 +94,7 @@ def exif_for_prompt(path: str) -> str:
     exif = extract_exif(path)
     if not exif:
         return "No EXIF metadata could be extracted (data may have been stripped)."
-    lines = [f"Image file: {Path(path).name}"]
+    lines = ["Image metadata (EXIF):"]
     for key in ("DateTimeOriginal", "DateTime", "Make", "Model", "Software",
                 "LensMake", "LensModel", "ImageWidth", "ImageLength",
                 "Orientation", "Flash", "FocalLength"):
@@ -113,6 +114,7 @@ def exif_for_prompt(path: str) -> str:
 
 
 class OsintHeavyPanel(AgentPanel):
+    _stopped_request = False
     """Investigate one target in depth and produce a dossier."""
 
     agent_key = "osint_heavy"
@@ -126,6 +128,7 @@ class OsintHeavyPanel(AgentPanel):
         self._image_path = ""
         self._image_osint = ""
         self._file_search_worker = None
+        self._file_results_remote = False
         self._collecting = False
         self._build()
         self.polish_workspace()
@@ -163,6 +166,10 @@ class OsintHeavyPanel(AgentPanel):
         self.scope_box.addItems(["Quick Scan", "Standard Investigation", "Deep Dive"])
         self.scope_box.setCurrentText("Standard Investigation")
         brief_layout.addWidget(self.scope_box, 1, 3)
+
+        self.courtlistener_box = QCheckBox("Include CourtListener court records (Organisation)")
+        self.courtlistener_box.setChecked(False)
+        brief_layout.addWidget(self.courtlistener_box, 1, 4)
 
         brief_layout.addWidget(QLabel("Objective:"), 2, 0)
         self.objective_input = QTextEdit()
@@ -217,6 +224,18 @@ class OsintHeavyPanel(AgentPanel):
         self.clear_image_btn.clicked.connect(self.clear_image)
         image_top_row.addWidget(self.clear_image_btn)
         image_outer.addLayout(image_top_row)
+        # Image metadata stays local unless the operator says otherwise: the
+        # Bloodhound lesson promises it is sent only when explicitly approved,
+        # and the selected model may be a paid cloud one.
+        self.send_exif_checkbox = QCheckBox(
+            "Include this image's metadata (EXIF, GPS) in the model prompt")
+        self.send_exif_checkbox.setChecked(False)
+        self.send_exif_checkbox.setToolTip(
+            "Off: the EXIF summary and GPS link stay in this panel only.\n"
+            "On: camera, timestamps and GPS coordinates are sent to the selected "
+            "provider and model with the dossier request. The file itself and its "
+            "name are never sent.")
+        image_outer.addWidget(self.send_exif_checkbox)
         self.exif_display = QTextEdit()
         self.exif_display.setReadOnly(True)
         self.exif_display.setMinimumHeight(56)
@@ -499,6 +518,7 @@ class OsintHeavyPanel(AgentPanel):
 
     # ── Running ─────────────────────────────────────────────────────────
     def investigate(self) -> None:
+        self._stopped_request = False
         target = self.target_input.text().strip()
         target_type = self.type_box.currentText()
         scope = self.scope_box.currentText()
@@ -512,7 +532,7 @@ class OsintHeavyPanel(AgentPanel):
             return
 
         image_metadata = ""
-        if self._image_path:
+        if self._image_path and self.send_exif_checkbox.isChecked():
             image_metadata = exif_for_prompt(self._image_path)
 
         self._clear_displays()
@@ -538,6 +558,15 @@ class OsintHeavyPanel(AgentPanel):
             self._send_dossier_request(brief, [])
             return
 
+        # Name every public source the target will be sent to, and ask —
+        # Trace does, and the Bloodhound lesson says the same rule applies.
+        options = self._live_options()
+        if not self._confirm_live_sources(target, target_type, scope, options):
+            self.abandon("cancelled")
+            self.status_label.setText("Cancelled before any public source was contacted.")
+            self.set_busy(self.investigate_btn, self.stop_btn, False)
+            return
+
         # Live public-source collection runs before the model call, on a
         # worker thread: a Deep Dive username sweep takes up to two minutes. It is
         # a free, no-model step; the real number of sources contacted drives
@@ -548,14 +577,41 @@ class OsintHeavyPanel(AgentPanel):
             else "Collecting live public-source data…"
         )
         self._collecting = True
-        worker = self.collection_worker_class(collect, target, target_type, scope)
+        worker = self.collection_worker_class(collect, target, target_type, scope, options)
         worker.progress_signal.connect(self._on_collection_progress)
         worker.finished_signal.connect(
             lambda results: self._on_collection_finished(worker, brief, results))
         worker.error_signal.connect(
-            lambda error: self._on_collection_finished(worker, brief, []))
+            lambda error: self._on_collection_failed(worker, brief))
         self.worker = worker
         worker.start()
+
+    def _live_options(self) -> dict:
+        """Opt-in sources. Empty when nothing extra is ticked, so the agent's
+        own defaults (court records off) apply."""
+        return {"court_records": True} if self.courtlistener_box.isChecked() else {}
+
+    def _confirm_live_sources(self, target: str, target_type: str, scope: str,
+                              options: dict | None = None) -> bool:
+        planned = getattr(self.agent(), "planned_sources", None)
+        sources = planned(target, target_type, scope, **(options or {})) if planned else []
+        if not sources:
+            return True            # nothing will be contacted for this type
+        answer = QMessageBox.question(
+            self, "Contact public sources?",
+            f"Bloodhound will send '{target}' to these public sources:\n\n"
+            + "\n".join(f"• {item}" for item in sources)
+            + "\n\nNo AI provider is involved in this step. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
+
+    def _on_collection_failed(self, worker, brief: tuple) -> None:
+        # A crashed sweep contacted nothing this time; never show the last
+        # run's count as "actually contacted".
+        agent = self.agent()
+        if hasattr(agent, "last_source_count"):
+            agent.last_source_count = 0
+        self._on_collection_finished(worker, brief, [])
 
     def _on_collection_progress(self, message: str) -> None:
         if self._collecting:
@@ -577,6 +633,13 @@ class OsintHeavyPanel(AgentPanel):
         messages = self.agent().build_messages(
             target, target_type, scope, objective, image_metadata,
             live_results=live_results)
+        # The first authorisation priced the target string; the real prompt
+        # carries the catalogue, the collected JSON and any EXIF. Check the
+        # caps against that before a token is sent.
+        if not self.reauthorize(messages):
+            self.status_label.setText("Blocked: the assembled request exceeds a budget cap.")
+            self.set_busy(self.investigate_btn, self.stop_btn, False)
+            return
         self.status_label.setText("Investigating…")
         self.start_worker(
             messages, target,
@@ -604,21 +667,64 @@ class OsintHeavyPanel(AgentPanel):
         self.save_btn.setEnabled(True)
 
     def _on_error(self, error: str) -> None:
-        self.abandon()
+        if error == "Request cancelled by user.":
+            # The worker reports a cancel as an error. It is a stop, not a
+            # failure: keep "Stopped." and the partial text; nothing is billed.
+            if not self._stopped_request:
+                self._stopped_request = True
+                self.abandon("cancelled")
+                self.status_label.setText("Stopped.")
+                self.set_busy(self.investigate_btn, self.stop_btn, False)
+            return
+        self.abandon(error=error)
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
         self.stream_box.setPlainText(f"[Error] {error}")
         self.status_label.setText("Error.")
         self.set_busy(self.investigate_btn, self.stop_btn, False)
 
+    def _file_search_running(self) -> bool:
+        worker = self._file_search_worker
+        return worker is not None and worker.isRunning()
+
+    def is_running(self) -> bool:
+        # The window's Stop, the tray's Quit and Emergency Reset all ask this;
+        # a file search over SFTP is work of ours too, not only a model call.
+        return self._file_search_running() or super().is_running()
+
     def stop(self) -> None:
-        self.stop_worker()
+        running = self.stop_worker()
+        if running and not self._collecting and self._request_id is not None:
+            # A model request in flight: close it as cancelled so it is not
+            # billed (the worker's own cancel error is then ignored).
+            self._stopped_request = True
+            self.abandon("cancelled")
         if self._collecting:
             # Authorised but never sent: close the request so it is not billed.
             self._collecting = False
             self.abandon("cancelled")
+        if self._file_search_running():
+            self.cancel_file_search()
         self.status_label.setText("Stopped.")
         self.set_busy(self.investigate_btn, self.stop_btn, False)
+
+    def shutdown(self, timeout_ms: int = 2000) -> None:
+        """Cancel and join every worker before the widgets are destroyed."""
+        workers = [self.worker, self._file_search_worker]
+        for worker in workers:
+            if worker is not None and worker.isRunning():
+                worker.cancel()
+        if self._collecting:
+            self._collecting = False
+            self.abandon("cancelled")
+        for worker in workers:
+            if worker is None or not worker.isRunning() or not hasattr(worker, "wait"):
+                continue
+            if not worker.wait(timeout_ms) and hasattr(worker, "terminate"):
+                # Metadata reads and SFTP listings are bounded; destroying a
+                # live QThread at exit is the one thing worse than this.
+                worker.terminate()
+                worker.wait(timeout_ms)
 
     # ── Local file discovery ───────────────────────────────────────────
     @staticmethod
@@ -627,7 +733,7 @@ class OsintHeavyPanel(AgentPanel):
             return (
                 "Read-only: Bloodhound lists file metadata over SFTP on the remote "
                 "host. No file contents are transferred and nothing is sent to an AI. "
-                "Double-click a result to reveal it in its folder."
+                "Double-click a result to copy its remote path."
             )
         return (
             "Read-only: Bloodhound checks file metadata locally. Nothing is uploaded. "
@@ -839,6 +945,8 @@ class OsintHeavyPanel(AgentPanel):
         return f"{size / (1024 * 1024 * 1024):.2f} GB"
 
     def _populate_file_results(self, report: FileSearchReport) -> None:
+        self._file_results_remote = (
+            self.file_source_box.currentText() == "Remote SSH machine")
         self.file_results.setSortingEnabled(False)
         self.file_results.setRowCount(len(report.matches))
         for row, match in enumerate(report.matches):
@@ -864,6 +972,13 @@ class OsintHeavyPanel(AgentPanel):
     def reveal_file_result(self, row: int, _column: int) -> None:
         item = self.file_results.item(row, 1)
         if not item:
+            return
+        if getattr(self, "_file_results_remote", False):
+            # A remote path means nothing to Finder, and testing it against the
+            # local disk made every remote reveal report "no longer available".
+            QGuiApplication.clipboard().setText(item.text())
+            self.file_status.setText(
+                f"Remote path copied: {item.text()} — open it over SSH (Open SSH Terminal).")
             return
         path = Path(item.text())
         if not path.exists():
@@ -991,7 +1106,12 @@ class OsintHeavyPanel(AgentPanel):
 
     def _populate_image_details(self, path: str) -> None:
         exif = extract_exif(path)
-        fname = Path(path).name
+        # The file name and EXIF text fields come from the chosen file, which
+        # may have travelled through other hands — escape both before they
+        # reach this pane's HTML, so a crafted name or metadata value (e.g.
+        # Software/Model containing markup) cannot inject a tag or forge a
+        # link (QA audit, Bloodhound must-fix #12).
+        fname = html.escape(Path(path).name)
         gps_block = ""
         gps = exif.get("GPSInfo", {})
         if gps.get("GPSLatitude") and gps.get("GPSLongitude"):
@@ -1009,15 +1129,16 @@ class OsintHeavyPanel(AgentPanel):
                     "Make", "Model", "Software", "LensMake", "LensModel",
                     "ImageWidth", "ImageLength", "Orientation", "Flash", "FocalLength"):
             if key in exif:
+                safe_value = html.escape(str(exif[key]))
                 exif_rows += (f"<tr><td style='color:#888;padding-right:14px;'>{key}</td>"
-                              f"<td>{exif[key]}</td></tr>")
+                              f"<td>{safe_value}</td></tr>")
         no_exif = (
             "<p style='color:#ff8888;'>No EXIF data found — the image may have been stripped "
             "(common with screenshots, social media downloads, and edited files). "
             "This itself can be a signal.</p>"
             if not exif else ""
         )
-        html = (
+        page_html = (
             "<html><body style='font-family:monospace;font-size:12px;color:#ccc;background:#1a1a1a;padding:8px;'>"
             f"<h2 style='color:#dd88ff;'>Image OSINT &mdash; {fname}</h2>"
             f"{no_exif}{gps_block}"
@@ -1040,5 +1161,5 @@ class OsintHeavyPanel(AgentPanel):
             + "<br><p style='color:#555;font-size:11px;'>For authorised investigative use only.</p>"
             "</body></html>"
         )
-        self.image_details.setHtml(html)
+        self.image_details.setHtml(page_html)
         self.image_details.setVisible(True)

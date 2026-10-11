@@ -1,0 +1,17 @@
+# Coverage is measured for the product Sentinel ships. The companion VPN Agent
+# libraries are now reached from Tunnel's Privacy and Servers tabs and counted.
+# Still omitted: the command-line front end (cli.py), which Sentinel does not
+# ship, and profile_store.py, which Tunnel replaced with vpn_connection's store.
+[run]
+omit =
+    .venv/*
+    */.venv/*
+    agents/vpn_agent/server/cli.py
+    agents/vpn_agent/services/profile_store.py
+    agents/bug_spray/.venv/*
+    scripts/*
+    build/*
+    dist.noindex/*
+
+[report]
+skip_empty = True

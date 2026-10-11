@@ -1,7 +1,7 @@
 """Gated execution for Tunnel's live Connect/Disconnect (phase 3b).
 
 ``vpn_connection`` knows *how* to bring a tunnel up or down. This module decides
-*whether* it may, and records what happened:
+*whether* it may. It writes no log of any kind:
 
 1. **Target review** — before anything runs, name the exact target, the command,
    the non-secret routing/DNS intent of the config, and every reason to refuse.
@@ -12,9 +12,10 @@
 4. **Fresh post-change check** — after the command, re-read local state (the
    ``/var/run/wireguard`` records, the OpenVPN process, the route to a public
    address) instead of trusting the command's exit status.
-5. **Local audit** — one JSON line per privileged attempt, refused ones
-   included. Only non-secret fields are written; config key material is never
-   read into this module (``inspect_wireguard_config`` discards it at parse time).
+5. **No log** — nothing about an attempt, refused or declined ones included,
+   is written to disk or kept after the result is shown. Config key material is
+   never read into this module (``inspect_wireguard_config`` discards it at
+   parse time).
 6. **Rollback guidance** travels with every review and every outcome.
 
 The review is re-run inside ``execute`` so a file changed between the dialog and
@@ -23,7 +24,6 @@ the worker is still caught.
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import stat
@@ -37,7 +37,7 @@ from typing import Callable
 from agents.vpn_agent.services.config_inspection import (
     inspect_wireguard_config as inspect_config_summary,
 )
-from services import openvpn_manager, vpn_connection
+from services import openvpn_manager, vpn_apps, vpn_connection
 
 # wg-quick's own interface-name rule (wg-quick(8)); a config file whose stem
 # fails it is refused by wg-quick, so refuse before the password prompt instead.
@@ -45,8 +45,72 @@ WG_INTERFACE_NAME = re.compile(r"^[a-zA-Z0-9_=+.-]{1,15}$")
 WG_RUN_DIR = Path("/var/run/wireguard")
 # A routing-table lookup only — `route get` sends no packets to this address.
 ROUTE_PROBE_ADDRESS = "1.1.1.1"
-AUDIT_FILENAME = "tunnel_audit.jsonl"
 OUTPUT_LIMIT = 2000
+
+# Directives that make the tunnel tool run a program as root when the tunnel
+# comes up or goes down. A config with one of these is a script, not just a
+# set of keys and routes; the review names each so the operator confirms it
+# knowingly (auditor finding: these were neither inspected nor warned about).
+WG_HOOK_KEYS = ("PreUp", "PostUp", "PreDown", "PostDown")
+OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
+                     "client-connect", "client-disconnect", "learn-address",
+                     "tls-verify", "auth-user-pass-verify", "plugin",
+                     "script-security")
+HOOK_VALUE_LIMIT = 100
+# Where wg-quick looks for <interface>.conf when it is given a bare name.
+WG_CONFIG_DIRS = ("/etc/wireguard", "/opt/homebrew/etc/wireguard", "/usr/local/etc/wireguard")
+
+
+# Anything the tunnel tools print can quote the config: wg-quick echoes the
+# offending line of a bad config ("Line unrecognized: `PrivateKey = …`"), and
+# OpenVPN logs inline <key> blocks on parse errors. Redact before anything
+# reaches the Execution tab or a saved chat.
+_SECRET_FIELD = re.compile(
+    r"(?i)\b(PrivateKey|PresharedKey|password|passwd|auth-user-pass|secret|token)"
+    r"(\s*[=:]\s*|\s+)(?!\[redacted)(\S+)")
+_INLINE_BLOCK = re.compile(
+    r"(?is)<(key|tls-auth|tls-crypt|tls-crypt-v2|pkcs12|secret)>.*?</\1>")
+_PEM_BLOCK = re.compile(r"(?s)-----BEGIN ([A-Za-z0-9 ]+)-----.*?-----END \1-----")
+_KEY_TOKEN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{42,}={0,2}(?![A-Za-z0-9+/=])")
+
+
+def redact_secrets(text: str | None) -> str:
+    """Scrub key material from tool output before it is shown or stored."""
+    if not text:
+        return ""
+    text = _INLINE_BLOCK.sub(lambda m: f"<{m.group(1)}>[redacted]</{m.group(1)}>", text)
+    text = _PEM_BLOCK.sub(
+        lambda m: m.group(0) if "CERTIFICATE" in m.group(1) and "PRIVATE" not in m.group(1)
+        else f"-----BEGIN {m.group(1)}-----[redacted]-----END {m.group(1)}-----", text)
+    text = _SECRET_FIELD.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
+    return _KEY_TOKEN.sub("[redacted key]", text)
+
+
+def config_root_hooks(path: str | Path, protocol: str) -> list[str]:
+    """Lines in a WireGuard/OpenVPN config that execute as root, as
+    'Directive: value' strings; secrets are not read (only hook lines are kept).
+    An unreadable file yields no hooks — the review reports that separately."""
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    hooks: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if protocol == "WireGuard":
+            key, sep, value = line.partition("=")
+            key = key.strip()
+            if sep and key.lower() in {k.lower() for k in WG_HOOK_KEYS}:
+                hooks.append(f"{key}: {value.strip()[:HOOK_VALUE_LIMIT]}")
+        elif protocol == "OpenVPN":
+            parts = line.split(None, 1)
+            key = parts[0].lstrip("-").lower()
+            if key in OPENVPN_HOOK_KEYS:
+                value = parts[1].strip() if len(parts) > 1 else ""
+                hooks.append(f"{parts[0]}: {value[:HOOK_VALUE_LIMIT]}")
+    return hooks
 ACTIONS = ("connect", "disconnect")
 
 
@@ -116,6 +180,7 @@ class ExecutionReview:
     blockers: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     rollback: tuple[str, ...] = ()
+    root_hooks: tuple[str, ...] = ()
 
     @property
     def allowed(self) -> bool:
@@ -131,12 +196,15 @@ class ExecutionReview:
         ]
         if self.config_lines:
             lines += [""] + list(self.config_lines)
+        if self.root_hooks:
+            lines += ["", "RUNS COMMANDS AS ADMINISTRATOR — this config executes:"]
+            lines += [f"• {item}" for item in self.root_hooks]
         if self.warnings:
             lines += ["", "Check first:"] + [f"• {item}" for item in self.warnings]
         lines += ["", "To undo:"] + [f"• {item}" for item in self.rollback]
-        lines += ["", "Tunnel will re-check local state afterwards and record this "
-                      "attempt in its local audit log. Traffic protection is not "
-                      "verified by this check."]
+        lines += ["", "Tunnel will re-check local state afterwards. It keeps no log "
+                      "of this attempt. Traffic protection is not verified by "
+                      "this check."]
         return "\n".join(lines)
 
     def sections(self) -> list[tuple[str, str, bool]]:
@@ -152,6 +220,9 @@ class ExecutionReview:
         if self.config_lines:
             sections.append(("Configuration intent (keys discarded)",
                              "\n".join(self.config_lines), True))
+        if self.root_hooks:
+            sections.append(("Runs commands as administrator",
+                             "\n".join(f"• {item}" for item in self.root_hooks), True))
         if self.blockers:
             sections.append(("Refused — nothing was run",
                              "\n".join(f"• {item}" for item in self.blockers), False))
@@ -202,6 +273,7 @@ def review_execution(action: str, profile: dict | None, *,
     blockers: list[str] = []
     warnings: list[str] = []
     config_lines: list[str] = []
+    root_hooks: list[str] = []
     route_mode = ""
     ks_armed = killswitch_armed()
 
@@ -247,6 +319,7 @@ def review_execution(action: str, profile: dict | None, *,
                     if route_mode == "Split tunnel":
                         warnings.append("Split tunnel: only the listed networks use the VPN; "
                                         "other traffic keeps your normal route.")
+                root_hooks = config_root_hooks(source, "WireGuard")
                 try:
                     mode = source.stat().st_mode
                     if mode & (stat.S_IRGRP | stat.S_IROTH):
@@ -255,6 +328,12 @@ def review_execution(action: str, profile: dict | None, *,
                                         "`chmod 600` on it.")
                 except OSError:
                     pass
+        elif (not config_path and action == "connect" and interface
+              and WG_INTERFACE_NAME.fullmatch(interface)
+              and not any((Path(d) / f"{interface}.conf").is_file() for d in WG_CONFIG_DIRS)):
+            blockers.append(
+                f"No config for '{interface}' was found in {', '.join(WG_CONFIG_DIRS)}. "
+                "wg-quick would fail; import the .conf file instead.")
         if interface and WG_INTERFACE_NAME.fullmatch(interface):
             state = probe["wireguard"](interface)
             if action == "connect" and state.get("up"):
@@ -283,6 +362,8 @@ def review_execution(action: str, profile: dict | None, *,
                 blockers.append("This OpenVPN profile has no config file.")
             elif not Path(target).expanduser().is_file():
                 blockers.append(f"The config file {target} no longer exists.")
+            else:
+                root_hooks = config_root_hooks(target, "OpenVPN")
             if probe["openvpn_running"]():
                 blockers.append("An OpenVPN process is already running — Disconnect it first.")
             rollback = ["Press Disconnect (only a process Sentinel started and "
@@ -293,6 +374,15 @@ def review_execution(action: str, profile: dict | None, *,
         interface, target, command = "", "", ""
         blockers.append(f"Unsupported protocol '{profile.get('protocol')}'.")
         rollback = []
+
+    if root_hooks:
+        warnings.append(f"This config runs {len(root_hooks)} command(s) as administrator "
+                        "when the tunnel comes up or goes down (see the list above).")
+
+    if action == "connect":
+        app_warning = vpn_apps.connect_warning()
+        if app_warning:
+            warnings.append(app_warning)
 
     if action == "disconnect":
         if ks_armed:
@@ -309,6 +399,7 @@ def review_execution(action: str, profile: dict | None, *,
         interface=interface, command=command, route_mode=route_mode,
         config_lines=tuple(config_lines), blockers=tuple(blockers),
         warnings=tuple(warnings), rollback=tuple(rollback),
+        root_hooks=tuple(root_hooks),
     )
 
 
@@ -371,40 +462,8 @@ def post_change_check(review: ExecutionReview, probe: dict | None = None, *,
     return None, "No post-change check exists for this protocol."
 
 
-# ── Local audit ─────────────────────────────────────────────────────────────
-
-def default_audit_path() -> Path:
-    from services import runtime_paths
-    return runtime_paths.user_data_base() / "data" / "logs" / AUDIT_FILENAME
-
-
-def append_audit(entry: dict, path: Path | None = None) -> Path | None:
-    """Append one JSON line. Auditing must never break the action it records."""
-    target = Path(path) if path else default_audit_path()
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        try:
-            target.chmod(0o600)
-        except OSError:
-            pass
-        return target
-    except OSError:
-        return None
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
-def record_killswitch(action: str, ok: bool, message: str, *,
-                      audit_path: Path | None = None) -> Path | None:
-    return append_audit({
-        "time": _now(), "action": f"killswitch-{action}", "protocol": "pf",
-        "outcome": "succeeded" if ok else "failed",
-        "detail": str(message or "")[:OUTPUT_LIMIT],
-    }, audit_path)
 
 
 # ── Execution ───────────────────────────────────────────────────────────────
@@ -418,7 +477,6 @@ class ExecutionOutcome:
     error: str | None = None
     verified: bool | None = None
     verification: str = ""
-    audit_path: str | None = None
     checked_at: str = field(default_factory=_now)
 
     @property
@@ -448,12 +506,7 @@ class ExecutionOutcome:
         sections += self.review.sections()
         if self.output:
             sections.append(("Tool output", self.output[:OUTPUT_LIMIT], True))
-        sections.append((
-            "Audit",
-            f"Recorded in {self.audit_path}." if self.audit_path
-            else "This attempt could not be written to the local audit log.",
-            False,
-        ))
+        sections.append(("Logging", "Tunnel keeps no log of this attempt.", False))
         return sections
 
     def as_result(self) -> dict:
@@ -469,7 +522,6 @@ class ExecutionOutcome:
             "rollback": list(self.review.rollback),
             "status_line": self.status_line,
             "sections": self.sections(),
-            "audit_path": self.audit_path,
         }
 
 
@@ -477,9 +529,8 @@ def execute(action: str, profile: dict, *,
             run_as_root: vpn_connection.RunAsRoot | None = None,
             probe: dict | None = None,
             killswitch_armed: Callable[[], bool] | None = None,
-            audit_path: Path | None = None,
             sleep: Callable[[float], None] = time.sleep) -> ExecutionOutcome:
-    """Review again, run only if nothing blocks, check afterwards, and audit."""
+    """Review again, run only if nothing blocks, and check afterwards. Logs nothing."""
     probe = probe or _default_probe()
     review = review_execution(action, profile, probe=probe, killswitch_armed=killswitch_armed)
     kwargs = {"run_as_root": run_as_root} if run_as_root is not None else {}
@@ -491,26 +542,10 @@ def execute(action: str, profile: dict, *,
         result = runner(profile, **kwargs)
         outcome = ExecutionOutcome(
             review, ran=True, success=bool(result.get("success")),
-            output=str(result.get("output") or "")[:OUTPUT_LIMIT],
-            error=result.get("error"),
+            output=redact_secrets(str(result.get("output") or ""))[:OUTPUT_LIMIT],
+            error=(redact_secrets(str(result.get("error")))
+                   if result.get("error") else None),
         )
         outcome.verified, outcome.verification = post_change_check(review, probe, sleep=sleep)
 
-    written = append_audit({
-        "time": outcome.checked_at,
-        "action": review.action,
-        "protocol": review.protocol,
-        "profile": review.profile_name,
-        "target": review.target,
-        "interface": review.interface,
-        "command": review.command,
-        "outcome": ("refused" if not outcome.ran
-                    else "succeeded" if outcome.success else "failed"),
-        "blockers": list(review.blockers),
-        "warnings": list(review.warnings),
-        "verified": outcome.verified,
-        "verification": outcome.verification,
-        "error": (str(outcome.error)[:OUTPUT_LIMIT] if outcome.error else None),
-    }, audit_path)
-    outcome.audit_path = str(written) if written else None
     return outcome

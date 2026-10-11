@@ -4,8 +4,13 @@ WireGuard already had a manager (``agents/vpn_agent/services/wireguard_manager``
 this is its OpenVPN counterpart. OpenVPN needs root to add routes and open a tun
 device, so every state change goes through an injected ``run_as_root`` (the real
 one raises the macOS authorisation dialog). The client is started daemonised with
-a pid and log file so the GUI stays responsive and can report real status and
-surface the connection log.
+a pid file so the GUI stays responsive and can report real status.
+
+Sentinel keeps no connection log. OpenVPN has to write one for a few seconds,
+because the tunnel device it opens ("utun4") is only reported there and the kill
+switch needs that name. ``connect`` reads the device from it, stores just the
+device name, and deletes the log; OpenVPN keeps writing to the unlinked file,
+which no longer has a name on disk.
 
 Nothing here fabricates a connection: ``connect`` reports what OpenVPN actually
 returned, and ``is_running``/``status`` read the real pid file and process table.
@@ -13,9 +18,11 @@ returned, and ``is_running``/``status`` read the real pid file and process table
 
 from __future__ import annotations
 
+import re
 import shutil
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -23,7 +30,11 @@ from services.runtime_paths import user_data_base
 
 # Injected in tests; the default raises the real admin prompt.
 try:  # pragma: no cover - exercised via the real app, mocked in tests
-    from agents.vpn_agent.services.privileged import run_as_root as _default_run_as_root
+    from functools import partial as _partial
+    from agents.vpn_agent.services.privileged import run_as_root as _privileged_run_as_root
+    # Sentinel's gated actions always go through the macOS dialog (never a
+    # cached sudo ticket) — that is what the README and the review promise.
+    _default_run_as_root = _partial(_privileged_run_as_root, allow_cached_sudo=False)
 except Exception:  # pragma: no cover
     def _default_run_as_root(script: str, prompt: str, timeout: float = 30):
         return False, "Privileged execution is unavailable."
@@ -31,9 +42,26 @@ except Exception:  # pragma: no cover
 RunAsRoot = Callable[..., tuple[bool, str]]
 
 
+def openvpn_binary() -> str | None:
+    """Absolute path of the OpenVPN client, or None.
+
+    Homebrew installs it under ``sbin``, which the macOS authorisation dialog's
+    shell and sudo's secure_path both drop, so the privileged script must name
+    the binary by its full path (the same fix ``wg_quick_command`` carries).
+    """
+    found = shutil.which("openvpn")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/sbin/openvpn", "/usr/local/sbin/openvpn",
+                      "/opt/homebrew/bin/openvpn", "/usr/local/bin/openvpn"):
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
 def is_openvpn_available() -> bool:
-    """True when an OpenVPN client binary is on PATH."""
-    return shutil.which("openvpn") is not None
+    """True when an OpenVPN client binary can be found."""
+    return openvpn_binary() is not None
 
 
 def _run_dir() -> Path:
@@ -47,7 +75,20 @@ def pid_file() -> Path:
 
 
 def log_file() -> Path:
+    """Where OpenVPN writes while it starts; deleted as soon as the device is known."""
     return _run_dir() / "openvpn.log"
+
+
+def device_file() -> Path:
+    """The tunnel device name ("utun4") of the tracked process; no log content."""
+    return _run_dir() / "openvpn.device"
+
+
+def _forget(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 def _read_pid() -> int | None:
@@ -64,18 +105,89 @@ def is_running() -> bool:
     return pid is not None and _is_tracked_process(pid)
 
 
+_DEVICE_LINE = re.compile(
+    r"(?:Opened utun device|TUN/TAP device)\s+(utun\d+|tun\d+)\b")
+_DEVICE_NAME = re.compile(r"(?:utun|tun)\d+")
+DEVICE_WAIT_ATTEMPTS = 30      # x 0.5 s: how long connect() waits for the device line
+
+
+def tunnel_device() -> str | None:
+    """The utun/tun device of the tracked OpenVPN tunnel, or None.
+
+    ``connect`` stored the device OpenVPN reported ("Opened utun device utun4",
+    or "TUN/TAP device tun0 opened"). The kill switch must pass traffic on
+    exactly that device; the name is validated so nothing else can reach a pf
+    rule. A log that is still present (an older Sentinel's) is read as a
+    fallback.
+    """
+    if not is_running():
+        return None
+    try:
+        stored = device_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        stored = ""
+    if _DEVICE_NAME.fullmatch(stored):
+        return stored
+    try:
+        text = log_file().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    matches = _DEVICE_LINE.findall(text)
+    return matches[-1] if matches else None
+
+
+def _settle_log(sleep: Callable[[float], None], attempts: int) -> tuple[str | None, str]:
+    """Learn the tunnel device from OpenVPN's start-up log, then delete the log.
+
+    Returns ``(device, tail)``: the device name (None if it never appeared) and,
+    only when it did not, the last lines of the log so a failed start can still
+    be explained once. The log is deleted either way, and so is any stale device
+    file, before the new one is written.
+    """
+    log = log_file()
+    device, tail = None, ""
+    try:
+        if log.exists():
+            text = ""
+            for attempt in range(max(1, attempts)):
+                try:
+                    text = log.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    text = ""
+                found = _DEVICE_LINE.findall(text)
+                if found:
+                    device = found[-1]
+                    break
+                if attempt + 1 < attempts:
+                    sleep(0.5)
+            if device is None:
+                tail = "\n".join(text.strip().splitlines()[-6:])
+    finally:
+        _forget(log)
+    if device:
+        try:
+            target = device_file()
+            target.write_text(device, encoding="utf-8")
+            target.chmod(0o600)
+        except OSError:
+            pass
+    return device, tail
+
+
 def _quote(text: str) -> str:
     return "'" + str(text).replace("'", "'\\''") + "'"
 
 
-def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
+def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root,
+            sleep: Callable[[float], None] = time.sleep) -> dict:
     """Start an OpenVPN client from a .ovpn file, daemonised, as root.
 
     Returns a structured result; ``success`` means OpenVPN launched, not that the
-    tunnel finished negotiating — callers poll ``is_running`` / read ``log_file``.
+    tunnel finished negotiating — callers poll ``is_running``. ``device`` is the
+    tunnel device OpenVPN reported, when it did within about fifteen seconds.
     """
     result = {"success": False, "output": "", "error": None,
-              "log": str(log_file()), "protocol": "OpenVPN"}
+              "device": None, "protocol": "OpenVPN"}
     if not is_openvpn_available():
         result["error"] = ("openvpn client not found — install it, e.g. "
                             "`brew install openvpn`.")
@@ -90,12 +202,10 @@ def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root) 
 
     log = log_file()
     pid = pid_file()
-    try:
-        log.unlink()
-    except OSError:
-        pass
+    _forget(log)
+    _forget(device_file())
     script = (
-        f"openvpn --config {_quote(str(cfg))} "
+        f"{_quote(openvpn_binary() or 'openvpn')} --config {_quote(str(cfg))} "
         f"--daemon sentinel-ovpn "
         f"--log {_quote(str(log))} "
         f"--writepid {_quote(str(pid))} "
@@ -104,33 +214,48 @@ def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root) 
     ok, output = run_as_root(script, "Sentinel needs administrator access to start the VPN.")
     result["output"] = output
     result["success"] = ok
+    device, tail = _settle_log(sleep, DEVICE_WAIT_ATTEMPTS)
+    result["device"] = device
     if not ok:
         result["error"] = output or "OpenVPN failed to start."
+    if tail and not device:
+        # Shown once, with the result. Nothing is kept: the log is already gone.
+        result["output"] = (output + "\n" if output else "") + "OpenVPN start-up output:\n" + tail
+        if not ok:
+            result["error"] = result["output"]
     return result
 
 
 def _is_tracked_process(pid: int) -> bool:
     """Fail closed unless this PID names Sentinel's own OpenVPN command.
 
-    A PID file alone is not identity: PIDs can be stale or reused. Ambiguous
-    process arguments (including unquoted spaces from ps) are refused.
+    A PID file alone is not identity: PIDs can be stale or reused. The command
+    line is compared as the raw string ``ps`` prints (``-ww`` so it is never
+    truncated) rather than re-tokenised: ``ps`` does not quote arguments, so a
+    pid-file path containing a space — every packaged build keeps it under
+    ``~/Library/Application Support`` and every portable one under
+    ``Sentinel Data`` — would split into two tokens and the real process would
+    be refused forever (D2).
     """
     if pid <= 1:
         return False
     try:
         proc = subprocess.run(
-            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            ["/bin/ps", "-ww", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, timeout=3,
         )
-        args = shlex.split(proc.stdout.strip())
-        return (
-            proc.returncode == 0 and bool(args)
-            and Path(args[0]).name == "openvpn"
-            and args[args.index("--daemon") + 1] == "sentinel-ovpn"
-            and args[args.index("--writepid") + 1] == str(pid_file())
-        )
-    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
+    command = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not command:
+        return False
+    first, _, _ = command.partition(" ")
+    if Path(first).name != "openvpn":
+        return False
+    return (
+        " --daemon sentinel-ovpn " in f"{command} "
+        and f" --writepid {pid_file()} " in f"{command} "
+    )
 
 
 def disconnect(*, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
@@ -151,13 +276,6 @@ def disconnect(*, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
     # Keep tracking until exit is observed; sending a signal does not prove exit.
     if not ok:
         result["error"] = output or "Could not stop OpenVPN."
+    else:
+        _forget(device_file())
     return result
-
-
-def read_log(max_bytes: int = 8192) -> str:
-    """Return the tail of the OpenVPN log, or '' if none."""
-    try:
-        data = log_file().read_bytes()
-    except OSError:
-        return ""
-    return data[-max_bytes:].decode("utf-8", errors="replace")

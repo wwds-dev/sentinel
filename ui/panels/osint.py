@@ -26,6 +26,7 @@ from ui.widgets import MenuComboBox, SectionView
 from ui.panels.base import AgentPanel
 from services import osint_catalog
 from services.deepseek_client import is_insufficient_balance_error
+from agents.osint_agent import classify_target
 from ui.workers import DomainLookupWorker, ExposureLookupWorker, IdentityLookupWorker
 
 
@@ -43,6 +44,11 @@ class OsintPanel(AgentPanel):
         self._last_response = ""
         self._activity_entries: list[str] = []
         self._received_first_token = False
+        # Set by Stop on a Structure Query: the cancelled thread may still send a
+        # token, an answer or the cancel error, and none of them may land.
+        self._stopped = False
+        # True while a Live Research or Exposure Check worker owns the panel.
+        self._lookup_active = False
         self._build()
         self.polish_workspace()
         self.hide()
@@ -79,6 +85,22 @@ class OsintPanel(AgentPanel):
             "Domain", "Company", "Phone", "IP Address",
         ])
         setup_layout.addWidget(self.type_box, 1, 1)
+
+        # Off by default and never remembered: Trace persists no option between
+        # runs, so every session starts without contacting CourtListener.
+        self.courtlistener_box = QCheckBox("Include CourtListener court records (Company)")
+        self.courtlistener_box.setChecked(False)
+        setup_layout.addWidget(self.courtlistener_box, 1, 2, 1, 2)
+
+        # Advisory only: names the type Trace will use and, when the text looks
+        # like another type, suggests it. It never changes the Query Type.
+        self.type_hint_label = QLabel("")
+        self.type_hint_label.setWordWrap(True)
+        self.type_hint_label.setStyleSheet("font-size: 11px; color: #c9a227;")
+        self.type_hint_label.hide()
+        setup_layout.addWidget(self.type_hint_label, 3, 0, 1, 4)
+        self.target_input.textChanged.connect(lambda _text: self._refresh_type_hint())
+        self.type_box.currentTextChanged.connect(lambda _text: self._refresh_type_hint())
 
         self.analyse_btn = QPushButton("Structure Query")
         self.analyse_btn.setMinimumWidth(150)
@@ -158,7 +180,18 @@ class OsintPanel(AgentPanel):
         layout.addLayout(bottom_row)
 
     # ── Running ─────────────────────────────────────────────────────────
+    def _busy_with_previous_request(self) -> bool:
+        """A worker that is still finishing must not be replaced by a new one."""
+        if self.is_running():
+            self.status_label.setText(
+                "Still finishing the previous request — try again in a moment."
+            )
+            return True
+        return False
+
     def analyse(self) -> None:
+        if self._busy_with_previous_request():
+            return
         target = self.target_input.text().strip()
         query_type = self.type_box.currentText()
 
@@ -186,6 +219,7 @@ class OsintPanel(AgentPanel):
         self._clear_output()
         self._last_response = ""
         self._received_first_token = False
+        self._stopped = False
         self._reset_activity()
         detected_note = " (auto-detected)" if query_type == "Auto-detect" else ""
         self._append_activity(
@@ -222,6 +256,8 @@ class OsintPanel(AgentPanel):
         )
 
     def _on_token(self, token: str) -> None:
+        if self._stopped:
+            return
         # While tokens arrive there are no sections to show yet, so the raw
         # stream is the view; the cards replace it once the answer is whole.
         self._last_response += token
@@ -234,6 +270,8 @@ class OsintPanel(AgentPanel):
         self.stream_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
+        if self._stopped:
+            return
         self._last_response = full_response
         self.record(full_response)
         self.stream_box.setVisible(False)
@@ -247,7 +285,16 @@ class OsintPanel(AgentPanel):
         self._set_trace_busy(False)
 
     def _on_error(self, error: str) -> None:
-        self.abandon()
+        if self._stopped or error == "Request cancelled by user.":
+            # The worker reports a cancel as an error. It is a stop, not a
+            # failure: the partial text stays and the request is not billed.
+            if not self._stopped:
+                self._stopped = True
+                self.abandon("cancelled")
+                self.status_label.setText("Stopped.")
+                self._set_trace_busy(False)
+            return
+        self.abandon(error=error)
         balance_error = is_insufficient_balance_error(error)
         if balance_error:
             error = self._prepare_balance_recovery()
@@ -293,7 +340,23 @@ class OsintPanel(AgentPanel):
         )
 
     def stop(self) -> None:
-        self.stop_worker()
+        running = self.stop_worker()
+        if running and self._lookup_active:
+            # A lookup checks the stop flag between sources, so the source in
+            # flight finishes first. The controls stay locked until the worker
+            # reports back; a second run now would replace a live thread.
+            self.stop_btn.setEnabled(False)
+            self.status_label.setText("Stopping — waiting for the source in flight…")
+            self._append_activity(
+                "Stop requested. The source already running will finish; "
+                "results collected so far are kept."
+            )
+            return
+        if running:
+            # A Structure Query: the partial text stays on screen, the request
+            # is closed as cancelled, and nothing the thread sends later lands.
+            self._stopped = True
+            self.abandon("cancelled")
         self._append_activity("Stopped by the user. No further processing was performed.")
         self.status_label.setText("Stopped.")
         self._set_trace_busy(False)
@@ -306,13 +369,46 @@ class OsintPanel(AgentPanel):
                 button.setVisible(not busy)
                 button.setEnabled(not busy)
 
+    def _type_hint_text(self, target: str, resolved_type: str) -> str:
+        hint = classify_target(target, resolved_type)
+        return hint.message if hint else ""
+
+    def _refresh_type_hint(self) -> None:
+        target = self.target_input.text().strip()
+        text = ""
+        if target:
+            validation = self.agent().validate_target(target, self.type_box.currentText())
+            text = self._type_hint_text(target, validation.query_type)
+        self.type_hint_label.setText(text)
+        self.type_hint_label.setVisible(bool(text))
+
+    def _treated_as_lines(self, target: str, resolved_type: str) -> str:
+        """'Treated as: <type>' plus, when it fits, a one-line better-type hint."""
+        lines = f"Treated as: {resolved_type}"
+        hint = self._type_hint_text(target, resolved_type)
+        return lines + (f"\nHint: {hint}" if hint else "")
+
     # ── Explicit live public-source research ───────────────────────────
     def live_research(self) -> None:
+        if self._busy_with_previous_request():
+            return
         target = self.target_input.text().strip()
         validation = self.agent().validate_target(target, self.type_box.currentText())
         if not validation.valid:
             QMessageBox.warning(self, "Invalid Target", validation.message)
             return
+        if validation.query_type == "IP Address":
+            non_public = self.agent().non_public_ip_reason(target)
+            if non_public:
+                QMessageBox.warning(
+                    self, "Not a Public Address",
+                    f"'{target}' is {non_public}. It has no meaningful public "
+                    "footprint, so Live Research will not contact WHOIS, DNS, "
+                    "or threat-intelligence services for it. Live Research "
+                    "stopped before contacting anything.",
+                )
+                self.status_label.setText("Live Research cancelled: not a public address.")
+                return
         if validation.query_type not in {
             "Domain", "IP Address", "Username", "Email", "Company"
         }:
@@ -351,7 +447,7 @@ class OsintPanel(AgentPanel):
                 "Domain": ("WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, "
                            "crt.sh, and the Wayback Machine"),
                 "Username": "URLScan, GitHub, and Keybase",
-                "Company": "GLEIF Legal Entity Index and CourtListener court records",
+                "Company": "GLEIF Legal Entity Index",
             }
             sources = source_map[validation.query_type]
             if validation.query_type in {"IP Address", "Domain"}:
@@ -367,16 +463,23 @@ class OsintPanel(AgentPanel):
                 from providers.company_lookup import opensanctions_key
 
                 # OpenSanctions needs a key for every call; without one it is
-                # neither named here nor contacted. CourtListener always runs.
+                # neither named here nor contacted. CourtListener has its own
+                # checkbox (off by default): it is named and contacted only when ticked.
+                names = ["GLEIF Legal Entity Index"]
                 if opensanctions_key():
                     selected_sources = ("opensanctions",)
-                    sources = ("GLEIF Legal Entity Index, OpenSanctions, and "
-                               "CourtListener court records")
+                    names.append("OpenSanctions")
+                if self.courtlistener_box.isChecked():
+                    selected_sources += ("courtlistener",)
+                    names.append("CourtListener court records")
+                sources = (names[0] if len(names) == 1
+                           else ", ".join(names[:-1]) + " and " + names[-1])
             consent = QMessageBox.question(
                 self,
                 "Confirm Live Research",
                 f"Trace will send this target to public research services:\n\n"
-                f"{target}\n\nSources: {sources}\n\n"
+                f"{target}\n\n{self._treated_as_lines(target, validation.query_type)}\n\n"
+                f"Sources: {sources}\n\n"
                 "This is a real external lookup, not local model processing. Continue?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
@@ -405,6 +508,7 @@ class OsintPanel(AgentPanel):
         worker.finished_signal.connect(self._on_lookup_finished)
         worker.error_signal.connect(self._on_lookup_error)
         self.worker = worker
+        self._lookup_active = True
         worker.start()
 
     def _choose_email_sources(self, target: str) -> tuple[str, ...]:
@@ -416,7 +520,8 @@ class OsintPanel(AgentPanel):
         layout = QVBoxLayout(dialog)
         explanation = QLabel(
             f"The complete address {target} will be sent only to the services "
-            "selected below. Breach services are off by default."
+            "selected below. Breach services are off by default.\n"
+            + self._treated_as_lines(target, "Email")
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
@@ -482,6 +587,8 @@ class OsintPanel(AgentPanel):
     def exposure_check(self) -> None:
         """Check whether a domain, company or email is in a leak or on a
         ransomware leak site, using clearnet services behind explicit consent."""
+        if self._busy_with_previous_request():
+            return
         target = self.target_input.text().strip()
         validation = self.agent().validate_target(target, self.type_box.currentText())
         if not validation.valid:
@@ -522,6 +629,7 @@ class OsintPanel(AgentPanel):
         worker.finished_signal.connect(self._on_lookup_finished)
         worker.error_signal.connect(self._on_lookup_error)
         self.worker = worker
+        self._lookup_active = True
         worker.start()
 
     def _choose_exposure_sources(self, target: str, query_type: str) -> tuple[str, ...]:
@@ -536,7 +644,8 @@ class OsintPanel(AgentPanel):
         explanation = QLabel(
             f"'{target}' will be sent only to the clearnet services selected "
             "below. Each does its own crawling under its own legal setup; Sentinel "
-            "receives text results only and never contacts an onion site."
+            "receives text results only and never contacts an onion site.\n"
+            + self._treated_as_lines(target, query_type)
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
@@ -634,6 +743,7 @@ class OsintPanel(AgentPanel):
         return json.dumps(value, indent=2, ensure_ascii=False, default=str)
 
     def _on_lookup_finished(self, result: dict) -> None:
+        self._lookup_active = False
         self._show_lookup_result(result, save=True)
 
     def _show_lookup_result(self, result: dict, *, save: bool) -> None:
@@ -739,6 +849,25 @@ class OsintPanel(AgentPanel):
                     "Possible exposure — matches found in dark-web / leak sources. "
                     "Review each hit below; a mention is a lead, not proof."
                 )
+            elif result.get("cancelled") or failed or not checked:
+                # Nothing was found, but the run did not cover what was asked
+                # for: that is not a clean result and must not read as one.
+                reasons = []
+                if result.get("cancelled"):
+                    reasons.append("the run was stopped before every source answered")
+                if failed:
+                    reasons.append(f"{', '.join(failed)} returned an error")
+                if not reasons:
+                    reasons.append("no source answered")
+                headline = (
+                    f"{'Incomplete' if checked else 'Not checked'} — "
+                    f"{'; '.join(reasons)}. "
+                    + ("Nothing was found in the sources that did answer, but this is "
+                       "not a clean result." if checked else
+                       "This is not a clean result.")
+                    + " Run the check again, and read the Errors line of the "
+                      "Research summary."
+                )
             else:
                 headline = (
                     "No exposure found in the sources that were queried. This is not a "
@@ -796,6 +925,7 @@ class OsintPanel(AgentPanel):
         self._set_trace_busy(False)
 
     def _on_lookup_error(self, error: str) -> None:
+        self._lookup_active = False
         self._append_activity(f"Live Research failed before completion: {error}")
         self.stream_box.setPlainText(f"Live Research error\n\n{error}")
         self.stream_box.setVisible(True)
@@ -857,7 +987,7 @@ class OsintPanel(AgentPanel):
             "structure": r"##\s*QUERY STRUCTURE(.*?)(?=##\s*GOOGLE DORKS|$)",
             "dorks":     r"##\s*GOOGLE DORKS(.*?)(?=##\s*PUBLIC SOURCES|$)",
             "sources":   r"##\s*PUBLIC SOURCES(.*?)(?=##\s*SUMMARY|$)",
-            "summary":   r"##\s*SUMMARY.*?(.*?)$",
+            "summary":   r"##\s*SUMMARY[^\n]*\n(.*)$",
         }
         result = {}
         for key, pat in patterns.items():

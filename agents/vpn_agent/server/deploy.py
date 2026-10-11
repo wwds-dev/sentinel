@@ -14,14 +14,17 @@ already resolved by the time the script is built.
 from __future__ import annotations
 
 import platform
+import re
+import shlex
 import shutil
 import subprocess
 import time
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
-from . import bootstrap, obfuscation, provision
+from . import bootstrap, obfuscation, paths, provision
 from .model import MODE_NATIVE, MODE_REMOTE, Site
 
 OutputCallback = Callable[[str], None]
@@ -34,6 +37,35 @@ SSH_BASE_OPTIONS = [
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ConnectTimeout=10",
 ]
+
+
+_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$")
+_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_IFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
+
+
+def ssh_problems(site: Site) -> list[str]:
+    """Reject an SSH target that could be read by ssh as an option or a shell word.
+
+    The target can come from a restored backup, so it is checked rather than
+    trusted: a host or user beginning with ``-`` would become an ssh option
+    (ProxyCommand runs a program), and the identity file must be a real file.
+    """
+    ssh = site.ssh
+    problems: list[str] = []
+    if not _HOST_RE.match(ssh.host or ""):
+        problems.append("The SSH host is not a plain host name or address.")
+    if not _USER_RE.match(ssh.user or ""):
+        problems.append("The SSH user is not a plain account name.")
+    if not (1 <= int(ssh.port or 0) <= 65535):
+        problems.append("The SSH port is out of range.")
+    if ssh.identity_file:
+        path = Path(ssh.identity_file).expanduser()
+        if str(ssh.identity_file).startswith("-") or not path.is_file():
+            problems.append("The SSH key file does not exist.")
+    if not _IFACE_RE.match(site.wg_interface or ""):
+        problems.append("The WireGuard interface name is not valid.")
+    return problems
 
 
 @dataclass
@@ -62,6 +94,7 @@ def preflight(site: Site) -> list[str]:
     if site.mode == MODE_REMOTE:
         if not shutil.which("ssh"):
             problems.append("ssh not found on this machine.")
+        problems.extend(ssh_problems(site))
     elif site.mode == MODE_NATIVE:
         system = platform.system().lower()
         if system not in ("linux", "darwin"):
@@ -79,6 +112,9 @@ def check_ssh(site: Site) -> DeployResult:
     """Verify the remote host is reachable and we can act as root there."""
     if not site.ssh.is_configured():
         return DeployResult(False, error="No SSH host configured.")
+    bad = ssh_problems(site)
+    if bad:
+        return DeployResult(False, problems=bad)
 
     probe = "id -u; uname -s; command -v apt-get >/dev/null && echo has-apt || echo no-apt"
     command = _ssh_command(site) + [probe]
@@ -116,12 +152,30 @@ def check_ssh(site: Site) -> DeployResult:
     if "no-apt" in proc.stdout:
         problems.append("Remote host has no apt-get — the installer targets Debian/Ubuntu.")
 
+    output = proc.stdout.strip()
+    fingerprint = host_fingerprint(site)
+    if fingerprint:
+        output += f"\nHost key accepted: {fingerprint}"
     return DeployResult(
         success=not problems,
-        output=proc.stdout.strip(),
+        output=output,
         command=" ".join(command),
         problems=problems,
     )
+
+
+def host_fingerprint(site: Site) -> str:
+    """The fingerprint ssh has on record for this host (local lookup, no network)."""
+    host = site.ssh.host if site.ssh.port == 22 else f"[{site.ssh.host}]:{site.ssh.port}"
+    try:
+        proc = subprocess.run(["ssh-keygen", "-F", host, "-l"], capture_output=True,
+                              text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in proc.stdout.splitlines():
+        if not line.startswith("#"):
+            return line.strip()
+    return ""
 
 
 # ── Deploy ───────────────────────────────────────
@@ -144,6 +198,12 @@ def deploy(
     if problems:
         return DeployResult(False, problems=problems)
 
+    if site.mode == MODE_REMOTE and not dry_run and not host_fingerprint(site):
+        return DeployResult(False, problems=[
+            "This host's key is not on record yet. Run Check SSH first and compare the "
+            "fingerprint it shows with the one your VPS provider gives you; the "
+            "server's private keys are only sent to a host you have seen."])
+
     script = build_script(site)
 
     if dry_run:
@@ -165,6 +225,42 @@ def deploy(
     return result
 
 
+_B64_RUN = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
+
+
+def preview_script(site: Site) -> str:
+    """The installer as shown to the person: secrets replaced, structure kept.
+
+    Base64 payloads (the config files the installer writes) are decoded and
+    shown with their key lines and PEM blocks scrubbed, so the person can read
+    exactly what goes onto the server; anything that is not text becomes
+    ``<redacted N bytes>``. Key material outside them is scrubbed too.
+    """
+    import base64
+    import binascii
+
+    from services.vpn_execution import redact_secrets
+
+    def show(match) -> str:
+        blob = match.group(0)
+        try:
+            decoded = base64.b64decode(blob, validate=True).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            return f"<redacted {len(blob)} bytes>"
+        body = redact_secrets(decoded).rstrip("\n")
+        return ("<file contents, keys redacted:\n"
+                + "\n".join("  | " + line for line in body.splitlines()) + "\n>")
+
+    script = build_script(site)
+    out, last = [], 0
+    for match in _B64_RUN.finditer(script):
+        out.append(redact_secrets(script[last:match.start()]))
+        out.append(show(match))
+        last = match.end()
+    out.append(redact_secrets(script[last:]))
+    return "".join(out)
+
+
 def build_script(site: Site) -> str:
     """Render the installer that would be run for this site."""
     if site.mode == MODE_REMOTE:
@@ -180,7 +276,7 @@ def _ssh_command(site: Site) -> list[str]:
         command += ["-p", str(site.ssh.port)]
     if site.ssh.identity_file:
         command += ["-i", site.ssh.identity_file, "-o", "IdentitiesOnly=yes"]
-    command.append(site.ssh.destination())
+    command += ["--", site.ssh.destination()]
     return command
 
 
@@ -190,29 +286,86 @@ def _run_remote(site: Site, script: str, on_output: OutputCallback | None) -> De
     return _stream(command, script, on_output)
 
 
-def _run_local(site: Site, script: str, on_output: OutputCallback | None) -> DeployResult:
-    """
-    Run the installer on this machine.
+def sweep_stale_installers() -> int:
+    """Remove installer files left by a run that was killed mid-dialog.
 
-    Requires root. We use `sudo -n` rather than prompting: a GUI has nowhere to
-    show a terminal password prompt, and silently blocking on one looks like a
-    hang. If credentials are not cached the caller is told exactly what to run.
+    They hold server private keys. The normal path removes its own file in a
+    ``finally``; an app killed while the password dialog was up never gets
+    there, so this runs when the Servers tab first opens.
+    """
+    directory = paths.state_dir() / "tmp"
+    removed = 0
+    if directory.is_dir():
+        for stale in directory.glob("install-*.sh"):
+            try:
+                stale.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def _run_local(site: Site, script: str, on_output: OutputCallback | None,
+               purpose: str = "set up the VPN server") -> DeployResult:
+    """
+    Run the installer on this machine, as root.
+
+    Sentinel's gated actions use the macOS administrator dialog and never a
+    cached ``sudo`` ticket. The dialog runs one command, not a stdin stream, so
+    the installer goes into a private (0600) file inside the state folder; root
+    copies it to a root-owned temp file, checks its SHA-256, runs it and removes
+    the copy. Sentinel removes its own file afterwards whatever happens: the
+    script embeds the server's private keys.
     """
     import os
+    import tempfile
+
+    from agents.vpn_agent.services import privileged
 
     if os.geteuid() == 0:
-        command = ["bash", "-s"]
-    else:
-        command = ["sudo", "-n", "bash", "-s"]
+        return _stream(["bash", "-s"], script, on_output)
 
-    result = _stream(command, script, on_output)
-    if not result.success and "sudo" in result.error.lower() and "password" in result.error.lower():
-        result.problems.append(
-            "sudo needs a password and none is cached. Run `sudo -v` in a terminal "
-            "first, then deploy again — or use 'Save installer script' and run it "
-            "yourself with sudo."
+    import hashlib
+
+    directory = paths.ensure_private_dir(paths.state_dir() / "tmp")
+    fd, name = tempfile.mkstemp(prefix="install-", suffix=".sh", dir=directory)
+    path = Path(name)
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    # The file is ours (user-owned) while the password dialog is up, so another
+    # process running as this user could swap its contents. Root therefore
+    # copies it into a root-owned 0600 temp file, checks the copy's SHA-256
+    # against what Sentinel wrote, and only then runs it; the copy is removed
+    # whatever happens.
+    runner = (
+        "t=$(/usr/bin/mktemp /tmp/sentinel-install.XXXXXX) || exit 97; "
+        f"/bin/cat {shlex.quote(str(path))} > \"$t\"; "
+        "h=$(/usr/bin/shasum -a 256 \"$t\" | /usr/bin/cut -c1-64); "
+        f"if [ \"$h\" = {digest} ]; then /bin/bash \"$t\"; r=$?; "
+        "else echo 'installer changed before it ran; refused' >&2; r=98; fi; "
+        "/bin/rm -f \"$t\"; exit $r"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(script)
+        os.chmod(path, 0o600)
+        ok, output = privileged.run_as_root(
+            runner,
+            f"Sentinel needs administrator access to {purpose} on {site.name}.",
+            DEPLOY_TIMEOUT,
+            allow_cached_sudo=False,
         )
-    return result
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    if on_output:
+        for line in output.splitlines():
+            on_output(line)
+    if ok:
+        return DeployResult(True, output=output, command="(installer run through the macOS dialog)")
+    return DeployResult(False, output=output, error=_explain_failure(1, output),
+                        command="(installer run through the macOS dialog)")
 
 
 def _stream(
@@ -326,6 +479,7 @@ def build_teardown_script(site: Site) -> str:
     A native macOS install is a different animal — pf and Homebrew rather than
     systemd and apt — so it gets its own script.
     """
+    site.check_strict()
     if site.mode == MODE_NATIVE and platform.system() == "Darwin":
         return bootstrap.macos_teardown_script(site)
 
@@ -370,6 +524,9 @@ def teardown(site: Site, *, on_output: OutputCallback | None = None) -> DeployRe
     script = build_teardown_script(site)
 
     if site.mode == MODE_REMOTE:
+        bad = ssh_problems(site)
+        if bad:
+            return DeployResult(False, problems=bad)
         command = _ssh_command(site) + (
             ["bash -s"] if site.ssh.user == "root" else ["sudo -n bash -s"]
         )
@@ -379,16 +536,7 @@ def teardown(site: Site, *, on_output: OutputCallback | None = None) -> DeployRe
     if system not in ("Darwin", "Linux"):
         return DeployResult(False, problems=[f"Native teardown is not supported on {system}."])
 
-    import os
-
-    command = ["bash", "-s"] if os.geteuid() == 0 else ["sudo", "-n", "bash", "-s"]
-    result = _stream(command, script, on_output)
-    if not result.success and "password" in result.error.lower():
-        result.problems.append(
-            "sudo needs a password and none is cached. Run `sudo -v` in a terminal "
-            "first, then tear down again."
-        )
-    return result
+    return _run_local(site, script, on_output, purpose="remove the VPN server")
 
 
 # ── Live status ──────────────────────────────────
@@ -479,6 +627,9 @@ def server_status(site: Site) -> ServerStatus:
         return ServerStatus(error="Live status is available for remote servers only.")
     if not site.ssh.is_configured():
         return ServerStatus(error="No SSH host configured.")
+    bad = ssh_problems(site)
+    if bad:
+        return ServerStatus(error="; ".join(bad))
 
     probe = (
         f"wg show {site.wg_interface} dump 2>/dev/null; "

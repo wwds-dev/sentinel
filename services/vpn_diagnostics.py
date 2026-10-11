@@ -24,6 +24,7 @@ from agents.vpn_agent.services.config_inspection import (
 )
 from agents.vpn_agent.server import paths as vpn_paths
 from agents.vpn_agent.services import dns_check, latency, public_ip, wireguard_manager
+from services import vpn_apps
 from services.runtime_paths import resource_base
 
 
@@ -416,6 +417,7 @@ class VpnDiagnosticsReport:
     openvpn_running: bool
     selected_profile: dict | None = None
     profile_findings: list[DiagnosticFinding] = field(default_factory=list)
+    vpn_apps: list = field(default_factory=list)
     external_checked: bool = False
     public_ip: str | None = None
     latency_result: dict | None = None
@@ -429,6 +431,11 @@ class VpnDiagnosticsReport:
         if self.active_tunnels:
             names = ", ".join(self.active_tunnels)
             return f"WireGuard interface detected: {names}. Confirm the route below."
+        managed = [a for a in self.vpn_apps if a.active]
+        if managed:
+            names = ", ".join(f"{a.name} ({a.state})" for a in managed)
+            return (f"{names} — managed by that app, not by Tunnel. "
+                    "Confirm the exit address under Your IP & DNS.")
         if self.openvpn_running:
             return "An OpenVPN process is running. Confirm the route below."
         return "No active WireGuard interface or OpenVPN process was detected."
@@ -464,8 +471,12 @@ class VpnDiagnosticsReport:
             ("Connection summary", self.summary, False),
             ("Installed VPN tools", "\n".join(tool_lines), True),
             ("Detected tunnels", "\n".join(tunnel_lines), True),
-            ("Local route and DNS", "\n".join(route_lines), True),
         ]
+        installed_apps = [a for a in self.vpn_apps if a.installed]
+        if installed_apps:
+            sections.append(("VPN apps (managed by the app, not Tunnel)",
+                             "\n".join(a.line() for a in installed_apps), True))
+        sections.append(("Local route and DNS", "\n".join(route_lines), True))
         if self.selected_profile:
             profile = self.selected_profile
             identity = [
@@ -545,6 +556,12 @@ def collect_vpn_diagnostics(
             tunnel_stats[interface] = stats
             errors.extend(stat_errors)
 
+    try:
+        apps = vpn_apps.detect()
+    except Exception as exc:  # a broken probe must not hide the rest of the check
+        apps = []
+        errors.append(f"VPN apps: {exc}")
+
     route = _default_route()
     try:
         dns_servers = list(dns_check.get_system_dns_servers())
@@ -560,6 +577,7 @@ def collect_vpn_diagnostics(
         route=route,
         dns_servers=dns_servers,
         openvpn_running=_openvpn_running(),
+        vpn_apps=apps,
         selected_profile=_public_profile(selected_profile) if selected_profile else None,
         cancelled=should_cancel(),
         errors=errors,
@@ -681,6 +699,10 @@ def _recommended_steps(report: VpnDiagnosticsReport) -> list[str]:
     for finding in report.profile_findings:
         if finding.next_step and finding.next_step not in steps:
             steps.append(finding.next_step)
+    if any(app.active for app in report.vpn_apps):
+        steps.append("A VPN app is carrying your traffic. Use Your IP & DNS to confirm the exit "
+                     "address and resolvers, and leave Tunnel's kill switch off: use the app's own "
+                     "kill switch setting.")
     if not report.dns_servers:
         steps.append("Confirm which DNS resolver the VPN profile intends to use; the system list could not be read.")
     if report.external_checked and not report.public_ip:

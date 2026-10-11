@@ -8,9 +8,9 @@
 |---|---|
 | Provider | Where the model runs. Ollama is local; other choices are cloud services. |
 | Model | The specific model used by the selected provider. Availability depends on installation, key and provider account. |
-| Auto-route | Applies Sentinel's recommendation using task, privacy, availability and cost preferences. Review the result before running. |
+| Auto-route | Picks a provider and model for the current input and selects them; review the result before running. Only Ollama and the providers ticked under Options → Paid provider access are candidates, and in Local only mode only Ollama is. It never changes the agent or the Tool. |
 | Main action | Send, Investigate, Analyse, Ask Advisor or another agent-specific operation. |
-| Stop | Requests cancellation of the active worker. Partial results may remain. |
+| Stop | Requests cancellation of the active worker. Partial results may remain. In Chat it appears beside Run only while a request is running, and Esc does the same. |
 | Best fit | A **BEST FIT** badge on one entry per dropdown is Sentinel's recommendation for this agent: the cheapest model rated good enough for this agent's kind of work (see [API keys and new models](api_keys.md)). Hover for the reason, including the ratings and prices compared. It is advice; the entry you pick is the one that runs, and the badge moving never changes your selection. |
 | NEW | A grey **NEW** badge marks a model a provider released since Sentinel last looked. It disappears once you update or dismiss it in **Model Updates**. |
 | Paid marker | The control turns amber while a route that may charge through a cloud API is selected, and cloud entries say so on hover. It is a warning, not a price quote. |
@@ -32,10 +32,23 @@ price:
 | Balanced | The cheapest model rated within 20 points of the best for the kind of work. The default. |
 | Cost first | The cheapest within 50 points. |
 | Quality first | The best-rated model, whatever it costs. |
-| Speed first | Sentinel's own scoring, weighted towards fast models. |
+| Speed first | The same as Balanced whenever any candidate model has a rating (the shipped snapshot normally supplies them); Sentinel's own scoring, weighted towards fast models, applies only when no candidate is rated. |
 | Privacy first | Sentinel's own scoring, weighted towards local models. |
 
 The priority also decides every agent's BEST FIT badge.
+
+Execution mode starts as Local only each time Sentinel launches, with every paid
+provider unticked. In Local only mode a cloud provider chosen in the run bar is
+replaced by Ollama; Hybrid allowed and Cloud only require the provider to be
+ticked under Paid provider access.
+
+**Local only** means Ollama with an Ollama model. If a cloud provider is still
+selected in the run bar, Chat does not contact it: the request uses your saved
+Ollama default model, the run-bar estimate reads `free · … · local only`, and
+hovering it names the substitution. In **Hybrid allowed** or **Cloud only**, a
+cloud provider whose permission is not ticked blocks the request: the estimate
+reads `blocked · see route` (hover for the reason) and Send shows **Request
+blocked**.
 
 ## Settings — General
 
@@ -61,7 +74,20 @@ history or files.
 
 Enable or disable registered tools. Tools supply task-specific instructions,
 such as Writing or Coding inside Chat. The prompt preview helps identify the
-tool but is not an editor in this screen.
+tool but is not an editor in this screen. Changes to the enabled list reach
+Chat's Tool selector after a restart, and Chat accepts only its five built-in
+Tools.
+
+## Settings — API Keys
+
+One row per cloud AI provider (OpenAI, Anthropic, Google Gemini, DeepSeek, Kimi,
+Qwen). Paste the key, press **Save**, and Sentinel writes it to the `.env` file
+and uses it from the next request, with no restart. Hover a provider name for
+its variable name and where to create the key. The eye shows or hides the key;
+saving an empty field removes it. The status beside each field and the
+**API KEYS** card in the left rail read **ready** once a key is stored. Save
+does not test the key with the provider. Keys for OSINT services are in the
+separate **OSINT Keys** tab. See [API keys and new models](api_keys.md).
 
 ## Settings — Pricing
 

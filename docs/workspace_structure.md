@@ -1,13 +1,13 @@
 # Lab workspace structure
 
-Updated 2026-10-06. Lab Hub is the front door; each product has one canonical
+Updated 2026-10-09. Lab Hub is the front door; each product has one canonical
 repository under `/Users/as/Documents/lab/active/`.
 
 ## Product ownership
 
 | product | purpose | canonical contents |
 |---|---|---|
-| **Sentinel** (`sentinel`) | security and intelligence | Chat, Trace, Bloodhound, Beacon, Bug Spray, Tunnel, Forge |
+| **Sentinel** (`sentinel`) | security and intelligence | Chat, Trace, Bloodhound, Beacon, Sentry, Bug Spray, Tunnel, Forge |
 | **SONAR** (`sonar`) | markets and wagering | Oracle direction and Playmaker |
 | **Create & Publish** | creative and publishing | Website, vidforge, Fiverr, Maestro, Manuscript, Publisher |
 | **Backup & Sync** | maintenance | Backup Control Center and git autosync |

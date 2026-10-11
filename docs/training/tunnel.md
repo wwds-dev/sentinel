@@ -2,7 +2,7 @@
 
 **Goal:** compare the current VPN state with an intended profile, understand the topology, and either create a reviewable configuration or run a gated connection. **Time:** 30 minutes.
 
-![Tunnel workspace](docs/training/images/tunnel.png)
+![Tunnel workspace. This capture predates the Your IP & DNS group, which sits between VPN Connection and Deployment.](docs/training/images/tunnel.png)
 
 Tunnel is for infrastructure you own or administer. It has six distinct
 paths: **VPN Connection (live)** actually connects or disconnects a real
@@ -10,7 +10,8 @@ tunnel, but only through an execution gate; **Connection Check** reads current
 status; **Safe Action Preview** shows but cannot run a proposed change; the
 **Advisor** uses an AI model; and **Build Config** and **Config Inspection** are
 deterministic and offline. A status check, preview, or inspection does not send
-anything to a model and does not count against an AI budget.
+anything to a model and does not count against an AI budget. Neither do Connect
+and Disconnect: only **Ask Advisor** uses a model.
 
 The amber banner at the top of the screen states the boundary: connecting starts
 WireGuard or OpenVPN and may ask for your administrator password, traffic
@@ -22,52 +23,156 @@ read-only.
 ## VPN Connection (live)
 
 This is the only path that touches a real tunnel. Choose a **Server** profile,
-or select **Import config…** to load a WireGuard `.conf` or OpenVPN `.ovpn` file;
-importing saves the profile locally and selects it. The status line reads
+or select **Import config…** to load a WireGuard `.conf` or OpenVPN `.ovpn` file
+(a `.ovpn` file is OpenVPN; any other file is read as WireGuard). Importing
+reads the server address and port out of the file, saves the profile locally,
+and selects it. Tunnel remembers where the file is rather than copying it, so
+moving or deleting the file later makes Connect refuse. The status line reads
 **Connection state not checked** until you act — Tunnel does not silently probe
 the tunnel.
+
+Imported profiles, server sites and kill-switch state are kept in Sentinel's
+data folder (`vpn/`), so Portable mode carries them and Emergency Reset covers
+them. If you used the standalone VPN Agent before, Sentinel copied its folder
+across on first run (the old copy is left untouched). On a Mac with no profile
+file yet, the first import creates one that holds only the imported profile, so
+the starter profiles disappear from the pickers.
 
 Selecting **Connect** or **Disconnect** never runs the command immediately. It
 first opens the **Execution** results tab with a target review, and only then
 asks a Yes/No question that defaults to **No**. The gate has fixed stages:
 
-1. **Target review** validates the profile and lists any blockers. If the review
-   is not allowed, Tunnel refuses, shows why, and executes nothing.
-2. **Explicit confirmation** — you must confirm the exact action and target.
-3. **Administrator prompt** — macOS asks for your password; Tunnel never stores it.
+1. **Target review** validates the profile and lists any blockers, warnings and
+   the steps that undo the action. If the review is not allowed, Tunnel refuses,
+   shows why, and executes nothing.
+2. **Explicit confirmation** — you must confirm the exact action, target and
+   command. If the config contains lines that run commands as administrator, a
+   second dialog lists them and also defaults to **No**.
+3. **Administrator prompt** — macOS asks for your password in its own dialog,
+   even when an unrelated `sudo` ticket happens to be cached, and Tunnel never
+   stores it. The prompt and the command share a 30-second limit; cancelling the
+   prompt is reported as a failed attempt.
 4. **Post-change check** re-reads local state after the command so the result
    reflects what actually happened, not what was requested.
-5. **Local audit** records one JSON line per privileged attempt — including
-   refused ones — in `tunnel_audit.jsonl`.
+5. **No log.** Tunnel writes nothing down about an attempt: not a success, a
+   failure, a refusal (a template, a blocker), a confirmation you declined or a
+   kill-switch result. The result is shown once and not kept. Key-like values are
+   scrubbed from tool output and error text before they are shown. macOS keeps
+   its own records, which Tunnel cannot remove.
 6. **Rollback guidance** travels with every review and outcome, so you always
    have the step that undoes what you just did.
 
 A template or example profile is refused before any of this: Tunnel tells you to
-import a real config or set a real endpoint first. When a connect command
-completes, the status line says the command completed and that **connection
-state and traffic protection are not verified** — confirm with Connection Check
-and, if it matters, an external IP check, rather than trusting the button alone.
+import a real config or set a real endpoint first. Other blockers appear in the
+Execution tab and in a dialog, and nothing runs and no password is requested:
+`wg-quick` or `openvpn` is not installed, the config file is missing, the config
+file name is one `wg-quick` would reject (letters, digits and `_=+.-` only, at
+most 15 characters — rename the file and import it again), a WireGuard config has
+no peer endpoint, or the tunnel is already up. Disconnect is deliberately not
+blocked for a template, so a stuck tunnel can always be brought down. Warnings
+do not block: a split tunnel, a config file that other users on this Mac can
+read (it holds your private key), and what happens to your traffic after a
+Disconnect.
+
+### Config lines that run as administrator
+
+A WireGuard config can contain `PreUp`, `PostUp`, `PreDown` and `PostDown` lines,
+and an OpenVPN config can contain script or plugin directives such as `up`,
+`down`, `route-up`, `plugin` and `script-security`. The tunnel tool runs these as
+administrator. The Connect review lists each one (cut at 100 characters) in its
+own section and repeats them in the confirmation, and a second dialog asks
+again, defaulting to **No**. Continue only if you wrote them or trust their
+source; if a line is cut off or you do not recognise it, read the file itself
+first.
+
+**Known limitation:** the list appears on Connect only — not on Disconnect and not
+in **Inspect config…** — and other `wg-quick` directives such as `SaveConfig` are
+not flagged.
+
+### Reading the result
+
+When the command completes, Tunnel re-reads local state and the status line says
+**verified locally** or **NOT verified**; the Execution tab shows the same with
+the review, the tool output and a note that nothing was logged. For
+WireGuard it looks for the tunnel's run records and, for a full tunnel, checks
+which interface the route to a public address now uses (a routing lookup; no
+traffic is sent). For OpenVPN it checks that the process Sentinel started exists.
+**Verified never means a handshake happened, DNS is safe, or traffic is
+protected** — confirm with Connection Check, **Your IP & DNS** and, if it
+matters, an external IP check, rather than trusting the button alone.
+
+A config that splits the default route into two halves (`0.0.0.0/1` and
+`128.0.0.0/1`) is treated as a split tunnel, so the route check is skipped.
+
+### OpenVPN
+
+OpenVPN is a basic client. Connect starts it as a background process with a pid
+file in Sentinel's data folder. OpenVPN has to write a start-up log for a few
+seconds, because the tunnel device it opens is only reported there. Sentinel
+reads the device name from it, keeps only that name, and deletes the log (if the
+device never appears, the last lines are shown once, with the failure). Tor's
+start-up log is handled the same way.
+Disconnect stops only the process Sentinel started and can identify as its own.
+If it cannot, it refuses, stops nothing, and tells you to use the client that
+started the connection — that refusal comes after you answer Yes and is shown
+as a failure. Tunnel never stops OpenVPN by process name. The review shows an
+abbreviated command and no routing or DNS lines for OpenVPN, and configs that
+ask for a username and password, pushed DNS and live status are not supported.
+
+### If you close Sentinel mid-connection
+
+Normal app close and Portable Emergency Reset cancel every Tunnel worker, wait
+about two seconds for each, then end any that is still running. Cancelling does
+not interrupt the macOS prompt or a command already handed to macOS: Sentinel
+drops the result, so it may not be shown, and a change that
+already happened is not undone. After reopening, run Connection Check before
+relying on the tunnel.
 
 ### Kill switch
 
-**Arm** installs a firewall rule that blocks all traffic except the selected
-tunnel's endpoint, so a dropped tunnel cannot leak; it needs macOS `pf` and your
-administrator password, and refuses to arm if the endpoint cannot be exempted.
-**Disarm** restores ordinary traffic. Arm the kill switch against a real server
-profile, not a template. Treat arming, connecting, and verifying no-leak as three
-separate steps: an armed kill switch proves traffic is blocked when the tunnel is
-down, not that the tunnel itself is protecting you.
+**Arm** loads a firewall rule set (macOS `pf`) that blocks network traffic except
+loopback, the WireGuard tunnel interface that exists at that moment, the tunnel's
+own transport to the selected server (WireGuard is UDP; OpenVPN follows the
+config's `proto` line), DHCP, and your local network, so a dropped tunnel cannot
+leak. It asks for confirmation (default **No**), which states what stays open
+and prints the Terminal command that undoes it, and then for your administrator
+password. It refuses to arm for a template, when the endpoint cannot be
+resolved (a name is looked up once, when you arm), or when the generated rules
+fail pf's own parse check. **Disarm** removes the blocking rules and asks only
+for the password. Connect first and arm second: the tunnel interface is the one
+present at arm time, so re-arm if the tunnel is re-created. Arm the kill switch
+against a real server profile, not a template. Treat arming, connecting, and
+verifying no-leak as three separate steps: an armed kill switch proves traffic
+is blocked when the tunnel is down, not that the tunnel itself is protecting you.
+
+If something goes wrong, the recovery command printed by the Arm confirmation
+(also in the first lines of the rules file in Sentinel's `vpn/` folder) is:
+
+```
+sudo pfctl -a vpn-agent-killswitch -F all && sudo pfctl -F all -f /etc/pf.conf
+```
+
+Sentinel does not disarm when you quit or run Emergency Reset.
+
+**Known limitations:** the first arm adds a small anchor block to `/etc/pf.conf`
+(a copy is kept as `/etc/pf.conf.vpn-agent.bak`) and switches pf on; Disarm does
+not remove that block or switch pf off. The kill switch only recognises
+WireGuard tunnel interfaces — Sentinel does not stop you arming it for an
+OpenVPN profile, and then the OpenVPN tunnel's own traffic is blocked as well, so
+use it with WireGuard profiles. The label next to the buttons reports what you
+did in this session (it starts at "Kill switch not armed."), not a live read.
 
 ## Connection Check
 
 Start here when a VPN is slow, appears disconnected, or you simply want to know
 what this Mac can see. Choose a saved profile under **Compare profile**, leave
 **Include public IP and latency** off, and select **Check Connection**. Choosing
-a profile here does not activate it or change the VPN Agent's saved selection.
-Tunnel then reports:
+a profile here does not activate it or change the VPN Agent's saved selection;
+it is a separate picker from the **Server** list used by Connect. Tunnel then
+reports:
 
 - whether the WireGuard app, `wg`, `wg-quick`, and OpenVPN command are present;
-- active WireGuard interfaces and whether an OpenVPN process was detected;
+- active WireGuard interfaces and whether any OpenVPN process was detected;
 - peer count, most recent WireGuard handshake, and transfer totals when the
   local `wg` status tool allows those reads;
 - the current default network interface and gateway;
@@ -78,7 +183,8 @@ Tunnel then reports:
 
 The default check is entirely local and read-only. It does not ask for an admin
 password, connect or disconnect a tunnel, alter a route, touch the firewall, or
-read private keys.
+read private keys. Its OpenVPN line counts any process named `openvpn`, whereas
+Connect and Disconnect act only on the one Sentinel started.
 
 ### Optional external checks
 
@@ -97,20 +203,27 @@ server list does not show every resolver an application might contact.
 ### Your IP & DNS
 
 The **Your IP & DNS** group is separate from Check Connection and is always
-visible. **Local** reads your LAN address and any active tunnel interface with no
-network contact. **Check public IP** contacts an address service — IPinfo when
-an `IPINFO_API_KEY` is set, otherwise `ipapi.co` — to show your exit IP, its
-location and network owner. A VPN/proxy/hosting flag appears only with an IPinfo
-key on a plan that returns the privacy object; the keyless `ipapi.co` fallback
-does not report one. It is a quick way to confirm a tunnel changed your apparent
-location. **Run test** performs a real DNS-leak test
-through bash.ws: it resolves a set of probe hostnames using your configured
-resolvers, then reads back which resolvers actually answered and whether any sit
-on a different network than your exit IP. Unlike the configured-DNS list above,
-this exercises the resolver path traffic really takes — but it is still not proof
-of anonymity, and a per-application route can differ. After you connect or
-disconnect, the local readout refreshes automatically, and the public IP
-re-checks only if you already ran it this session.
+visible. **Local** reads your LAN address and any active tunnel interface (IPv4
+only) with no network contact; it also runs once when the panel opens. **Check
+public IP** contacts an address service — IPinfo when an `IPINFO_API_KEY` is set,
+otherwise `ipapi.co` — to show your exit IP, its location and network owner. A
+VPN/proxy/hosting flag appears only with an IPinfo key on a plan that returns
+the privacy object; the keyless `ipapi.co` fallback does not report one. It is a
+quick way to confirm a tunnel changed your apparent location. **Run test**
+performs a DNS-leak test through bash.ws: it looks up a set of probe hostnames
+with the resolvers in your system resolver configuration, then reads back which
+resolvers answered and whether any sit on a different network than your exit IP.
+Check public IP and Run test contact their services as soon as you press them;
+there is no extra confirmation dialog. Unlike the configured-DNS list above, the
+test shows who actually answered — but it is still not proof of anonymity, and a
+per-application route can differ.
+
+**Known limitation:** macOS can also use resolvers scoped to a single interface
+that a resolver-configuration read does not show, and a public resolver reached
+through the tunnel can read as a possible leak because it sits on a different
+network than the server. Treat the verdict as a clue to follow up. After you
+connect or disconnect, the local readout refreshes automatically, and the public
+IP re-checks only if you already ran it this session.
 
 ### Reading the cards
 
@@ -121,16 +234,18 @@ re-checks only if you already ran it this session.
 3. Compare **Default interface** with the behavior you expect. Full-tunnel VPNs
    normally influence the default route; split tunnels may not.
 4. Treat **Configured DNS servers** as context. If DNS behavior matters, follow
-   up with the standalone VPN Agent's deeper checks.
+   up with **Your IP & DNS → Run test**, keeping its limits in mind.
 5. Copy an individual card when asking the Advisor for help. Never copy private
    keys or complete secret configuration files into an AI request.
 
 ### Profile comparison
 
-Tunnel reads the standalone VPN Agent's live profile list when it exists and
-otherwise reads the bundled starter list. This read does not create a file,
-save a selection, or expose key material. Select **No profile comparison** when
-you only want a machine-wide snapshot.
+Tunnel reads the VPN Agent's live profile list when it exists and otherwise
+reads the bundled starter list. This read does not create a file, save a
+selection, or expose key material. Select **No profile comparison** when you only
+want a machine-wide snapshot. The list is read when the panel opens and when you
+select **Reload**; importing a config updates the Server list but not this one
+until you reload.
 
 Only non-secret profile fields enter Sentinel's report; key-like and unknown
 fields are discarded. The comparison is intentionally cautious. An interface
@@ -143,10 +258,16 @@ tunnels legitimately keep the ordinary default route. For a full tunnel, a
 route mismatch is a reason to inspect `AllowedIPs` and optionally compare the
 public IP—not proof by itself.
 
-On macOS, a tunnel managed by the WireGuard app may appear as an automatically
-assigned `utun` interface instead of the profile's friendly name. Tunnel keeps
-an exact-name mismatch visible and asks you to confirm it in the WireGuard app;
-it does not assume that an arbitrary active `utun` belongs to the selected profile.
+On macOS, a tunnel often appears as an automatically assigned `utun` interface
+instead of the profile's friendly name. Tunnel keeps an exact-name mismatch
+visible and asks you to confirm it in the WireGuard app; it does not assume that
+an arbitrary active `utun` belongs to the selected profile.
+
+**Known limitation:** this also applies to a tunnel Sentinel itself started. Right
+after a verified Connect, Connection Check may still report the selected tunnel
+as not active. This has not been confirmed on a Mac yet; until it is, trust the
+Execution tab's result and **Your IP & DNS → Local**, which lists the tunnel
+interface and its address.
 
 The **Recommended next steps** card prioritizes concrete follow-up work. Follow
 only steps that fit your intended topology; it is guidance based on a snapshot,
@@ -166,13 +287,16 @@ WireGuard is the only protocol currently supported by action previews. OpenVPN
 and unknown protocols produce no command. The preview has no execution path: it
 does not open a shell, request an admin password, or change a tunnel, route, DNS
 setting, or firewall rule. A missing or unsafe interface name produces no
-command. After any manual change, return to Connection Check and collect a fresh
-snapshot rather than relying on old status.
+command. It uses the **Compare profile** picker and shows the plain
+`sudo wg-quick` form for the profile's interface; the live Connect confirmation
+shows the exact command that would really run. After any change, return to
+Connection Check and collect a fresh snapshot rather than relying on old status.
 
 If Sentinel is closed or Portable Emergency Reset is used during a check, the
 app first cancels and finishes the background worker before closing or erasing
 Sentinel-owned portable data. This avoids leaving the check running after its
-screen has gone away.
+screen has gone away. A Connect in flight is handled as described under VPN
+Connection.
 
 ![Tunnel action preview](docs/training/images/tunnel-action-preview.png)
 
@@ -188,12 +312,62 @@ The parser has a strict privacy boundary: `PrivateKey` and `PresharedKey` values
 are discarded as each line is read. The result contains only a non-secret
 summary; the original file is not copied into the result, an AI prompt, Saved
 Chats, or the run log. The inspection is local, bounded to a 1 MiB text file,
-does not resolve the endpoint, and cannot connect or change the VPN.
+does not resolve the endpoint, and cannot connect or change the VPN. It does not
+list `PostUp`-style hooks; the Connect review does.
 
 Treat comparisons as evidence, not proof. On macOS the WireGuard app may expose
 a friendly profile as a `utun` interface. A full-tunnel route mismatch can also
 mean the tunnel is simply stopped. Re-run Connection Check after a deliberate
-manual change before drawing a conclusion.
+change before drawing a conclusion.
+
+## Privacy tab
+
+Three cards. Each says plainly what it does not do.
+
+**Hardware address.** Pick an interface, then *Randomise…* or *Restore hardware
+address…*. The review shows `old → new` and warns that Wi-Fi will be switched off
+and on. macOS asks for your administrator password. This changes what the local
+network sees, nothing more: your router still sees your traffic, and the change
+lasts until restart or Restore. For Wi-Fi, also set Private Wi-Fi Address to Off
+for that network or macOS may override it.
+
+**Tor.** *Start Tor…* runs a local client on 127.0.0.1:9250 (never a relay).
+*Check…* asks the Tor Project's check site, through Tor, whether you really exit
+through Tor. *New identity* asks for fresh circuits. Tor hides where you connect
+from, not who you are; logging in, cookies and your browser fingerprint still
+identify you. Install with `brew install tor`.
+
+**Proxy chain.** Build an ordered list of SOCKS5/SOCKS4/HTTP proxies (you can add
+Tor as a hop), then *Test chain…*. The test names the site it contacts and each
+hop that will see the request. The proxychains wrapper barely works on macOS: it
+is ignored by Apple's own tools such as `/usr/bin/curl`, which looks exactly like
+success, so always check the exit address. Passwords are stored owner-only and
+never shown or logged.
+
+Nothing on this tab is logged, including actions you declined.
+
+## Servers tab — a VPN server you own
+
+Create a site (remote VPS, or native on your home network), set its endpoint,
+ports, routes and SSH details, add a peer per device, and Sentinel generates the
+keys and certificates locally. *Export files…* and *Show QR…* hand a device its
+config; both contain a private key and ask first (the QR is drawn from memory and
+never saved). *Rotate keys…* and *Remove…* make an issued config stop working at
+the next deploy. *Back up this site…* writes an AES-GCM encrypted file; the
+passphrase is never stored. *Delete site…* needs you to type its name, and if no
+backup exists, to accept that the keys are gone for good.
+
+To put the server online: *Check SSH…* (key-based only; the first host key is
+trusted and its fingerprint shown; compare it with the one your VPS provider
+gives you; Deploy is refused until this has been done), *Preview deploy* (nothing runs; keys are
+replaced by `<redacted N bytes>`), *Deploy…*, then *Server status…* to see which
+devices have handshaked. *Teardown…* removes the server (type the site name).
+*Use for Connect…* adds one peer as a profile so Tunnel's Connect can use it from
+this Mac. Nothing here is logged (`deploy`, `teardown`, `export`, `backup`, …).
+
+While Tunnel is on screen a local health monitor watches the selected profile's
+tunnel and your DNS resolvers and warns in the status line if the tunnel drops. It
+never contacts the internet and never changes anything.
 
 ## Deployment choices
 
@@ -202,22 +376,196 @@ public exit address. **Native (home LAN)** provides encrypted access back into
 your home network; it normally does not hide or change your home public IP.
 
 Choose WireGuard, OpenVPN TCP/443 fallback, or both. Enter the server host, SSH
-user, home subnet and server egress interface where relevant. Incorrect routes
-can cut off connectivity, so verify values before applying generated material.
+user, home subnet and server egress interface where relevant; these feed Build
+Config and the Advisor and do not affect Connect. Incorrect routes can cut off
+connectivity, so verify values before applying generated material.
 
 ## Advisor
 
 Ask about topology, connection failures, firewalls, DNS/IPv6/WebRTC leaks or
-kill-switch behaviour. Deployment fields are included as context. Review the
-route before sending infrastructure details to a cloud model.
+kill-switch behaviour. The mode, protocol, server host and home subnet are
+included as context. Review the route before sending infrastructure details to a
+cloud model. The Advisor can explain Tor, proxy chains and MAC randomisation;
+the controls for them are on the Privacy tab.
+
+Tunnel does not save Advisor conversations: no Saved Chats entry and no Run log
+row is created. The Cost history still counts what the request cost (agent,
+provider, model, token counts and price, never any text), because the budget
+caps are computed from it. Your question still goes to the selected provider,
+which may keep its own records.
 
 ## Config Builder
 
 Build Config produces server/client templates and a deployment runbook with
-clearly marked key placeholders. It does not create real keys, connect to a
+clearly marked key placeholders, an outline of the OpenVPN TCP/443 fallback, and
+in remote mode a short macOS kill-switch sketch. The sketch is for orientation:
+it is not what the Arm button loads. It does not create real keys, connect to a
 server or change system settings. Generate keys locally, protect private keys,
 back up working configurations and keep an independent recovery session open
 when changing a remote firewall.
+
+## How-to: get a working tunnel
+
+Tunnel does not implement WireGuard or OpenVPN. It drives the `wg-quick` and
+`openvpn` programs installed on your Mac, so the tunnel is the real thing and
+Tunnel is the reviewed, verified way to start and check it. There is no
+field-by-field editor: a profile is a `.conf` or `.ovpn` file, which you edit in a
+text editor or in the official WireGuard app.
+
+1. **Install the tools** (once): `brew install wireguard-tools openvpn`. Without
+   them Connection Check reports the program as missing and Connect refuses.
+2. **Get a config.** Pick one source:
+   - *A commercial VPN* (Mullvad, Proton and similar): download a WireGuard
+     `.conf` or OpenVPN `.ovpn` file from the provider's account page.
+   - *Your own server* (a rented VPS or a home network): use the **Servers
+     tab** to create a site and a peer per device, check SSH, preview and deploy,
+     then **Use for Connect…** to add a peer as a profile on this Mac. **Build
+     Config** gives templates only, with key placeholders, if you prefer to set
+     the server up by hand (or with PiVPN or wg-easy).
+   - *The official WireGuard app* (Mac App Store) can also create and edit
+     tunnels, with its own key generator.
+3. **Inspect before you trust it.** Use **Inspect config…** on a WireGuard file.
+   Check the endpoint, DNS, `AllowedIPs` (full tunnel is `0.0.0.0/0, ::/0`) and
+   that no peer is one you do not recognise.
+4. **Import.** Select **Import config…** and choose the file. The profile is saved
+   locally and selected. Keep the file readable only by you (`chmod 600`).
+5. **Check the starting state.** Run **Check Connection** with no tunnel active
+   and note the default interface and DNS servers.
+6. **Connect.** Read the Execution review, confirm, enter the administrator
+   password. Then run **Check Connection** again: a recent handshake and a
+   default interface that matches the profile are the evidence you want.
+7. **Verify.** In **Your IP & DNS**, run **Check public IP** (the exit address
+   should differ from step 5) and **Run test** (the resolvers should not belong
+   to your ISP). One passing result does not prove the other.
+8. **Arm the kill switch** only after the tunnel is up and verified, against a
+   real WireGuard server profile (it does not recognise OpenVPN tunnels). Then
+   disconnect once on purpose and confirm that traffic stops, and that **Disarm**
+   restores it. Re-arm if the tunnel is re-created.
+9. **To change a setting**, edit the file (endpoint, DNS, `AllowedIPs`,
+   keepalive), save it and import it again.
+
+If you are locked out, use the recovery command below. It works without Sentinel.
+
+## Scenarios: which functions to use when
+
+Tunnel has three kinds of function, and which you get depends on what is already
+running on the Mac.
+
+- **Observe** needs nothing installed: Connection Check, **Your IP & DNS**, the
+  DNS-leak test, config inspection and the health monitor.
+- **Guard** is the kill switch.
+- **Operate** needs tools: Connect and Disconnect need `wg-quick` or `openvpn`;
+  the Servers tab needs SSH; the Privacy tab needs `tor` for Tor.
+
+### A. A commercial VPN app (such as Mullvad or Proton) is already running
+
+Let the app run the tunnel. It handles relay choice, reconnecting and its own
+firewall better than a second tool can. Use Tunnel to check it:
+
+1. Run **Check public IP** and **Run test** in **Your IP & DNS**. The exit
+   address should belong to the provider and the resolvers should be the
+   provider's, not your ISP's. Provider-run check pages (for Mullvad,
+   `am.i.mullvad.net`) confirm the same from the other side.
+2. Run **Check Connection** with *No profile comparison*. The **VPN apps**
+   card lists the installed Mullvad and ProtonVPN apps and the state each one
+   reports (Mullvad through its `mullvad status` command, Proton through the
+   macOS VPN service list; Tunnel only reads, it never logs in or connects
+   them). A tunnel started by another app can appear only as an unnamed `utun`
+   interface, and `wg` may not report its handshake; treat that as expected, and
+   rely on the IP and DNS results.
+3. Re-run both checks after sleep, a Wi-Fi change or a reconnect. The health
+   monitor warns while Tunnel is on screen if the tunnel drops.
+
+Do **not** arm Tunnel's kill switch while such an app is running. Apps like this
+install their own firewall rules and two rule sets can block each other, so
+Tunnel refuses to arm while Mullvad or ProtonVPN is connected (or Mullvad's state
+cannot be read) and tells you why. Use the app's own "always require VPN" or
+lockdown setting. If you connect a Tunnel profile while such an app is
+connected, the Connect review warns that two VPNs will stack.
+
+The **VPN Apps** tab can also start and stop Mullvad for you (through Mullvad's
+own command-line tool) and choose its country or city. Log in with the Mullvad app
+first: Tunnel never asks for or keeps your account number, and Connect refuses
+while you are logged out, because Mullvad would otherwise block all traffic. The
+same tab shows ProtonVPN's state, but it cannot start or stop Proton: macOS accepts
+the request and Proton's extension ignores it, so use the ProtonVPN app for that
+(or download a Proton config and use **Import config…**). After connecting either
+one, confirm the exit address under **Your IP & DNS**.
+
+### B. No VPN is running
+
+1. Run **Your IP & DNS** first. This is what the websites you visit and your ISP
+   currently see.
+2. On public Wi-Fi, use **Hardware address → Randomise…** (Privacy tab) before
+   joining, then connect a tunnel.
+3. Bring up a tunnel (scenario C or D), then follow steps 5–8 of the how-to:
+   starting state, connect, verify, kill switch.
+4. If you do not want a system-wide VPN, the Privacy tab's Tor client runs on
+   `127.0.0.1:9250`. Only programs you point at it use it: Sentinel's own agents
+   do not route through it, and the Tor Browser is a better tool for browsing.
+
+### C. A VPN server you own
+
+Use the **Servers tab** to create the site and a peer for this Mac, deploy it,
+then **Use for Connect…** and follow the how-to from step 5. Tunnel then
+controls a server that nobody else uses. That gives you control and a trusted
+operator, but a single-user exit address that points back to your account with
+the host; it is privacy from your ISP and the local network, not anonymity.
+
+### D. A commercial provider's config loaded into Tunnel instead of its app
+
+Use this only for a reason the app cannot give you:
+
+- a fixed server for a whole session, so the exit address does not change;
+- one place to connect, verify and review (inspection shows the DNS, full or
+  split tunnel and every peer);
+- a kill switch whose rules you can read, for a WireGuard profile.
+
+Otherwise the provider's app is the better client. Do not run the app's tunnel
+and the same provider's config at once.
+
+### What stays outside every scenario
+
+A tunnel, a changed address or Tor does not remove accounts you log in to,
+cookies, or your browser fingerprint. Treat each check as one observation, not
+as proof of anonymity.
+
+## Command reference
+
+Run these in Terminal. Commands marked `sudo` change or read privileged state.
+Replace `wg0` and file paths with your own; never paste a private key into a chat
+or an AI request.
+
+| Task | Command |
+| --- | --- |
+| Install the tools | `brew install wireguard-tools openvpn` |
+| Create a key pair | `umask 077; wg genkey \| tee private.key \| wg pubkey > public.key` |
+| Create a preshared key | `wg genpsk` |
+| Lock down a config | `chmod 600 profile.conf` |
+| Start WireGuard | `sudo wg-quick up /full/path/profile.conf` |
+| Stop WireGuard | `sudo wg-quick down /full/path/profile.conf` |
+| Show peers, handshake, transfer | `sudo wg show` |
+| List active WireGuard interfaces | `sudo wg show interfaces` |
+| Start OpenVPN | `sudo openvpn --config /full/path/profile.ovpn` |
+| Show the default route | `route -n get default` |
+| Show all routes | `netstat -rn` |
+| Show interfaces (tunnels are `utunN`) | `ifconfig \| grep -A4 utun` |
+| Show the DNS servers in use | `scutil --dns \| grep nameserver` |
+| List network devices | `networksetup -listallhardwareports` |
+| Public IPv4 address | `curl -4 https://api.ipify.org` |
+| Public IPv6 address (should fail or match the VPN) | `curl -6 https://api.ipify.org` |
+| Reachability and latency | `ping -c 4 1.1.1.1` |
+| Show the kill switch rules | `sudo pfctl -a vpn-agent-killswitch -s rules` |
+| **Recovery: remove the kill switch** | `sudo pfctl -a vpn-agent-killswitch -F all && sudo pfctl -F all -f /etc/pf.conf` |
+
+On a Linux server:
+
+| Task | Command |
+| --- | --- |
+| Enable forwarding | `sudo sysctl -w net.ipv4.ip_forward=1` |
+| Open the WireGuard port | `sudo ufw allow 51820/udp` |
+| Start the tunnel at boot | `sudo systemctl enable --now wg-quick@wg0` |
+| Show peers and handshakes | `sudo wg show` |
 
 ## Beginner exercise
 
@@ -234,6 +582,10 @@ Then select a saved profile and preview Disconnect. Identify the warning about
 ordinary traffic resuming when no kill switch is active. Confirm that the VPN
 remains unchanged after generating the preview.
 
+Finally, choose an **Example** profile marked `(template)` under **Server** and
+select **Connect**. Confirm that Tunnel refuses without asking for a password,
+and that the Execution tab says nothing was logged.
+
 ## Independent exercise
 
 With a VPN you own connected, run the local check twice: once immediately and
@@ -242,21 +594,31 @@ also opt into the external check, record the public IP before and during the
 tunnel without placing either address into an AI prompt. Write a short verdict
 that separates observations, likely explanations, and what remains unverified.
 
+Then, with a config you wrote yourself, run a gated Connect and read every line
+of the review before answering. In your verdict, state what "verified locally"
+did and did not cover.
+
 ## Best-practice checklist
 
 - Keep an independent recovery session open before changing a remote firewall.
 - Back up site state and client configurations before deployment or key rotation.
-- Store private keys only in the VPN Agent's protected state location.
+- Keep private keys in files only you can read (`chmod 600`); Tunnel warns when
+  an imported config is readable by other users, and it never stores or shows
+  key values.
 - Use the local check before the Advisor; send only the non-secret card needed
   to explain the problem.
-- Inspect a configuration locally before importing it, and never paste the
-  original file or private-key lines into an AI prompt.
-- Treat an Action Preview as a review artifact. Confirm the target, keep recovery
-  access available, and make the change through your normal trusted VPN tool.
+- Inspect a configuration locally before importing it, read any lines listed
+  under "runs commands as administrator", and never paste the original file or
+  private-key lines into an AI prompt.
+- Treat an Action Preview as a review artifact. Confirm the target and keep
+  recovery access available; to act, use the gated Connect or Disconnect, or your
+  normal trusted VPN tool.
 - Before a live **Connect** or **Disconnect**, read the Execution review, confirm
   the exact target, and keep a rollback and independent recovery path ready. The
   confirmation defaults to No for a reason.
-- After a live connection completes, verify it with Connection Check; the status
-  line explicitly does not confirm traffic protection.
+- After a live connection completes, verify it with Connection Check and **Your
+  IP & DNS**; the status line explicitly does not confirm traffic protection.
 - Treat an active tunnel, public-IP change, DNS configuration, and kill-switch
   behavior as separate checks. One passing result does not prove the others.
+- Know the recovery command before you arm the kill switch, and disarm it before
+  you quit if you do not want traffic left blocked.

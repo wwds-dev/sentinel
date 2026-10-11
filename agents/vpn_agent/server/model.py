@@ -22,6 +22,7 @@ traffic comes out:
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
@@ -51,6 +52,20 @@ FIRST_PEER_OFFSET = 2
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# Every value below ends up inside a root-run shell script, a WireGuard or
+# OpenVPN config, or an AppleScript prompt. A site can come from a restored
+# backup someone else made, so these are allowlists, not escaping hopes.
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,62}$")
+IFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$")
+ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
+NOTES_RE = re.compile(r"^[^\x00-\x1f\x7f]{0,200}$")
+
+
+def _is_port(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
 
 
 @dataclass
@@ -284,6 +299,97 @@ class Site:
         return [p.name for p in self.peers]
 
     # ── Validation ────────────────────────────────
+
+    def strict_problems(self) -> list[str]:
+        """Structural checks that keep every field safe to put in a script or config.
+
+        Unlike validate(), which says what would make a deploy fail, these are
+        hard limits: a site that fails them is never saved, loaded, rendered or
+        deployed.
+        """
+        bad: list[str] = []
+        if not isinstance(self.name, str) or not NAME_RE.match(self.name):
+            bad.append("Site name may use letters, digits, spaces and . _ - ( ) only "
+                       "(up to 63 characters, starting with a letter or digit).")
+        if self.mode not in MODES:
+            bad.append(f"Unknown mode {self.mode!r}.")
+        if self.obfuscation not in OBFS_MODES:
+            bad.append(f"Unknown obfuscation {self.obfuscation!r}.")
+        if not isinstance(self.wg_interface, str) or not IFACE_RE.match(self.wg_interface):
+            bad.append("WireGuard interface name is not valid.")
+        host = self.endpoint_host
+        if not isinstance(host, str) or (host and not HOST_RE.match(host)):
+            bad.append("Endpoint must be a plain host name or IP address.")
+        if self.onion_address and not (isinstance(self.onion_address, str)
+                                       and ONION_RE.match(self.onion_address)):
+            bad.append("Onion address is not a valid v3 .onion name.")
+        for label, value in (("WireGuard port", self.wg_port), ("OpenVPN port", self.ovpn_port),
+                             ("OpenVPN local port", self.ovpn_local_port)):
+            if not _is_port(value):
+                bad.append(f"{label} must be a number from 1 to 65535.")
+        for label, value in (("enable_openvpn", self.enable_openvpn),
+                             ("onion_enabled", self.onion_enabled),
+                             ("enable_ipv6", self.enable_ipv6),
+                             ("full_tunnel", self.full_tunnel)):
+            if not isinstance(value, bool):
+                bad.append(f"{label} must be true or false.")
+        for label, subnet in (("WireGuard subnet", self.wg_subnet4),
+                              ("WireGuard IPv6 subnet", self.wg_subnet6),
+                              ("OpenVPN subnet", self.ovpn_subnet4)):
+            try:
+                ipaddress.ip_network(str(subnet), strict=False)
+            except ValueError:
+                bad.append(f"{label} {subnet!r} is not a network.")
+        if not isinstance(self.lan_routes, list) or not isinstance(self.dns, list):
+            bad.append("LAN routes and DNS must be lists.")
+        else:
+            for route in self.lan_routes:
+                try:
+                    ipaddress.ip_network(str(route), strict=False)
+                    if not isinstance(route, str) or route != route.strip():
+                        raise ValueError
+                except ValueError:
+                    bad.append(f"LAN route {route!r} is not a network (like 192.168.1.0/24).")
+            for server in self.dns:
+                try:
+                    ipaddress.ip_address(str(server))
+                    if not isinstance(server, str) or server != server.strip():
+                        raise ValueError
+                except ValueError:
+                    bad.append(f"DNS server {server!r} is not an IP address.")
+        ssh = self.ssh
+        if not (isinstance(ssh.host, str) and (not ssh.host or HOST_RE.match(ssh.host))):
+            bad.append("SSH host must be a plain host name or IP address.")
+        if not (isinstance(ssh.user, str) and re.match(r"^[a-z_][a-z0-9_-]{0,31}$", ssh.user)):
+            bad.append("SSH user must be a plain account name.")
+        if not _is_port(ssh.port):
+            bad.append("SSH port must be a number from 1 to 65535.")
+        if not (isinstance(ssh.identity_file, str) and NOTES_RE.match(ssh.identity_file)
+                and not ssh.identity_file.startswith("-")):
+            bad.append("SSH key file path is not valid.")
+        seen: set[str] = set()
+        for peer in self.peers if isinstance(self.peers, list) else []:
+            if not isinstance(peer.name, str) or not NAME_RE.match(peer.name):
+                bad.append(f"Peer name {peer.name!r} may use letters, digits, spaces "
+                           "and . _ - ( ) only.")
+            elif peer.name.lower() in seen:
+                bad.append(f"Two peers are named {peer.name!r}.")
+            else:
+                seen.add(peer.name.lower())
+            if not isinstance(peer.notes, str) or not NOTES_RE.match(peer.notes):
+                bad.append(f"Notes for {peer.name!r} contain control characters or are too long.")
+            for value in (peer.address4, peer.address6):
+                if value:
+                    try:
+                        ipaddress.ip_interface(str(value))
+                    except ValueError:
+                        bad.append(f"Peer {peer.name!r} has an invalid address {value!r}.")
+        return bad
+
+    def check_strict(self) -> None:
+        problems = self.strict_problems()
+        if problems:
+            raise ValueError("Unsafe site data: " + " ".join(problems))
 
     def validate(self) -> list[str]:
         """Return a list of problems that would break a deployment."""

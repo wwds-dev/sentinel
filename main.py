@@ -60,7 +60,7 @@ from services.report_exporter import ReportExporter
 from services.usage_tracker import UsageTracker, estimate_prompt_tokens
 from services.database import init_db, get_setting, save_setting, get_connection
 from services.registry import Registry
-from services.validator import Validator
+from services.validator import Validator, parse_money
 from services.run_logger import RunLogger
 from services import settings_store
 
@@ -109,6 +109,9 @@ MODEL_WATCH_FILE = DATA_DIR / "model_watch.json"
 # Public per-task model ratings (services/benchmarks.py): the last fetch, and
 # the snapshot shipped with the code that stands in until the first one.
 RATINGS_CACHE_FILE = DATA_DIR / "lmarena_ratings.json"
+# Settings key: "on" (default) or "off". Off means the router uses the cached
+# or shipped ratings only and never contacts the leaderboard.
+PUBLIC_RATINGS_SETTING = "public_ratings_refresh"
 RATINGS_SNAPSHOT_FILE = benchmarks.SNAPSHOT_FILE
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
@@ -116,6 +119,11 @@ ALL_AGENTS_FILTER = "All agents"
 ALL_PROJECTS_FILTER = "All projects"
 UNFILED_PROJECT_FILTER = "Unfiled"
 NO_ACTIVE_PROJECT = "No project"
+# Agents whose requests leave no content behind: no Saved Chats entry and no
+# Run log row (its prompt summary quotes the prompt). The bill still gets its
+# usage row, because the budget caps are computed from it; that row holds the
+# agent name, provider, model, token counts and cost, never any text.
+NO_CONTENT_LOG_AGENTS = frozenset({"vpn"})
 
 # Shipped defaults (tracked, bundled, never written by the app) and this
 # machine's own picks laid over them (git-ignored). services/settings_store.py.
@@ -205,6 +213,23 @@ from ui.panels.wifi import WifiPanel
 from ui.panels.sentry import SentryPanel
 from ui.panels.osint import OsintPanel
 
+
+def _write_json_atomic(path, data) -> None:
+    """Write JSON so a failure part-way leaves the old file intact (temp file
+    in the same folder, then an atomic replace)."""
+    path = str(path)
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
 class ChatInput(QTextEdit):
     """Multiline composer with the familiar Enter/Shift+Enter contract."""
 
@@ -217,6 +242,24 @@ class ChatInput(QTextEdit):
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+def budget_meter_state(spent: float, cap: float, name: str = "SESSION"):
+    """(fraction, text, level, tooltip) for one budget meter.
+
+    The cap is shown to the cent (a 7.25 cap used to read "€7"). A cap of zero
+    blocks every paid request, so its meter reads as full, not as 0 % used.
+    """
+    if cap > 0:
+        fraction = spent / cap
+    else:
+        fraction = 1.0
+    level = "red" if fraction >= 0.9 else "yellow" if fraction >= 0.6 else "green"
+    remaining = cap - spent
+    tip = f"€{remaining:.2f} left of the €{cap:.2f} {name.lower()} cap"
+    if cap <= 0:
+        tip += " (a zero cap blocks every paid request)"
+    return fraction, f"€{spent:.2f} / €{cap:.2f}", level, tip
 
 
 class GodAI(QWidget):
@@ -302,6 +345,7 @@ class GodAI(QWidget):
         }
 
         self.current_messages = []
+        self.current_chat_path = None   # the saved-chat file this conversation continues
 
         self.session_cost_total = 0.0
         self.session_request_count = 0
@@ -544,12 +588,22 @@ class GodAI(QWidget):
             return 0.0, 0, None, None
 
         _, full_prompt = self.build_user_prompt(raw_text)
-        backend, model = self.resolve_backend_model()
+        try:
+            backend, model = self.resolve_backend_model()
+        except RuntimeError as exc:
+            # D3: raised on every keystroke for an unticked provider; the
+            # estimate shows the reason instead of dying unseen.
+            self._set_route_notice(str(exc))
+            if hasattr(self, "runbar_cost"):
+                self.runbar_cost.setText("blocked · see route")
+            return 0.0, 0, None, None
 
+        agent_now = self.agent_box.currentText() if hasattr(self, "agent_box") else "chat"
+        tool_now = self.tool_box.currentText() if hasattr(self, "tool_box") else "General Chat"
         estimated_cost, approx_tokens = self.estimate_chat_cost(
             backend,
             model,
-            full_prompt
+            self._request_text(agent_now, tool_now, full_prompt),
         )
 
         return estimated_cost, approx_tokens, backend, model
@@ -596,8 +650,12 @@ class GodAI(QWidget):
 
         if hasattr(self, "runbar_cost"):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
-            if backend == "ollama":
-                self.runbar_cost.setText(f"free · {tokens} tok")
+            if backend is None:
+                pass                      # a blocked route already set the text
+            elif backend == "ollama":
+                notice = getattr(self, "_route_resolution_notice", "")
+                self.runbar_cost.setText(
+                    f"free · {tokens} tok" + (" · local only" if notice else ""))
             else:
                 self.runbar_cost.setText(f"~€{estimated_cost:.2f} · {tokens} tok")
 
@@ -770,17 +828,17 @@ class GodAI(QWidget):
 
     def save_budget_limits(self):
         try:
-            self.session_budget_eur = float(self.session_budget_input.text().strip())
-            self.daily_budget_eur = float(self.daily_budget_input.text().strip())
-
-            save_setting("session_budget_eur", str(self.session_budget_eur))
-            save_setting("daily_budget_eur", str(self.daily_budget_eur))
-
-            self.update_usage_labels()
-            QMessageBox.information(self, "Budget Saved", "Budget limits saved.")
-
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Budget", "Please enter valid numbers.")
+            session = parse_money(self.session_budget_input.text(), field="Session budget")
+            daily = parse_money(self.daily_budget_input.text(), field="Daily budget")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Budget", f"{exc} Previous values kept.")
+            return
+        self.session_budget_eur = session
+        self.daily_budget_eur = daily
+        save_setting("session_budget_eur", str(self.session_budget_eur))
+        save_setting("daily_budget_eur", str(self.daily_budget_eur))
+        self.update_usage_labels()
+        QMessageBox.information(self, "Budget Saved", "Budget limits saved.")
 
     def reset_session_spend(self):
         self.session_cost_total = 0.0
@@ -1179,12 +1237,25 @@ class GodAI(QWidget):
 
     # ── Model updates: scan, report, adopt ───────────────────────────────────
 
+    def public_ratings_refresh_enabled(self) -> bool:
+        """Whether a model scan may also fetch the public LMArena ratings."""
+        if get_setting(PUBLIC_RATINGS_SETTING, "on") != "on":
+            return False
+        mode_box = getattr(self, "execution_mode_box", None)
+        if mode_box is not None and mode_box.currentText() == "Local only":
+            return False
+        return True
+
     def start_model_scan(self) -> None:
         """List every provider's models in the background (startup and Check now)."""
         if self.model_scan_worker is not None and self.model_scan_worker.isRunning():
             return
         self.model_updates_card.set_checking(True)
-        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES, RATINGS_CACHE_FILE)
+        # The public ratings fetch (LMArena) is a network contact of its own.
+        # It stays off in Local only mode and when the operator has switched
+        # it off in Settings; the shipped snapshot still serves the router.
+        ratings_cache = RATINGS_CACHE_FILE if self.public_ratings_refresh_enabled() else None
+        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES, ratings_cache)
         worker.finished_signal.connect(self._on_model_scan_finished)
         worker.error_signal.connect(self._on_model_scan_error)
         self.model_scan_worker = worker
@@ -3107,7 +3178,7 @@ class GodAI(QWidget):
         )
 
     def route_for_request(self, prompt: str, *, agent: str = "chat", tool: str = "",
-                          keep_manual: bool = True):
+                          keep_manual: bool = True, context_text: str | None = None):
         enabled = self._enabled_provider_names()
         available = {provider: self.models_for_provider(provider) for provider in sorted(enabled)}
         manual_provider = self.provider_box.currentText() if keep_manual and hasattr(self, "provider_box") else None
@@ -3117,7 +3188,10 @@ class GodAI(QWidget):
         # a prompt over 100K tokens to long_context.
         return route_request(
             prompt, agent=agent, tool=tool,
-            context_tokens=estimate_prompt_tokens(prompt),
+            # The window must hold the whole request: system prompt and the
+            # conversation so far, not just the newest message.
+            context_tokens=estimate_prompt_tokens(
+                context_text if context_text is not None else prompt),
             preferences=self._routing_preferences(),
             available_models=available, enabled_providers=enabled,
             manual_provider=manual_provider, manual_model=manual_model,
@@ -3184,7 +3258,7 @@ class GodAI(QWidget):
             if status is not None:
                 if not permitted:
                     status.setText(
-                        f"{provider} permission is off. Enable it in Inspector, "
+                        f"{provider} permission is off. Tick it under Chat → Options → Paid provider access, "
                         "or choose an available local model."
                     )
                 else:
@@ -3213,7 +3287,9 @@ class GodAI(QWidget):
             prompt = self.input_box.toPlainText().strip() if hasattr(self, "input_box") else ""
             agent = self.agent_box.currentText() if hasattr(self, "agent_box") else "chat"
             tool = self.tool_box.currentText() if hasattr(self, "tool_box") else ""
-            decision = self.route_for_request(prompt, agent=agent, tool=tool, keep_manual=False)
+            decision = self.route_for_request(
+                prompt, agent=agent, tool=tool, keep_manual=False,
+                context_text=self._request_text(agent, tool, prompt) if prompt else None)
             self._apply_route_to_widgets(decision, self.provider_box, self.model_box)
             self._show_route(decision)
             return decision.provider, decision.model
@@ -3228,7 +3304,20 @@ class GodAI(QWidget):
         }
 
         if execution_mode == "Local only":
-            return "ollama", model if model else "deepseek-r1:8b"
+            # D3: a cloud provider picked in the run bar used to be sent to
+            # Ollama under its cloud model name, silently. Local only means
+            # Ollama with an Ollama model, and the substitution is shown.
+            if provider == "ollama":
+                self._set_route_notice("")
+                return "ollama", model if model else "deepseek-r1:8b"
+            local_model = self._local_default_model()
+            self._set_route_notice(
+                f"Local only mode: using ollama · {local_model} instead of "
+                f"{provider} · {model}. Switch the execution mode to use {provider}."
+            )
+            return "ollama", local_model
+
+        self._set_route_notice("")
 
         if execution_mode == "Cloud only":
             if provider == "ollama":
@@ -3252,6 +3341,32 @@ class GodAI(QWidget):
             return provider, model
 
         return "ollama", model if model else "deepseek-r1:8b"
+
+    @staticmethod
+    def _continuable_chat_path(record: dict, filepath) -> str | None:
+        """The saved-chat file a reopened record may be continued in, or None.
+
+        Only a record written by Chat is continued in place; any other agent's
+        record stays as it is and the next Chat turn starts a new file.
+        """
+        agent = str((record or {}).get("agent") or "chat")
+        return str(filepath) if agent == "chat" else None
+
+    def _local_default_model(self) -> str:
+        """The Ollama model Local only mode falls back to."""
+        settings = getattr(self, "settings", None) or {}
+        saved = str(settings.get("default_model_ollama") or "").strip()
+        return saved or "deepseek-r1:8b"
+
+    def _set_route_notice(self, text: str) -> None:
+        """Show (or clear) a one-line notice about how the route was resolved."""
+        self._route_resolution_notice = text
+        label = getattr(self, "route_result_label", None)
+        if label is not None and text:
+            label.setText(text)
+        bar = getattr(self, "runbar_cost", None)
+        if bar is not None:
+            bar.setToolTip(text)
 
     def build_user_prompt(self, raw_text: str):
         command_name = self.command_box.currentText()
@@ -3279,12 +3394,20 @@ class GodAI(QWidget):
             moment = moment.astimezone()
         return moment.isoformat(timespec="seconds")
 
-    def _timestamped_message(self, role: str, content: str, timestamp=None) -> dict:
-        return {
+    def _timestamped_message(self, role: str, content: str, timestamp=None,
+                             *, ui_only: bool = False) -> dict:
+        message = {
             "role": role,
             "content": content,
             "timestamp": self._message_timestamp(timestamp),
         }
+        if ui_only:
+            # A notice for the reader (stopped, failed), never for the model.
+            message["ui_only"] = True
+        return message
+
+    def _ui_notice(self, content: str) -> dict:
+        return self._timestamped_message("system", content, ui_only=True)
 
     def _normalise_chat_messages(self, messages: list, fallback=None) -> list:
         return [
@@ -3292,6 +3415,7 @@ class GodAI(QWidget):
                 str(message.get("role", "system")),
                 str(message.get("content", "")),
                 message.get("timestamp") or fallback,
+                ui_only=bool(message.get("ui_only")),
             )
             for message in messages
             if isinstance(message, dict)
@@ -3299,10 +3423,16 @@ class GodAI(QWidget):
 
     @staticmethod
     def _backend_messages(messages: list) -> list:
-        """Provider APIs receive only their standard role/content fields."""
+        """Provider APIs receive only their standard role/content fields.
+
+        Transcript notices ("stopped by user", "could not be completed") are
+        marked ui_only and never sent: as system messages they displaced the
+        tool's instructions on providers that keep only the last system turn.
+        """
         return [
             {"role": message["role"], "content": message["content"]}
             for message in messages
+            if not message.get("ui_only")
         ]
 
     def _render_chat_conversation(self, *, force_tail: bool = False) -> None:
@@ -3346,6 +3476,45 @@ class GodAI(QWidget):
         else:
             bar.setValue(min(previous_scroll, bar.maximum()))
 
+    def _assemble_chat_messages(self, selected_agent, selected_tool, full_prompt) -> list:
+        """Everything the provider will receive for this turn.
+
+        The system prompt, the conversation so far (Chat only) and the new
+        prompt. Send builds the request from it and the cost estimate measures
+        the same list, so a long conversation cannot be priced as one line.
+        """
+        if selected_tool in self.tool_prompts:
+            messages = self.build_tool_messages(selected_tool, full_prompt)
+        elif selected_agent in self.agent_instances:
+            agent = self.agent_instances[selected_agent]
+            messages = agent.build_messages(full_prompt)
+        else:
+            messages = [{"role": "user", "content": full_prompt}]
+
+        prior = list(self.current_messages) if selected_agent == "chat" else []
+        fresh = self._normalise_chat_messages(messages)
+        if prior and fresh and fresh[0].get("role") == "system":
+            # The tool chosen for this turn sets the instructions for this
+            # turn: its system prompt replaces the one the conversation
+            # started with instead of being thrown away (a switch from
+            # Writing to Coding mid-chat used to be silently ignored).
+            system_now = fresh[0]
+            fresh = fresh[1:]
+            if prior[0].get("role") == "system" and not prior[0].get("ui_only"):
+                prior[0] = {**prior[0], "content": system_now["content"]}
+            else:
+                prior.insert(0, system_now)
+        return prior + fresh
+
+    def _request_text(self, selected_agent, selected_tool, full_prompt) -> str:
+        """The text a Chat turn really sends, for the cost estimate and routing."""
+        try:
+            messages = self._backend_messages(
+                self._assemble_chat_messages(selected_agent, selected_tool, full_prompt))
+            return "\n".join(str(m.get("content", "")) for m in messages)
+        except Exception:  # noqa: BLE001 - an estimate must not break Send
+            return full_prompt
+
     def send_prompt(self):
         selected_agent = self.agent_box.currentText()
 
@@ -3361,9 +3530,26 @@ class GodAI(QWidget):
 
         selected_tool = self.tool_box.currentText() if hasattr(self, "tool_box") else "General Chat"
         command_name, full_prompt = self.build_user_prompt(raw_text)
-        final_backend, final_model = self.resolve_backend_model()
+        try:
+            final_backend, final_model = self.resolve_backend_model()
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Request blocked", str(exc))
+            return
 
-        estimated_cost, approx_tokens = self.estimate_chat_cost(final_backend, final_model, full_prompt)
+        # The specialist panels stop here (authorize_request) when a provider
+        # has no key; Chat used to start the run and fail inside the worker.
+        if not self.provider_key_available(final_backend):
+            QMessageBox.warning(
+                self, "Request blocked",
+                f"{final_backend} API key is not configured. Add it in Settings "
+                "or choose a local model.",
+            )
+            return
+
+        estimated_cost, approx_tokens = self.estimate_chat_cost(
+            final_backend, final_model,
+            self._request_text(selected_agent, selected_tool, full_prompt),
+        )
 
         api_permissions = {
             "allow_openai": self.allow_openai_checkbox.isChecked(),
@@ -3404,25 +3590,14 @@ class GodAI(QWidget):
             return
 
         try:
-            if selected_tool in self.tool_prompts:
-                messages = self.build_tool_messages(selected_tool, full_prompt)
-            elif selected_agent in self.agent_instances:
-                agent = self.agent_instances[selected_agent]
-                messages = agent.build_messages(full_prompt)
-            else:
-                messages = [{"role": "user", "content": full_prompt}]
-
             self.pending_agent = selected_agent
             self.pending_tool = selected_tool
             self.pending_backend = final_backend
             self.pending_model = final_model
             self.pending_command = command_name
             self.pending_project = self.active_project_id
-            prior = list(self.current_messages) if selected_agent == "chat" else []
-            fresh = self._normalise_chat_messages(messages)
-            if prior and fresh and fresh[0].get("role") == "system":
-                fresh = fresh[1:]
-            self.pending_messages = prior + fresh
+            self.pending_messages = self._assemble_chat_messages(
+                selected_agent, selected_tool, full_prompt)
             self.pending_prompt = full_prompt
             self.pending_usage = None
 
@@ -3629,7 +3804,7 @@ class GodAI(QWidget):
             "prompt": prompt,
             "usage": None,
             "started_at": time.monotonic(),
-            "run_id": self.run_logger.start(
+            "run_id": None if agent in NO_CONTENT_LOG_AGENTS else self.run_logger.start(
                 agent=agent,
                 tool=descriptor,
                 provider=provider,
@@ -3638,6 +3813,34 @@ class GodAI(QWidget):
                 prompt_summary=prompt,
             ),
         }
+        return True
+
+    def recheck_budget(self, agent, provider, model, prompt, request_id=None) -> bool:
+        """Re-run the budget caps against the text that is really being sent.
+
+        authorize_request() runs before a panel has its full prompt (live
+        collection, EXIF, scan output arrive later), so its estimate can be a
+        few dozen characters while the real request is many kilobytes. This
+        checks the caps again with the assembled prompt, keeps the consent
+        already given, and updates the pending record so the run log and the
+        bill describe what was sent. False means: do not send, abandon.
+        """
+        estimated_cost, _ = self.estimate_chat_cost(provider, model, prompt)
+        result = self.validator.validate_budget(
+            agent_name=agent, tool_name=None, provider=provider,
+            session_cost=self.session_cost_total,
+            session_budget=self.session_budget_eur,
+            daily_cost=self.usage_tracker.get_today_total(),
+            daily_budget=self.daily_budget_eur,
+            estimated_cost=estimated_cost,
+        )
+        if not result.allowed:
+            QMessageBox.warning(self, "Request Blocked", result.reason)
+            return False
+        key = self._pending_request_key(agent, request_id)
+        pending = self._pending_requests.get(key) if key else None
+        if pending is not None:
+            pending["prompt"] = prompt
         return True
 
     def record_request(self, agent, response, messages=None, request_id=None):
@@ -3665,16 +3868,17 @@ class GodAI(QWidget):
         self.session_request_count += 1
         self.update_usage_labels()
 
-        if messages is None:
-            messages = [{"role": "user", "content": context["prompt"]}]
-        self.history.save_chat(
-            agent=context["agent"],
-            backend=context["provider"],
-            model=context["model"],
-            command=context["tool"],
-            messages=messages + [{"role": "assistant", "content": response}],
-            response=response,
-        )
+        if context["agent"] not in NO_CONTENT_LOG_AGENTS:
+            if messages is None:
+                messages = [{"role": "user", "content": context["prompt"]}]
+            self.history.save_chat(
+                agent=context["agent"],
+                backend=context["provider"],
+                model=context["model"],
+                command=context["tool"],
+                messages=messages + [{"role": "assistant", "content": response}],
+                response=response,
+            )
 
         if context["run_id"]:
             self.run_logger.finish(
@@ -3688,12 +3892,20 @@ class GodAI(QWidget):
         self.load_history_list()
         self.load_saved_searches()
 
+    def note_request_error(self, agent, error, request_id=None):
+        """Remember why a request is about to be abandoned (Run log "errors")."""
+        key = self._pending_request_key(agent, request_id)
+        context = self._pending_requests.get(key) if key is not None else None
+        if context is not None:
+            context["error"] = str(error)[:500]
+
     def abandon_request(self, agent, reason="error", request_id=None):
         """Drop a request that failed, so it is not billed and the log closes."""
         key = self._pending_request_key(agent, request_id)
         context = self._pending_requests.pop(key, None) if key is not None else None
         if context and context["run_id"]:
-            self.run_logger.finish(run_id=context["run_id"], status=reason)
+            self.run_logger.finish(run_id=context["run_id"], status=reason,
+                                   error=context.get("error"))
 
     def record_external_research(self, *, agent: str, target: str,
                                  query_type: str, response: str,
@@ -3745,6 +3957,11 @@ class GodAI(QWidget):
             if verdict is not None and verdict["level"] == "too_big":
                 raise RuntimeError(verdict["message"])
 
+            # Stream like every cloud provider: the worker checks its cancel
+            # flag per token, so Stop interrupts a local reply instead of
+            # waiting for the whole thing (and the transcript fills as it goes).
+            if hasattr(self.ollama, "stream_chat"):
+                return self.ollama.stream_chat(model=model, messages=messages)
             if hasattr(self.ollama, "chat"):
                 return self.ollama.chat(model=model, messages=messages)
             if hasattr(self.ollama, "generate"):
@@ -3830,15 +4047,21 @@ class GodAI(QWidget):
         self.chat_progress.hide()
 
     def handle_chat_status(self, text):
+        if self._from_detached_chat_worker():
+            return
         self.chat_status_label.setText(text)
 
     def handle_chat_token(self, text):
+        if self._from_detached_chat_worker():
+            return
         if not self.current_messages or self.current_messages[-1].get("role") != "assistant":
             self.current_messages.append(self._timestamped_message("assistant", ""))
         self.current_messages[-1]["content"] += text
         self._render_chat_conversation()
 
     def handle_chat_finished(self, response):
+        if self._from_detached_chat_worker():
+            return
         self.stop_chat_timer()
         self.send_btn.show()
         self.send_btn.setEnabled(True)
@@ -3881,27 +4104,42 @@ class GodAI(QWidget):
             )
             self.active_run_id = None
 
-        self.history.save_chat(
-            agent=self.pending_agent,
-            backend=self.pending_backend,
-            model=self.pending_model,
-            command=self.pending_command,
-            messages=self.current_messages,
-            response=response,
-            project=self.pending_project,
-        )
+        current_path = getattr(self, "current_chat_path", None)
+        if current_path and Path(current_path).is_file():
+            try:
+                self.history.update_chat(
+                    current_path,
+                    messages=self.current_messages, response=response,
+                    backend=self.pending_backend, model=self.pending_model,
+                    command=self.pending_command, project=self.pending_project,
+                )
+            except Exception as exc:
+                self._note_failure("saved chats: update", exc)
+                self.current_chat_path = None
+        if not getattr(self, "current_chat_path", None):
+            self.current_chat_path = str(self.history.save_chat(
+                agent=self.pending_agent,
+                backend=self.pending_backend,
+                model=self.pending_model,
+                command=self.pending_command,
+                messages=self.current_messages,
+                response=response,
+                project=self.pending_project,
+            ))
 
         self.load_history_list()
         self.route_result_label.setText(f"Router: {self.pending_agent} · {self.pending_backend} · {self.pending_model}")
 
     def handle_chat_error(self, error):
+        if self._from_detached_chat_worker():
+            return
         self.stop_chat_timer()
         if (self.current_messages
                 and self.current_messages[-1].get("role") == "assistant"
                 and not self.current_messages[-1].get("content")):
             self.current_messages.pop()
         self.current_messages.append(
-            self._timestamped_message("system", f"The request could not be completed. {error}")
+            self._ui_notice(f"The request could not be completed. {error}")
         )
         self._render_chat_conversation()
         self.send_btn.show()
@@ -3915,11 +4153,45 @@ class GodAI(QWidget):
             self.active_run_id = None
         
     def handle_chat_usage(self, usage):
+        if self._from_detached_chat_worker():
+            return
         self.pending_usage = usage
+
+    def _from_detached_chat_worker(self) -> bool:
+        """True when the signal being handled came from a worker that was
+        already stopped. Disconnecting does not drop events Qt had queued
+        before Stop, so a reply finishing just before Stop could otherwise
+        still be rendered, saved and billed against a cancelled run."""
+        sender = self.sender()
+        return sender is not None and getattr(sender, "_sentinel_detached", False)
+
+    def _detach_chat_worker(self, worker) -> None:
+        """Stop listening to a worker that is no longer the current request.
+
+        A cancelled worker can still deliver a final answer or a usage report
+        a moment later; delivered into the window, that would be rendered and
+        billed against a run that was already closed as cancelled.
+        """
+        try:
+            worker._sentinel_detached = True
+        except (AttributeError, RuntimeError):
+            pass
+        for signal, handler in (
+            (worker.status_signal, self.handle_chat_status),
+            (worker.token_signal, self.handle_chat_token),
+            (worker.finished_signal, self.handle_chat_finished),
+            (worker.usage_signal, self.handle_chat_usage),
+            (worker.error_signal, self.handle_chat_error),
+        ):
+            try:
+                signal.disconnect(handler)
+            except (RuntimeError, TypeError):
+                pass
 
     def stop_chat_worker(self):
         if self.chat_worker is not None and self.chat_worker.isRunning():
             self.chat_worker.cancel()
+            self._detach_chat_worker(self.chat_worker)
             self.chat_worker.terminate()
             self.chat_worker.wait(2000)
             if (self.current_messages
@@ -3927,7 +4199,7 @@ class GodAI(QWidget):
                     and not self.current_messages[-1].get("content")):
                 self.current_messages.pop()
             self.current_messages.append(
-                self._timestamped_message("system", "Chat request stopped by user.")
+                self._ui_notice("Chat request stopped by user.")
             )
             self._render_chat_conversation()
         self.stop_chat_timer()
@@ -4041,15 +4313,8 @@ class GodAI(QWidget):
                 ("SESSION", self.session_cost_total, self.session_budget_eur),
                 ("DAILY", today_total, self.daily_budget_eur),
             ):
-                fraction = (spent / cap) if cap > 0 else 0.0
-                level = "red" if fraction >= 0.9 else "yellow" if fraction >= 0.6 else "green"
-                remaining = cap - spent
-                self.budget_meters[key].set(
-                    fraction,
-                    f"€{spent:.2f} / €{cap:.0f}",
-                    level,
-                    f"€{remaining:.2f} left of the €{cap:.2f} {key.lower()} cap",
-                )
+                fraction, text, level, tip = budget_meter_state(spent, cap, key)
+                self.budget_meters[key].set(fraction, text, level, tip)
                 worst = max(worst, fraction)
             if hasattr(self, "budget_screen"):
                 self.budget_screen.set_status(
@@ -4188,8 +4453,7 @@ class GodAI(QWidget):
             data["project"] = project_id
         else:
             data.pop("project", None)
-        with open(filepath, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, ensure_ascii=False)
+        _write_json_atomic(filepath, data)
         self.load_history_list()
 
     def assign_selected_chat_to_project(self) -> None:
@@ -4334,6 +4598,15 @@ class GodAI(QWidget):
             panel.target_input.setText(target)
 
             query_type = data.get("command", "Auto-detect")
+            live = str(query_type).startswith("Live Research")
+            stored = json.loads(data.get("response", "")) if live else None
+            if live:
+                # A live save is titled "Live Research · Domain"; the type box
+                # only knows the part after the dot. An Exposure Check has no
+                # item of its own, so it comes back as the kind of target.
+                query_type = query_type.partition(" · ")[2]
+                if query_type == "Exposure":
+                    query_type = str(stored.get("target_type", "")).capitalize()
             if panel.type_box.findText(query_type) >= 0:
                 panel.type_box.setCurrentText(query_type)
 
@@ -4347,14 +4620,16 @@ class GodAI(QWidget):
             response = data.get("response", "")
             panel._clear_output()
             panel._last_response = response
-            if str(data.get("command", "")).startswith("Live Research"):
-                panel._show_lookup_result(json.loads(response), save=False)
+            if live:
+                panel._show_lookup_result(stored, save=False)
             else:
                 panel._populate_sections(response)
             panel._reset_activity()
+            kind = ("stored live-source record" if live
+                    else "stored query-planning result")
             panel._append_activity(
-                "Opened a saved Trace search. This is a stored query-planning "
-                "result; no external sources were queried while reopening it."
+                f"Opened a saved Trace search. This is a {kind}; "
+                "no external sources were queried while reopening it."
             )
             panel.status_label.setText("Saved search loaded.")
         except Exception as exc:
@@ -4375,8 +4650,7 @@ class GodAI(QWidget):
                 data["title"] = title
             else:
                 data.pop("title", None)
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2, ensure_ascii=False)
+            _write_json_atomic(path, data)
             self.load_saved_searches()
         except Exception as exc:
             self._note_failure("saved searches: rename", exc)
@@ -4446,8 +4720,7 @@ class GodAI(QWidget):
         else:
             data.pop("title", None)      # cleared — fall back to the first prompt
         try:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2, ensure_ascii=False)
+            _write_json_atomic(path, data)
         except Exception as exc:
             self._note_failure("saved chats: save new name", exc)
             return
@@ -4455,6 +4728,11 @@ class GodAI(QWidget):
 
     def open_selected_chat(self, item):
         filepath = item.data(Qt.UserRole) or item.text()
+        # A reply still streaming belongs to the conversation on screen. Left
+        # running, it would finish into whichever chat is open by then and be
+        # saved over that file, so it is stopped (and its run cancelled) first.
+        if getattr(self, "chat_worker", None) is not None and self.chat_worker.isRunning():
+            self.stop_chat_worker()
         try:
             data = self.history.load_chat(filepath)
             self.show_output_area()
@@ -4464,6 +4742,10 @@ class GodAI(QWidget):
             self.current_messages = self._normalise_chat_messages(
                 messages, fallback=data.get("timestamp")
             )
+            # Continuing this chat appends to this file rather than cloning it —
+            # but only when the file is a Chat record. A Trace or Bloodhound
+            # record opened for reading must not be rewritten into a Chat thread.
+            self.current_chat_path = self._continuable_chat_path(data, filepath)
             self._render_chat_conversation(force_tail=True)
             self.input_box.clear()
             self.route_result_label.setText(
@@ -4491,12 +4773,17 @@ class GodAI(QWidget):
 
         try:
             Path(filepath).unlink(missing_ok=True)
+            if getattr(self, "current_chat_path", None) == str(filepath):
+                self.current_chat_path = None
             self.load_history_list()
         except Exception as e:
             QMessageBox.warning(self, "Delete Failed", str(e))
 
     def new_chat(self):
+        if getattr(self, "chat_worker", None) is not None and self.chat_worker.isRunning():
+            self.stop_chat_worker()
         self.current_messages = []
+        self.current_chat_path = None
         self.input_box.clear()
         self.output_box.clear()
         self.hide_output_area()
@@ -4508,7 +4795,12 @@ class GodAI(QWidget):
             QMessageBox.warning(self, "Warning", "No output to export.")
             return
         title = self.agent_box.currentText() + "_report"
-        filepath = self.report_exporter.export_text_report(title, content)
+        try:
+            filepath = self.report_exporter.export_text_report(title, content)
+        except Exception as exc:
+            self._note_failure("export report", exc)
+            QMessageBox.warning(self, "Export Failed", f"The report could not be saved:\n{exc}")
+            return
         QMessageBox.information(self, "Export Complete", f"Report saved to:\n{filepath}")
 
     @staticmethod
@@ -4779,14 +5071,52 @@ class GodAI(QWidget):
         search_box.setFocus()
         dialog.exec()
 
+    def stop_background_work(self) -> None:
+        """Stop and join everything Sentinel started, and close its run-log rows.
+
+        Shared by quitting and by Emergency Reset, which erases the database
+        the run log writes to and so needs the same quiet first.
+        """
+        if self.chat_worker is not None and self.chat_worker.isRunning():
+            self.chat_worker.cancel()
+            self._detach_chat_worker(self.chat_worker)
+            self.chat_worker.terminate()
+            self.chat_worker.wait(1000)
+        # The run log must not keep a request "running" after the app is
+        # gone: close it as cancelled, as the Stop button would.
+        run_id = getattr(self, "active_run_id", None)
+        if run_id:
+            try:
+                self.run_logger.cancel(run_id)
+            finally:
+                self.active_run_id = None
+        # The model scan and a model pull are QThreads of ours too; a quit
+        # while one ran destroyed a live thread (and could crash on exit).
+        for name in ("model_scan_worker", "model_pull_worker"):
+            thread = getattr(self, name, None)
+            if thread is not None and thread.isRunning():
+                cancel = getattr(thread, "cancel", None)
+                if callable(cancel):
+                    cancel()
+                if not thread.wait(2000):
+                    thread.terminate()
+                    thread.wait(1000)
+        from ui.dialogs import shutdown_panels
+        shutdown_panels(self)
+        # Whatever a panel left authorised but never recorded: close each row
+        # so the Run log does not show it as running for ever.
+        for request_id in list(self._pending_requests):
+            context = self._pending_requests.get(request_id) or {}
+            try:
+                self.abandon_request(context.get("agent", ""), "cancelled",
+                                     request_id=request_id)
+            except Exception as exc:  # noqa: BLE001
+                self._note_failure("shutdown: abandon request", exc)
+            self._pending_requests.pop(request_id, None)
+
     def closeEvent(self, event):
         try:
-            if self.chat_worker is not None and self.chat_worker.isRunning():
-                self.chat_worker.cancel()
-                self.chat_worker.terminate()
-                self.chat_worker.wait(1000)
-            from ui.dialogs import shutdown_panels
-            shutdown_panels(self)
+            self.stop_background_work()
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
@@ -4814,10 +5144,22 @@ def _tray_status(window) -> str:
     menu opens.
     """
     worker = getattr(window, "chat_worker", None)
+    busy_key = ""
     if worker is not None and worker.isRunning():
-        agent = BUILTIN_AGENTS.get(
-            window.pending_agent or getattr(window, "_current_agent", ""), {}
-        ).get("label", "")
+        busy_key = window.pending_agent or getattr(window, "_current_agent", "")
+    else:
+        # The specialist agents run in their own panels, not through
+        # chat_worker; a Tunnel check or a Bloodhound sweep used to read as Idle.
+        for key, panel in (getattr(window, "panels", None) or {}).items():
+            is_running = getattr(panel, "is_running", None)
+            try:
+                if is_running is not None and is_running():
+                    busy_key = key
+                    break
+            except Exception:  # noqa: BLE001 - a status line must never raise
+                continue
+    if busy_key or (worker is not None and worker.isRunning()):
+        agent = BUILTIN_AGENTS.get(busy_key, {}).get("label", "")
         activity = f"Working — {agent}" if agent else "Working"
     else:
         activity = "Idle"
@@ -4901,6 +5243,13 @@ if __name__ == "__main__":
             settings_store.migrate_tracked_defaults(SETTINGS_FILE, SETTINGS_OVERRIDE_FILE)
         except OSError as exc:
             print(f"settings migration skipped: {exc}", file=sys.stderr)
+
+    # Tunnel keeps no log; delete the ones an older version left on disk.
+    try:
+        from services import tunnel_logs
+        tunnel_logs.purge_legacy_logs()
+    except Exception as exc:
+        print(f"old Tunnel log cleanup skipped: {exc}", file=sys.stderr)
 
     window = GodAI()
     settings = QSettings("Sentinel", "Sentinel")

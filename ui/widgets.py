@@ -58,6 +58,9 @@ class SelectorMenu(QMenu):
         super().__init__(parent)
         self._badges: dict = {}
         self._muted: set = set()
+        # QMenu hides action tooltips unless asked. Without this the BEST FIT
+        # reason and the "costs money" text on cloud entries never showed (D7).
+        self.setToolTipsVisible(True)
 
     def markBestFit(self, action, text: str = BEST_FIT_BADGE) -> None:  # noqa: N802
         """Give one of this menu's actions a best-fit pill."""
@@ -684,6 +687,9 @@ class SectionCard(QFrame):
 
         self._body = body
         text = QLabel(body)
+        # Model output is shown as the characters it is. Qt's auto rich-text
+        # would render tags and could hide part of a spec from its reviewer.
+        text.setTextFormat(Qt.PlainText)
         text.setObjectName("SectionMono" if mono else "SectionBody")
         text.setWordWrap(True)
         text.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -733,6 +739,8 @@ class SectionView(QWidget):
 
         self._raw_box = QLabel()
         self._raw_box.setObjectName("SectionMono")
+        # The raw reply is model output too: plain characters, never markup.
+        self._raw_box.setTextFormat(Qt.PlainText)
         self._raw_box.setWordWrap(True)
         self._raw_box.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._raw_box.setVisible(False)

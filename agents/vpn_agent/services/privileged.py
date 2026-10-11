@@ -17,6 +17,10 @@ import os
 import subprocess
 
 DEFAULT_TIMEOUT = 30
+# The dialog path waits for a person to read the prompt and type a password
+# before the command even starts; the command's own timeout must not be spent
+# on that, or a slow typist sees "Timed out." for a change they approved.
+PASSWORD_ENTRY_SECONDS = 90
 
 
 def run(command: list[str], timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
@@ -36,32 +40,84 @@ def run(command: list[str], timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str
     return False, output or f"exited {proc.returncode}"
 
 
-def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
+SUDO_REFUSALS = (
+    "a password is required",
+    "sorry, you must have a tty",
+    "no tty present",
+    "a terminal is required",
+)
+
+
+def _sudo_refused(output: str) -> bool:
+    """True only when sudo itself declined to run the command non-interactively.
+
+    sudo prints its own refusals as lines starting with ``sudo:``. Anything
+    else is the command's output: it ran, and must not be run a second time
+    through the dialog just because it happened to mention "password".
+    """
+    for line in output.splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith("sudo:") and any(text in stripped for text in SUDO_REFUSALS):
+            return True
+    return False
+
+
+def applescript_string(text: str) -> str:
+    """Quote ``text`` as an AppleScript string literal.
+
+    Backslash and double quote are the only escapes inside an AppleScript
+    string; control characters are dropped so a value cannot end the line.
+    Both the shell snippet and the prompt go through here: an unescaped quote
+    in the prompt (a site name, say) would otherwise let the text after it run
+    as AppleScript before any password is asked for.
+    """
+    cleaned = "".join(ch for ch in str(text) if ch in "\n\t" or ord(ch) >= 32)
+    return '"' + cleaned.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def run_with_dialog(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
+    """Run a shell snippet as root through the macOS authorisation dialog only."""
+    prompt_text = " ".join(str(prompt).split())
+    ok, output = run(
+        [
+            "osascript", "-e",
+            f"do shell script {applescript_string(script)} "
+            f"with prompt {applescript_string(prompt_text)} "
+            "with administrator privileges",
+        ],
+        timeout + PASSWORD_ENTRY_SECONDS,
+    )
+    if not ok and output == "Timed out.":
+        # Once the password is accepted the command runs as root on its own;
+        # stopping osascript does not undo it. Say so, so nobody reads this as
+        # "nothing happened" — callers re-check local state afterwards.
+        output = ("Timed out waiting for the administrator dialog or the command. "
+                  "If you had already approved it, the change may still have happened.")
+    return ok, output
+
+
+def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,
+                allow_cached_sudo: bool = True) -> tuple[bool, str]:
     """
     Run a shell snippet as root.
 
-    Order matters: cached sudo first, because it is silent and does not steal
-    focus. The authorisation dialog is only raised when there is no other way,
-    so a user who has just run `sudo -v` is never interrupted.
+    With ``allow_cached_sudo`` (the companion tools' default) a cached sudo
+    ticket is tried first, because it is silent and does not steal focus.
+    Sentinel's gated actions pass ``False``: the README promises that a
+    Connect, Disconnect or kill-switch change goes through the macOS
+    authorisation dialog, and a ticket left by an unrelated ``sudo`` must not
+    turn that promise into a silent privileged run.
     """
     if os.geteuid() == 0:
         return run(["bash", "-c", script], timeout)
 
+    if not allow_cached_sudo:
+        return run_with_dialog(script, prompt, timeout)
+
     ok, output = run(["sudo", "-n", "bash", "-c", script], timeout)
     if ok:
         return True, output
-
-    lowered = output.lower()
-    if "password" not in lowered and "sudo" not in lowered:
-        # A real failure from the command itself, not a missing credential.
+    if not _sudo_refused(output):
+        # The command itself ran under sudo and failed; never re-run it.
         return False, output
-
-    escaped = script.replace("\\", "\\\\").replace('"', '\\"')
-    return run(
-        [
-            "osascript", "-e",
-            f'do shell script "{escaped}" with prompt "{prompt}" '
-            "with administrator privileges",
-        ],
-        timeout,
-    )
+    return run_with_dialog(script, prompt, timeout)

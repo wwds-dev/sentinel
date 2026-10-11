@@ -163,22 +163,17 @@ def _no_osint_keys(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _isolated_tunnel_audit():
-    """Point Tunnel's audit log at _TEST_ROOT instead of data/logs/.
+@pytest.fixture(autouse=True)
+def _no_real_vpn_apps(monkeypatch):
+    """Tests never ask the developer's real Mullvad/Proton what state they are in.
 
-    `data/logs/tunnel_audit.jsonl` is the operator's record of real
-    connect/disconnect and kill-switch attempts. Any test that reaches
-    `append_audit` without its own `audit_path` (the kill-switch worker tests
-    did) was appending made-up "ARMED ok" / "pfctl error" lines to it. Session
-    scope for the same reason as above: `win` is built first.
+    A connected app on the machine running the suite would otherwise refuse the
+    kill switch and add warnings to every Connect review. A test that cares
+    passes its own apps, or patches `vpn_apps.detect` itself.
     """
-    from services import vpn_execution
+    from services import vpn_apps
 
-    audit = _TEST_ROOT / "data" / "logs" / vpn_execution.AUDIT_FILENAME
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(vpn_execution, "default_audit_path", lambda: audit)
-        yield
+    monkeypatch.setattr(vpn_apps, "detect", lambda run=None: [])
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -207,6 +202,9 @@ def pytest_configure(config):
     """
     global _TEST_ROOT
     _TEST_ROOT = Path(tempfile.mkdtemp(prefix="sentinel-tests-"))
+    # VPN state (sites, keys, Tor dir, kill-switch files) must never touch the
+    # developer's real folders, and Tunnel tests must not see each other's.
+    os.environ["VPN_AGENT_STATE_DIR"] = str(_TEST_ROOT / "vpn-state")
 
     from services import database
 
@@ -219,3 +217,41 @@ def pytest_unconfigure(config):
     if _TEST_ROOT is not None:
         shutil.rmtree(_TEST_ROOT, ignore_errors=True)
         _TEST_ROOT = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _dispose_windows_a_module_leaked():
+    """Destroy the top-level windows a test module created and left behind.
+
+    Building a main window re-applies the global stylesheet to every live
+    widget, so each leaked window made every later window slower (the suite
+    went from ~11 minutes to stalling for minutes per test around the
+    Tunnel tests). Only widgets that did not exist when the module started
+    are touched, after the module's own fixtures have finished.
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    app = QApplication.instance()
+    before = {id(w) for w in app.topLevelWidgets()} if app else set()
+    yield
+    app = QApplication.instance()
+    if not app:
+        return
+    import shiboken6
+    for widget in list(app.topLevelWidgets()):
+        if id(widget) in before:
+            continue
+        try:
+            if hasattr(widget, "stop_background_work"):
+                widget.stop_background_work()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            widget.hide()
+            shiboken6.delete(widget)
+        except Exception:  # noqa: BLE001
+            pass
+    app.processEvents()

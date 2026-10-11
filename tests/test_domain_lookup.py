@@ -214,6 +214,103 @@ def test_an_unannounced_address_is_a_fact_not_an_error(monkeypatch):
     assert "error" not in result
 
 
+# ── DNS ──────────────────────────────────────────────────────────────────────
+
+def _record_queries(monkeypatch, answers):
+    """Fake dns.resolver.resolve; returns the (name, type) pairs it was asked."""
+    import dns.resolver
+
+    asked = []
+
+    def resolve(name, rtype, lifetime=None):
+        asked.append((str(name), rtype))
+        value = answers.get((str(name), rtype))
+        if value is None:
+            raise dns.resolver.NXDOMAIN()
+        return value
+
+    monkeypatch.setattr(dns.resolver, "resolve", resolve)
+    return asked
+
+
+def test_dns_of_an_ip_asks_for_its_reverse_name_not_forward_records(monkeypatch):
+    """The step used to ask for A/AAAA/MX/NS/TXT/SOA of "192.0.2.1", which
+    nothing answers, so every IP run listed DNS as an error."""
+    monkeypatch.undo()
+    asked = _record_queries(monkeypatch, {
+        ("1.2.0.192.in-addr.arpa.", "PTR"): ["host.example.net."],
+    })
+    assert domain_lookup._dns("192.0.2.1") == {"PTR": ["host.example.net."]}
+    assert asked == [("1.2.0.192.in-addr.arpa.", "PTR")]
+
+    asked.clear()
+    domain_lookup._dns("2001:db8::1")
+    assert asked[0][0].endswith(".ip6.arpa.") and asked[0][1] == "PTR"
+
+
+def test_an_ip_without_a_reverse_record_is_a_fact_not_an_error(monkeypatch):
+    monkeypatch.undo()
+    _record_queries(monkeypatch, {})
+    result = domain_lookup._dns("192.0.2.1")
+    assert result["PTR"] == [] and "error" not in result
+
+    monkeypatch.setattr(domain_lookup, "_whois", lambda target: {})
+    monkeypatch.setattr(domain_lookup, "_asn", lambda target: {})
+    monkeypatch.setattr(domain_lookup, "_passive_dns", lambda target: {})
+    monkeypatch.setattr(domain_lookup, "_dshield", lambda target: {})
+    monkeypatch.setattr(domain_lookup, "_shodan_internetdb", lambda target: {})
+    found = domain_lookup.lookup("192.0.2.1")
+    assert {"source": "DNS", "status": "checked"} in found["sources_contacted"]
+
+
+def test_dns_of_a_domain_still_asks_for_forward_records(monkeypatch):
+    monkeypatch.undo()
+    asked = _record_queries(monkeypatch, {("example.com", "A"): ["192.0.2.10"]})
+    assert domain_lookup._dns("example.com") == {"A": ["192.0.2.10"]}
+    assert ("example.com", "MX") in asked and not any(t == "PTR" for _, t in asked)
+
+
+# ── Key-gated sources without a key ──────────────────────────────────────────
+
+def _no_keys(monkeypatch):
+    from providers import intel_sources
+
+    for name in ["IPINFO_API_KEY", "CRIMINALIP_API_KEY",
+                 *(source.env for source in intel_sources.SOURCES)]:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_keyed_sources_without_a_key_are_recorded_as_skipped_before_contact(monkeypatch):
+    """They used to vanish from the result, so the summary card read
+    "Skipped before contact: none" while keyed services were left out."""
+    from providers import intel_sources
+
+    _no_keys(monkeypatch)
+    monkeypatch.setattr(domain_lookup, "_whois", lambda target: {})
+    monkeypatch.setattr(domain_lookup, "_dns", lambda target: {})
+    progress = []
+
+    ip = domain_lookup.lookup(
+        "192.0.2.1", on_progress=lambda source, status: progress.append((source, status)))
+    expected = ["IPinfo", "Criminal IP"] + [
+        s.label for s in intel_sources.SOURCES if "ip" in s.kinds]
+    assert [i["source"] for i in ip["sources_skipped"]] == expected
+    assert {i["status"] for i in ip["sources_skipped"]} == {"skipped"}
+    contacted = [i["source"] for i in ip["sources_contacted"]]
+    assert not set(expected) & set(contacted)
+    assert ("IPinfo", "skipped") in progress and ("IPinfo", "checking") not in progress
+
+    domain = domain_lookup.lookup("example.com")
+    assert [i["source"] for i in domain["sources_skipped"]] == [
+        s.label for s in intel_sources.SOURCES if "domain" in s.kinds]
+
+    # Saving a key moves that service from skipped to contacted.
+    monkeypatch.setenv("IPINFO_API_KEY", "k")
+    keyed = domain_lookup.lookup("192.0.2.1")
+    assert "IPinfo" in [i["source"] for i in keyed["sources_contacted"]]
+    assert "IPinfo" not in [i["source"] for i in keyed["sources_skipped"]]
+
+
 # ── Mnemonic passive DNS ─────────────────────────────────────────────────────
 
 def test_passive_dns_dates_fall_back_for_partial_results(monkeypatch):

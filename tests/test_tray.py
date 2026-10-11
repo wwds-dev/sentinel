@@ -149,3 +149,25 @@ def test_an_unknown_agent_key_does_not_break_the_line():
     assert main._tray_status(_window(running=True, agent="forge-made-this")) == (
         "Working  ·  €0.00 this session"
     )
+
+
+def test_a_running_panel_agent_is_not_idle():
+    """Tunnel, Bloodhound and the rest run in their panels, not chat_worker."""
+    import main
+
+    window = _window(running=False, cost=0.2)
+    window.panels = {
+        "osint": SimpleNamespace(is_running=lambda: False),
+        "vpn": SimpleNamespace(is_running=lambda: True),
+    }
+    assert main._tray_status(window) == "Working — Tunnel  ·  €0.20 this session"
+
+
+def test_a_panel_whose_status_raises_does_not_break_the_line():
+    import main
+
+    def boom():
+        raise RuntimeError("widget gone")
+    window = _window(running=False)
+    window.panels = {"wifi": SimpleNamespace(is_running=boom)}
+    assert main._tray_status(window) == "Idle  ·  €0.00 this session"

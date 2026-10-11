@@ -183,7 +183,14 @@ class WifiPanel(AgentPanel):
 
         ai_row = QHBoxLayout()
         self.ai_checkbox = QCheckBox("AI Analysis — feed results to LLM for interpretation")
-        self.ai_checkbox.setChecked(True)
+        # Off by default, as the Beacon lesson promises: a scan's SSIDs, signal
+        # and security data go to the selected model only when the operator
+        # ticks this, and the selected provider may be a paid cloud one (D5).
+        self.ai_checkbox.setChecked(False)
+        self.ai_checkbox.setToolTip(
+            "Sends the raw scan output (network names, signal, security) to the "
+            "selected provider and model. Off by default; prefer a local model."
+        )
         ai_row.addWidget(self.ai_checkbox)
         ai_row.addStretch()
         layout.addLayout(ai_row)
@@ -398,6 +405,7 @@ class WifiPanel(AgentPanel):
         else:
             cmd = list(WIFI_SCAN_CMD)
 
+        self._stopped = False
         self.scan_worker = SubprocessWorker(cmd)
         self.scan_worker.finished_signal.connect(self._scan_finished)
         self.scan_worker.error_signal.connect(self._scan_error)
@@ -429,14 +437,9 @@ class WifiPanel(AgentPanel):
         self._last_response = cmds
         self.save_btn.setEnabled(True)
         self.status_label.setText(f"Kali commands generated: {op}")
-
-        if self.ai_checkbox.isEnabled() and self.ai_checkbox.isChecked() and self.model:
-            prompt = (
-                "Explain the following Kali Linux Wi-Fi attack command sequence for an "
-                "authorised penetration test. Break down what each step does and what to "
-                f"watch for:\n\n{cmds}"
-            )
-            self._start_ai_pass(prompt)
+        # AI Analysis is disabled while Kali Command Builder is the active mode
+        # (see `_on_mode_changed`), so this generator never routes the command
+        # text to a model — Kali-mode data never leaves the Mac.
 
     def _format_scan_output(self, raw: str) -> str:
         """Turn system_profiler JSON into a readable report; pass other output
@@ -451,6 +454,8 @@ class WifiPanel(AgentPanel):
             return raw
 
     def _scan_finished(self, raw: str) -> None:
+        if getattr(self, "_stopped", False):
+            return            # Stop was pressed; a result already queued must not start a paid request
         raw = self._format_scan_output(raw)
         self._source_output = raw
         self._show_sections([("Raw wireless output", raw, True)], raw)
@@ -460,19 +465,19 @@ class WifiPanel(AgentPanel):
         if self.ai_checkbox.isChecked() and self.model:
             mode = self.mode_box.currentText()
             prompt = f"Mode: {mode}\n\nRaw output:\n{raw}\n\nAnalyse this Wi-Fi scan result."
-            self._start_ai_pass(prompt)
-            self.status_label.setText("Running AI analysis…")
+            if self._start_ai_pass(prompt):
+                self.status_label.setText("Running AI analysis…")
         else:
             self._last_response = raw
             self.set_busy(self.run_btn, self.stop_btn, False)
             self.save_btn.setEnabled(True)
 
-    def _start_ai_pass(self, prompt: str) -> None:
+    def _start_ai_pass(self, prompt: str) -> bool:
         """The paid half. `run`/scan already put the panel in the running state."""
         messages = self.agent().build_messages(prompt)
         if not self.authorize(prompt):
             self.set_busy(self.run_btn, self.stop_btn, False)
-            return
+            return False
         self._last_response = ""
         self.sections.setVisible(False)
         self.stream_box.clear()
@@ -483,6 +488,7 @@ class WifiPanel(AgentPanel):
             on_finished=self._on_finished,
             on_error=self._on_error,
         )
+        return True
 
     def _scan_error(self, error: str) -> None:
         self.sections.setVisible(False)
@@ -516,7 +522,7 @@ class WifiPanel(AgentPanel):
         self.save_btn.setEnabled(True)
 
     def _on_error(self, error: str) -> None:
-        self.abandon()
+        self.abandon(error=error)
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
         self.stream_box.setPlainText(f"[Error] {error}")
@@ -524,6 +530,7 @@ class WifiPanel(AgentPanel):
         self.set_busy(self.run_btn, self.stop_btn, False)
 
     def stop(self) -> None:
+        self._stopped = True
         if self.scan_worker is not None and self.scan_worker.isRunning():
             self.scan_worker.cancel()
         self.stop_worker()

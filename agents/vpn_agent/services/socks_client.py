@@ -166,7 +166,10 @@ def _negotiate_socks4a(sock: socket.socket, hop: ProxyHop, host: str, port: int)
     user = hop.username.encode("utf-8")
     # 0.0.0.x with x != 0 signals SOCKS4a: the hostname follows, unresolved.
     request = b"\x04\x01" + struct.pack(">H", port) + b"\x00\x00\x00\x01"
-    request += user + b"\x00" + host.encode("ascii") + b"\x00"
+    try:
+        request += user + b"\x00" + host.encode("ascii") + b"\x00"
+    except UnicodeEncodeError as exc:
+        raise SocksError("SOCKS4 cannot carry a non-ASCII host name") from exc
     sock.sendall(request)
 
     reply = _recv_exactly(sock, 8)
@@ -272,7 +275,7 @@ def http_get_through(
 
         request = (
             f"GET {path} HTTP/1.1\r\nHost: {url_host}\r\n"
-            "User-Agent: vpn-agent\r\nConnection: close\r\n\r\n"
+            "User-Agent: Sentinel\r\nConnection: close\r\n\r\n"
         )
         sock.sendall(request.encode("ascii"))
 
