@@ -384,8 +384,8 @@ connectivity, so verify values before applying generated material.
 Ask about topology, connection failures, firewalls, DNS/IPv6/WebRTC leaks or
 kill-switch behaviour. The mode, protocol, server host and home subnet are
 included as context. Review the route before sending infrastructure details to a
-cloud model. The Advisor's background knowledge also mentions Tor, proxy chains
-and MAC randomisation; Tunnel has no controls for those.
+cloud model. The Advisor can explain Tor, proxy chains and MAC randomisation;
+the controls for them are on the Privacy tab.
 
 ## Config Builder
 
@@ -438,6 +438,77 @@ text editor or in the official WireGuard app.
    keepalive), save it and import it again.
 
 If you are locked out, use the recovery command below. It works without Sentinel.
+
+## Scenarios: which functions to use when
+
+Tunnel has three kinds of function, and which you get depends on what is already
+running on the Mac.
+
+- **Observe** needs nothing installed: Connection Check, **Your IP & DNS**, the
+  DNS-leak test, config inspection and the health monitor.
+- **Guard** is the kill switch.
+- **Operate** needs tools: Connect and Disconnect need `wg-quick` or `openvpn`;
+  the Servers tab needs SSH; the Privacy tab needs `tor` for Tor.
+
+### A. A commercial VPN app (such as Mullvad or Proton) is already running
+
+Let the app run the tunnel. It handles relay choice, reconnecting and its own
+firewall better than a second tool can. Use Tunnel to check it:
+
+1. Run **Check public IP** and **Run test** in **Your IP & DNS**. The exit
+   address should belong to the provider and the resolvers should be the
+   provider's, not your ISP's. Provider-run check pages (for Mullvad,
+   `am.i.mullvad.net`) confirm the same from the other side.
+2. Run **Check Connection** with *No profile comparison*. A tunnel started by
+   another app can appear only as an unnamed `utun` interface, and `wg` may not
+   report its handshake; treat that as expected, and rely on the IP and DNS
+   results.
+3. Re-run both checks after sleep, a Wi-Fi change or a reconnect. The health
+   monitor warns while Tunnel is on screen if the tunnel drops.
+
+Do **not** arm Tunnel's kill switch while such an app is running. Apps like this
+install their own firewall rules, two rule sets can block each other, and Tunnel
+does not yet detect the other app. Use the app's own "always require VPN" or
+lockdown setting. Do not also connect a second full tunnel from Tunnel unless you
+want a double VPN.
+
+### B. No VPN is running
+
+1. Run **Your IP & DNS** first. This is what the websites you visit and your ISP
+   currently see.
+2. On public Wi-Fi, use **Hardware address → Randomise…** (Privacy tab) before
+   joining, then connect a tunnel.
+3. Bring up a tunnel (scenario C or D), then follow steps 5–8 of the how-to:
+   starting state, connect, verify, kill switch.
+4. If you do not want a system-wide VPN, the Privacy tab's Tor client runs on
+   `127.0.0.1:9250`. Only programs you point at it use it: Sentinel's own agents
+   do not route through it, and the Tor Browser is a better tool for browsing.
+
+### C. A VPN server you own
+
+Use the **Servers tab** to create the site and a peer for this Mac, deploy it,
+then **Use for Connect…** and follow the how-to from step 5. Tunnel then
+controls a server that nobody else uses. That gives you control and a trusted
+operator, but a single-user exit address that points back to your account with
+the host; it is privacy from your ISP and the local network, not anonymity.
+
+### D. A commercial provider's config loaded into Tunnel instead of its app
+
+Use this only for a reason the app cannot give you:
+
+- a fixed server for a whole session, so the exit address does not change;
+- one place to connect, verify and review (inspection shows the DNS, full or
+  split tunnel and every peer);
+- a kill switch whose rules you can read, for a WireGuard profile.
+
+Otherwise the provider's app is the better client. Do not run the app's tunnel
+and the same provider's config at once.
+
+### What stays outside every scenario
+
+A tunnel, a changed address or Tor does not remove accounts you log in to,
+cookies, or your browser fingerprint. Treat each check as one observation, not
+as proof of anonymity.
 
 ## Command reference
 
