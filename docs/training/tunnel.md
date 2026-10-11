@@ -483,6 +483,12 @@ cannot be read) and tells you why. Use the app's own "always require VPN" or
 lockdown setting. If you connect a Tunnel profile while such an app is
 connected, the Connect review warns that two VPNs will stack.
 
+The **VPN Apps** tab can also start and stop Mullvad for you (through Mullvad's
+own command-line tool) and choose its country or city. Log in with the Mullvad app
+first: Tunnel never asks for or keeps your account number, and Connect refuses
+while you are logged out, because Mullvad would otherwise block all traffic. After
+connecting, confirm the exit address under **Your IP & DNS**.
+
 ### B. No VPN is running
 
 1. Run **Your IP & DNS** first. This is what the websites you visit and your ISP

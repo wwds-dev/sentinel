@@ -3395,14 +3395,15 @@ def tunnel(qapp, monkeypatch, tmp_path):
 
 class TestTunnelPanel:
 
-    def test_it_builds_hidden_with_eight_tabs(self, tunnel):
+    def test_it_builds_hidden_with_nine_tabs(self, tunnel):
         assert tunnel.isHidden() is True
-        assert tunnel.tabs.count() == 8
+        assert tunnel.tabs.count() == 9
         assert tunnel.tabs.tabText(0) == "Diagnostics"
         assert tunnel.tabs.tabText(3) == "Action Preview"
         assert tunnel.tabs.tabText(5) == "Execution"
         assert tunnel.tabs.tabText(6) == "Privacy"
         assert tunnel.tabs.tabText(7) == "Servers"
+        assert tunnel.tabs.tabText(8) == "VPN Apps"
 
     def test_connecting_a_real_profile_starts_the_connection_worker(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox

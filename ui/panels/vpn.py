@@ -31,6 +31,7 @@ from services.vpn_diagnostics import (
 )
 from services import vpn_apps, vpn_connection, vpn_execution
 from ui.panels.base import AgentPanel
+from ui.panels.vpn_apps_tab import AppsTab
 from ui.panels.vpn_privacy import PrivacyTab
 from ui.panels.vpn_servers import ServersTab
 from ui.widgets import MenuComboBox, SectionView
@@ -374,6 +375,9 @@ class VpnPanel(AgentPanel):
 
         self.servers_tab = ServersTab()
         self.tabs.addTab(self.servers_tab, "Servers")
+
+        self.apps_tab = AppsTab()
+        self.tabs.addTab(self.apps_tab, "VPN Apps")
 
         self.advisor_box.setPlaceholderText(
             "Troubleshooting advice will appear after you select Ask Advisor."
@@ -994,7 +998,8 @@ class VpnPanel(AgentPanel):
             monitor.stop()
         workers = [self.worker, self._diagnostics_worker, self._ip_worker,
                    self._dns_worker, getattr(self, "_connection_worker", None)]
-        for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None)):
+        for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None),
+                    getattr(self, "apps_tab", None)):
             if tab is not None:
                 tab.shutdown(timeout_ms)
         for worker in workers:
