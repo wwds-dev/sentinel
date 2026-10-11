@@ -172,6 +172,8 @@ def tab_env(monkeypatch):
     monkeypatch.setattr(control, "mullvad_disconnect", lambda **k: (e.connects.append("off") or (True, "Mullvad VPN: disconnected.")))
     monkeypatch.setattr(vpn_apps, "detect_mullvad",
                         lambda run=None: vpn_apps.VpnApp("mullvad", "Mullvad VPN", True, vpn_apps.DISCONNECTED))
+    monkeypatch.setattr(vpn_apps, "detect_proton",
+                        lambda run=None: vpn_apps.VpnApp("proton", "ProtonVPN", False))
     e.tab = AppsTab()
     e.tab.refresh()
     return e

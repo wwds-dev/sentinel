@@ -103,8 +103,113 @@ def _isolated_settings_file():
         # depends on which keys the real .env holds.
         patch.setattr(main, "RATINGS_CACHE_FILE", _TEST_ROOT / "data" / "lmarena_ratings.json")
         patch.setattr(main, "RATINGS_SNAPSHOT_FILE", _TEST_ROOT / "no_snapshot.json")
+        # The About box asks git for the checkout's revision; tests may not run git.
+        patch.setattr(main, "build_description", lambda root=None: "Sentinel (test build)")
         yield
     assert [digest(path) for path in real] == before, f"the test run modified {real}"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_chats_and_logs_are_never_written():
+    """Saved chats and audit logs go to _TEST_ROOT, and the real ones end the
+    run exactly as they began.
+
+    A full run once left three test chats in data/chats/ and "Acme" Nmap lines
+    in data/logs/bug_spray_audit.jsonl: both resolve their folder from
+    `user_data_base()` at call time, and only the database was redirected.
+    """
+    import hashlib
+
+    from services import history_store, runtime_paths
+
+    real_base = runtime_paths.user_data_base()
+
+    def listing():
+        found = {}
+        for folder in (real_base / "data" / "chats", real_base / "data" / "logs"):
+            for f in sorted(folder.glob("*")) if folder.exists() else []:
+                if f.is_file():
+                    found[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
+        return found
+
+    before = listing()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runtime_paths, "user_data_base", lambda: _TEST_ROOT)
+        patch.setattr(history_store, "user_data_base", lambda: _TEST_ROOT)
+        yield
+    after = listing()
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    assert not changed, f"the test run modified the real data folder: {changed}"
+
+
+class ForbiddenInTests(AssertionError):
+    """A test reached the real network or started a real program."""
+
+
+_LOOPBACK = {"localhost", "127.0.0.1", "::1", "", "0.0.0.0"}
+
+
+def _is_local_address(address) -> bool:
+    if isinstance(address, (str, bytes, os.PathLike)):      # AF_UNIX path
+        return True
+    host = address[0] if address else ""
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    return host in _LOOPBACK or host.startswith("127.") or host.startswith("::ffff:127.")
+
+
+@pytest.fixture(autouse=True)
+def _deny_network_and_processes(request, monkeypatch):
+    """Deny by default: a normal test may not leave this machine or run a program.
+
+    Sockets may connect to loopback only, and names other than localhost are
+    not looked up. Starting a program (subprocess, os.system) raises unless the
+    test is marked `allow_process`; a test that needs a real one says so, and
+    `allow_network` lifts the socket rule. Everything else is expected to use
+    a fake endpoint (a loopback server) or a stub.
+
+    Qt's own network stack (QNetworkAccessManager) does not go through Python
+    sockets and is not covered here.
+    """
+    import socket
+    import subprocess
+
+    if request.node.get_closest_marker("allow_network") is None:
+        real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
+        real_getaddrinfo = socket.getaddrinfo
+
+        def connect(self, address):
+            if not _is_local_address(address):
+                raise ForbiddenInTests(f"test tried to connect to {address!r}")
+            return real_connect(self, address)
+
+        def connect_ex(self, address):
+            if not _is_local_address(address):
+                raise ForbiddenInTests(f"test tried to connect to {address!r}")
+            return real_connect_ex(self, address)
+
+        def getaddrinfo(host, *args, **kwargs):
+            if isinstance(host, bytes):
+                host = host.decode("ascii", "replace")
+            if host not in _LOOPBACK and not str(host).startswith("127."):
+                raise ForbiddenInTests(f"test tried to look up {host!r}")
+            return real_getaddrinfo(host, *args, **kwargs)
+
+        monkeypatch.setattr(socket.socket, "connect", connect)
+        monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+
+    if request.node.get_closest_marker("allow_process") is None:
+        real_popen_init = subprocess.Popen.__init__
+
+        def popen_init(self, args, *a, **kw):
+            raise ForbiddenInTests(f"test tried to start a program: {args!r}")
+
+        def forbidden_system(command):
+            raise ForbiddenInTests(f"test tried to run a shell command: {command!r}")
+
+        monkeypatch.setattr(subprocess.Popen, "__init__", popen_init)
+        monkeypatch.setattr(os, "system", forbidden_system)
 
 
 # Every key a lookup source switches on. The app loads the real .env, so with
@@ -240,7 +345,6 @@ def _dispose_windows_a_module_leaked():
     app = QApplication.instance()
     if not app:
         return
-    import shiboken6
     for widget in list(app.topLevelWidgets()):
         if id(widget) in before:
             continue
@@ -251,7 +355,9 @@ def _dispose_windows_a_module_leaked():
             pass
         try:
             widget.hide()
-            shiboken6.delete(widget)
+            widget.deleteLater()
         except Exception:  # noqa: BLE001
             pass
+    from PySide6.QtCore import QEvent
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()

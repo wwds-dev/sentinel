@@ -144,6 +144,8 @@ def test_connection_check_lists_installed_apps_and_stays_read_only(monkeypatch):
     apps = [VpnApp("mullvad", "Mullvad VPN", True, vpn_apps.CONNECTED, "Connected to se-got-wg-001"),
             VpnApp("proton", "ProtonVPN", False)]
     monkeypatch.setattr(vpn_apps, "detect", lambda run=None: apps)
+    monkeypatch.setattr(vpn_diagnostics, "_default_route",
+                        lambda: {"interface": "en0", "gateway": "192.0.2.1"})
     report = vpn_diagnostics.collect_vpn_diagnostics()
     text = report.as_text()
     assert "Mullvad VPN: connected" in text and "ProtonVPN" not in text.split("VPN apps")[1].split("Local route")[0]
