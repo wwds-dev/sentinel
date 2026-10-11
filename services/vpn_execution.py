@@ -37,7 +37,7 @@ from typing import Callable
 from agents.vpn_agent.services.config_inspection import (
     inspect_wireguard_config as inspect_config_summary,
 )
-from services import openvpn_manager, vpn_connection
+from services import openvpn_manager, vpn_apps, vpn_connection
 
 # wg-quick's own interface-name rule (wg-quick(8)); a config file whose stem
 # fails it is refused by wg-quick, so refuse before the password prompt instead.
@@ -378,6 +378,11 @@ def review_execution(action: str, profile: dict | None, *,
     if root_hooks:
         warnings.append(f"This config runs {len(root_hooks)} command(s) as administrator "
                         "when the tunnel comes up or goes down (see the list above).")
+
+    if action == "connect":
+        app_warning = vpn_apps.connect_warning()
+        if app_warning:
+            warnings.append(app_warning)
 
     if action == "disconnect":
         if ks_armed:

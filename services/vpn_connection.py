@@ -23,7 +23,7 @@ from typing import Callable
 
 from agents.vpn_agent.server import paths as vpn_paths
 from agents.vpn_agent.services import wireguard_manager
-from services import openvpn_manager
+from services import openvpn_manager, vpn_apps
 from services.vpn_diagnostics import PROFILE_SEED, _profile_protocol
 
 
@@ -239,15 +239,18 @@ def arm_killswitch(profile: dict):
     if not endpoint:
         return False, ("This profile has no server endpoint, so the kill switch "
                        "could not exempt the tunnel. Import a real config first.")
+    conflict = vpn_apps.killswitch_conflict()
+    if conflict:
+        return False, conflict
     allow = tunnel_allow_rules(profile)
     if resolve_protocol(profile) == "OpenVPN" and openvpn_manager.is_running():
         # pf only knows WireGuard's utun by itself. An OpenVPN tunnel that is up
         # must be passed by its own device, or arming drops everything inside it.
         device = openvpn_manager.tunnel_device()
         if not device:
-            return False, ("OpenVPN is running but its tunnel device could not be read "
-                           "from its log, so arming now would block traffic inside the "
-                           "tunnel. Reconnect, then arm again.")
+            return False, ("OpenVPN is running but Sentinel did not learn its tunnel "
+                           "device when it connected, so arming now would block traffic "
+                           "inside the tunnel. Reconnect, then arm again.")
         return ks.arm([endpoint], allow=allow, extra_interfaces=[device])
     return ks.arm([endpoint], allow=allow)
 

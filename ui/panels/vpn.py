@@ -29,7 +29,7 @@ from services.vpn_diagnostics import (
     inspect_wireguard_config,
     load_vpn_profile_catalog,
 )
-from services import vpn_connection, vpn_execution
+from services import vpn_apps, vpn_connection, vpn_execution
 from ui.panels.base import AgentPanel
 from ui.panels.vpn_privacy import PrivacyTab
 from ui.panels.vpn_servers import ServersTab
@@ -797,6 +797,12 @@ class VpnPanel(AgentPanel):
                 self, "Kill switch",
                 "Choose a real server profile first — the kill switch must exempt "
                 "its endpoint, or it would block the tunnel too.")
+            return
+        conflict = vpn_apps.killswitch_conflict()
+        if conflict:
+            QMessageBox.information(self, "Kill switch", conflict + "\n\nNothing was changed.")
+            self.kill_switch_status_label.setText(
+                "Kill switch: not armed (another VPN app is active).")
             return
         allow = vpn_connection.tunnel_allow_rules(profile)
         allowed = ", ".join(f"{proto.upper()}/{port}" for proto, port in allow)

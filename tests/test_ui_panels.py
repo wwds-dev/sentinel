@@ -3632,6 +3632,26 @@ class TestTunnelPanel:
         tunnel.arm_kill_switch()
         assert FakeVpnConnectionWorker.instances == []
 
+    def test_arming_is_refused_before_any_dialog_while_a_vpn_app_is_connected(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_apps, vpn_connection
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        monkeypatch.setattr(vpn_apps, "detect", lambda run=None: [
+            vpn_apps.VpnApp("mullvad", "Mullvad VPN", True, vpn_apps.CONNECTED)])
+        asked, told = [], []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: asked.append(a) or QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information",
+                            staticmethod(lambda *a, **k: told.append(a[2])))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.arm_kill_switch()
+        assert asked == [] and FakeVpnConnectionWorker.instances == []
+        assert "Mullvad VPN is connected" in told[0] and "Nothing was changed" in told[0]
+        assert "another VPN app" in tunnel.kill_switch_status_label.text()
+
     def test_the_arm_dialog_defaults_to_no_and_names_rules_and_recovery(self, tunnel, monkeypatch, tmp_path):
         from PySide6.QtWidgets import QMessageBox
         from services import vpn_connection

@@ -163,6 +163,19 @@ def _no_osint_keys(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_vpn_apps(monkeypatch):
+    """Tests never ask the developer's real Mullvad/Proton what state they are in.
+
+    A connected app on the machine running the suite would otherwise refuse the
+    kill switch and add warnings to every Connect review. A test that cares
+    passes its own apps, or patches `vpn_apps.detect` itself.
+    """
+    from services import vpn_apps
+
+    monkeypatch.setattr(vpn_apps, "detect", lambda run=None: [])
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _offline_osint_catalog(tmp_path_factory):
     """No OSINT Framework download, and no machine-specific cached copy.

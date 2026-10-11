@@ -466,18 +466,22 @@ firewall better than a second tool can. Use Tunnel to check it:
    address should belong to the provider and the resolvers should be the
    provider's, not your ISP's. Provider-run check pages (for Mullvad,
    `am.i.mullvad.net`) confirm the same from the other side.
-2. Run **Check Connection** with *No profile comparison*. A tunnel started by
-   another app can appear only as an unnamed `utun` interface, and `wg` may not
-   report its handshake; treat that as expected, and rely on the IP and DNS
-   results.
+2. Run **Check Connection** with *No profile comparison*. The **VPN apps**
+   card lists the installed Mullvad and ProtonVPN apps and the state each one
+   reports (Mullvad through its `mullvad status` command, Proton through the
+   macOS VPN service list; Tunnel only reads, it never logs in or connects
+   them). A tunnel started by another app can appear only as an unnamed `utun`
+   interface, and `wg` may not report its handshake; treat that as expected, and
+   rely on the IP and DNS results.
 3. Re-run both checks after sleep, a Wi-Fi change or a reconnect. The health
    monitor warns while Tunnel is on screen if the tunnel drops.
 
 Do **not** arm Tunnel's kill switch while such an app is running. Apps like this
-install their own firewall rules, two rule sets can block each other, and Tunnel
-does not yet detect the other app. Use the app's own "always require VPN" or
-lockdown setting. Do not also connect a second full tunnel from Tunnel unless you
-want a double VPN.
+install their own firewall rules and two rule sets can block each other, so
+Tunnel refuses to arm while Mullvad or ProtonVPN is connected (or Mullvad's state
+cannot be read) and tells you why. Use the app's own "always require VPN" or
+lockdown setting. If you connect a Tunnel profile while such an app is
+connected, the Connect review warns that two VPNs will stack.
 
 ### B. No VPN is running
 
