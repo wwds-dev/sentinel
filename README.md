@@ -16,7 +16,7 @@ Sentinel's built-in roster is intentionally limited to eight agents:
 | Beacon | `wifi` | Wi-Fi diagnostics and commands for networks the operator is authorised to test |
 | Sentry | `sentry` | Read-only watch of your own network (new devices, address conflicts and gateway-MAC changes, new listening services, new outbound connections) with an optional background watch you install yourself |
 | Bug Spray | `bug_bounty` | Public program radar (scans five platforms' public directories in the background once a platform is enabled; source checkout only) plus vulnerability analysis and report drafts for an asset you declare in scope (not verified or enforced) |
-| Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, and self-hosted VPN design |
+| Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, self-hosted VPN design, and detection and start/stop of the Mullvad and ProtonVPN apps; keeps no log |
 | Forge | `manager` | Drafts agent specifications and, after your approval, writes an inactive scaffold and disabled registry rows |
 
 Writing and Coding are Chat tools, not standalone agents. Creative publishing, audiobook, health, investing, and sports-betting workflows are not part of the current Sentinel product.
@@ -154,7 +154,11 @@ for interactive administration outside Sentinel.
 Tunnel's **Connection Check** is local and read-only by default. It reports
 installed WireGuard/OpenVPN tools, detected tunnels, recent WireGuard handshake
 and transfer totals when the `wg` status tool permits them, the current default
-route, and configured DNS servers. A selected profile can
+route, and configured DNS servers. A **VPN apps** card lists the Mullvad and
+ProtonVPN apps if they are installed, with the state each reports (Mullvad
+through `mullvad status`, ProtonVPN through its macOS system VPN service,
+`scutil --nc list`; `services/vpn_apps.py`); Tunnel only reads it and never logs
+in to or connects either app. A selected profile can
 be compared with the snapshot to explain interface, endpoint, port, handshake,
 and routing findings. Endpoint and port are checked for usable profile values,
 but the live peer endpoint is deliberately not queried or verified. Its OpenVPN
@@ -182,7 +186,8 @@ Tunnel's **VPN Connection** brings a real tunnel up and down. Choosing a
 WireGuard or OpenVPN profile and clicking **Connect** or **Disconnect** first
 builds a target review (`services/vpn_execution.py`): the exact target and
 command, the config's non-secret routing and DNS intent (keys discarded while
-reading), warnings, rollback steps, and any blocker — a template, a missing
+reading), warnings (including one when the Mullvad or ProtonVPN app is already
+connected, because two VPNs would stack), rollback steps, and any blocker — a template, a missing
 `wg-quick`/`openvpn` or config file, a config name `wg-quick` would reject, an
 interface that is already up. A blocked action runs nothing; otherwise the review
 is the confirmation dialog (default **No**), and `wg-quick`/`openvpn` then runs
@@ -219,15 +224,19 @@ country-labelled example profiles ship as explicit templates — they are marked
 `(template)` and the connect path refuses them until you import a real config or
 set a real endpoint, so nothing pretends to be a working server it is not. An
 optional **Kill switch** (macOS pf) can be armed to block network traffic except
-loopback, the WireGuard tunnel interface present at arm time, the tunnel's own
-transport to the selected server (WireGuard UDP; OpenVPN per its `proto` line;
+loopback, the tunnel interface present at arm time (WireGuard's, or the OpenVPN
+device Sentinel stored when it connected), the tunnel's own
+transport to the selected server (WireGuard UDP; OpenVPN per its first `remote`
+line, then its `proto` line;
 port from the profile, the config, or the protocol default), DHCP and the local
 network, so a dropped tunnel cannot leak. Arm asks for confirmation (default
 **No**), which states what stays open and prints the recovery command, and then
 for the administrator password; it refuses for a template, when the endpoint
-cannot be resolved, or when the generated rules fail pf's parse check. Known
-limitations: it only recognises WireGuard tunnel interfaces (arming for an
-OpenVPN profile also blocks the OpenVPN tunnel's own traffic); the first arm adds
+cannot be resolved, when the generated rules fail pf's parse check, while the
+Mullvad or ProtonVPN app is connected (or Mullvad's state cannot be read), and
+for an OpenVPN tunnel whose device Sentinel did not learn when it connected.
+Known limitations: arming with a live OpenVPN tunnel up is covered only by
+injected tests so far; the first arm adds
 an anchor block to `/etc/pf.conf` and switches pf on, which Disarm does not undo;
 Sentinel does not disarm on quit or Emergency Reset.
 **Action Preview** still shows the equivalent commands without running them, and
@@ -237,13 +246,34 @@ Connection Check names `api.ipify.org` and `1.1.1.1` and requires a separate
 confirmation (default **No**); Your IP & DNS → Check public IP and Run test
 contact IPinfo (with a key) or `ipapi.co`, and `bash.ws`, as soon as they are
 pressed. None of these paths, nor Connect/Disconnect, uses an AI model or incurs
-model cost; only Ask Advisor does.
+model cost; only Ask Advisor does. Advisor requests create no Saved Chats entry
+and no Run log row (`NO_CONTENT_LOG_AGENTS` in `main.py`); only the usage row
+stays (agent, provider, model, token counts and price, no text), because the
+budget caps are computed from it. The question still goes to the selected
+provider, which may keep its own records.
 Normal app close and Portable Emergency Reset cancel every Tunnel worker and wait
 about two seconds for each, then end any still running. A Connect in flight is
 not interrupted (the macOS prompt and any command already handed to macOS
 continue); its result is dropped, so it may not be shown.
 Packaged builds include a non-secret starter profile
 catalog so Tunnel does not depend on source-tree files.
+
+Tunnel's **VPN Apps** tab starts and stops the Mullvad and ProtonVPN apps'
+own tunnels (`services/vpn_app_control.py`, `ui/panels/vpn_apps_tab.py`).
+Mullvad is driven through its official command-line tool (`mullvad connect`,
+`disconnect`, `relay set location`), with a country or city picker filled from
+`mullvad relay list`. Login stays in the Mullvad app: Tunnel never logs in and
+never passes or keeps an account number (`mullvad account get` is reduced to
+"logged in until <date>"), and Connect refuses unless the account is verifiably
+logged in, because Mullvad blocks all traffic when told to connect while logged
+out. ProtonVPN is started and stopped through its macOS system VPN service
+(`scutil --nc start|stop`); it connects to the server Proton used last, Tunnel
+cannot choose a server and never sees a Proton login. Each Connect and
+Disconnect asks first (default **No**), runs off the interface thread, logs
+nothing, waits about fifteen seconds for the app to report Connected and says
+so honestly if it does not. Traffic protection is still not verified: check
+**Your IP & DNS** afterwards. Both paths are covered by stubs only so far; live
+checks against real Mullvad and Proton setups are open TODOs.
 
 **Inspect config…** reads one explicitly selected WireGuard file locally and
 returns only its interface, routing, DNS, peer and endpoint summary. Private and
@@ -291,6 +321,10 @@ The main runtime is organised around:
   Sentinel's data folder).
   The real connect path lives in `services/vpn_connection.py` and
   `services/openvpn_manager.py`
+- `services/vpn_apps.py` and `services/vpn_app_control.py` — Tunnel's
+  read-only Mullvad/ProtonVPN detection and their start/stop through Mullvad's
+  CLI and ProtonVPN's macOS VPN service; the tab is `ui/panels/vpn_apps_tab.py`.
+  `services/tunnel_logs.py` removes logs older versions left behind at launch
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Sentry, Bug Spray, Tunnel, and Forge
 - `ui/theme.py` and `ui/vibe.py` — the three colour themes (one green
   stylesheet, hue-rotated) and the per-theme caret, empty-transcript backdrop
@@ -321,6 +355,11 @@ The main runtime is organised around:
   passed through unfiltered; a source that needs a key is left out until the key
   is saved.
 - `services/agent_catalog.py` — canonical built-in roster and metadata
+- `AGENTS.md` and `CLAUDE.md` — instructions for coding agents working in this
+  repo: `AGENTS.md` is the engineering pipeline (roles, phases, owner approval
+  gates), `CLAUDE.md` adds this app's own rules (TODO/SUGGESTIONS format,
+  working rules, current goal). App facts for that pipeline live in
+  `docs/company/app-context.md`, and the per-role playbooks in `docs/playbooks/`
 - `VERSION` and `services/app_version.py` — canonical public version and the
   exact development-build description shown by the app
 - `services/registry.py` and `services/validator.py` — permissions and tool/provider checks; `registry.py` also has a `projects` table behind Chat Projects (an active-project picker in the run bar, a project filter and "Assign to project…" in History; usage is attributed to the project). Its instructions, default agent/provider/model and budget columns are not read by anything yet (`docs/projects_roadmap.md`, Stage 2), and there is no UI to rename, archive or delete a project
@@ -428,9 +467,13 @@ Tunnel's diagnostics and connection boundaries are covered by
 `tests/test_vpn_diagnostics.py`, `tests/test_vpn_connection.py`,
 `tests/test_vpn_execution.py` (the Connect/Disconnect gate),
 `tests/test_vpn_killswitch.py`, `tests/test_vpn_ip_readout.py`,
-`tests/test_vpn_worker_shutdown.py`, and the Tunnel panel tests in
+`tests/test_vpn_worker_shutdown.py`, `tests/test_vpn_apps.py` and
+`tests/test_vpn_app_control.py` (Mullvad and ProtonVPN detection and control),
+`tests/test_tunnel_keeps_no_logs.py` (no Tunnel log file, start-up log or
+Advisor chat/run row is left behind), and the Tunnel panel tests in
 `tests/test_ui_panels.py`. These use fake privileged runners and probes: no
-automated test runs wg-quick, openvpn, pfctl or the macOS password dialog.
+automated test runs wg-quick, openvpn, pfctl, `mullvad`, `scutil --nc` or the
+macOS password dialog.
 
 ## Further documentation
 

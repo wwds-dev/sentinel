@@ -44,6 +44,12 @@ prices and reported usage. They do not replace provider billing controls.
 Review Cost history against the provider account when accuracy matters. Run log
 shows failed and cancelled operations as well as successes.
 
+Tunnel's Advisor is the one exception to that record-keeping: its questions and
+answers are not saved to Saved Chats and create no Run log row. Cost history
+still counts each request (agent, provider, model, token counts and price, never
+any text), because the budget caps are computed from it. The provider you chose
+still receives the question and may keep its own records.
+
 ## Completion check
 
 Explain why “API ready,” “permission enabled,” “within budget” and “provider

@@ -2,7 +2,7 @@
 
 **Goal:** compare the current VPN state with an intended profile, understand the topology, and either create a reviewable configuration or run a gated connection. **Time:** 30 minutes.
 
-![Tunnel workspace. This capture predates the Your IP & DNS group, which sits between VPN Connection and Deployment.](docs/training/images/tunnel.png)
+![Tunnel workspace. This capture predates the Your IP & DNS group, which sits between VPN Connection and Deployment, and the VPN Apps tab, the last tab after Servers.](docs/training/images/tunnel.png)
 
 Tunnel is for infrastructure you own or administer. It has six distinct
 paths: **VPN Connection (live)** actually connects or disconnects a real
@@ -11,14 +11,17 @@ status; **Safe Action Preview** shows but cannot run a proposed change; the
 **Advisor** uses an AI model; and **Build Config** and **Config Inspection** are
 deterministic and offline. A status check, preview, or inspection does not send
 anything to a model and does not count against an AI budget. Neither do Connect
-and Disconnect: only **Ask Advisor** uses a model.
+and Disconnect: only **Ask Advisor** uses a model. Three more tabs act on this
+Mac or on a server you own, each behind its own confirmation: **Privacy**
+(hardware address, Tor, proxy chain), **Servers** (a VPN server you own) and
+**VPN Apps** (start and stop the Mullvad app's own tunnel; ProtonVPN is shown, not controlled).
 
 The amber banner at the top of the screen states the boundary: connecting starts
 WireGuard or OpenVPN and may ask for your administrator password, traffic
 protection is not verified afterwards, and the example country profiles are
 templates that will not connect until you import a real config. Only the live
-connection and the kill switch can change your machine; every other path stays
-read-only.
+connection, the kill switch and the actions on the Privacy, Servers and VPN Apps
+tabs can change anything; every other path stays read-only.
 
 ## VPN Connection (live)
 
@@ -131,14 +134,19 @@ relying on the tunnel.
 ### Kill switch
 
 **Arm** loads a firewall rule set (macOS `pf`) that blocks network traffic except
-loopback, the WireGuard tunnel interface that exists at that moment, the tunnel's
-own transport to the selected server (WireGuard is UDP; OpenVPN follows the
-config's `proto` line), DHCP, and your local network, so a dropped tunnel cannot
+loopback, the tunnel interface that exists at that moment (WireGuard's, or the
+OpenVPN device Sentinel stored when it connected), the tunnel's own transport to
+the selected server (WireGuard is UDP; OpenVPN follows the config's first
+`remote` line, then its `proto` line), DHCP, and your local network, so a dropped tunnel cannot
 leak. It asks for confirmation (default **No**), which states what stays open
 and prints the Terminal command that undoes it, and then for your administrator
 password. It refuses to arm for a template, when the endpoint cannot be
 resolved (a name is looked up once, when you arm), or when the generated rules
-fail pf's own parse check. **Disarm** removes the blocking rules and asks only
+fail pf's own parse check. It also refuses while the Mullvad or ProtonVPN app is
+connected (or Mullvad's state cannot be read), because that app's own tunnel and
+firewall rules would be blocked or fought; use the app's own kill switch then.
+For an OpenVPN profile it refuses if Sentinel did not learn the tunnel device
+when it connected; reconnect from Tunnel, then arm. **Disarm** removes the blocking rules and asks only
 for the password. Connect first and arm second: the tunnel interface is the one
 present at arm time, so re-arm if the tunnel is re-created. Arm the kill switch
 against a real server profile, not a template. Treat arming, connecting, and
@@ -156,10 +164,9 @@ Sentinel does not disarm when you quit or run Emergency Reset.
 
 **Known limitations:** the first arm adds a small anchor block to `/etc/pf.conf`
 (a copy is kept as `/etc/pf.conf.vpn-agent.bak`) and switches pf on; Disarm does
-not remove that block or switch pf off. The kill switch only recognises
-WireGuard tunnel interfaces — Sentinel does not stop you arming it for an
-OpenVPN profile, and then the OpenVPN tunnel's own traffic is blocked as well, so
-use it with WireGuard profiles. The label next to the buttons reports what you
+not remove that block or switch pf off. Arming with a live OpenVPN tunnel up is
+covered only by injected tests so far, so after arming for an OpenVPN profile
+check that traffic still flows. The label next to the buttons reports what you
 did in this session (it starts at "Kill switch not armed."), not a live read.
 
 ## Connection Check
@@ -177,6 +184,8 @@ reports:
   local `wg` status tool allows those reads;
 - the current default network interface and gateway;
 - the DNS servers configured on this Mac;
+- in a **VPN apps** card, the Mullvad and ProtonVPN apps if they are installed,
+  and the state each one reports (see scenario A below);
 - whether the selected profile's interface is active, whether it has a recent
   handshake, whether its saved endpoint and port look usable, and whether the
   default route matches the interface.
@@ -369,6 +378,32 @@ While Tunnel is on screen a local health monitor watches the selected profile's
 tunnel and your DNS resolvers and warns in the status line if the tunnel drops. It
 never contacts the internet and never changes anything.
 
+## VPN Apps tab
+
+Two cards, one per app. Each shows the state the app reports. Mullvad's buttons are greyed out when the
+app is not installed. **Refresh** reads the state again.
+
+**Mullvad VPN.** Log in with the Mullvad app first. Pick a country or city in
+the location list (or leave **Mullvad's current location**), then **Connect…**.
+Tunnel runs only Mullvad's own command-line tool; it never asks for, passes or
+keeps your account number, and the card shows only "Logged in; account time
+runs until …". Connect refuses unless Mullvad confirms you are logged in,
+because connecting while logged out makes Mullvad block all traffic on this Mac. **Disconnect…** returns traffic to your
+ordinary network, unless Mullvad's own lockdown mode keeps it blocked.
+
+**ProtonVPN.** Shows Proton's state only. Tunnel cannot start or stop it: macOS
+accepts a start request for Proton's VPN service and Proton's extension ignores
+it (tested), so connect and disconnect in the ProtonVPN app. Tunnel never sees
+your Proton login. A Proton account is tied to your identity (an email address and
+a payment record). To use a Proton WireGuard or OpenVPN file yourself, download it
+from your Proton account and use **Import config…**.
+
+Every Mullvad Connect and Disconnect asks first (default **No**), runs in the
+background and is not logged. A connected app is not proof of protection:
+check the exit address under **Your IP & DNS**. While either app is connected,
+Tunnel's kill switch refuses to arm, and connecting a Tunnel profile on top of
+it warns that two VPNs will stack.
+
 ## Deployment choices
 
 **Remote (VPS)** routes traffic through a rented server and can change the
@@ -437,8 +472,9 @@ text editor or in the official WireGuard app.
 7. **Verify.** In **Your IP & DNS**, run **Check public IP** (the exit address
    should differ from step 5) and **Run test** (the resolvers should not belong
    to your ISP). One passing result does not prove the other.
-8. **Arm the kill switch** only after the tunnel is up and verified, against a
-   real WireGuard server profile (it does not recognise OpenVPN tunnels). Then
+8. **Arm the kill switch** only after the tunnel is up and verified, against the
+   real server profile you connected from Tunnel (for OpenVPN, Sentinel must
+   have learned the tunnel device when it connected), with no VPN app connected. Then
    disconnect once on purpose and confirm that traffic stops, and that **Disarm**
    restores it. Re-arm if the tunnel is re-created.
 9. **To change a setting**, edit the file (endpoint, DNS, `AllowedIPs`,
@@ -556,6 +592,8 @@ or an AI request.
 | Public IPv6 address (should fail or match the VPN) | `curl -6 https://api.ipify.org` |
 | Reachability and latency | `ping -c 4 1.1.1.1` |
 | Show the kill switch rules | `sudo pfctl -a vpn-agent-killswitch -s rules` |
+| Mullvad app's state | `mullvad status` |
+| macOS VPN services (ProtonVPN's included) | `scutil --nc list` |
 | **Recovery: remove the kill switch** | `sudo pfctl -a vpn-agent-killswitch -F all && sudo pfctl -F all -f /etc/pf.conf` |
 
 On a Linux server:

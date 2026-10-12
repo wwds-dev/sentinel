@@ -48,8 +48,11 @@ Wayback Machine for domains (for IPs, SANS DShield and Shodan InternetDB
 instead of crt.sh and Wayback, plus IPinfo with `IPINFO_API_KEY` and Criminal
 IP with `CRIMINALIP_API_KEY` — each omitted without its key); EmailRep,
 Gravatar (by address hash), HIBP (with a key) and BreachDirectory for emails;
-URLScan, GitHub and Keybase for usernames; GLEIF, ICIJ Offshore Leaks and
-CourtListener court dockets for organisations. CourtListener works without a
+URLScan, GitHub and Keybase for usernames; GLEIF and ICIJ Offshore Leaks for
+organisations, plus CourtListener court dockets only when **Include
+CourtListener court records (Organisation)** is ticked (off by default). The
+consent dialog's source list comes from the same dispatch as the lookup
+(`planned_sources`), so the two cannot drift apart on target type. CourtListener works without a
 key (`COURTLISTENER_API_KEY` only raises the rate limit) and returns docket
 metadata only, never filing text or PDFs; a name match is a lead, not proof the
 case concerns the target. The prompt treats Keybase's signed

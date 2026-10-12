@@ -11,10 +11,10 @@ A fast, lightweight open-source-intelligence assistant. Given a target (name, us
 | Control | Purpose |
 |---|---|
 | Query / target box | The subject to research. Structured types are validated locally before authorization. |
-| Query type | Auto-detect, Person, Username, Email, Domain, Company, Phone, or IP Address. Auto-detect records the resolved type in the activity trail. |
+| Query type | Auto-detect, Person, Username, Email, Domain, Company, Phone, or IP Address. Auto-detect records the resolved type in the activity trail. A one-line hint appears when the input looks like another type (a checksum-valid crypto address, a domain, or a name typed as a domain); it is advisory only and never changes the type used (`classify_target`). |
 | Model override | Optional provider/model change; the task recommendation is selected by default. |
 | Structure Query | Generate a model-based investigation plan without contacting research sources. |
-| Live Research | After explicit confirmation, query WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, crt.sh and the Wayback Machine for domains; WHOIS, DNS, IP-to-ASN, SANS DShield and passive DNS for IPs; URLScan, GitHub and Keybase for usernames; individually selected email services; or GLEIF for company legal-entity records. Person and phone targets remain local-only. |
+| Live Research | After explicit confirmation, query WHOIS, DNS, Team Cymru IP-to-ASN, Mnemonic passive DNS, crt.sh and the Wayback Machine for domains; WHOIS, DNS, IP-to-ASN, SANS DShield and passive DNS for IPs; URLScan, GitHub and Keybase for usernames; individually selected email services; or GLEIF for company legal-entity records, plus CourtListener court dockets only when **Include CourtListener court records (Company)** is ticked (off at every start). A private, loopback, link-local, multicast, unspecified or reserved IP address is refused before anything is contacted (`non_public_ip_reason`). Person and phone targets remain local-only. |
 | Exposure Check | After explicit confirmation, answer "is this domain, company or email in a leak or on a ransomware leak site?" using clearnet services — ransomware.live, Ahmia and Intelligence X. Domain, Company and Email targets only. Text metadata only; no onion site is contacted and nothing is downloaded. |
 | Stop | Request cancellation; completed source results remain visible as a partial result. |
 

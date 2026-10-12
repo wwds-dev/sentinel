@@ -1,6 +1,6 @@
 # AGENTS.md: engineering process
 
-This app is built like a small software company: roles, gates, written artifacts. App facts
+This app is built the Foundry way: roles, gates, written artifacts. App facts
 live in `docs/company/app-context.md`; product facts in the README. Any workspace-level
 rules above this repo still apply.
 
@@ -30,6 +30,19 @@ Every change that is more than a typo goes through these phases. Each ends in a 
 
 Skip phases only for: typos, comment fixes, test-only changes, dependency-free refactors with
 unchanged behaviour. Say which phases were skipped and why.
+
+**Radar check.** Run `/radar-check <scope>` so the work uses the best available tooling and
+practice: at **Define** for a new app, idea or feature (`new-idea` / `feature`); before
+**Architect** (`stack`); before **Secure** (`security`); on any dependency or version
+**upgrade** (`upgrade`); before **Release** (`release`). Moving between other phases reuses the
+latest note (under 30 days old). It proposes only: nothing is installed, enabled or connected
+without the owner's yes.
+
+**Log activity.** At the start and end of each phase, run
+`python3 docs/company/tooling/log_activity.py . <phase> start|done [--spec <slug>]` (phases:
+define design architect build review verify secure document release; use `blocked` when stopped
+on a gate). The Foundry dashboard reads it to show what is in progress. It records nothing else
+and never blocks work: if the command fails, say so and continue.
 
 ## Definition of done
 - The success measure is demonstrably met (a test, a number, or a screenshot).

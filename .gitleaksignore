@@ -17,3 +17,6 @@
 # correction and its test (the 9446a3c entry above is the superseded draft).
 3d2f2eca9a23f11bdfd4a95884654abcce2932b6:services/database.py:generic-api-key:442
 3d2f2eca9a23f11bdfd4a95884654abcce2932b6:tests/test_price_resolution.py:generic-api-key:158
+fd83e782298b85bf6c23434492c762038ba12a2d:services/database.py:generic-api-key:442
+fd83e782298b85bf6c23434492c762038ba12a2d:tests/test_price_resolution.py:generic-api-key:158
+bb3bee5b4c79e45dfaaf70a1b7f47add790bf0cd:tests/test_contract_tunnel_chat.py:generic-api-key:41

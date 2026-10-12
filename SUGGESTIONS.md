@@ -39,6 +39,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Live OSINT source expansion (v2.002): Shodan InternetDB, IPinfo and Criminal IP for IPs; CourtListener court dockets (metadata-only) for companies/orgs; DeHashed breach metadata for exposure — all key-gated where paid and metadata-only | Sep 2026 |
 | Tunnel "Your IP & DNS" readout (local/tunnel + public exit IP with VPN/hosting flags) and a real bash.ws DNS-leak test | Sep 2026 |
 | Tunnel gated Connect/Disconnect, Import config, pf kill switch (its local audit log was removed on purpose; Tunnel keeps no log) | Oct 2026 |
+| Tunnel works with the Mullvad and ProtonVPN apps: read-only detection in Connection Check, kill-switch guard and stacked-VPN warning, and a VPN Apps tab that starts and stops them (Mullvad CLI, ProtonVPN's macOS VPN service) without credentials; the Advisor leaves no Saved Chats entry or Run log row | Oct 2026 |
 | addy.io burner-alias minting in the OSINT Keys tab (user-triggered write) | Sep 2026 |
 | Saved Chats: agent filter and rename | Aug 2026 |
 | `authorize_request` / `record_request` guard applied to all 19 unguarded `ChatWorker` sites | Aug 2026 |
