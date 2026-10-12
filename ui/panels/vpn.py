@@ -691,10 +691,11 @@ class VpnPanel(AgentPanel):
                 "This is an example/template. Import a real WireGuard .conf or "
                 "OpenVPN .ovpn (or set a real endpoint) before connecting.")
             return
-        if not self._review_and_confirm("connect", profile, "Connect VPN"):
+        confirmed = self._review_and_confirm("connect", profile, "Connect VPN")
+        if confirmed is None:
             return
         self._start_connection("connect", profile,
-                               f"Connecting {profile.get('name')}…")
+                               f"Connecting {profile.get('name')}…", confirmed)
 
     def disconnect_vpn(self) -> None:
         if self._connection_busy():
@@ -703,13 +704,33 @@ class VpnPanel(AgentPanel):
         if not profile:
             QMessageBox.information(self, "No profile", "Choose the profile to disconnect.")
             return
-        if not self._review_and_confirm("disconnect", profile, "Disconnect VPN"):
+        confirmed = self._review_and_confirm("disconnect", profile, "Disconnect VPN")
+        if confirmed is None:
             return
         self._start_connection("disconnect", profile,
-                               f"Disconnecting {profile.get('name')}…")
+                               f"Disconnecting {profile.get('name')}…", confirmed)
 
-    def _review_and_confirm(self, action: str, profile: dict, title: str) -> bool:
-        """Show the target review; refuse on blockers, else ask (default No)."""
+    def _ask(self, ask_warning: bool, title: str, text: str, detail: str):
+        """question()/warning() with the default No. A detail that the body
+        shortened needs a real box to carry setDetailedText; otherwise the
+        static call is used."""
+        if not detail:
+            if ask_warning:
+                return QMessageBox.warning(self, title, text,
+                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            return QMessageBox.question(self, title, text,
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        box = QMessageBox(QMessageBox.Warning if ask_warning else QMessageBox.Question,
+                          title, text, QMessageBox.Yes | QMessageBox.No, self)
+        box.setDefaultButton(QMessageBox.No)
+        box.setDetailedText(detail)
+        return box.exec()
+
+    def _review_and_confirm(self, action: str, profile: dict, title: str):
+        """Show the target review; refuse on blockers, else ask (default No).
+
+        Returns the confirmed ExecutionReview (the worker hands it back to
+        execute(), which aborts if anything differs) or None."""
         review = vpn_execution.review_execution(action, profile)
         self.execution_view.show_sections(review.sections())
         self.tabs.setCurrentWidget(self.execution_view)
@@ -721,24 +742,23 @@ class VpnPanel(AgentPanel):
                 "Tunnel will not run this:\n\n"
                 + "\n".join(f"• {item}" for item in review.blockers)
                 + "\n\nNothing was executed.")
-            return False
-        confirm = QMessageBox.question(
-            self, title, review.confirmation_text(),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            return None
+        detail = review.confirmation_detail() if review.hooks_shortened else ""
+        confirm = self._ask(False, title, review.confirmation_text(), detail)
         if confirm == QMessageBox.Yes and review.root_hooks:
             # A config with hooks is a script run as root, not just keys and
             # routes; make that a decision of its own, default No.
-            confirm = QMessageBox.warning(
-                self, "This config runs commands as administrator",
+            confirm = self._ask(
+                True, "This config runs commands as administrator",
                 "The config file contains hook directives that wg-quick/openvpn "
                 "will execute with administrator rights:\n\n"
-                + "\n".join(f"• {item}" for item in review.root_hooks)
+                + "\n".join(f"• {review._shown_hook(item)}" for item in review.root_hooks)
                 + "\n\nOnly continue if you wrote these or trust their source.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                detail)
         if confirm != QMessageBox.Yes:
             self.connection_status_label.setText("Not run: confirmation declined.")
-            return False
-        return True
+            return None
+        return review
 
     def _connection_busy(self) -> bool:
         worker = getattr(self, "_connection_worker", None)
@@ -747,11 +767,12 @@ class VpnPanel(AgentPanel):
             return True
         return False
 
-    def _start_connection(self, action: str, profile: dict, status: str) -> None:
+    def _start_connection(self, action: str, profile: dict, status: str,
+                          confirmed=None) -> None:
         self.connection_status_label.setText(status)
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(False)
-        worker = self.connection_worker_class(action, profile)
+        worker = self.connection_worker_class(action, profile, confirmed)
         worker.finished_signal.connect(self._on_connection_finished)
         worker.error_signal.connect(self._on_connection_error)
         self._connection_worker = worker

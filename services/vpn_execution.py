@@ -24,18 +24,22 @@ the worker is still caught.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from agents.vpn_agent.services.config_inspection import (
-    inspect_wireguard_config as inspect_config_summary,
+    inspect_wireguard_text as inspect_config_text,
 )
 from services import openvpn_manager, vpn_apps, vpn_connection
 
@@ -56,7 +60,52 @@ OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                      "client-connect", "client-disconnect", "learn-address",
                      "tls-verify", "auth-user-pass-verify", "plugin",
                      "script-security")
-HOOK_VALUE_LIMIT = 100
+# A hook is shown whole: the model keeps every character. The dialog body
+# shortens each one to HOOK_DISPLAY_LIMIT (the full text goes in the dialog's
+# detail and in sections()); a single line over HOOK_LINE_LIMIT is refused
+# outright, because nobody can review that.
+HOOK_DISPLAY_LIMIT = 300
+HOOK_LINE_LIMIT = 4000
+# The review reads the config once (the hash and the inspection describe the
+# same bytes), so the size is capped well below what a profile ever needs.
+CONFIG_READ_LIMIT = 256 * 1024
+# OpenVPN directives that hide hooks (`config` pulls in a second file), open a
+# local control socket (`management*`), or make root write or change directory
+# somewhere the review cannot see. Blockers, not warnings.
+OPENVPN_BLOCKER_KEYS = ("config", "log", "log-append", "writepid", "status",
+                        "tmp-dir", "cd", "chroot", "setenv")
+# Directives whose value is a program or plugin that runs as root.
+OPENVPN_EXECUTABLE_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
+                           "client-connect", "client-disconnect", "learn-address",
+                           "tls-verify", "auth-user-pass-verify", "plugin")
+# The reviewed client directive list. Anything else is still allowed (a real
+# profile must not break) but is named in one warning.
+OPENVPN_KNOWN_KEYS = frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KEYS) | frozenset((
+    "client", "dev", "dev-type", "dev-node", "proto", "remote", "remote-random",
+    "remote-random-hostname", "resolv-retry", "nobind", "persist-key", "persist-tun",
+    "persist-local-ip", "persist-remote-ip", "ca", "cert", "key", "dh", "tls-client",
+    "tls-version-min", "tls-version-max", "tls-cipher", "tls-ciphersuites", "tls-groups",
+    "remote-cert-tls", "remote-cert-ku", "remote-cert-eku", "verify-x509-name",
+    "verify-hash", "peer-fingerprint", "cipher", "data-ciphers", "data-ciphers-fallback",
+    "ncp-ciphers", "auth", "auth-nocache", "auth-user-pass", "auth-retry", "key-direction",
+    "comp-lzo", "compress", "allow-compression", "verb", "mute", "mute-replay-warnings",
+    "float", "keepalive", "ping", "ping-restart", "ping-exit", "reneg-sec", "route",
+    "route-ipv6", "route-nopull", "route-metric", "route-delay", "route-gateway",
+    "redirect-gateway", "redirect-private", "pull", "pull-filter", "push-peer-info",
+    "dhcp-option", "block-outside-dns", "ifconfig", "ifconfig-ipv6", "topology", "mssfix",
+    "fragment", "tun-mtu", "link-mtu", "sndbuf", "rcvbuf", "socks-proxy", "http-proxy",
+    "http-proxy-option", "http-proxy-retry", "http-proxy-user-pass", "connect-retry",
+    "connect-retry-max", "connect-timeout", "server-poll-timeout", "explicit-exit-notify",
+    "ns-cert-type", "crl-verify", "extra-certs", "pkcs12", "lport", "rport", "local",
+    "bind", "mark", "fast-io", "user", "group", "askpass", "setenv-safe",
+    "ignore-unknown-option", "engine", "inactive", "replay-window", "reneg-bytes",
+    "reneg-pkts", "tcp-queue-limit", "tran-window", "hand-window", "tls-timeout",
+    "tls-auth", "tls-crypt", "tls-crypt-v2", "secret", "providers", "show-net",
+    "disable-dco", "dns", "register-dns", "windows-driver", "lladdr", "txqueuelen",
+    "multihome", "passtos", "nice", "mlock", "up-restart", "down-pre", "ifconfig-nowarn",
+    "ifconfig-noexec", "route-noexec", "script-security", "socket-flags",
+    "cryptoapicert", "single-session", "ccd-exclusive", "auth-gen-token",
+))
 # Where wg-quick looks for <interface>.conf when it is given a bare name.
 WG_CONFIG_DIRS = ("/etc/wireguard", "/opt/homebrew/etc/wireguard", "/usr/local/etc/wireguard")
 
@@ -86,6 +135,39 @@ def redact_secrets(text: str | None) -> str:
     return _KEY_TOKEN.sub("[redacted key]", text)
 
 
+def _config_directives(text: str, protocol: str):
+    """(raw key, lowercased key, value) for each directive line. OpenVPN inline
+    blocks (<ca>…</ca>) are data, not directives, so their content is skipped."""
+    block = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if protocol == "WireGuard":
+            key, sep, value = line.partition("=")
+            if sep:
+                yield key.strip(), key.strip().lower(), value.strip()
+            continue
+        if block:
+            if line.lower() == f"</{block}>":
+                block = ""
+            continue
+        if line.startswith("<") and line.endswith(">") and not line.startswith("</"):
+            block = line[1:-1].strip().lower()
+            continue
+        parts = line.split(None, 1)
+        yield parts[0], parts[0].lstrip("-").lower(), (parts[1].strip() if len(parts) > 1 else "")
+
+
+def hooks_from_text(text: str, protocol: str) -> list[str]:
+    """'Directive: value' for each line that executes as root; the value is the
+    whole value, never shortened."""
+    wanted = ({k.lower() for k in WG_HOOK_KEYS} if protocol == "WireGuard"
+              else set(OPENVPN_HOOK_KEYS))
+    return [f"{raw}: {value}" for raw, key, value in _config_directives(text, protocol)
+            if key in wanted]
+
+
 def config_root_hooks(path: str | Path, protocol: str) -> list[str]:
     """Lines in a WireGuard/OpenVPN config that execute as root, as
     'Directive: value' strings; secrets are not read (only hook lines are kept).
@@ -94,23 +176,100 @@ def config_root_hooks(path: str | Path, protocol: str) -> list[str]:
         text = Path(path).expanduser().read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
-    hooks: list[str] = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        if protocol == "WireGuard":
-            key, sep, value = line.partition("=")
-            key = key.strip()
-            if sep and key.lower() in {k.lower() for k in WG_HOOK_KEYS}:
-                hooks.append(f"{key}: {value.strip()[:HOOK_VALUE_LIMIT]}")
-        elif protocol == "OpenVPN":
-            parts = line.split(None, 1)
-            key = parts[0].lstrip("-").lower()
-            if key in OPENVPN_HOOK_KEYS:
-                value = parts[1].strip() if len(parts) > 1 else ""
-                hooks.append(f"{parts[0]}: {value[:HOOK_VALUE_LIMIT]}")
-    return hooks
+    return hooks_from_text(text, protocol)
+
+
+def _read_config(path: Path) -> tuple[str | None, str, list[str], list[str]]:
+    """(text, sha256 of the exact bytes, blockers, warnings). The bytes are read
+    once so the hash, the hook scan and the inspection describe the same file."""
+    blockers: list[str] = []
+    warnings: list[str] = []
+    try:
+        if path.is_symlink():
+            warnings.append(f"{path} is a symbolic link; the review describes the file it "
+                            "points to right now.")
+        if not path.is_file():
+            return None, "", [f"The config file {path} no longer exists."], warnings
+        with path.open("rb") as handle:
+            data = handle.read(CONFIG_READ_LIMIT + 1)
+    except OSError:
+        return None, "", [f"The config file {path} cannot be read."], warnings
+    if len(data) > CONFIG_READ_LIMIT:
+        return None, "", [f"The config file {path} is larger than "
+                          f"{CONFIG_READ_LIMIT // 1024} KiB; Tunnel will not review it."], warnings
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        return data.decode("utf-8"), digest, blockers, warnings
+    except UnicodeError:
+        return None, digest, ["The selected configuration is not readable UTF-8 text."], warnings
+
+
+_stat = os.stat      # indirection so tests can describe a root-owned filesystem
+
+
+def _unsafe_executable_reason(path: Path) -> str | None:
+    """Why a root-run program could be replaced by a normal user, or None.
+    Root must own the file and every directory above it, none of them group- or
+    world-writable (a sticky world-writable directory such as /tmp still lets a
+    user replace nothing they do not own, but is not a place to keep a hook)."""
+    for candidate in (path, *path.parents):
+        try:
+            info = _stat(candidate)
+        except OSError:
+            continue                              # not there yet: judged by what exists
+        if info.st_uid != 0:
+            return f"{candidate} is not owned by root"
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return f"{candidate} is writable by group or others"
+    return None
+
+
+def _hook_executable(key: str, value: str, protocol: str) -> Path | None:
+    """The absolute program a hook line names, if it names one."""
+    if protocol == "OpenVPN" and key not in OPENVPN_EXECUTABLE_KEYS:
+        return None
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        words = value.split()
+    if words and words[0].startswith("/"):
+        return Path(words[0])
+    return None
+
+
+def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str]]:
+    """(blockers, warnings) for hook programs and OpenVPN directives."""
+    blockers: list[str] = []
+    warnings: list[str] = []
+    unknown: list[str] = []
+    for raw, key, value in _config_directives(text, protocol):
+        hook_keys = ({k.lower() for k in WG_HOOK_KEYS} if protocol == "WireGuard"
+                     else set(OPENVPN_HOOK_KEYS))
+        if len(raw) + len(value) > HOOK_LINE_LIMIT and key in hook_keys:
+            blockers.append(f"The {raw} line is longer than {HOOK_LINE_LIMIT} characters; "
+                            "Tunnel will not run what a person cannot review.")
+        if protocol == "OpenVPN":
+            if key in OPENVPN_BLOCKER_KEYS or key.startswith("management"):
+                blockers.append(f"The OpenVPN directive '{key}' can hide commands or redirect "
+                                "what administrator rights write; remove it from the profile.")
+            elif key not in OPENVPN_KNOWN_KEYS and key not in unknown:
+                unknown.append(key)
+        if key in hook_keys:
+            program = _hook_executable(key, value, protocol)
+            if program is not None:
+                reason = _unsafe_executable_reason(program)
+                if reason:
+                    blockers.append(f"The {raw} hook runs {program} as administrator, and "
+                                    f"{reason}, so a normal user could replace it.")
+                elif not program.exists():
+                    warnings.append(f"The {raw} hook names {program}, which does not exist.")
+    if unknown:
+        warnings.append("OpenVPN directives not on the reviewed list (allowed, but Tunnel "
+                        "has not checked what they do): " + ", ".join(unknown[:12])
+                        + (" …" if len(unknown) > 12 else ""))
+    return blockers, warnings
+
+
 ACTIONS = ("connect", "disconnect")
 
 
@@ -181,10 +340,39 @@ class ExecutionReview:
     warnings: tuple[str, ...] = ()
     rollback: tuple[str, ...] = ()
     root_hooks: tuple[str, ...] = ()
+    config_sha256: str = ""
 
     @property
     def allowed(self) -> bool:
         return not self.blockers
+
+    def fingerprint(self) -> str:
+        """Identity of what administrator rights would run: action, protocol,
+        target, interface, command, every hook in full, and the hash of the
+        config bytes. Warnings and blockers are left out on purpose (probe
+        state may legitimately change between the dialog and the worker)."""
+        payload = json.dumps([self.action, self.protocol, self.target, self.interface,
+                              self.command, list(self.root_hooks), self.config_sha256],
+                             ensure_ascii=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _shown_hook(item: str) -> str:
+        if len(item) <= HOOK_DISPLAY_LIMIT:
+            return item
+        return (item[:HOOK_DISPLAY_LIMIT]
+                + f" … ({len(item) - HOOK_DISPLAY_LIMIT} more characters; see the details)")
+
+    @property
+    def hooks_shortened(self) -> bool:
+        return any(len(item) > HOOK_DISPLAY_LIMIT for item in self.root_hooks)
+
+    def confirmation_detail(self) -> str:
+        """Everything the dialog body shortens: each hook whole, and the hash."""
+        lines = [f"• {item}" for item in self.root_hooks]
+        if self.config_sha256:
+            lines += ["", f"Config SHA-256: {self.config_sha256}"]
+        return "\n".join(lines)
 
     def confirmation_text(self) -> str:
         verb = "Start" if self.action == "connect" else "Stop"
@@ -198,7 +386,7 @@ class ExecutionReview:
             lines += [""] + list(self.config_lines)
         if self.root_hooks:
             lines += ["", "RUNS COMMANDS AS ADMINISTRATOR — this config executes:"]
-            lines += [f"• {item}" for item in self.root_hooks]
+            lines += [f"• {self._shown_hook(item)}" for item in self.root_hooks]
         if self.warnings:
             lines += ["", "Check first:"] + [f"• {item}" for item in self.warnings]
         lines += ["", "To undo:"] + [f"• {item}" for item in self.rollback]
@@ -212,6 +400,8 @@ class ExecutionReview:
                 f"Profile: {self.profile_name}", f"Target: {self.target or 'None'}"]
         if self.interface:
             head.append(f"Interface: {self.interface}")
+        if self.config_sha256:
+            head.append(f"Config SHA-256: {self.config_sha256}")
         sections: list[tuple[str, str, bool]] = [
             ("Target review", "\n".join(head), True),
         ]
@@ -275,6 +465,7 @@ def review_execution(action: str, profile: dict | None, *,
     config_lines: list[str] = []
     root_hooks: list[str] = []
     route_mode = ""
+    config_sha256 = ""
     ks_armed = killswitch_armed()
 
     if action == "connect" and vpn_connection.is_placeholder(profile):
@@ -296,16 +487,22 @@ def review_execution(action: str, profile: dict | None, *,
                 "and _=+.- only, at most 15 characters). wg-quick names the interface "
                 "after the config file, so rename the file and import it again.")
         config_path = vpn_connection.resolve_config_path(profile)
-        if config_path and action == "connect":
+        if config_path:
             source = Path(config_path).expanduser()
-            if not source.is_file():
-                blockers.append(f"The config file {source} no longer exists.")
+            # Both actions read the file: wg-quick down re-reads it and runs
+            # PreDown/PostDown, so a disconnect is reviewed like a connect.
+            text, config_sha256, read_blockers, read_warnings = _read_config(source)
+            warnings.extend(read_warnings)
+            if text is None:
+                if action == "connect" or source.exists():
+                    blockers.extend(read_blockers)
             else:
-                try:
-                    summary = inspect_config_summary(source)
-                except ValueError as exc:
-                    blockers.append(str(exc))
-                else:
+                root_hooks = hooks_from_text(text, "WireGuard")
+                hook_blockers, hook_warnings = _hook_findings(text, "WireGuard")
+                blockers.extend(hook_blockers)
+                warnings.extend(hook_warnings)
+                if action == "connect":
+                    summary = inspect_config_text(text, source)
                     route_mode = summary.route_mode
                     config_lines = [
                         f"Routing: {summary.route_mode}",
@@ -319,15 +516,14 @@ def review_execution(action: str, profile: dict | None, *,
                     if route_mode == "Split tunnel":
                         warnings.append("Split tunnel: only the listed networks use the VPN; "
                                         "other traffic keeps your normal route.")
-                root_hooks = config_root_hooks(source, "WireGuard")
-                try:
-                    mode = source.stat().st_mode
-                    if mode & (stat.S_IRGRP | stat.S_IROTH):
-                        warnings.append("The config file (which holds your private key) is "
-                                        "readable by other users on this Mac — consider "
-                                        "`chmod 600` on it.")
-                except OSError:
-                    pass
+                    try:
+                        mode = source.stat().st_mode
+                        if mode & (stat.S_IRGRP | stat.S_IROTH):
+                            warnings.append("The config file (which holds your private key) is "
+                                            "readable by other users on this Mac — consider "
+                                            "`chmod 600` on it.")
+                    except OSError:
+                        pass
         elif (not config_path and action == "connect" and interface
               and WG_INTERFACE_NAME.fullmatch(interface)
               and not any((Path(d) / f"{interface}.conf").is_file() for d in WG_CONFIG_DIRS)):
@@ -360,15 +556,23 @@ def review_execution(action: str, profile: dict | None, *,
                                 "`brew install openvpn`.")
             if not target:
                 blockers.append("This OpenVPN profile has no config file.")
-            elif not Path(target).expanduser().is_file():
-                blockers.append(f"The config file {target} no longer exists.")
             else:
-                root_hooks = config_root_hooks(target, "OpenVPN")
+                text, config_sha256, read_blockers, read_warnings = _read_config(
+                    Path(target).expanduser())
+                warnings.extend(read_warnings)
+                blockers.extend(read_blockers)
+                if text is not None:
+                    root_hooks = hooks_from_text(text, "OpenVPN")
+                    hook_blockers, hook_warnings = _hook_findings(text, "OpenVPN")
+                    blockers.extend(hook_blockers)
+                    warnings.extend(hook_warnings)
             if probe["openvpn_running"]():
                 blockers.append("An OpenVPN process is already running — Disconnect it first.")
             rollback = ["Press Disconnect (only a process Sentinel started and "
                         "tracks will be stopped)."]
         else:
+            warnings.append("OpenVPN runs its down hooks inside the daemon you confirmed at "
+                            "Connect; Disconnect only signals that process.")
             rollback = ["Press Connect to start the tunnel again."]
     else:
         interface, target, command = "", "", ""
@@ -399,7 +603,7 @@ def review_execution(action: str, profile: dict | None, *,
         interface=interface, command=command, route_mode=route_mode,
         config_lines=tuple(config_lines), blockers=tuple(blockers),
         warnings=tuple(warnings), rollback=tuple(rollback),
-        root_hooks=tuple(root_hooks),
+        root_hooks=tuple(root_hooks), config_sha256=config_sha256,
     )
 
 
@@ -525,18 +729,33 @@ class ExecutionOutcome:
         }
 
 
+CHANGED_MESSAGE = ("The config, command or target changed since you confirmed it; "
+                   "nothing was run. Review again.")
+UNCONFIRMED_MESSAGE = "No confirmed review was supplied; nothing was run. Review again."
+
+
 def execute(action: str, profile: dict, *,
+            confirmed: ExecutionReview | None = None,
             run_as_root: vpn_connection.RunAsRoot | None = None,
             probe: dict | None = None,
             killswitch_armed: Callable[[], bool] | None = None,
             sleep: Callable[[float], None] = time.sleep) -> ExecutionOutcome:
-    """Review again, run only if nothing blocks, and check afterwards. Logs nothing."""
+    """Review again, run only if nothing blocks and the fresh review is the one the
+    user confirmed, and check afterwards. Logs nothing.
+
+    ``confirmed`` is the review the dialog showed. Without it, or when the
+    fresh review's fingerprint differs, nothing runs and no administrator
+    prompt appears (fail closed)."""
     probe = probe or _default_probe()
     review = review_execution(action, profile, probe=probe, killswitch_armed=killswitch_armed)
     kwargs = {"run_as_root": run_as_root} if run_as_root is not None else {}
     if not review.allowed:
         outcome = ExecutionOutcome(review, ran=False, success=False,
                                    error="; ".join(review.blockers))
+    elif confirmed is None or review.fingerprint() != confirmed.fingerprint():
+        message = UNCONFIRMED_MESSAGE if confirmed is None else CHANGED_MESSAGE
+        outcome = ExecutionOutcome(replace(review, blockers=(message,)), ran=False,
+                                   success=False, error=message)
     else:
         runner = vpn_connection.connect if review.action == "connect" else vpn_connection.disconnect
         result = runner(profile, **kwargs)
