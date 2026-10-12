@@ -440,6 +440,12 @@ class SentryPanel(AgentPanel):
                 "run Sentinel from the checkout (developer mode)."
             )
             self.install_btn.setText("Install background watch")
+        elif status.get("loaded") and status.get("last_run") == "failed":
+            self.bg_status_label.setText(
+                f"Background watch is loaded, but its last run failed "
+                f"(exit {status.get('last_exit_code')}). Log: {status.get('log', '')}"
+            )
+            self.install_btn.setText("Reinstall")
         elif status.get("loaded"):
             interval = status.get("interval")
             every = f"every {interval // 60} min" if interval else "on a schedule"

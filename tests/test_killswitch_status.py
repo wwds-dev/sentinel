@@ -118,9 +118,9 @@ def test_status_never_removes_a_stale_marker(pf):
 
 def test_reconcile_removes_only_a_stale_marker(pf):
     write_marker(pf, at=BOOT - 3600, boot=BOOT - 7200)
-    assert ks.reconcile() is True and not pf.marker.exists()
+    assert ks.reconcile() == "the Mac restarted since arming" and not pf.marker.exists()
     write_marker(pf, at=BOOT + 10)
-    assert ks.reconcile() is False and pf.marker.exists()
+    assert ks.reconcile() == "" and pf.marker.exists()
 
 
 # ── the boot time ───────────────────────────────────────────────────────────
@@ -142,8 +142,12 @@ def test_boot_time_uses_sysctl_and_fails_to_unknown(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="{ sec = 42, usec = 1 } x", stderr="")
 
     monkeypatch.setattr(ks.subprocess, "run", fake_run)
-    assert ks._boot_time() == 42 and seen["cmd"][-2:] == ["-n", "kern.boottime"]
+    monkeypatch.setattr(ks, "_BOOT_CACHE", [])
+    assert ks._boot_time() == 42
+    assert seen["cmd"] == ["/usr/sbin/sysctl", "-n", "kern.boottime"]   # absolute path
     monkeypatch.setattr(ks.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no")))
+    assert ks._boot_time() == 42                                        # cached for the process
+    monkeypatch.setattr(ks, "_BOOT_CACHE", [])
     assert ks._boot_time() is None
 
 
@@ -226,3 +230,70 @@ def test_connection_status_text_comes_from_status(monkeypatch):
     assert vpn_connection.killswitch_status_text() == "Recorded as armed (not verified)"
     monkeypatch.setattr(vpn_connection, "_killswitch", lambda: None)
     assert vpn_connection.killswitch_status_text() is None
+
+
+# ── Round 2: review findings ────────────────────────────────────────────────
+
+def test_a_marker_is_never_stale_on_a_boot_field_difference_alone(pf):
+    # at is after this boot; only the stored boot differs (clock steps, a restored backup)
+    write_marker(pf, at=BOOT + 500, boot=BOOT - 100000)
+    assert ks.status().state == ks.STATE_RECORDED_ARMED
+    assert ks.reconcile() == "" and pf.marker.exists()
+
+
+def test_boot_time_is_read_once_per_process(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="{ sec = 77, usec = 1 }", stderr="")
+
+    monkeypatch.setattr(ks.subprocess, "run", fake_run)
+    monkeypatch.setattr(ks, "_BOOT_CACHE", [])
+    assert ks._boot_time() == 77 and ks._boot_time() == 77
+    assert len(calls) == 1
+
+
+def test_reconcile_does_not_delete_a_marker_that_changed_since_it_was_read(pf, monkeypatch):
+    write_marker(pf, at=BOOT - 3600, boot=BOOT - 7200)          # stale when read
+
+    def registered():
+        write_marker(pf, at=BOOT + 1000)                         # a fresh arm lands meanwhile
+        return True
+
+    monkeypatch.setattr(ks, "_is_registered", registered)
+    assert ks.reconcile() == ""
+    assert json.loads(pf.marker.read_text())["at"] == BOOT + 1000
+
+
+def test_reconcile_reports_why_it_removed_the_marker(pf):
+    pf.registered = False
+    write_marker(pf, at=BOOT + 500)
+    assert "registration is gone" in ks.reconcile()
+
+
+def test_the_marker_directory_is_private(pf, tmp_path, monkeypatch):
+    state = tmp_path / "fresh-state"
+    monkeypatch.setattr(ks.paths, "state_dir", lambda: state)
+    ks.arm(["203.0.113.7"], allow=[("udp", 51820)])
+    assert (state.stat().st_mode & 0o777) == 0o700
+
+
+def test_an_arming_marker_says_unconfirmed_not_protected(pf):
+    write_marker(pf, at=BOOT + 5, marker_state="arming")
+    s = ks.status()
+    assert s.armed is True                                       # fail-safe: Disarm stays offered
+    assert "arming, unconfirmed" in s.summary().lower()
+    assert "recorded as armed" not in s.summary().lower()
+
+
+def test_the_panel_shows_why_a_stale_marker_was_dropped(pf, monkeypatch):
+    from services import vpn_connection
+    from ui.panels import vpn as vpn_panel
+    write_marker(pf, at=BOOT - 3600, boot=BOOT - 7200)
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: ks)
+    label = types.SimpleNamespace(text="", setText=lambda t: setattr(label, "text", t))
+    fake = types.SimpleNamespace(kill_switch_status_label=label, _connection_worker=None)
+    vpn_panel.VpnPanel._refresh_kill_switch_label(fake)
+    assert label.text == "Not armed: the Mac restarted since arming"
+    assert not pf.marker.exists()

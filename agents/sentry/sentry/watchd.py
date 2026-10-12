@@ -95,10 +95,32 @@ def is_loaded() -> bool:
     return LABEL in (proc.stdout or "")
 
 
+def _last_run() -> tuple[str | None, str | None]:
+    """(last run, exit code) of the loaded job, or (None, None) if unknown."""
+    try:
+        proc = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    state, code = parse_job(proc.stdout or "")
+    return (last_run(code), code) if state else (None, None)
+
+
 def status() -> dict:
+    loaded = is_loaded()
+    # `launchctl print` is a second blocking call on whoever asks (the panel's UI
+    # thread today); it is only made for a loaded job. Moving both off the UI
+    # thread is deferred: the panel has no worker for it yet.
+    last, code = _last_run() if loaded else (None, None)
     return {
         "installed": is_installed(),
-        "loaded": is_loaded(),
+        "loaded": loaded,
+        "last_run": last,
+        "last_exit_code": code,
         "interval": _installed_interval(),
         "frozen": is_frozen(),
         "plist": str(plist_path()),
@@ -185,20 +207,52 @@ def _verify_loaded() -> dict:
         return {"ok": False, "verified": False,
                 "message": "Launch agent written, but launchd reports the job is not loaded "
                            f"({(proc.stderr or '').strip() or 'launchctl print failed'}). {check}"}
-    state = re.search(r"^\s*state\s*=\s*(.+?)\s*$", out, re.MULTILINE)
+    state, code = parse_job(out)
     if not state:
         return {"ok": False, "verified": False,
                 "message": f"Launch agent written and load accepted, but not verified "
                            f"(launchctl print gave no job state). {check}"}
-    last = re.search(r"^\s*last exit code\s*=\s*(.+?)\s*$", out, re.MULTILINE)
-    code = last.group(1) if last else ""
-    if code and code.isdigit() and int(code) != 0:
+    ran = last_run(code)
+    if ran == "failed":
         return {"ok": False, "verified": True,
-                "message": f"Background watch is loaded (state: {state.group(1)}) but its last "
+                "message": f"Background watch is loaded (state: {state}) but its last "
                            f"run failed (exit {code}). See the log, then Reinstall."}
-    ran = ("ok" if code.isdigit() else "not yet run")
     return {"ok": True, "verified": True,
-            "message": f"Background watch is loaded (state: {state.group(1)}); last run: {ran}."}
+            "message": f"Background watch is loaded (state: {state}); last run: {ran}."}
+
+
+def parse_job(output: str) -> tuple[str, str]:
+    """(state, last exit code) of the job itself from `launchctl print` output.
+    Nested blocks (endpoints, properties) have their own `state =` lines; only
+    the job's top level counts. Either value is "" when absent."""
+    state = code = ""
+    depth = 0
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.endswith("{"):
+            depth += 1
+            continue
+        if line.startswith("}"):
+            depth = max(0, depth - 1)
+            continue
+        if depth > 1:
+            continue
+        match = re.match(r"(state|last exit code)\s*=\s*(.+)$", line)
+        if match:
+            if match.group(1) == "state" and not state:
+                state = match.group(2).strip()
+            elif match.group(1) == "last exit code" and not code:
+                code = match.group(2).strip()
+    return state, code
+
+
+def last_run(code: str) -> str:
+    """"ok", "failed" or "not yet run" from a launchd `last exit code` value.
+    Negative or suffixed codes ("-9", "78 (x)") are failures, never "ok"."""
+    match = re.match(r"-?\d+", code or "")
+    if not match:
+        return "not yet run"
+    return "ok" if int(match.group(0)) == 0 and re.fullmatch(r"0(\s.*)?", code) else "failed"
 
 
 def _launchctl_unload(path: Path) -> None:

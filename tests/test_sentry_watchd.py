@@ -137,3 +137,56 @@ def test_a_failed_load_is_still_reported(launchd):
 def test_the_plist_test_in_the_sentry_suite_still_holds(launchd):
     plist = watchd.build_plist(300)
     assert plist["Label"] == watchd.LABEL and plist["ProgramArguments"][-1] == "--headless"
+
+
+# ── Round 2: parsing and the loaded-but-failed state ────────────────────────
+
+@pytest.mark.parametrize("code", ["-9", "78", "78 (exited)", "1abc", "-1"])
+def test_negative_and_suffixed_exit_codes_count_as_a_failed_run(launchd, code):
+    launchd.print_ = (0, PRINT_OK.replace("last exit code = 0", f"last exit code = {code}"), "")
+    result = watchd.install(300)
+    assert result["ok"] is False and "failed" in result["message"]
+
+
+@pytest.mark.parametrize("code", ["0", "0 (ok)"])
+def test_a_zero_exit_code_is_ok(launchd, code):
+    launchd.print_ = (0, PRINT_OK.replace("last exit code = 0", f"last exit code = {code}"), "")
+    assert watchd.install(300)["ok"] is True
+
+
+NESTED = """gui/501/com.sentinel.sentry.watch = {
+\tendpoints = {
+\t\t"com.x" = {
+\t\t\tstate = active
+\t\t\tlast exit code = 99
+\t\t}
+\t}
+\tstate = waiting
+\tlast exit code = 0
+}
+"""
+
+
+def test_state_and_exit_code_are_read_from_the_job_block_only(launchd):
+    launchd.print_ = (0, NESTED, "")
+    result = watchd.install(300)
+    assert result["ok"] is True and "state: waiting" in result["message"]
+
+
+def test_a_state_that_exists_only_in_a_nested_block_is_not_verification(launchd):
+    nested_only = NESTED.replace("\tstate = waiting\n", "").replace("\tlast exit code = 0\n", "")
+    launchd.print_ = (0, nested_only, "")
+    result = watchd.install(300)
+    assert result["ok"] is False and "not verified" in result["message"]
+
+
+def test_status_reports_a_failed_last_run_of_a_loaded_job(launchd):
+    launchd.listed = f"123\t0\t{watchd.LABEL}\n"
+    launchd.print_ = (0, PRINT_FAILED, "")
+    st = watchd.status()
+    assert st["loaded"] is True and st["last_run"] == "failed" and st["last_exit_code"] == "78"
+
+
+def test_status_does_not_call_print_when_the_job_is_not_loaded(launchd):
+    assert watchd.status()["last_run"] is None
+    assert "print" not in launchd.verbs()

@@ -348,3 +348,246 @@ def test_the_worker_passes_the_confirmed_review_to_execute(monkeypatch):
 def test_the_worker_defaults_to_no_confirmed_review(monkeypatch):
     from ui import workers
     assert workers.VpnConnectionWorker("connect", {})._confirmed is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Round 2: independent review findings
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _blocked(r, needle):
+    return (not r.allowed) and any(needle in b for b in r.blockers)
+
+
+# ── the OpenVPN scanner reads lines the way OpenVPN does ────────────────────
+
+@pytest.mark.parametrize("line", [
+    '"up" /x/y.sh', "u\\p /x/y.sh", "'plugin' /x/lib.so", '"config" other.ovpn',
+    "lo\\g /tmp/x", '"script-security" 2', "--\"up\" /x", "'up'x /x",
+])
+def test_quoted_or_escaped_directive_names_are_blockers(tmp_path, line):
+    r = review("connect", profile_for(ovpn(tmp_path, line + "\n")))
+    assert _blocked(r, "quote or backslash")
+
+
+def test_an_unbalanced_quote_in_a_value_is_a_blocker(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, 'remote-cert-tls "server\n')))
+    assert _blocked(r, "unbalanced")
+
+
+def test_a_close_tag_with_trailing_text_is_an_ambiguous_block(tmp_path):
+    body = "<ca>\nMIIBogus\n</ca>x\nup /tmp/evil.sh\n</ca>\n"
+    r = review("connect", profile_for(ovpn(tmp_path, body)))
+    assert _blocked(r, "ambiguous inline block")
+
+
+def test_an_unterminated_inline_block_is_a_blocker(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "<ca>\nMIIBogus\nup /tmp/evil.sh\n")))
+    assert _blocked(r, "ambiguous inline block")
+
+
+def test_an_indented_close_tag_is_ambiguous(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "<ca>\nabc\n  </ca>\nup /x\n</ca>\n")))
+    assert _blocked(r, "ambiguous inline block")
+
+
+def test_a_properly_closed_block_with_crlf_is_fine(tmp_path):
+    path = tmp_path / "crlf.ovpn"
+    path.write_bytes(b"client\r\nremote 203.0.113.7 1194\r\n<ca>\r\nabc\r\n</ca>\r\nup /nonexistent-dir/x.sh\r\n")
+    r = review("connect", profile_for(path))
+    assert r.allowed
+    assert r.root_hooks == ("up: /nonexistent-dir/x.sh",)        # no stray \r in the value
+
+
+def test_crlf_does_not_hide_a_blocker(tmp_path):
+    path = tmp_path / "crlf2.ovpn"
+    path.write_bytes(b"client\r\nremote 203.0.113.7 1194\r\nconfig other.ovpn\r\n")
+    assert _blocked(review("connect", profile_for(path)), "config")
+
+
+def test_unicode_line_separators_do_not_split_lines(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "dev tun up /tmp/x\n")))
+    assert r.root_hooks == ()          # OpenVPN sees one line; so does the scanner
+
+
+def test_a_comment_starting_a_token_ends_the_line(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "verb 3 # config other\n")))
+    assert r.allowed
+
+
+# ── every path word of a hook command ───────────────────────────────────────
+
+def _user_script(tmp_path):
+    script = tmp_path / "evil.sh"
+    script.write_text("#!/bin/sh\n")
+    return script
+
+
+@pytest.mark.parametrize("template", [
+    "/bin/sh {s}", "sh {s}", "bash -c {s}", "/usr/bin/env FOO=1 {s}", "env {s}",
+    "echo ok && {s}", "true; {s} up", "python3 {s}", "/usr/bin/perl {s}", "osascript {s}",
+    "nohup {s}", "FOO=1 {s}", "'{s}'",
+])
+def test_a_user_writable_program_anywhere_in_a_wireguard_hook_is_a_blocker(tmp_path, template):
+    script = _user_script(tmp_path)
+    path = wg_conf(tmp_path, interface_extra="PostUp = " + template.format(s=script) + "\n")
+    assert _blocked(review("connect", profile_for(path)), str(script))
+
+
+def test_a_tilde_path_in_an_interpreter_hook_is_a_blocker(tmp_path):
+    path = wg_conf(tmp_path, interface_extra="PostUp = sh ~/hook.sh\n")
+    assert _blocked(review("connect", profile_for(path)), "~/hook.sh")
+
+
+def test_a_user_writable_data_argument_of_a_root_program_is_only_a_warning(monkeypatch, tmp_path):
+    data = tmp_path / "list.txt"
+    data.write_text("x")
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
+        "/usr/bin/true": (0, ROOT_FILE), "/usr/bin": (0, ROOT_DIR), "/usr": (0, ROOT_DIR),
+        "/": (0, ROOT_DIR), str(data): (501, stat.S_IFREG | 0o644),
+        str(tmp_path): (501, stat.S_IFDIR | 0o755)}))
+    path = wg_conf(tmp_path, interface_extra=f"PostUp = /usr/bin/true {data}\n")
+    r = review("connect", profile_for(path))
+    assert r.allowed and any(str(data) in w for w in r.warnings)
+
+
+def test_a_user_writable_program_after_an_interpreter_in_openvpn_is_a_blocker(tmp_path):
+    script = _user_script(tmp_path)
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup /bin/sh {script}\n")))
+    assert _blocked(r, str(script))
+
+
+# ── interface-only WireGuard profiles are hashed and scanned too ────────────
+
+IFACE_ONLY = {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7", "interface": "wgx"}
+
+
+def test_an_interface_only_profile_resolves_hashes_and_scans_its_conf(tmp_path, monkeypatch):
+    conf = wg_conf(tmp_path, "wgx", interface_extra="PostUp = echo hi\n")
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", ("/nonexistent-a", str(tmp_path)))
+    r = review("connect", IFACE_ONLY)
+    assert r.config_sha256 == hashlib.sha256(conf.read_bytes()).hexdigest()
+    assert r.root_hooks == ("PostUp: echo hi",)
+
+
+def test_an_interface_only_conf_with_a_user_script_hook_is_blocked(tmp_path, monkeypatch):
+    script = _user_script(tmp_path)
+    wg_conf(tmp_path, "wgx", interface_extra=f"PostUp = {script}\n")
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(tmp_path),))
+    assert _blocked(review("connect", IFACE_ONLY), str(script))
+
+
+def test_an_interface_only_profile_without_a_conf_says_import_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(tmp_path),))
+    assert _blocked(review("connect", IFACE_ONLY), "import the .conf")
+
+
+def test_an_unreadable_interface_only_conf_blocks_a_connect(tmp_path, monkeypatch):
+    conf = wg_conf(tmp_path, "wgx")
+    os.chmod(conf, 0)
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(tmp_path),))
+    try:
+        if os.access(conf, os.R_OK):
+            pytest.skip("running as a user that can read mode 000 files")
+        assert not review("connect", IFACE_ONLY).allowed
+    finally:
+        os.chmod(conf, 0o600)
+
+
+@pytest.mark.parametrize("line", ["SaveConfig = true", "saveconfig=TRUE", "SAVECONFIG = True"])
+def test_saveconfig_true_is_a_blocker(tmp_path, line):
+    path = wg_conf(tmp_path, interface_extra=line + "\n")
+    assert _blocked(review("connect", profile_for(path)), "SaveConfig")
+
+
+def test_saveconfig_false_is_fine(tmp_path):
+    assert review("connect", profile_for(wg_conf(tmp_path, interface_extra="SaveConfig = false\n"))).allowed
+
+
+# ── Disconnect never strands the user ───────────────────────────────────────
+
+def test_a_user_writable_postdown_on_disconnect_is_a_risk_not_a_blocker(tmp_path):
+    script = _user_script(tmp_path)
+    path = wg_conf(tmp_path, "wgd", interface_extra=f"PostDown = {script}\n")
+    r = review("disconnect", profile_for(path), Probe(up={"wgd"}))
+    assert r.allowed and r.blockers == ()
+    assert any(str(script) in item for item in r.risks)
+    assert "Disconnect anyway" in " ".join(r.risks) or r.needs_second_confirmation
+
+
+def test_the_same_hook_still_blocks_a_connect(tmp_path):
+    script = _user_script(tmp_path)
+    path = wg_conf(tmp_path, "wgd", interface_extra=f"PostDown = {script}\n")
+    assert not review("connect", profile_for(path)).allowed
+
+
+def test_an_unreadable_config_on_disconnect_is_a_risk(tmp_path):
+    path = wg_conf(tmp_path, "wgu")
+    os.chmod(path, 0)
+    try:
+        if os.access(path, os.R_OK):
+            pytest.skip("running as a user that can read mode 000 files")
+        r = review("disconnect", profile_for(path), Probe(up={"wgu"}))
+        assert r.allowed and r.risks
+    finally:
+        os.chmod(path, 0o600)
+
+
+def test_an_oversized_config_on_disconnect_is_a_risk(tmp_path):
+    path = wg_conf(tmp_path, "wgo")
+    path.write_text(path.read_text() + "# " + "x" * (256 * 1024) + "\n")
+    r = review("disconnect", profile_for(path), Probe(up={"wgo"}))
+    assert r.allowed and r.risks
+
+
+def test_risks_are_part_of_the_fingerprint(tmp_path):
+    import dataclasses
+    p = profile_for(wg_conf(tmp_path, "wgd"))
+    r = review("connect", p)
+    assert dataclasses.replace(r, risks=("x",)).fingerprint() != r.fingerprint()
+
+
+def test_disconnect_with_the_kill_switch_armed_runs_when_the_confirmed_review_matches(tmp_path):
+    script = _user_script(tmp_path)
+    path = wg_conf(tmp_path, "wgd", interface_extra=f"PostDown = {script}\n")
+    p = profile_for(path)
+    probe = Probe(up={"wgd"})
+    armed = vpn_execution.review_execution("disconnect", p, probe=probe, killswitch_armed=lambda: True)
+    assert armed.allowed and armed.risks
+    runner = Recorder()
+    outcome = vpn_execution.execute("disconnect", p, confirmed=armed, run_as_root=runner,
+                                    probe=probe, killswitch_armed=lambda: True, sleep=lambda s: None)
+    assert outcome.ran is True and len(runner.scripts) == 1
+
+
+def test_disconnect_still_fails_closed_on_a_fingerprint_mismatch(tmp_path):
+    script = _user_script(tmp_path)
+    path = wg_conf(tmp_path, "wgd", interface_extra=f"PostDown = {script}\n")
+    p = profile_for(path)
+    probe = Probe(up={"wgd"})
+    confirmed = review("disconnect", p, probe)
+    path.write_text(path.read_text() + "PostDown = id\n")
+    runner = Recorder()
+    outcome = run("disconnect", p, runner, confirmed, probe)
+    assert outcome.ran is False and runner.scripts == []
+
+
+# ── honest hash wording and the dead unguarded wg-quick path ────────────────
+
+def test_the_hash_line_says_when_it_was_checked(tmp_path):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = echo hi\n")))
+    wording = "verified when the password prompt opened, not when it ran"
+    assert wording in r.confirmation_detail()
+    assert any(wording in body for _, body, _ in r.sections())
+
+
+def test_the_module_and_execute_docstrings_do_not_overclaim():
+    for doc in (vpn_execution.__doc__, vpn_execution.execute.__doc__):
+        assert "not when root reads" in doc
+
+
+def test_the_unguarded_wireguard_manager_wg_quick_helpers_refuse():
+    from agents.vpn_agent.services import wireguard_manager
+    with pytest.raises(RuntimeError, match="vpn_execution"):
+        wireguard_manager.connect("wg0")
+    with pytest.raises(RuntimeError, match="vpn_execution"):
+        wireguard_manager.disconnect("wg0")

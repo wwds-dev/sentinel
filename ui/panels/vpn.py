@@ -756,6 +756,16 @@ class VpnPanel(AgentPanel):
                 + "\n".join(f"• {review._shown_hook(item)}" for item in review.root_hooks)
                 + "\n\nOnly continue if you wrote these or trust their source.",
                 detail)
+        if confirm == QMessageBox.Yes and review.needs_second_confirmation:
+            # Findings that would block a Connect but must not make a Disconnect
+            # impossible (an unreadable config, a hook program a user could
+            # replace): the person decides, with the kill switch state in view.
+            confirm = self._ask(
+                True, "Disconnect anyway?",
+                "Tunnel could not fully review what this Disconnect will run:\n\n"
+                + "\n".join(f"• {item}" for item in review.risks)
+                + "\n\nDisconnect anyway only if you trust this config.",
+                "")
         if confirm != QMessageBox.Yes:
             self.connection_status_label.setText("Not run: confirmation declined.")
             return None
@@ -1011,11 +1021,16 @@ class VpnPanel(AgentPanel):
         if worker is not None and worker.isRunning():
             return
         ks = vpn_connection._killswitch()
+        reason = ""
         try:
             if ks is not None and ks.is_supported():
-                ks.reconcile()
+                reason = ks.reconcile()
         except Exception:  # noqa: BLE001 - housekeeping must not break showing the panel
             pass
+        if reason:
+            # The stale record is gone; say why instead of a bare "disarmed".
+            self.kill_switch_status_label.setText(f"Not armed: {reason}"[:300])
+            return
         text = vpn_connection.killswitch_status_text()
         if text:
             self.kill_switch_status_label.setText(text[:300])
