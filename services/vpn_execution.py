@@ -438,6 +438,12 @@ def _killswitch_armed() -> bool:
     if ks is None:
         return False
     try:
+        # A marker from before the last boot is dropped first; a recorded (not
+        # verified) switch counts as armed here, the fail-safe direction: the
+        # warning says traffic stays blocked.
+        reconcile = getattr(ks, "reconcile", None)
+        if reconcile is not None:
+            reconcile()
         return bool(ks.status().armed)
     except Exception:
         return False

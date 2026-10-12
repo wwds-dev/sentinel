@@ -3401,6 +3401,7 @@ def tunnel(qapp, monkeypatch, tmp_path):
     from services import vpn_connection, vpn_execution
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     monkeypatch.setattr(vpn_execution, "_killswitch_armed", lambda: False)
+    monkeypatch.setattr(vpn_connection, "killswitch_status_text", lambda: None)
     monkeypatch.setattr(vpn_execution, "_default_probe", lambda: {
         "wireguard": lambda name: {"up": False, "device": None},
         "openvpn_running": lambda: False,
@@ -3737,6 +3738,21 @@ class TestTunnelPanel:
         assert FakeVpnConnectionWorker.instances == []
         assert entries() == []
         assert "declined" in tunnel.kill_switch_status_label.text()
+
+    def test_the_kill_switch_label_starts_from_the_real_status_not_a_static_text(
+            self, tunnel, monkeypatch):
+        from services import vpn_connection
+        from ui.panels.vpn import VpnPanel
+        monkeypatch.setattr(vpn_connection, "killswitch_status_text",
+                            lambda: "Recorded as armed (not verified) — only utun7 may carry traffic")
+        panel = VpnPanel(tunnel.host)
+        try:
+            assert "recorded as armed (not verified)" in panel.kill_switch_status_label.text().lower()
+        finally:
+            panel.shutdown()
+
+    def test_the_kill_switch_label_falls_back_when_status_is_unavailable(self, tunnel):
+        assert tunnel.kill_switch_status_label.text() == "Kill switch not armed."
 
     def test_kill_switch_result_updates_its_own_status(self, tunnel):
         tunnel._on_killswitch_finished({"success": True, "output": "Kill switch ARMED"})

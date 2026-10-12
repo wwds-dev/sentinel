@@ -36,10 +36,12 @@ from __future__ import annotations
 import re
 
 import ipaddress
+import json
 import os
 import shutil
 import socket
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,6 +62,19 @@ WG_RUN_DIR = Path("/var/run/wireguard")
 
 TIMEOUT = 30
 
+# What Sentinel knows about the switch. Only the marker file is read without
+# root, so "armed" is a record of what Sentinel did, never proof of what pf holds.
+STATE_DISARMED = "disarmed"                # no marker
+STATE_RECORDED_ARMED = "recorded_armed"    # marker present, newer than boot, anchor registered
+STATE_STALE = "stale"                      # marker older than the boot, or the anchor block is gone
+STATE_VERIFIED_ARMED = "verified_armed"    # set only by the explicit Verify step (privileged pfctl read)
+STATE_VERIFIED_EMPTY = "verified_empty"    # Verify found no rules
+_ARMED_STATES = (STATE_RECORDED_ARMED, STATE_VERIFIED_ARMED)
+# kern.boottime can move by a few seconds when the clock is corrected.
+BOOT_TOLERANCE = 5
+
+MARKER_NAME = "killswitch.armed"
+
 
 @dataclass
 class KillSwitchState:
@@ -70,13 +85,30 @@ class KillSwitchState:
     interfaces: list[str] = field(default_factory=list)
     endpoints: list[str] = field(default_factory=list)
     error: str = ""
+    state: str = STATE_DISARMED
+    boot_known: bool = True
+    stale_reason: str = ""
+
+    def __post_init__(self) -> None:
+        # Older callers build the state with armed=True only.
+        if self.armed and self.state == STATE_DISARMED:
+            self.state = STATE_RECORDED_ARMED
+        self.armed = self.state in _ARMED_STATES
 
     def summary(self) -> str:
         if not self.available:
             return f"Unavailable: {self.error}"
-        if self.armed:
-            where = ", ".join(self.interfaces) or "no tunnel detected"
-            return f"ARMED — only {where} may carry traffic"
+        where = ", ".join(self.interfaces) or "no tunnel detected"
+        if self.state == STATE_VERIFIED_ARMED:
+            return f"Armed (verified) — only {where} may carry traffic"
+        if self.state == STATE_RECORDED_ARMED:
+            note = "" if self.boot_known else " (boot time unknown)"
+            return (f"Recorded as armed (not verified){note} — only {where} "
+                    "may carry traffic")
+        if self.state == STATE_STALE:
+            return f"Not armed: {self.stale_reason or 'the record is out of date'}"
+        if self.state == STATE_VERIFIED_EMPTY:
+            return "Not armed: pf holds no kill-switch rules"
         return "Disarmed — traffic uses whatever route macOS picks"
 
 
@@ -291,8 +323,81 @@ def validate(rules_file: Path | None = None) -> tuple[bool, str]:
     return False, cleaned or "pf rejected the rules."
 
 
+def parse_boottime(text: str) -> int | None:
+    """Seconds since the epoch from `sysctl -n kern.boottime` ("{ sec = N, usec = M } …")."""
+    match = re.search(r"\bsec\s*=\s*(\d+)", text or "")
+    return int(match.group(1)) if match else None
+
+
+def _boot_time() -> int | None:
+    """When this Mac booted, or None when it cannot be read (shown as unknown)."""
+    try:
+        proc = subprocess.run(["sysctl", "-n", "kern.boottime"],
+                              capture_output=True, text=True, timeout=5)
+    except Exception:  # noqa: BLE001 - unknown boot time is a state, not a crash
+        return None
+    return parse_boottime(proc.stdout) if proc.returncode == 0 else None
+
+
+def marker_path() -> Path:
+    return paths.state_dir() / MARKER_NAME
+
+
+def _read_marker() -> dict | None:
+    """The marker as a dict (state, at, boot, ifaces), or None if there is none.
+    The first-generation marker ("armed\\n") reads as armed at its mtime."""
+    path = marker_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        at = data.get("at")
+        return {"state": str(data.get("state") or "armed"),
+                "at": float(at) if isinstance(at, (int, float)) else mtime,
+                "boot": data.get("boot") if isinstance(data.get("boot"), int) else None,
+                "ifaces": [str(x) for x in data.get("ifaces") or []]}
+    return {"state": "armed", "at": mtime, "boot": None, "ifaces": []}
+
+
+def _write_marker(state: str, interfaces: list[str]) -> None:
+    path = marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"state": state, "at": int(time.time()), "boot": _boot_time(),
+               "ifaces": list(interfaces)}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _classify(marker: dict | None, registered: bool) -> tuple[str, bool, str]:
+    """(state, boot_known, stale_reason) for a marker."""
+    if marker is None:
+        return STATE_DISARMED, True, ""
+    boot = _boot_time()
+    if boot is not None:
+        if marker["at"] < boot - BOOT_TOLERANCE or (
+                marker["boot"] is not None and boot - marker["boot"] > 60):
+            return STATE_STALE, True, "the Mac restarted since arming"
+    if marker["state"] != "arming" and not registered:
+        return STATE_STALE, boot is not None, "the pf anchor registration is gone"
+    return STATE_RECORDED_ARMED, boot is not None, ""
+
+
 def status(endpoints: list[str] | None = None) -> KillSwitchState:
-    """Report whether the switch is currently armed. Read-only, needs no root."""
+    """Report what Sentinel knows about the switch. Read-only, needs no root.
+
+    `pfctl -a <anchor> -s rules` needs root, so this reads Sentinel's own
+    marker and the pf.conf registration, and says so: a marker is a record, not
+    a measurement. It is older than the boot (stale) or its anchor block is
+    gone when the record can no longer be right. Removing a stale marker is
+    reconcile()'s job, never status()'s.
+    """
     if not is_supported():
         return KillSwitchState(
             available=False, armed=False, registered=False,
@@ -300,20 +405,34 @@ def status(endpoints: list[str] | None = None) -> KillSwitchState:
         )
 
     registered = _is_registered()
-
-    # `pfctl -a <anchor> -s rules` needs root, so armed-ness is inferred from
-    # our own marker file instead. It is written under Application Support and
-    # removed on disarm, so it cannot drift from the anchor unless someone
-    # flushes pf by hand — which is the documented recovery anyway.
-    armed_marker = paths.state_dir() / "killswitch.armed"
+    state, boot_known, reason = _classify(_read_marker(), registered)
 
     return KillSwitchState(
         available=True,
-        armed=armed_marker.exists() and registered,
+        armed=state in _ARMED_STATES,
         registered=registered,
         interfaces=active_tunnel_interfaces(),
         endpoints=endpoints or [],
+        state=state,
+        boot_known=boot_known,
+        stale_reason=reason,
     )
+
+
+def reconcile() -> bool:
+    """Remove a stale marker (older than the boot, or its anchor block gone).
+    True if one was removed. Called when the panel shows and before a
+    disconnect review; never from status()."""
+    if not is_supported():
+        return False
+    state, _, _ = _classify(_read_marker(), _is_registered())
+    if state != STATE_STALE:
+        return False
+    try:
+        marker_path().unlink()
+    except OSError:
+        return False
+    return True
 
 
 def arm(
@@ -364,6 +483,16 @@ def arm(
         f"pfctl -a {ANCHOR} -f {_q(path)}",
         "pfctl -E",
     ])
+    # Record the intent BEFORE root runs: if this thread is lost mid-arm (the
+    # app quits during the administrator dialog) the record already says the
+    # switch may be live, and Disarm stays offered. The previous record is kept
+    # so a failed re-arm does not erase the memory of a block that is still up.
+    marker = marker_path()
+    try:
+        previous = marker.read_bytes()
+    except OSError:
+        previous = None
+    _write_marker("arming", interfaces)
     ok, output = _run_privileged(script, "Arm the VPN Agent kill switch")
 
     if not ok:
@@ -371,16 +500,22 @@ def arm(
             # Approved, then timed out: pf may hold the rules now. Recording it
             # as armed keeps Disarm offered; disarming rules that never loaded
             # is harmless, while showing "Disarmed" over a live block is not.
-            (paths.state_dir() / "killswitch.armed").write_text("armed\n", encoding="utf-8")
+            _write_marker("armed", interfaces)
             return False, (
                 f"{output}\nTreating the kill switch as armed so Disarm stays available. "
                 f"If the network is now broken, press Disarm or run:\n  {recovery_command()}"
             )
+        # A definitive failure (declined, pfctl error): the rules did not load,
+        # so put the record back as it was.
+        if previous is None:
+            marker.unlink(missing_ok=True)
+        else:
+            marker.write_bytes(previous)
         return False, (
             f"Failed to arm: {output}\n\nIf the network is now broken, run:\n  {recovery_command()}"
         )
 
-    (paths.state_dir() / "killswitch.armed").write_text("armed\n", encoding="utf-8")
+    _write_marker("armed", interfaces)
 
     detail = ", ".join(interfaces) if interfaces else "no tunnel is currently up"
     warning = ""
@@ -393,7 +528,7 @@ def arm(
         )
 
     return True, (
-        f"Kill switch ARMED (passing: {detail}).{warning}\n"
+        f"Kill switch recorded as armed (not verified; passing: {detail}).{warning}\n"
         f"Undo at any time with:\n  {recovery_command()}"
     )
 
@@ -412,7 +547,7 @@ def disarm() -> tuple[bool, str]:
         # the rules are really gone, never report a block that is still live.
         return False, f"Failed to disarm: {output}\n\nRun manually:\n  {recovery_command()}"
 
-    marker = paths.state_dir() / "killswitch.armed"
+    marker = marker_path()
     if marker.exists():
         marker.unlink()
     return True, "Kill switch disarmed — traffic routes normally again."

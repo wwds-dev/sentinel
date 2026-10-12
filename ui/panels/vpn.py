@@ -128,7 +128,8 @@ class VpnPanel(AgentPanel):
         self.disarm_ks_btn = QPushButton("Disarm")
         self.disarm_ks_btn.clicked.connect(self.disarm_kill_switch)
         ks_row.addWidget(self.disarm_ks_btn)
-        self.kill_switch_status_label = QLabel("Kill switch not armed.")
+        self.kill_switch_status_label = QLabel(
+            vpn_connection.killswitch_status_text() or "Kill switch not armed.")
         self.kill_switch_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
         ks_row.addWidget(self.kill_switch_status_label, 1)
         connect_layout.addLayout(ks_row)
@@ -999,8 +1000,25 @@ class VpnPanel(AgentPanel):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._refresh_kill_switch_label()
         self._watch_selected_profile()
         self.health_monitor.start()
+
+    def _refresh_kill_switch_label(self) -> None:
+        """Show what Sentinel knows now (the record survives a restart, a stale
+        one is dropped) unless an action is rewriting the label."""
+        worker = getattr(self, "_connection_worker", None)
+        if worker is not None and worker.isRunning():
+            return
+        ks = vpn_connection._killswitch()
+        try:
+            if ks is not None and ks.is_supported():
+                ks.reconcile()
+        except Exception:  # noqa: BLE001 - housekeeping must not break showing the panel
+            pass
+        text = vpn_connection.killswitch_status_text()
+        if text:
+            self.kill_switch_status_label.setText(text[:300])
 
     def hideEvent(self, event) -> None:
         self.health_monitor.stop()
