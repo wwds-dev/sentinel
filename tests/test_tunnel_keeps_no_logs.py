@@ -12,7 +12,7 @@ from pathlib import Path
 
 from services import runtime_paths, vpn_execution
 from tests.test_vpn_execution import (  # noqa: F401  (the fixture is autouse there)
-    Probe, Recorder, profile_for, wg_quick_installed, write_conf)
+    Probe, Recorder, execute, profile_for, wg_quick_installed, write_conf)
 
 ROOT = Path(__file__).resolve().parent.parent
 TUNNEL_SOURCES = [
@@ -43,14 +43,14 @@ def test_execute_writes_nothing_for_a_refusal_or_a_run(tmp_path, monkeypatch):
     data.mkdir()
     monkeypatch.setattr(runtime_paths, "user_data_base", lambda: data)
 
-    refused = vpn_execution.execute(
+    refused = execute(
         "connect", {"name": "Example", "protocol": "WireGuard", "endpoint": "<SERVER_IP>",
                     "interface": "wgjp", "placeholder": True},
         run_as_root=Recorder(), probe=Probe(), killswitch_armed=lambda: False)
     assert refused.ran is False
 
     probe = Probe(route="utun7")
-    ran = vpn_execution.execute(
+    ran = execute(
         "connect", profile_for(write_conf(tmp_path)),
         run_as_root=Recorder(), probe=probe, killswitch_armed=lambda: False,
         sleep=lambda s: None)
@@ -59,7 +59,7 @@ def test_execute_writes_nothing_for_a_refusal_or_a_run(tmp_path, monkeypatch):
 
 
 def test_the_result_says_nothing_was_logged(tmp_path):
-    outcome = vpn_execution.execute(
+    outcome = execute(
         "connect", profile_for(write_conf(tmp_path)),
         run_as_root=Recorder(), probe=Probe(), killswitch_armed=lambda: False,
         sleep=lambda s: None)

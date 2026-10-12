@@ -677,7 +677,9 @@ class TestConnectDisconnect:
             self, tunnel, gate, tmp_path):
         from ui.workers import VpnConnectionWorker
         got = []
-        worker = VpnConnectionWorker("connect", wg_profile(write_conf(tmp_path), "NL"))
+        profile = wg_profile(write_conf(tmp_path), "NL")
+        worker = VpnConnectionWorker("connect", profile,
+                                     vpn_execution.review_execution("connect", profile))
         worker.finished_signal.connect(got.append)
         worker.error_signal.connect(got.append)
         worker.cancel()

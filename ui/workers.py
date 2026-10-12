@@ -409,10 +409,13 @@ class VpnConnectionWorker(QThread):
     finished_signal = Signal(dict)
     error_signal = Signal(str)
 
-    def __init__(self, action: str, profile: dict):
+    def __init__(self, action: str, profile: dict, confirmed=None):
+        """``confirmed`` is the ExecutionReview the user approved in the dialog;
+        connect/disconnect run only if a fresh review still matches it."""
         super().__init__()
         self._action = action
         self._profile = dict(profile or {})
+        self._confirmed = confirmed
         self._cancel_requested = False
 
     def cancel(self) -> None:
@@ -431,7 +434,8 @@ class VpnConnectionWorker(QThread):
         try:
             from services import vpn_connection, vpn_execution
             if self._action in ("connect", "disconnect"):
-                result = vpn_execution.execute(self._action, self._profile).as_result()
+                result = vpn_execution.execute(
+                    self._action, self._profile, confirmed=self._confirmed).as_result()
             elif self._action in ("arm", "disarm"):
                 if self._action == "arm":
                     ok, message = vpn_connection.arm_killswitch(self._profile)

@@ -75,6 +75,15 @@ def review(action, profile, probe=None, armed=False):
                                           killswitch_armed=lambda: armed)
 
 
+def execute(action, profile, **kwargs):
+    """vpn_execution.execute with the review the user would have confirmed:
+    execute() fails closed without one (audit tier-2, S1)."""
+    kwargs.setdefault("confirmed", vpn_execution.review_execution(
+        action, profile, probe=kwargs.get("probe"),
+        killswitch_armed=kwargs.get("killswitch_armed")))
+    return vpn_execution.execute(action, profile, **kwargs)
+
+
 # ── Target review ───────────────────────────────────────────────────────────
 
 def test_review_names_target_command_intent_and_rollback(tmp_path):
@@ -198,7 +207,7 @@ def test_rollback_is_a_command_a_person_can_type(tmp_path, monkeypatch):
 
 def test_a_blocked_action_runs_nothing(tmp_path):
     run = Recorder()
-    outcome = vpn_execution.execute(
+    outcome = execute(
         "connect", {"name": "Example", "protocol": "WireGuard", "endpoint": "<SERVER_IP>",
                     "interface": "wgjp", "placeholder": True},
         run_as_root=run, probe=Probe(), killswitch_armed=lambda: False)
@@ -218,7 +227,7 @@ def test_verified_full_tunnel_connect(tmp_path):
         probe.up.add("wgnl")          # the tunnel comes up when the command runs
         return run(script, prompt, timeout)
 
-    outcome = vpn_execution.execute("connect", profile_for(path), run_as_root=runner,
+    outcome = execute("connect", profile_for(path), run_as_root=runner,
                                     probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
     assert run.scripts == [f"wg-quick up '{path}'"]
     assert outcome.success and outcome.verified is True
@@ -233,7 +242,7 @@ def test_verified_full_tunnel_connect(tmp_path):
 
 def test_command_success_without_the_interface_is_not_verified(tmp_path):
     slept = []
-    outcome = vpn_execution.execute(
+    outcome = execute(
         "connect", profile_for(write_conf(tmp_path)), run_as_root=Recorder(),
         probe=Probe(), killswitch_armed=lambda: False, sleep=slept.append)
     assert outcome.success is True
@@ -250,7 +259,7 @@ def test_full_tunnel_whose_route_bypasses_the_tunnel_is_not_verified(tmp_path):
         probe.up.add("wgnl")
         return True, ""
 
-    outcome = vpn_execution.execute("connect", profile_for(path), run_as_root=runner,
+    outcome = execute("connect", profile_for(path), run_as_root=runner,
                                     probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.verified is False
     assert "en0" in outcome.verification
@@ -263,7 +272,7 @@ def test_verified_disconnect(tmp_path):
         probe.up.discard("wg0")
         return True, ""
 
-    outcome = vpn_execution.execute(
+    outcome = execute(
         "disconnect", {"name": "VPS", "protocol": "WireGuard",
                        "endpoint": "203.0.113.7", "interface": "wg0"},
         run_as_root=runner, probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
@@ -272,7 +281,7 @@ def test_verified_disconnect(tmp_path):
 
 
 def test_a_failed_command_is_reported(tmp_path):
-    outcome = vpn_execution.execute(
+    outcome = execute(
         "connect", profile_for(write_conf(tmp_path)),
         run_as_root=Recorder(ok=False, output="Cancelled."), probe=Probe(),
         killswitch_armed=lambda: False, sleep=lambda s: None)
@@ -288,7 +297,7 @@ def test_openvpn_post_check_reads_the_tracked_process(tmp_path, monkeypatch):
     monkeypatch.setattr(vpn_connection.openvpn_manager, "connect",
                         lambda path, run_as_root: (setattr(probe, "openvpn", True)
                                                    or {"success": True, "output": ""}))
-    outcome = vpn_execution.execute("connect", profile_for(conf), probe=probe,
+    outcome = execute("connect", profile_for(conf), probe=probe,
                                     run_as_root=Recorder(), killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.verified is True
 
@@ -368,13 +377,10 @@ def test_openvpn_review_surfaces_hooks(tmp_path, monkeypatch):
     assert r.root_hooks == ("script-security: 2", "up: /x/y.sh")
 
 
-def test_disconnect_review_does_not_rescan_hooks(tmp_path):
-    path = tmp_path / "wgh.conf"
-    path.write_text(
-        "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\nPostUp = /opt/hook.sh\n"
-        "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
-    r = review("disconnect", profile_for(path), probe=Probe(up={"wgh"}))
-    assert r.root_hooks == ()
+# test_disconnect_review_does_not_rescan_hooks pinned a gap (wg-quick down re-reads
+# the config and runs PreDown/PostDown as root, yet a disconnect was never scanned).
+# It is replaced by its inverse, test_disconnect_review_scans_predown_and_postdown
+# in tests/test_vpn_review_gate.py (audit tier-2 S1, approved by the owner).
 
 
 # ── Key material never reaches the Execution tab ───────────
@@ -408,7 +414,7 @@ def test_execute_redacts_tool_output_and_error_everywhere(tmp_path):
 
     def run(script, prompt, timeout=30):
         return False, leaked
-    outcome = vpn_execution.execute("connect", profile_for(conf), run_as_root=run,
+    outcome = execute("connect", profile_for(conf), run_as_root=run,
                                     probe=Probe(), killswitch_armed=lambda: False, sleep=lambda s: None)
     everything = json.dumps(outcome.as_result())
     assert PRIVATE_KEY not in everything
