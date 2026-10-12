@@ -747,6 +747,7 @@ def pf(monkeypatch, state_dir, gate):
     monkeypatch.setattr(killswitch, "_is_registered", lambda: True)
     monkeypatch.setattr(killswitch, "validate", lambda path=None: (True, ""))
     monkeypatch.setattr(killswitch, "active_tunnel_interfaces", lambda: ["utun7"])
+    monkeypatch.setattr(killswitch, "_boot_time", lambda: 1)       # long before the marker
     monkeypatch.setattr(killswitch, "_run_privileged", run_privileged)
     monkeypatch.setattr(vpn_execution, "_killswitch_armed", REAL_KILLSWITCH_ARMED)
     return pf
@@ -769,7 +770,8 @@ class TestKillSwitch:
         rules = pf.ks.rules_path().read_text()
         assert "pass out quick inet proto udp from any to 203.0.113.7 port 51820" in rules
         assert pf.ks.status().armed is True
-        assert "ARMED" in tunnel.kill_switch_status_label.text()
+        # The label records what was done; it does not claim pf was measured.
+        assert "recorded as armed (not verified" in tunnel.kill_switch_status_label.text()
         assert tunnel.arm_ks_btn.isEnabled() and tunnel.disarm_ks_btn.isEnabled()
         assert gate.entries() == []
 

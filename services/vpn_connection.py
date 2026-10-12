@@ -191,6 +191,18 @@ def killswitch_supported() -> bool:
     return bool(ks and ks.is_supported())
 
 
+def killswitch_status_text() -> str | None:
+    """What Sentinel knows about the kill switch, in words (read-only, no root);
+    None when the service is unavailable. It never says more than "recorded"."""
+    ks = _killswitch()
+    try:
+        if ks is None or not ks.is_supported():
+            return None
+        return ks.status().summary()
+    except Exception:  # noqa: BLE001 - a label must never break the panel
+        return None
+
+
 DEFAULT_TUNNEL_PORTS = {"WireGuard": 51820, "OpenVPN": 1194}
 
 
