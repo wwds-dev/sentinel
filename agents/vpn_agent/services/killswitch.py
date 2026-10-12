@@ -88,6 +88,7 @@ class KillSwitchState:
     state: str = STATE_DISARMED
     boot_known: bool = True
     stale_reason: str = ""
+    arming: bool = False                   # marker written, arm not yet confirmed
 
     def __post_init__(self) -> None:
         # Older callers build the state with armed=True only.
@@ -101,6 +102,9 @@ class KillSwitchState:
         where = ", ".join(self.interfaces) or "no tunnel detected"
         if self.state == STATE_VERIFIED_ARMED:
             return f"Armed (verified) — only {where} may carry traffic"
+        if self.state == STATE_RECORDED_ARMED and self.arming:
+            return (f"Arming, unconfirmed — the arm was started but not seen to finish; "
+                    f"if it did, only {where} may carry traffic. Disarm clears it.")
         if self.state == STATE_RECORDED_ARMED:
             note = "" if self.boot_known else " (boot time unknown)"
             return (f"Recorded as armed (not verified){note} — only {where} "
@@ -329,14 +333,23 @@ def parse_boottime(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+_BOOT_CACHE: list[int] = []        # one entry once read; the boot time cannot change
+
+
 def _boot_time() -> int | None:
-    """When this Mac booted, or None when it cannot be read (shown as unknown)."""
+    """When this Mac booted, or None when it cannot be read (shown as unknown).
+    Read once per process, by absolute path, so a PATH entry cannot stand in."""
+    if _BOOT_CACHE:
+        return _BOOT_CACHE[0]
     try:
-        proc = subprocess.run(["sysctl", "-n", "kern.boottime"],
+        proc = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.boottime"],
                               capture_output=True, text=True, timeout=5)
     except Exception:  # noqa: BLE001 - unknown boot time is a state, not a crash
         return None
-    return parse_boottime(proc.stdout) if proc.returncode == 0 else None
+    value = parse_boottime(proc.stdout) if proc.returncode == 0 else None
+    if value is not None:
+        _BOOT_CACHE.append(value)
+    return value
 
 
 def marker_path() -> Path:
@@ -367,7 +380,7 @@ def _read_marker() -> dict | None:
 
 def _write_marker(state: str, interfaces: list[str]) -> None:
     path = marker_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_private_dir(path.parent)
     payload = {"state": state, "at": int(time.time()), "boot": _boot_time(),
                "ifaces": list(interfaces)}
     tmp = path.with_name(path.name + ".tmp")
@@ -381,8 +394,9 @@ def _classify(marker: dict | None, registered: bool) -> tuple[str, bool, str]:
         return STATE_DISARMED, True, ""
     boot = _boot_time()
     if boot is not None:
-        if marker["at"] < boot - BOOT_TOLERANCE or (
-                marker["boot"] is not None and boot - marker["boot"] > 60):
+        # Only "written before this boot" counts; a differing boot field alone is
+        # not evidence enough to drop a record of a possibly live block.
+        if marker["at"] < boot - BOOT_TOLERANCE:
             return STATE_STALE, True, "the Mac restarted since arming"
     if marker["state"] != "arming" and not registered:
         return STATE_STALE, boot is not None, "the pf anchor registration is gone"
@@ -405,7 +419,8 @@ def status(endpoints: list[str] | None = None) -> KillSwitchState:
         )
 
     registered = _is_registered()
-    state, boot_known, reason = _classify(_read_marker(), registered)
+    marker = _read_marker()
+    state, boot_known, reason = _classify(marker, registered)
 
     return KillSwitchState(
         available=True,
@@ -416,23 +431,34 @@ def status(endpoints: list[str] | None = None) -> KillSwitchState:
         state=state,
         boot_known=boot_known,
         stale_reason=reason,
+        arming=bool(marker and marker["state"] == "arming" and state == STATE_RECORDED_ARMED),
     )
 
 
-def reconcile() -> bool:
+def reconcile() -> str:
     """Remove a stale marker (older than the boot, or its anchor block gone).
-    True if one was removed. Called when the panel shows and before a
-    disconnect review; never from status()."""
+    Returns why it was removed ("" when nothing was), so the panel can say so
+    instead of silently showing "disarmed". Called when the panel shows and
+    before a disconnect review; never from status(). A marker that changed since
+    it was read (a new arm landed) is left alone."""
     if not is_supported():
-        return False
-    state, _, _ = _classify(_read_marker(), _is_registered())
-    if state != STATE_STALE:
-        return False
+        return ""
+    path = marker_path()
     try:
-        marker_path().unlink()
+        before = path.read_bytes()
     except OSError:
-        return False
-    return True
+        return ""
+    marker = _read_marker()
+    state, _, reason = _classify(marker, _is_registered())
+    if state != STATE_STALE:
+        return ""
+    try:
+        if path.read_bytes() != before:
+            return ""
+        path.unlink()
+    except OSError:
+        return ""
+    return reason or "the record is out of date"
 
 
 def arm(

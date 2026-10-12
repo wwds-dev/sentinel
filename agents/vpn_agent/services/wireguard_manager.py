@@ -68,65 +68,17 @@ def get_tunnel_status(interface: str) -> dict:
 
 
 def connect(interface: str, config_path: str | None = None) -> dict:
-    """
-    Bring up a WireGuard tunnel using wg-quick.
-    config_path: optional path to a .conf file. If None, wg-quick uses /etc/wireguard/<interface>.conf
-    Requires sudo — the GUI will need to handle privilege escalation.
-    """
-    result = {"success": False, "output": "", "error": None}
-
-    if not is_wg_quick_available():
-        result["error"] = "wg-quick not found — install wireguard-tools: brew install wireguard-tools"
-        return result
-
-    try:
-        cmd = ["sudo", "wg-quick", "up"]
-        if config_path:
-            cmd.append(config_path)
-        else:
-            cmd.append(interface)
-
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        result["output"] = proc.stdout + proc.stderr
-        result["success"] = proc.returncode == 0
-        if not result["success"]:
-            result["error"] = proc.stderr.strip()
-    except subprocess.TimeoutExpired:
-        result["error"] = "wg-quick up timed out"
-    except Exception as e:
-        result["error"] = str(e)
-
-    return result
+    """Disabled. This ran ``sudo wg-quick up`` with no review or confirmation."""
+    raise RuntimeError(
+        "Ungated sudo wg-quick is disabled: use services.vpn_execution.execute, which "
+        "reviews the config and asks for confirmation first.")
 
 
 def disconnect(interface: str) -> dict:
-    """
-    Bring down a WireGuard tunnel using wg-quick down.
-    Requires sudo on macOS.
-    """
-    result = {"success": False, "output": "", "error": None}
-
-    if not is_wg_quick_available():
-        result["error"] = "wg-quick not found"
-        return result
-
-    try:
-        proc = subprocess.run(
-            ["sudo", "wg-quick", "down", interface],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        result["output"] = proc.stdout + proc.stderr
-        result["success"] = proc.returncode == 0
-        if not result["success"]:
-            result["error"] = proc.stderr.strip()
-    except subprocess.TimeoutExpired:
-        result["error"] = "wg-quick down timed out"
-    except Exception as e:
-        result["error"] = str(e)
-
-    return result
+    """Disabled. This ran ``sudo wg-quick down`` with no review or confirmation."""
+    raise RuntimeError(
+        "Ungated sudo wg-quick is disabled: use services.vpn_execution.execute, which "
+        "reviews the config and asks for confirmation first.")
 
 
 def restart(interface: str) -> dict:

@@ -3372,7 +3372,10 @@ def tunnel(qapp, monkeypatch, tmp_path):
     confs = tmp_path / "wireguard"
     confs.mkdir()
     for name in ("wg0", "wg1", "wg2", "wg3", "wgtest"):
-        (confs / f"{name}.conf").write_text("[Interface]\n")
+        # Reviewed like any imported config now, so it must be a real one.
+        (confs / f"{name}.conf").write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
     monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(confs),))
     from ui.panels.vpn import VpnPanel
     from services.vpn_diagnostics import VpnProfileCatalog
@@ -3640,6 +3643,42 @@ class TestTunnelPanel:
         assert prompts[1][2] == QMessageBox.No
         assert FakeVpnConnectionWorker.instances == []
         assert entries() == []
+
+    def _risky_disconnect(self, tunnel, monkeypatch, tmp_path, answers):
+        from PySide6.QtWidgets import QMessageBox
+        script = tmp_path / "down.sh"
+        script.write_text("#!/bin/sh\n")
+        conf = tmp_path / "wgd.conf"
+        conf.write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            f"PostDown = {script}\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+        titles = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "warning", staticmethod(
+            lambda *a, **k: titles.append(a[1]) or answers[len(titles) - 1]))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Risky", {
+            "name": "Risky", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wgd", "config_path": str(conf)})
+        tunnel.disconnect_vpn()
+        return titles
+
+    def test_a_disconnect_with_unreviewable_hooks_asks_to_disconnect_anyway(
+            self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        titles = self._risky_disconnect(tunnel, monkeypatch, tmp_path,
+                                        [QMessageBox.Yes, QMessageBox.Yes])
+        assert titles[-1] == "Disconnect anyway?"
+        worker, = FakeVpnConnectionWorker.instances
+        assert worker.action == "disconnect" and worker.confirmed.risks
+
+    def test_declining_disconnect_anyway_runs_nothing(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        titles = self._risky_disconnect(tunnel, monkeypatch, tmp_path,
+                                        [QMessageBox.Yes, QMessageBox.No])
+        assert titles[-1] == "Disconnect anyway?" and FakeVpnConnectionWorker.instances == []
 
     def test_a_config_without_hooks_asks_once(self, tunnel, monkeypatch, tmp_path):
         from PySide6.QtWidgets import QMessageBox
@@ -4318,6 +4357,15 @@ class TestSentryPanel:
         text = sentry_panel.bg_status_label.text().lower()
         assert "cannot run" in text and "remove" in text
         assert sentry_panel.install_btn.isEnabled() is False
+
+    def test_the_panel_does_not_say_running_after_the_last_run_failed(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "status", lambda: {
+            "installed": True, "loaded": True, "interval": 300, "frozen": False,
+            "last_run": "failed", "last_exit_code": "78", "log": "/x/watch.log"})
+        sentry_panel.refresh_watch_status()
+        text = sentry_panel.bg_status_label.text().lower()
+        assert "last run failed" in text and "78" in text and "is running" not in text
 
     def test_the_panel_shows_the_install_message_as_is(self, sentry_panel, monkeypatch):
         import ui.panels.sentry as sentry_module
