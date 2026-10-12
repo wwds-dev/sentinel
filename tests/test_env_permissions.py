@@ -163,8 +163,12 @@ def test_unwritable_directory_falls_back_to_writing_in_place(tmp_path, monkeypat
     assert _mode(target) == 0o600
 
 
-def test_main_tightens_the_env_before_loading_it():
+def test_main_tightens_the_env_at_launch_not_at_import():
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
-    tighten = source.index("tighten_env_files()")
-    load = source.index("load_dotenv(")
-    assert tighten < load
+    lines = source.splitlines()
+    # never at module level: importing main (as many tests do) must not chmod real files
+    assert not any(line.startswith("tighten_env_files(") for line in lines)
+    entry = source.index('if __name__ == "__main__":')
+    assert "tighten_env_files()" in source[entry:]
+    # and before the application object exists
+    assert source.index("tighten_env_files()", entry) < source.index("QApplication([])", entry)
