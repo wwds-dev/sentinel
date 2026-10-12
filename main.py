@@ -27,7 +27,6 @@ except RuntimeDataError as exc:
         )
     raise SystemExit(2) from exc
 
-tighten_env_files()  # keys must not stay world-readable from an older write
 from dotenv import load_dotenv
 # API keys: user-data .env when frozen, project .env in dev. Real env vars still win.
 load_dotenv(user_data_base() / ".env")
@@ -5212,6 +5211,10 @@ def _hand_off_to_running_instance() -> bool:
 
 
 if __name__ == "__main__":
+    # Keys must not stay world-readable from an older write. At launch only: doing
+    # this at import time made every test that imports main chmod the real files.
+    tighten_env_files()
+
     # Both before QApplication, and both for a reason. AppKit reads the name it
     # titles the application menu with when the application object is created,
     # which Qt does inside QApplication(); and the menu bar item's menu aborts
