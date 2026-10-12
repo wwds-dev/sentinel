@@ -426,7 +426,21 @@ class SentryPanel(AgentPanel):
             status = watchd.status()
         except Exception:
             status = {"installed": False, "loaded": False}
-        if status.get("loaded"):
+        frozen = bool(status.get("frozen"))
+        self.install_btn.setEnabled(not frozen)
+        if frozen and (status.get("installed") or status.get("loaded")):
+            self.bg_status_label.setText(
+                "A background watch is installed but cannot run from the packaged app. "
+                "Press Remove to take it out."
+            )
+            self.install_btn.setText("Install background watch")
+        elif frozen:
+            self.bg_status_label.setText(
+                "The background watch is not available in the packaged app; "
+                "run Sentinel from the checkout (developer mode)."
+            )
+            self.install_btn.setText("Install background watch")
+        elif status.get("loaded"):
             interval = status.get("interval")
             every = f"every {interval // 60} min" if interval else "on a schedule"
             self.bg_status_label.setText(

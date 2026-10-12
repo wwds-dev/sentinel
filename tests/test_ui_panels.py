@@ -4301,6 +4301,31 @@ class TestSentryPanel:
         assert sentry_panel.run_btn.isEnabled() is True
         assert sentry_panel.stop_btn.isEnabled() is False
 
+    def test_the_panel_greys_install_in_a_packaged_build(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "status", lambda: {
+            "installed": False, "loaded": False, "interval": None, "frozen": True})
+        sentry_panel.refresh_watch_status()
+        assert sentry_panel.install_btn.isEnabled() is False
+        assert "packaged app" in sentry_panel.bg_status_label.text()
+        assert "running" not in sentry_panel.bg_status_label.text().lower()
+
+    def test_the_panel_offers_removal_of_a_leftover_plist_in_a_packaged_build(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "status", lambda: {
+            "installed": True, "loaded": True, "interval": 300, "frozen": True})
+        sentry_panel.refresh_watch_status()
+        text = sentry_panel.bg_status_label.text().lower()
+        assert "cannot run" in text and "remove" in text
+        assert sentry_panel.install_btn.isEnabled() is False
+
+    def test_the_panel_shows_the_install_message_as_is(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "install", lambda interval: {
+            "ok": False, "verified": False, "message": "Background watch: load accepted, not verified."})
+        sentry_panel.install_background()
+        assert sentry_panel.status_label.text() == "Background watch: load accepted, not verified."
+
     def test_install_and_remove_background_call_launchd(self, sentry_panel, monkeypatch):
         import ui.panels.sentry as sentry_module
         calls = []

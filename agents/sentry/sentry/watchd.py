@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,13 @@ PROJECT = Path(__file__).resolve().parents[1]  # agents/sentry
 MAIN = PROJECT / "main.py"
 MIN_INTERVAL = 60
 DEFAULT_INTERVAL = 300
+FROZEN_MESSAGE = ("The background watch is not available in the packaged app; "
+                  "run Sentinel from the checkout (developer mode).")
+
+
+def is_frozen() -> bool:
+    """True in a packaged build, where the plist's main.py is not bundled."""
+    return bool(getattr(sys, "frozen", False))
 
 
 def _launch_agents_dir() -> Path:
@@ -92,6 +100,7 @@ def status() -> dict:
         "installed": is_installed(),
         "loaded": is_loaded(),
         "interval": _installed_interval(),
+        "frozen": is_frozen(),
         "plist": str(plist_path()),
         "log": str(_log_path()),
     }
@@ -109,7 +118,13 @@ def _installed_interval() -> int | None:
 
 
 def install(interval: int = DEFAULT_INTERVAL) -> dict:
-    """Write the plist and load it. Reloads cleanly if already installed."""
+    """Write the plist and load it. Reloads cleanly if already installed.
+
+    Refuses in a packaged build (the plist runs ``main.py --headless``, which the
+    bundle does not contain). Success is judged by `launchctl print`, not by the
+    exit code of `launchctl load`."""
+    if is_frozen():
+        return {"ok": False, "verified": False, "message": FROZEN_MESSAGE}
     path = plist_path()
     if is_loaded():
         _launchctl_unload(path)
@@ -119,6 +134,8 @@ def install(interval: int = DEFAULT_INTERVAL) -> dict:
     except OSError as exc:
         return {"ok": False, "message": f"Could not write launch agent: {exc}"}
     result = _launchctl_load(path)
+    if result["ok"]:
+        result = _verify_loaded()
     result["interval"] = max(MIN_INTERVAL, int(interval))
     return result
 
@@ -146,7 +163,42 @@ def _launchctl_load(path: Path) -> dict:
         return {"ok": False, "message": f"launchctl unavailable: {exc}"}
     if proc.returncode != 0:
         return {"ok": False, "message": proc.stderr.strip() or "launchctl load failed."}
-    return {"ok": True, "message": "Background watch installed and running."}
+    return {"ok": True, "message": "launchctl accepted the launch agent."}
+
+
+def _verify_loaded() -> dict:
+    """Ask launchd about the job. `launchctl load` can exit 0 without a loaded
+    job, so the answer comes from `launchctl print gui/<uid>/<label>`; the
+    output format varies by macOS version, so it is parsed loosely."""
+    target = f"gui/{os.getuid()}/{LABEL}"
+    check = f"Check with: launchctl print {target}"
+    try:
+        proc = subprocess.run(
+            ["launchctl", "print", target], capture_output=True, text=True, timeout=10
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "verified": False,
+                "message": f"Launch agent written and load accepted, but not verified "
+                           f"(launchctl print unavailable: {exc}). {check}"}
+    out = proc.stdout or ""
+    if proc.returncode != 0:
+        return {"ok": False, "verified": False,
+                "message": "Launch agent written, but launchd reports the job is not loaded "
+                           f"({(proc.stderr or '').strip() or 'launchctl print failed'}). {check}"}
+    state = re.search(r"^\s*state\s*=\s*(.+?)\s*$", out, re.MULTILINE)
+    if not state:
+        return {"ok": False, "verified": False,
+                "message": f"Launch agent written and load accepted, but not verified "
+                           f"(launchctl print gave no job state). {check}"}
+    last = re.search(r"^\s*last exit code\s*=\s*(.+?)\s*$", out, re.MULTILINE)
+    code = last.group(1) if last else ""
+    if code and code.isdigit() and int(code) != 0:
+        return {"ok": False, "verified": True,
+                "message": f"Background watch is loaded (state: {state.group(1)}) but its last "
+                           f"run failed (exit {code}). See the log, then Reinstall."}
+    ran = ("ok" if code.isdigit() else "not yet run")
+    return {"ok": True, "verified": True,
+            "message": f"Background watch is loaded (state: {state.group(1)}); last run: {ran}."}
 
 
 def _launchctl_unload(path: Path) -> None:
