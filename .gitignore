@@ -61,3 +61,7 @@ data/settings.local.json
 
 # Local runtime data written by the VPN tools when running from a checkout
 /vpn/
+
+# audit-sensitive company docs: kept local, never published (see software_company/audits)
+docs/company/app-context.md
+docs/company/tooling-baseline.md
