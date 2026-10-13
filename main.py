@@ -5118,7 +5118,39 @@ class GodAI(QWidget):
                 self._note_failure("shutdown: abandon request", exc)
             self._pending_requests.pop(request_id, None)
 
+    def _wait_for_privileged_work(self) -> None:
+        """After "Wait": keep the window, close it once the administrator action
+        ends. Bounded by the longest the action can take (password entry plus
+        the command's timeout); after that the next close asks again."""
+        from agents.vpn_agent.services import privileged
+        from ui.dialogs import privileged_work_running
+        if getattr(self, "_quit_wait_timer", None) is not None:
+            return
+        deadline = time.monotonic() + privileged.PASSWORD_ENTRY_SECONDS + privileged.DEFAULT_TIMEOUT + 5
+        timer = QTimer(self)
+        self._quit_wait_timer = timer
+
+        def tick():
+            if privileged_work_running(self) and time.monotonic() < deadline:
+                return
+            timer.stop()
+            self._quit_wait_timer = None
+            self.close()            # asks again if it is somehow still running
+
+        timer.timeout.connect(tick)
+        timer.start(500)
+
     def closeEvent(self, event):
+        from ui.dialogs import ask_quit_with_privileged_work, privileged_work_running
+        if privileged_work_running(self):
+            # Never terminate a thread that is inside a privileged call: ask.
+            if not ask_quit_with_privileged_work(self):
+                event.ignore()
+                self._wait_for_privileged_work()
+                return
+            # Quit anyway: panels detach the worker; main() leaves with os._exit
+            # so Qt never aborts over a thread that is still running.
+            self._quit_anyway = True
         try:
             self.stop_background_work()
         except Exception as exc:
@@ -5287,3 +5319,10 @@ if __name__ == "__main__":
         else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
     )
     app.exec()
+    if getattr(window, "_quit_anyway", False):
+        # A detached thread is still inside a privileged call; a normal exit
+        # would destroy it while running. Everything else has been stopped and
+        # aboutToQuit has saved the window geometry.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
