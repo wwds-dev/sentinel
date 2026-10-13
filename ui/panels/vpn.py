@@ -1128,7 +1128,7 @@ class VpnPanel(AgentPanel):
                 # must not destroy a live QThread if an OS call ignores cancellation.
                 worker.terminate()
                 worker.wait(500)
-        if (connection is not None and connection.isRunning()
+        if (connection is not None and connection.isRunning() and hasattr(connection, "wait")
                 and not connection.wait(timeout_ms)):
             detach_worker(connection)
 
