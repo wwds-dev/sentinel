@@ -4,8 +4,15 @@ title = "company baseline"
 useDefault = true
 
 # Allowlist entries need the owner's approval. Prefer rotating a leaked secret to allowlisting it.
-# (An empty [allowlist] table is rejected by current gitleaks, so none is declared.)
-#
-# [allowlist]
-# description = "why"
-# paths = ['''path/to/fixture''']
+# Approved 2026-10-13: five false positives (four settings/fixture strings plus one fake PEM),
+# matched by line content, not by whole file.
+[allowlist]
+description = "settings-key names and test fixtures that only look like secrets"
+regexes = [
+  # settings keys such as 'pricing_correction_2026_10' (services/database.py, tests/test_price_resolution.py)
+  '''pricing_correction_\d{4}_\d{2}''',
+  # fake base64 fixture "private-key-that-must-never-leak..." in tests/test_vpn_execution.py
+  '''cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWs''',
+  # fake PEM body "MIIBogusKeyBody" in the redaction test (tests/test_vpn_execution.py)
+  '''MIIBogusKeyBody''',
+]

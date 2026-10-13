@@ -150,6 +150,7 @@ def test_stale_installers_are_swept(state):
 
 @pytest.mark.skipif(os.geteuid() != 0 or not shutil.which("shasum"),
                     reason="runs the root runner for real; needs root and shasum")
+@pytest.mark.allow_process
 @pytest.mark.parametrize("swap", [False, True])
 def test_runner_refuses_an_installer_swapped_after_writing(state, monkeypatch, swap):
     s = site(mode=MODE_NATIVE)
