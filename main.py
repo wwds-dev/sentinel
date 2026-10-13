@@ -5151,6 +5151,10 @@ class GodAI(QWidget):
             # Quit anyway: panels detach the worker; main() leaves with os._exit
             # so Qt never aborts over a thread that is still running.
             self._quit_anyway = True
+            timer = getattr(self, "_quit_wait_timer", None)
+            if timer is not None:
+                timer.stop()            # an earlier "Wait" must not fire mid-close
+                self._quit_wait_timer = None
         try:
             self.stop_background_work()
         except Exception as exc:
@@ -5200,6 +5204,26 @@ def _tray_status(window) -> str:
     else:
         activity = "Idle"
     return f"{activity}  ·  €{window.session_cost_total:.2f} this session"
+
+
+def _finish_quit_anyway(window, settings) -> None:
+    """After app.exec(): if the user chose Quit anyway, leave without Qt's teardown.
+
+    A detached thread is still inside a privileged call; a normal exit would
+    destroy it while running. os._exit skips Qt's own shutdown, so the window
+    geometry (set by aboutToQuit) is sync()ed to disk first, unless a portable
+    reset just erased that folder.
+    """
+    if not getattr(window, "_quit_anyway", False):
+        return
+    if not getattr(window, "_portable_reset_committed", False):
+        try:
+            settings.sync()
+        except Exception as exc:  # noqa: BLE001 - leaving matters more than the geometry
+            print(f"settings not saved: {exc}", file=sys.stderr)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 def _show_main_window(window):
@@ -5319,10 +5343,4 @@ if __name__ == "__main__":
         else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
     )
     app.exec()
-    if getattr(window, "_quit_anyway", False):
-        # A detached thread is still inside a privileged call; a normal exit
-        # would destroy it while running. Everything else has been stopped and
-        # aboutToQuit has saved the window geometry.
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(0)
+    _finish_quit_anyway(window, settings)
