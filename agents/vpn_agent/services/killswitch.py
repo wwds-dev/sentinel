@@ -42,6 +42,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,12 +57,18 @@ MARKER_END = "# <<< vpn-agent-killswitch <<<"
 # Private ranges treated as "the LAN" when local access is kept.
 DEFAULT_LAN = ("192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12")
 
+# Every range a LAN rule may name (the defaults plus link-local).
+LAN_RANGES = frozenset(DEFAULT_LAN) | {"169.254.0.0/16"}
+
 # macOS keeps a handful of utun devices for its own use (iCloud Private Relay,
 # Handoff). Passing every utun would quietly exempt those from the switch, so
 # the active WireGuard device is looked up instead and only that one passes.
 WG_RUN_DIR = Path("/var/run/wireguard")
 
 TIMEOUT = 30
+
+# The only interface names a rule may carry (an OpenVPN or WireGuard utun).
+TUNNEL_DEVICE = re.compile(r"(?:utun|tun)\d{1,4}")
 
 # What Sentinel knows about the switch. Only the marker file is read without
 # root, so "armed" is a record of what Sentinel did, never proof of what pf holds.
@@ -171,11 +178,41 @@ def active_tunnel_interfaces() -> list[str]:
                 device = entry.read_text(encoding="utf-8").strip()
             except OSError:
                 continue
-            if device and device not in found:
+            # The file is written by root, but a name that is not a tunnel device
+            # must never become part of a rule.
+            if TUNNEL_DEVICE.fullmatch(device) and device not in found:
                 found.append(device)
     except OSError:
         pass
     return found
+
+
+def endpoint_problem(host: str) -> str:
+    """Why ``host`` can never be an endpoint, or "" when it may be tried.
+
+    The text ends up in a firewall rule, so anything but printable,
+    non-whitespace ASCII is out, and so is an IPv6 scope id (`fe80::1%en0`):
+    ipaddress accepts a scope id of any text, newlines included.
+    """
+    if not host or any(not 33 <= ord(ch) <= 126 for ch in host):
+        return "it is not plain printable ASCII (it has a space, control or other character)"
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        return ""                       # a hostname: its answers are cleaned below
+    if getattr(parsed, "scope_id", None):
+        return "a scoped (zone) address such as fe80::1%en0 is not supported"
+    return ""
+
+
+def _rendered(address: str) -> str | None:
+    """An address re-rendered from its parsed value, or None if it is not a plain IP."""
+    if endpoint_problem(address):
+        return None
+    try:
+        return str(ipaddress.ip_address(address))
+    except ValueError:
+        return None
 
 
 def resolve_endpoints(hosts: list[str]) -> tuple[list[str], list[str]]:
@@ -184,14 +221,19 @@ def resolve_endpoints(hosts: list[str]) -> tuple[list[str], list[str]]:
 
     Returns (addresses, unresolved). An endpoint that cannot be resolved is
     reported rather than skipped silently — arming without it would leave the
-    tunnel unable to reach its own server.
+    tunnel unable to reach its own server. Addresses are always the parsed,
+    re-rendered form (never the caller's text), and a host that is not plain
+    printable ASCII, or carries a scope id, is unresolved without a lookup.
     """
     addresses: list[str] = []
     unresolved: list[str] = []
 
     for host in hosts:
-        host = (host or "").strip()
+        host = host or ""
         if not host:
+            continue
+        if endpoint_problem(host):
+            unresolved.append(host)
             continue
         try:
             parsed = ipaddress.ip_address(host)
@@ -201,20 +243,20 @@ def resolve_endpoints(hosts: list[str]) -> tuple[list[str], list[str]]:
             if parsed.is_unspecified:
                 unresolved.append(host)
                 continue
-            if host not in addresses:
-                addresses.append(host)
+            if str(parsed) not in addresses:
+                addresses.append(str(parsed))
             continue
         except ValueError:
             pass
 
         try:
             infos = socket.getaddrinfo(host, None)
-        except socket.gaierror:
+        except (socket.gaierror, UnicodeError):
             unresolved.append(host)
             continue
         for info in infos:
-            address = info[4][0]
-            if address not in addresses:
+            address = _rendered(str(info[4][0]))
+            if address is not None and address not in addresses:
                 addresses.append(address)
 
     return addresses, unresolved
@@ -342,19 +384,69 @@ def validate(rules_file: Path | None = None) -> tuple[bool, str]:
     return False, cleaned or "pf rejected the rules."
 
 
+_ADDR = r"[0-9A-Fa-f:.]{2,45}"
+_RULE_SHAPES = tuple(re.compile(p, re.ASCII) for p in (
+    r"block drop all",
+    r"pass quick on lo0 all",
+    r"pass quick on (?:utun|tun)\d{1,4} all",
+    rf"pass out quick (?:inet|inet6) proto (?:tcp|udp) from any to (?P<addr>{_ADDR}) port (?P<port>\d{{1,5}})",
+    rf"pass out quick (?:inet|inet6) proto (?:icmp|icmp6) from any to (?P<addr>{_ADDR})",
+    r"pass quick inet proto udp from any port 68 to any port 67",
+    r"pass quick inet proto udp from any port 67 to any port 68",
+    r"pass quick inet from (?P<net>[0-9./]{7,18}) to (?P<net2>[0-9./]{7,18})",
+    r"pass quick inet6 from fe80::/10 to fe80::/10",
+))
+
+
+def _rule_allowed(line: str) -> bool:
+    for shape in _RULE_SHAPES:
+        match = shape.fullmatch(line)
+        if match is None:
+            continue
+        groups = match.groupdict()
+        try:
+            if groups.get("addr") is not None:
+                parsed = ipaddress.ip_address(groups["addr"])
+                if parsed.is_unspecified or getattr(parsed, "scope_id", None):
+                    return False
+                if str(parsed) != groups["addr"]:
+                    return False
+                if (":" in groups["addr"]) != (" inet6 " in line):
+                    return False
+            if groups.get("port") is not None and not 1 <= int(groups["port"]) <= 65535:
+                return False
+            if groups.get("net") is not None:
+                # A LAN rule passes a private range to itself, never to anywhere else.
+                if groups["net"] != groups["net2"] or groups["net"] not in LAN_RANGES:
+                    return False
+        except ValueError:
+            return False
+        return True
+    return False
+
+
 def loadable_rules(text: str) -> str:
-    """The rule text root will load: comments and blank lines dropped, ASCII only.
+    """The rule text root will load: comments and blank lines dropped, ASCII only,
+    and EVERY remaining line one of the shapes build_rules writes.
 
     The comments exist for a person reading the file; pf needs none of them, and
     the non-ASCII dash in the header would cross the AppleScript/shell boundary
-    for nothing. Raises ValueError for anything that is not printable ASCII.
+    for nothing. A control character anywhere (checked before the text is split
+    into lines, since splitlines treats several of them as line ends) or a line
+    that is not an expected rule raises ValueError: the rules are assembled from
+    values a profile and the filesystem supply, and root must only ever load the
+    fixed shapes.
     """
-    lines = [ln.rstrip() for ln in text.splitlines()
+    if any((ord(ch) < 32 and ch != "\n") or ord(ch) == 127 for ch in text):
+        raise ValueError("it contains a control character")
+    lines = [ln.rstrip() for ln in text.split("\n")
              if ln.strip() and not ln.lstrip().startswith("#")]
-    out = "\n".join(lines) + "\n"
-    if any(ord(ch) > 126 or (ord(ch) < 32 and ch != "\n") for ch in out):
-        raise ValueError("it contains a character outside printable ASCII")
-    return out
+    for line in lines:
+        if any(ord(ch) > 126 for ch in line):
+            raise ValueError("it contains a character outside printable ASCII")
+        if not _rule_allowed(line):
+            raise ValueError(f"not an expected rule: {line[:80]!r}")
+    return "\n".join(lines) + "\n"
 
 
 def _load_rules_command(text: str) -> str:
@@ -375,6 +467,20 @@ def _load_rules_command(text: str) -> str:
         f"[ \"$(shasum -a 256 < \"$t\" | cut -d' ' -f1)\" = {digest} ] && {load} \"$t\"; "
         f"r=$?; rm -f \"$t\"; [ \"$r\" -eq 0 ]; }}; }}"
     )
+
+
+def _validate_text(text: str) -> tuple[bool, str]:
+    """validate() on a private (0600, mkstemp) copy of ``text``, removed afterwards."""
+    state = paths.state_dir()
+    state.mkdir(parents=True, exist_ok=True)      # write_rules has already made it private
+    fd, name = tempfile.mkstemp(prefix="killswitch-check.", dir=str(state))
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(text)
+        return validate(path)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def parse_boottime(text: str) -> int | None:
@@ -540,6 +646,12 @@ def arm(
 
     addresses, unresolved = resolve_endpoints(endpoints)
     if unresolved and not addresses:
+        refused = [(h, endpoint_problem(h)) for h in unresolved if endpoint_problem(h)]
+        if refused:
+            host, why = refused[0]
+            return False, (
+                f"Refusing to arm — the endpoint {host!r} cannot be used in a firewall rule: "
+                f"{why}. Fix the profile's endpoint first.")
         return False, (
             f"Could not resolve any endpoint ({', '.join(unresolved)}). Arming now "
             "would block the tunnel from ever reconnecting. Fix the endpoint first."
@@ -552,22 +664,23 @@ def arm(
         if device not in interfaces:
             interfaces.append(device)
     rules = build_rules(addresses, allow, interfaces=interfaces, allow_lan=allow_lan)
-    path = write_rules(rules)
-
-    # Never hand pf something that does not parse. A half-applied ruleset is
-    # the one failure mode that could leave the machine unable to talk to
-    # anything, and this check costs nothing and needs no privileges.
-    ok, detail = validate(path)
-    if not ok:
-        return False, f"Refusing to arm — the generated rules do not parse:\n{detail}"
-
     # Root loads the validated TEXT, carried inside the script, never a path in
-    # the user's state directory (which the user, or anything running as them,
-    # could swap after validation). The file written above is for recovery only.
+    # the user's state directory. The file written below is for recovery only.
     try:
         loadable = loadable_rules(rules)
     except ValueError as exc:
         return False, f"Refusing to arm — the rules cannot be passed to pf as plain text: {exc}"
+    write_rules(rules)
+
+    # Never hand pf something that does not parse. A half-applied ruleset is
+    # the one failure mode that could leave the machine unable to talk to
+    # anything, and this check costs nothing and needs no privileges. It runs
+    # on a private 0600 copy of the exact text root will load, not on the
+    # user-readable recovery file.
+    ok, detail = _validate_text(loadable)
+    if not ok:
+        return False, f"Refusing to arm — the generated rules do not parse:\n{detail}"
+
     script = "; ".join([
         _ensure_registered_command(),
         _load_rules_command(loadable) + " && pfctl -E",
