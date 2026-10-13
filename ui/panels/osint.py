@@ -248,6 +248,15 @@ class OsintPanel(AgentPanel):
         self._route_notice = ""
         self._set_trace_busy(True)
 
+        # authorize() above only priced `target` — a short string. The real
+        # request is the assembled system + user prompt (it carries the OSINT
+        # catalogue text), so the caps are checked again against that before
+        # anything is sent, the same way Bloodhound and Bug Spray do.
+        if not self.reauthorize(messages):
+            self.status_label.setText("Blocked: the assembled request exceeds a budget cap.")
+            self._set_trace_busy(False)
+            return
+
         self.start_worker(
             messages, target,
             on_token=self._on_token,

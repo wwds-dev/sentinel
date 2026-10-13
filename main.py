@@ -4662,7 +4662,8 @@ class GodAI(QWidget):
             QMessageBox.information(self, "No Selection", "Select a saved search first.")
             return
         if QMessageBox.question(
-                self, "Delete Search", f"Delete saved search?\n\n{item.text()}"
+                self, "Delete Search", f"Delete saved search?\n\n{item.text()}",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         ) != QMessageBox.Yes:
             return
         try:
@@ -4768,7 +4769,10 @@ class GodAI(QWidget):
             return
 
         filepath = item.data(Qt.UserRole)
-        confirm = QMessageBox.question(self, "Delete Chat", f"Delete saved chat?\n\n{item.text()}")
+        confirm = QMessageBox.question(
+            self, "Delete Chat", f"Delete saved chat?\n\n{item.text()}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
         if confirm != QMessageBox.Yes:
             return
 

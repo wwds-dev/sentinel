@@ -276,7 +276,7 @@ class ManagerPanel(AgentPanel):
             f"it in by hand. Its registry rows stay disabled, and Chat's tool list "
             f"is fixed, so the generated prompt is not usable from Chat until that "
             f"wiring is done.",
-            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
 
         if confirm != QMessageBox.Yes:
