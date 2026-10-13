@@ -111,6 +111,7 @@ class KillSwitchState:
     boot_known: bool = True
     stale_reason: str = ""
     arming: bool = False                   # marker written, arm not yet confirmed
+    disarming: bool = False                # marker written, disarm not yet confirmed
     verified_at: float = 0.0               # when Verify last concluded (memory only)
 
     def __post_init__(self) -> None:
@@ -132,6 +133,10 @@ class KillSwitchState:
         if self.state == STATE_VERIFIED_INERT:
             return (f"Not armed: the anchor holds rules that are not enforcing "
                     f"({_clock(self.verified_at)}). Disarm clears them.")
+        if self.state == STATE_RECORDED_ARMED and self.disarming:
+            return ("Disarming, unconfirmed — the disarm was started but not seen to finish; "
+                    "the block may or may not still be in place. Press Verify to check, or "
+                    "Disarm to try again.")
         if self.state == STATE_RECORDED_ARMED and self.arming:
             return (f"Arming, unconfirmed — the arm was started but not seen to finish; "
                     f"if it did, only {where} may carry traffic. Disarm clears it.")
@@ -568,7 +573,7 @@ def _classify(marker: dict | None, registered: bool) -> tuple[str, bool, str]:
         # not evidence enough to drop a record of a possibly live block.
         if marker["at"] < boot - BOOT_TOLERANCE:
             return STATE_STALE, True, "the Mac restarted since arming"
-    if marker["state"] != "arming" and not registered:
+    if marker["state"] not in ("arming", "disarming") and not registered:
         return STATE_STALE, boot is not None, "the pf anchor registration is gone"
     return STATE_RECORDED_ARMED, boot is not None, ""
 
@@ -592,9 +597,10 @@ def status(endpoints: list[str] | None = None) -> KillSwitchState:
     marker = _read_marker()
     state, boot_known, reason = _classify(marker, registered)
     arming = bool(marker and marker["state"] == "arming" and state == STATE_RECORDED_ARMED)
+    disarming = bool(marker and marker["state"] == "disarming" and state == STATE_RECORDED_ARMED)
     verified_at = 0.0
     verified = dict(_VERIFIED)         # one copy: another thread may clear() it
-    if state == STATE_RECORDED_ARMED and not arming and verified.get("state"):
+    if state == STATE_RECORDED_ARMED and not (arming or disarming) and verified.get("state"):
         # The last explicit Verify, kept in memory only: it can be out of date
         # (pf flushed by hand since), so it carries its time and arm/disarm drop it.
         state, verified_at = verified["state"], float(verified.get("at") or 0.0)
@@ -609,6 +615,7 @@ def status(endpoints: list[str] | None = None) -> KillSwitchState:
         boot_known=boot_known,
         stale_reason=reason,
         arming=arming,
+        disarming=disarming,
         verified_at=verified_at,
     )
 
@@ -756,20 +763,40 @@ def disarm() -> tuple[bool, str]:
     if not is_supported():
         return False, "Kill switch requires macOS pf."
 
+    # Record the intent BEFORE root runs, as arm() does: if this thread is lost
+    # mid-disarm (Quit anyway during the administrator dialog) root may still
+    # flush the anchor with nothing left to remove the record, so the record must
+    # say "unconfirmed" rather than keep claiming an armed block.
+    _VERIFIED.clear()
+    marker = marker_path()
+    previous = _read_marker()
+    try:
+        previous_bytes = marker.read_bytes()
+    except OSError:
+        previous_bytes = None
+    _write_marker("disarming", (previous or {}).get("ifaces") or [])
     ok, output = _run_privileged(
         f"pfctl -a {ANCHOR} -F rules", "Disarm the VPN Agent kill switch"
     )
     if not ok:
+        if "may still have happened" in output:
+            # Approved, then timed out: the flush may have happened. Keep the
+            # unconfirmed record; Verify or a second Disarm settles it.
+            return False, (f"{output}\nThe kill switch is shown as disarming, unconfirmed. "
+                           f"Press Verify, or run:\n  {recovery_command()}")
         # The anchor may still be loaded (a cancelled authorisation, a pfctl
-        # error), so the marker stays: status() must keep saying "armed" until
-        # the rules are really gone, never report a block that is still live.
+        # error), so the previous record is put back: status() must keep saying
+        # "armed" until the rules are really gone, never report a block that is
+        # still live.
+        if previous_bytes is None:
+            marker.unlink(missing_ok=True)
+        else:
+            marker.write_bytes(previous_bytes)
         return False, f"Failed to disarm: {output}\n\nRun manually:\n  {recovery_command()}"
 
-    _VERIFIED.clear()
-    marker = marker_path()
-    if marker.exists():
-        marker.unlink()
+    marker.unlink(missing_ok=True)
     return True, "Kill switch disarmed — traffic routes normally again."
+
 
 # ── Verify (explicit, read-only) ─────────────────
 
