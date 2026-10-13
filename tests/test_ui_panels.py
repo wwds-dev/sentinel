@@ -3433,6 +3433,51 @@ class TestTunnelPanel:
         assert tunnel.tabs.tabText(7) == "Servers"
         assert tunnel.tabs.tabText(8) == "VPN Apps"
 
+    def test_verify_button_starts_a_verify_worker_without_a_confirmation(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked"))))
+        FakeVpnConnectionWorker.instances.clear()
+        assert tunnel.verify_ks_btn.text() == "Verify"
+        tunnel.verify_ks_btn.click()
+        (worker,) = FakeVpnConnectionWorker.instances
+        assert worker.action == "verify" and worker.started
+        assert tunnel.verify_ks_btn.isEnabled() is False and tunnel.arm_ks_btn.isEnabled() is False
+
+    def test_verify_result_sets_the_label_and_reenables_the_buttons(self, tunnel):
+        tunnel.verify_ks_btn.click()
+        tunnel._on_killswitch_finished({"success": True, "output": "Verified armed (10:00): x",
+                                        "verify_state": "verified_armed"})
+        assert tunnel.kill_switch_status_label.text() == "Verified armed (10:00): x"
+        assert tunnel.verify_ks_btn.isEnabled() and tunnel.arm_ks_btn.isEnabled()
+
+    def test_a_failed_verify_says_could_not_verify(self, tunnel):
+        tunnel._on_killswitch_finished({"success": False, "error": "Could not verify: Cancelled.",
+                                        "verify_state": "unknown"})
+        assert tunnel.kill_switch_status_label.text().startswith("Could not verify")
+
+    def test_verified_empty_offers_to_clear_the_record_and_default_is_no(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        asked, cleared = [], []
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda parent, title, text, buttons, default: asked.append(default) or QMessageBox.Yes))
+        monkeypatch.setattr(vpn_connection, "clear_killswitch_record", lambda: cleared.append(1) or True)
+        tunnel._on_killswitch_finished({"success": True, "output": "Not armed: no rules loaded.",
+                                        "verify_state": "verified_empty"})
+        assert asked == [QMessageBox.No] and cleared == [1]
+        assert "record cleared" in tunnel.kill_switch_status_label.text().lower()
+
+    def test_declining_the_clear_keeps_the_record(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        cleared = []
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+        monkeypatch.setattr(vpn_connection, "clear_killswitch_record", lambda: cleared.append(1) or True)
+        tunnel._on_killswitch_finished({"success": True, "output": "Not armed: no rules loaded.",
+                                        "verify_state": "verified_empty"})
+        assert cleared == []
+
     def test_connecting_a_real_profile_starts_the_connection_worker(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
         monkeypatch.setattr(QMessageBox, "question",
