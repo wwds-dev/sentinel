@@ -511,7 +511,7 @@ def test_a_user_writable_postdown_on_disconnect_is_a_risk_not_a_blocker(tmp_path
     r = review("disconnect", profile_for(path), Probe(up={"wgd"}))
     assert r.allowed and r.blockers == ()
     assert any(str(script) in item for item in r.risks)
-    assert "Disconnect anyway" in " ".join(r.risks) or r.needs_second_confirmation
+    assert r.needs_second_confirmation is True
 
 
 def test_the_same_hook_still_blocks_a_connect(tmp_path):
@@ -591,3 +591,24 @@ def test_the_unguarded_wireguard_manager_wg_quick_helpers_refuse():
         wireguard_manager.connect("wg0")
     with pytest.raises(RuntimeError, match="vpn_execution"):
         wireguard_manager.disconnect("wg0")
+
+
+def test_the_tilde_rule_refuses_a_home_program_whatever_the_filesystem_says(monkeypatch):
+    # Even if every path looked root-owned and read-only, ~ is a user's home.
+    monkeypatch.setattr(vpn_execution, "_stat", lambda p, *a, **k: types.SimpleNamespace(
+        st_uid=0, st_mode=stat.S_IFREG | 0o755))
+    from pathlib import Path
+    reason = vpn_execution._unsafe_executable_reason(Path("~/hook.sh"))
+    assert reason and "home" in reason
+
+
+def test_the_confirmation_dialog_lists_the_risks_of_a_disconnect(tmp_path):
+    path = wg_conf(tmp_path, "wgo")
+    path.write_text(path.read_text() + "# " + "x" * (256 * 1024) + "\n")
+    r = review("disconnect", profile_for(path), Probe(up={"wgo"}))
+    assert r.risks
+    body = r.confirmation_text()
+    assert "Not reviewable" in body
+    for item in r.risks:
+        assert f"• {item}" in body
+    assert any("Risks" in title and r.risks[0] in text for title, text, _ in r.sections())

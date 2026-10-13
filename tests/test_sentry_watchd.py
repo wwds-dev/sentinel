@@ -141,7 +141,7 @@ def test_the_plist_test_in_the_sentry_suite_still_holds(launchd):
 
 # ── Round 2: parsing and the loaded-but-failed state ────────────────────────
 
-@pytest.mark.parametrize("code", ["-9", "78", "78 (exited)", "1abc", "-1"])
+@pytest.mark.parametrize("code", ["-9", "78", "78 (exited)", "1abc", "-1", "0abc", "0x1"])
 def test_negative_and_suffixed_exit_codes_count_as_a_failed_run(launchd, code):
     launchd.print_ = (0, PRINT_OK.replace("last exit code = 0", f"last exit code = {code}"), "")
     result = watchd.install(300)
