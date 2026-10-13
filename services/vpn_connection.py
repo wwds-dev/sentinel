@@ -276,6 +276,21 @@ def killswitch_recovery_command() -> str:
         return "sudo pfctl -d"
 
 
+def verify_killswitch():
+    """Ask pf what it holds (one administrator prompt, read-only). Returns
+    (state, message); state is "verified_armed", "verified_empty" or "unknown"."""
+    ks = _killswitch()
+    if ks is None:
+        return "unknown", "Could not verify: the kill switch module is unavailable."
+    return ks.verify()
+
+
+def clear_killswitch_record() -> bool:
+    """Drop the armed record after Verify found no rules (pf is not touched)."""
+    ks = _killswitch()
+    return bool(ks and ks.clear_record())
+
+
 def disarm_killswitch():
     ks = _killswitch()
     if ks is None:

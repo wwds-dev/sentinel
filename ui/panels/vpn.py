@@ -129,6 +129,13 @@ class VpnPanel(AgentPanel):
         self.disarm_ks_btn = QPushButton("Disarm")
         self.disarm_ks_btn.clicked.connect(self.disarm_kill_switch)
         ks_row.addWidget(self.disarm_ks_btn)
+        self.verify_ks_btn = QPushButton("Verify")
+        self.verify_ks_btn.setToolTip(
+            "Ask pf what it really holds (read-only; never changes anything). "
+            "Always asks for your administrator password, so it only runs when you press it. "
+            "Without it the label is only a record of what Sentinel did.")
+        self.verify_ks_btn.clicked.connect(self.verify_kill_switch)
+        ks_row.addWidget(self.verify_ks_btn)
         self.kill_switch_status_label = QLabel(
             vpn_connection.killswitch_status_text() or "Kill switch not armed.")
         self.kill_switch_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
@@ -866,10 +873,22 @@ class VpnPanel(AgentPanel):
         self._start_killswitch(
             "disarm", self.selected_connect_profile() or {}, "Disarming kill switch…")
 
+    def verify_kill_switch(self) -> None:
+        """Read what pf holds. Explicit only: it costs an administrator prompt."""
+        if self._connection_busy():
+            return
+        if not vpn_connection.killswitch_supported():
+            QMessageBox.information(
+                self, "Kill switch",
+                "The kill switch needs macOS pf (the packet filter) to be available.")
+            return
+        self._start_killswitch("verify", {}, "Verifying with pf (administrator prompt)…")
+
     def _start_killswitch(self, action: str, profile: dict, status: str) -> None:
         self.kill_switch_status_label.setText(status)
         self.arm_ks_btn.setEnabled(False)
         self.disarm_ks_btn.setEnabled(False)
+        self.verify_ks_btn.setEnabled(False)
         worker = self.connection_worker_class(action, profile)
         worker.finished_signal.connect(self._on_killswitch_finished)
         worker.error_signal.connect(self._on_killswitch_error)
@@ -879,16 +898,37 @@ class VpnPanel(AgentPanel):
     def _on_killswitch_finished(self, result: dict) -> None:
         self.arm_ks_btn.setEnabled(True)
         self.disarm_ks_btn.setEnabled(True)
-        if result.get("success"):
+        self.verify_ks_btn.setEnabled(True)
+        if "verify_state" in result:
+            self._show_verify_result(result)
+        elif result.get("success"):
             self.kill_switch_status_label.setText(
                 f"Kill switch: {result.get('output', 'done')}"[:200])
         else:
             self.kill_switch_status_label.setText(
                 f"Kill switch failed: {result.get('error', 'unknown')}"[:300])
 
+    def _show_verify_result(self, result: dict) -> None:
+        text = str(result.get("output") if result.get("success") else
+                   result.get("error") or "Could not verify.")
+        self.kill_switch_status_label.setText(text[:300])
+        if result.get("verify_state") != "verified_empty":
+            return
+        # pf holds nothing, so the record Sentinel keeps is wrong; offer (default
+        # No) to drop it. Clearing the record never touches pf.
+        answer = QMessageBox.question(
+            self, "Kill switch",
+            "pf is not blocking anything, but Sentinel still has the kill switch "
+            "recorded as armed.\n\nClear that record?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes and vpn_connection.clear_killswitch_record():
+            self.kill_switch_status_label.setText(
+                "Not armed: no rules loaded. Record cleared.")
+
     def _on_killswitch_error(self, error: str) -> None:
         self.arm_ks_btn.setEnabled(True)
         self.disarm_ks_btn.setEnabled(True)
+        self.verify_ks_btn.setEnabled(True)
         self.kill_switch_status_label.setText(f"Kill switch error: {error}"[:300])
 
     def run_diagnostics(self) -> None:

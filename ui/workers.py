@@ -478,6 +478,11 @@ class VpnConnectionWorker(QThread):
             if self._action in ("connect", "disconnect"):
                 result = vpn_execution.execute(
                     self._action, self._profile, confirmed=self._confirmed).as_result()
+            elif self._action == "verify":
+                state, message = vpn_connection.verify_killswitch()
+                ok = state != "unknown"
+                result = {"success": ok, "protocol": "Kill switch", "output": message,
+                          "error": None if ok else message, "verify_state": state}
             elif self._action in ("arm", "disarm"):
                 if self._action == "arm":
                     ok, message = vpn_connection.arm_killswitch(self._profile)
