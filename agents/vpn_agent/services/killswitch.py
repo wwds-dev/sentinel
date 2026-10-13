@@ -81,8 +81,10 @@ STATE_DISARMED = "disarmed"                # no marker
 STATE_RECORDED_ARMED = "recorded_armed"    # marker present, newer than boot, anchor registered
 STATE_STALE = "stale"                      # marker older than the boot, or the anchor block is gone
 STATE_VERIFIED_ARMED = "verified_armed"    # set only by the explicit Verify step (privileged pfctl read)
-STATE_VERIFIED_EMPTY = "verified_empty"    # Verify found no rules
-_ARMED_STATES = (STATE_RECORDED_ARMED, STATE_VERIFIED_ARMED)
+STATE_VERIFIED_EMPTY = "verified_empty"    # Verify found no rules in the anchor
+STATE_VERIFIED_BLOCKING = "verified_blocking"  # a blocking rule is there, the full set was not seen
+STATE_VERIFIED_INERT = "verified_inert"    # rules are loaded but not enforcing (pf off, anchor unregistered, nothing blocks)
+_ARMED_STATES = (STATE_RECORDED_ARMED, STATE_VERIFIED_ARMED, STATE_VERIFIED_BLOCKING)
 VERIFY_UNKNOWN = "unknown"                 # Verify could not reach a conclusion (not a switch state)
 # Printed between the two pfctl reads so one output can be split; chosen so pf's
 # own text cannot contain it.
@@ -122,8 +124,14 @@ class KillSwitchState:
             return f"Unavailable: {self.error}"
         where = ", ".join(self.interfaces) or "no tunnel detected"
         if self.state == STATE_VERIFIED_ARMED:
-            return (f"Verified armed ({_clock(self.verified_at)}) — only {where} may carry "
-                    "traffic. Verify again to re-check.")
+            return (f"Verified armed ({_clock(self.verified_at)}): pf is on and the anchor holds "
+                    "the block-all and loopback rules. Verify again to re-check.")
+        if self.state == STATE_VERIFIED_BLOCKING:
+            return (f"A blocking rule is present in the anchor ({_clock(self.verified_at)}), but "
+                    "the full kill-switch rule set was not seen. Verify again to re-check.")
+        if self.state == STATE_VERIFIED_INERT:
+            return (f"Not armed: the anchor holds rules that are not enforcing "
+                    f"({_clock(self.verified_at)}). Disarm clears them.")
         if self.state == STATE_RECORDED_ARMED and self.arming:
             return (f"Arming, unconfirmed — the arm was started but not seen to finish; "
                     f"if it did, only {where} may carry traffic. Disarm clears it.")
@@ -585,10 +593,11 @@ def status(endpoints: list[str] | None = None) -> KillSwitchState:
     state, boot_known, reason = _classify(marker, registered)
     arming = bool(marker and marker["state"] == "arming" and state == STATE_RECORDED_ARMED)
     verified_at = 0.0
-    if state == STATE_RECORDED_ARMED and not arming and _VERIFIED:
+    verified = dict(_VERIFIED)         # one copy: another thread may clear() it
+    if state == STATE_RECORDED_ARMED and not arming and verified.get("state"):
         # The last explicit Verify, kept in memory only: it can be out of date
         # (pf flushed by hand since), so it carries its time and arm/disarm drop it.
-        state, verified_at = _VERIFIED["state"], _VERIFIED["at"]
+        state, verified_at = verified["state"], float(verified.get("at") or 0.0)
 
     return KillSwitchState(
         available=True,
@@ -767,24 +776,36 @@ def disarm() -> tuple[bool, str]:
 
 _PF_NOISE = ("no altq", "altq related", "altq", "warning", "#")
 _PF_STATUS = re.compile(r"^\s*Status:\s*(\w+)", re.IGNORECASE | re.MULTILINE)
+_ANCHOR_REF = re.compile(rf'^\s*anchor\s+"{re.escape(ANCHOR)}(?:/\*)?"')
+_BLOCK_ALL = re.compile(r"^\s*block\s+drop\s+all\b")
+_LOOPBACK = re.compile(r"^\s*pass\s+quick\s+on\s+lo0\s+all\b")
+
+
+def _rule_lines(section: str) -> list[str]:
+    return [ln.strip() for ln in section.splitlines()
+            if ln.strip() and not ln.strip().lower().startswith(_PF_NOISE)]
 
 
 def parse_verify_output(text: str) -> tuple[str, str]:
-    """Map the output of the Verify script to (state, message).
+    """Map the output of the Verify script (pf status, main ruleset, anchor rules,
+    split by VERIFY_SEPARATOR) to (state, message).
 
     The real text of `pfctl -s info` / `-s rules` on macOS is UNVERIFIED, so this
-    reads loosely: the "Status:" word, and whether any rule line is present and
-    any of them says `block`. Anything it cannot place is VERIFY_UNKNOWN, never
-    a guess in either direction.
+    reads loosely: the "Status:" word, an `anchor "vpn-agent-killswitch"` line in
+    the main ruleset, and in the anchor whether any rule line is present, one
+    says `block`, and `block drop all` plus the loopback pass are both seen.
+    "Verified armed" needs pf on, the anchor registered and both of those rules.
+    Anything not placeable is VERIFY_UNKNOWN, never a guess in either direction.
     """
     unknown = ("Could not verify: {} (the pfctl output format is UNVERIFIED on this Mac; "
                "run `sudo pfctl -a {} -s rules` yourself to check).")
-    if VERIFY_SEPARATOR not in (text or ""):
+    parts = (text or "").split(VERIFY_SEPARATOR)
+    if len(parts) != 3:
         return VERIFY_UNKNOWN, unknown.format("the output was not in the expected shape", ANCHOR)
-    info, rules = text.split(VERIFY_SEPARATOR, 1)
-    lines = [ln.strip() for ln in rules.splitlines()
-             if ln.strip() and not ln.strip().lower().startswith(_PF_NOISE)]
-    for line in lines:
+    info, main_text, rules = parts
+    main = _rule_lines(main_text)
+    lines = _rule_lines(rules)
+    for line in main + lines:
         if line.lower().startswith("pfctl:"):
             return VERIFY_UNKNOWN, f"Could not verify: pfctl said \"{line[:160]}\"."
     status = _PF_STATUS.search(info)
@@ -796,13 +817,25 @@ def parse_verify_output(text: str) -> tuple[str, str]:
     if enabled is None:
         return VERIFY_UNKNOWN, unknown.format("pf's Status line was not recognised", ANCHOR)
     if not enabled:
-        return STATE_VERIFIED_EMPTY, (f"Not armed: rules are loaded but pf is switched off "
+        return STATE_VERIFIED_INERT, (f"Not enforcing: rules are loaded but pf is switched off "
                                       f"(verified {now}).")
-    if not any(re.search(r"\bblock\b", line) for line in lines):
-        return STATE_VERIFIED_EMPTY, (f"Not armed: the anchor holds rules but none of them blocks "
-                                      f"traffic (verified {now}).")
-    return STATE_VERIFIED_ARMED, (f"Verified armed ({now}): pf is on and the anchor holds "
-                                  "blocking rules. This was true when checked.")
+    if not any(_ANCHOR_REF.match(line) for line in main):
+        return STATE_VERIFIED_INERT, (
+            f"Not enforcing: the anchor holds rules but is not registered in the main ruleset, "
+            f"so they are inert (verified {now}; the main ruleset text is UNVERIFIED).")
+    block_all = any(_BLOCK_ALL.match(line) for line in lines)
+    loopback = any(_LOOPBACK.match(line) for line in lines)
+    if block_all and loopback:
+        return STATE_VERIFIED_ARMED, (
+            f"Verified armed ({now}): pf is on, the anchor is registered and holds `block drop "
+            "all` and the loopback pass rule. Verify does not show what else it lets through.")
+    if any(re.search(r"\bblock\b", line) for line in lines):
+        return STATE_VERIFIED_BLOCKING, (
+            f"A blocking rule is present in the anchor ({now}), but the full kill-switch set "
+            "(block drop all plus the loopback pass) was not seen. Check "
+            f"`sudo pfctl -a {ANCHOR} -s rules`.")
+    return STATE_VERIFIED_INERT, (f"Not enforcing: the anchor holds rules but none of them blocks "
+                                  f"traffic (verified {now}).")
 
 
 def verify() -> tuple[str, str]:
@@ -812,12 +845,13 @@ def verify() -> tuple[str, str]:
     or disables anything. It always goes through the administrator dialog (see
     _run_privileged), never a cached sudo ticket. The result is kept in memory
     only. Returns (state, message); state is STATE_VERIFIED_ARMED,
-    STATE_VERIFIED_EMPTY or VERIFY_UNKNOWN (cancelled, failed or unreadable,
+    STATE_VERIFIED_BLOCKING, STATE_VERIFIED_INERT, STATE_VERIFIED_EMPTY or VERIFY_UNKNOWN (cancelled, failed or unreadable,
     in which case nothing about the recorded state changes).
     """
     if not is_supported():
         return VERIFY_UNKNOWN, "Could not verify: the kill switch needs macOS pf."
-    script = f"pfctl -s info; echo '{VERIFY_SEPARATOR}'; pfctl -a {ANCHOR} -s rules"
+    script = (f"pfctl -s info; echo '{VERIFY_SEPARATOR}'; pfctl -s rules; "
+              f"echo '{VERIFY_SEPARATOR}'; pfctl -a {ANCHOR} -s rules")
     ok, output = _run_privileged(script, "Check (read-only) the VPN Agent kill switch")
     if not ok:
         return VERIFY_UNKNOWN, f"Could not verify: {' '.join(output.split())[:240] or 'no answer'}"

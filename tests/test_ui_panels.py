@@ -3468,6 +3468,36 @@ class TestTunnelPanel:
         assert asked == [QMessageBox.No] and cleared == [1]
         assert "record cleared" in tunnel.kill_switch_status_label.text().lower()
 
+    def test_inert_rules_offer_disarm_not_clearing_the_record(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        asked, cleared = [], []
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda parent, title, text, buttons, default: asked.append((text, default)) or QMessageBox.Yes))
+        monkeypatch.setattr(vpn_connection, "clear_killswitch_record", lambda: cleared.append(1) or True)
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        FakeVpnConnectionWorker.instances.clear()
+        tunnel._on_killswitch_finished({"success": True, "output": "Not enforcing: pf is switched off.",
+                                        "verify_state": "verified_inert"})
+        (text, default), = asked
+        assert default == QMessageBox.No and "disarm" in text.lower() and "clear" not in text.lower()
+        assert cleared == []
+        assert [w.action for w in FakeVpnConnectionWorker.instances] == ["disarm"]
+
+    def test_inert_rules_declined_starts_nothing(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+        FakeVpnConnectionWorker.instances.clear()
+        tunnel._on_killswitch_finished({"success": True, "output": "x", "verify_state": "verified_inert"})
+        assert FakeVpnConnectionWorker.instances == []
+
+    def test_verified_armed_and_blocking_offer_nothing(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked"))))
+        for st in ("verified_armed", "verified_blocking"):
+            tunnel._on_killswitch_finished({"success": True, "output": "x", "verify_state": st})
+
     def test_declining_the_clear_keeps_the_record(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
         from services import vpn_connection

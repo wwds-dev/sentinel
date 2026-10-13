@@ -27,8 +27,14 @@ RULES_BLOCK = ("block drop all\npass quick on lo0 all\npass quick on utun7 all\n
                "pass out quick inet proto udp from any to 203.0.113.7 port 51820\n")
 
 
-def out(info, rules):
-    return f"{info}{SEP}\n{rules}"
+MAIN_OK = ('scrub-anchor "com.apple/*" all fragment reassemble\n'
+           'anchor "com.apple/*" all\nanchor "vpn-agent-killswitch" all\n')
+MAIN_NO = 'scrub-anchor "com.apple/*" all fragment reassemble\nanchor "com.apple/*" all\n'
+
+
+def out(info, rules, main=MAIN_OK):
+    """The Verify script's output: pf status, the main ruleset, the anchor's rules."""
+    return f"{info}{SEP}\n{main}{SEP}\n{rules}"
 
 
 @pytest.fixture
@@ -60,8 +66,9 @@ def test_verify_runs_one_read_only_script_with_both_queries(pf):
     ks.verify()
     (script, why), = pf.scripts
     assert "pfctl -s info" in script
+    assert "pfctl -s rules" in script                       # the main ruleset: is our anchor referenced?
     assert f"pfctl -a {ks.ANCHOR} -s rules" in script
-    assert SEP in script
+    assert script.count(SEP) == 2
     assert "read-only" in why.lower() or "check" in why.lower()
 
 
@@ -71,7 +78,7 @@ def test_verify_script_never_changes_pf(pf):
     for forbidden in (" -f ", " -E", " -e", " -d", " -F", " -X", " -k", " -t", "tee", ">", "sed -i"):
         assert forbidden not in script, forbidden
     assert re.findall(r"pfctl\b[^;|&\n]*", script) == [
-        "pfctl -s info", f"pfctl -a {ks.ANCHOR} -s rules"]
+        "pfctl -s info", "pfctl -s rules", f"pfctl -a {ks.ANCHOR} -s rules"]
 
 
 def test_verify_never_uses_a_cached_sudo_ticket(monkeypatch):
@@ -96,24 +103,46 @@ def test_verify_goes_through_the_module_runner_not_a_direct_call():
 
 # ── the parser ──────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("info, rules, state, words", [
-    (INFO_ON, RULES_BLOCK, ks.STATE_VERIFIED_ARMED, "verified armed"),
-    (INFO_ON, "", ks.STATE_VERIFIED_EMPTY, "not armed: no rules loaded"),
-    (INFO_OFF, "", ks.STATE_VERIFIED_EMPTY, "not armed: no rules loaded"),
-    (INFO_OFF, RULES_BLOCK, ks.STATE_VERIFIED_EMPTY, "pf is switched off"),
-    (INFO_ON, "pass quick on lo0 all\n", ks.STATE_VERIFIED_EMPTY, "none of them blocks"),
+LO0 = "pass quick on lo0 all flags S/SA keep state\n"
+
+
+@pytest.mark.parametrize("info, rules, main, state, words", [
+    (INFO_ON, RULES_BLOCK, MAIN_OK, ks.STATE_VERIFIED_ARMED, "verified armed"),
+    (INFO_ON, "", MAIN_OK, ks.STATE_VERIFIED_EMPTY, "not armed: no rules loaded"),
+    (INFO_OFF, "", MAIN_OK, ks.STATE_VERIFIED_EMPTY, "not armed: no rules loaded"),
+    (INFO_OFF, RULES_BLOCK, MAIN_OK, ks.STATE_VERIFIED_INERT, "pf is switched off"),
+    (INFO_ON, "pass quick on lo0 all\n", MAIN_OK, ks.STATE_VERIFIED_INERT, "none of them blocks"),
+    (INFO_ON, RULES_BLOCK, MAIN_NO, ks.STATE_VERIFIED_INERT, "not registered"),
+    (INFO_ON, "block drop all\n" + LO0, MAIN_OK, ks.STATE_VERIFIED_ARMED, "verified armed"),
+    # partial: a block but not the whole kill-switch set
+    (INFO_ON, "block drop all\n", MAIN_OK, ks.STATE_VERIFIED_BLOCKING, "a blocking rule is present"),
+    (INFO_ON, "block drop out on en0 all\n" + LO0, MAIN_OK, ks.STATE_VERIFIED_BLOCKING,
+     "a blocking rule is present"),
 ])
-def test_known_shapes_map_to_the_two_verified_states(info, rules, state, words):
-    got, message = ks.parse_verify_output(out(info, rules))
+def test_known_shapes_map_to_the_verified_states(info, rules, main, state, words):
+    got, message = ks.parse_verify_output(out(info, rules, main))
     assert got == state
     assert words in message.lower()
 
 
+def test_verified_armed_does_not_claim_which_traffic_may_pass():
+    _, message = ks.parse_verify_output(out(INFO_ON, RULES_BLOCK))
+    assert "only" not in message.lower() and "may carry" not in message.lower()
+
+
+def test_only_armed_and_blocking_count_as_armed():
+    mk = lambda st: ks.KillSwitchState(True, False, True, state=st).armed   # noqa: E731
+    assert mk(ks.STATE_VERIFIED_ARMED) is True and mk(ks.STATE_VERIFIED_BLOCKING) is True
+    assert mk(ks.STATE_VERIFIED_INERT) is False and mk(ks.STATE_VERIFIED_EMPTY) is False
+
+
 @pytest.mark.parametrize("text", [
     "",                                              # nothing at all
-    "Status: Enabled\nblock drop all\n",             # separator missing
+    "Status: Enabled\nblock drop all\n",             # separators missing
+    f"{INFO_ON}{SEP}\n{RULES_BLOCK}",               # the S5 two-part shape: main ruleset missing
     out("something else entirely\n", RULES_BLOCK),   # pf status line not recognised
     out(INFO_ON, "pfctl: Anchor not found\n"),       # pfctl complained instead of listing
+    out(INFO_ON, RULES_BLOCK, "pfctl: /dev/pf: Permission denied\n"),
     out("Status: Maybe\n", RULES_BLOCK),
 ])
 def test_unparsable_output_is_could_not_verify_and_says_the_format_is_unverified(text):
@@ -138,7 +167,7 @@ def test_verified_armed_is_remembered_in_memory_and_shown_by_status(pf):
     assert state == ks.STATE_VERIFIED_ARMED and "verified armed" in message.lower()
     s = ks.status()
     assert s.state == ks.STATE_VERIFIED_ARMED and s.armed is True and s.verified_at > 0
-    assert "verified" in s.summary().lower()
+    assert "verified" in s.summary().lower() and "only" not in s.summary().lower()
     assert json.loads(pf.marker.read_text())["state"] == "armed"        # the file is not rewritten
 
 
@@ -227,3 +256,37 @@ def test_vpn_connection_verify_passes_through_and_survives_a_missing_module(monk
     monkeypatch.setattr(vpn_connection, "_killswitch", lambda: None)
     state, message = vpn_connection.verify_killswitch()
     assert state == ks.VERIFY_UNKNOWN and "could not verify" in message.lower()
+
+
+def test_inert_rules_make_status_not_armed_and_keep_the_marker(pf):
+    mark_armed(pf)
+    pf.result = (True, out(INFO_ON, RULES_BLOCK, MAIN_NO))
+    state, message = ks.verify()
+    assert state == ks.STATE_VERIFIED_INERT and "inert" in message.lower()
+    s = ks.status()
+    assert s.state == ks.STATE_VERIFIED_INERT and s.armed is False
+    assert "not armed" in s.summary().lower() and pf.marker.exists()
+
+
+def test_a_partial_blocking_rule_set_is_shown_as_blocking_not_verified_armed(pf):
+    mark_armed(pf)
+    pf.result = (True, out(INFO_ON, "block drop all\n"))
+    ks.verify()
+    s = ks.status()
+    assert s.state == ks.STATE_VERIFIED_BLOCKING and s.armed is True
+    assert "blocking rule is present" in s.summary().lower()
+    assert "verified armed" not in s.summary().lower()
+
+
+def test_status_survives_the_verified_result_being_cleared_mid_read(pf, monkeypatch):
+    """status() reads _VERIFIED once; a concurrent clear() must not raise."""
+    mark_armed(pf)
+
+    class Racy(dict):
+        def __bool__(self):              # truthy, then another thread clears it
+            self.clear()
+            return True
+    racy = Racy(state=ks.STATE_VERIFIED_ARMED, at=1.0)
+    monkeypatch.setattr(ks, "_VERIFIED", racy)
+    s = ks.status()                      # KeyError before the fix
+    assert s.state in (ks.STATE_RECORDED_ARMED, ks.STATE_VERIFIED_ARMED)
