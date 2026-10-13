@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -341,6 +342,41 @@ def validate(rules_file: Path | None = None) -> tuple[bool, str]:
     return False, cleaned or "pf rejected the rules."
 
 
+def loadable_rules(text: str) -> str:
+    """The rule text root will load: comments and blank lines dropped, ASCII only.
+
+    The comments exist for a person reading the file; pf needs none of them, and
+    the non-ASCII dash in the header would cross the AppleScript/shell boundary
+    for nothing. Raises ValueError for anything that is not printable ASCII.
+    """
+    lines = [ln.rstrip() for ln in text.splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")]
+    out = "\n".join(lines) + "\n"
+    if any(ord(ch) > 126 or (ord(ch) < 32 and ch != "\n") for ch in out):
+        raise ValueError("it contains a character outside printable ASCII")
+    return out
+
+
+def _load_rules_command(text: str) -> str:
+    """Shell that loads ``text`` into our anchor, as root, from the script itself.
+
+    First choice: pipe it to `pfctl -f -`. Whether this macOS pfctl accepts
+    stdin is UNVERIFIED, so if that fails the same text goes to a root-owned
+    `mktemp` file (never a user directory), its SHA-256 is checked against the
+    hash computed here, it is loaded, and removed. Both failing is a failure
+    (non-zero), and the caller does not enable pf after it.
+    """
+    digest = hashlib.sha256(text.encode("ascii")).hexdigest()
+    load = f"pfctl -a {ANCHOR} -f"
+    return (
+        f"rules={_q_str(text)}; "
+        f"{{ printf '%s' \"$rules\" | {load} - || "
+        f"{{ t=$(mktemp -t sentinel-pf.XXXXXX) && printf '%s' \"$rules\" > \"$t\" && "
+        f"[ \"$(shasum -a 256 < \"$t\" | cut -d' ' -f1)\" = {digest} ] && {load} \"$t\"; "
+        f"r=$?; rm -f \"$t\"; [ \"$r\" -eq 0 ]; }}; }}"
+    )
+
+
 def parse_boottime(text: str) -> int | None:
     """Seconds since the epoch from `sysctl -n kern.boottime` ("{ sec = N, usec = M } …")."""
     match = re.search(r"\bsec\s*=\s*(\d+)", text or "")
@@ -525,10 +561,16 @@ def arm(
     if not ok:
         return False, f"Refusing to arm — the generated rules do not parse:\n{detail}"
 
+    # Root loads the validated TEXT, carried inside the script, never a path in
+    # the user's state directory (which the user, or anything running as them,
+    # could swap after validation). The file written above is for recovery only.
+    try:
+        loadable = loadable_rules(rules)
+    except ValueError as exc:
+        return False, f"Refusing to arm — the rules cannot be passed to pf as plain text: {exc}"
     script = "; ".join([
         _ensure_registered_command(),
-        f"pfctl -a {ANCHOR} -f {_q(path)}",
-        "pfctl -E",
+        _load_rules_command(loadable) + " && pfctl -E",
     ])
     # Record the intent BEFORE root runs: if this thread is lost mid-arm (the
     # app quits during the administrator dialog) the record already says the
@@ -740,10 +782,6 @@ def _run(command: list[str]) -> tuple[bool, str]:
     if "User canceled" in output or "(-128)" in output:
         return False, "Cancelled."
     return False, output or f"exited {proc.returncode}"
-
-
-def _q(path: Path) -> str:
-    return "'" + str(path).replace("'", "'\\''") + "'"
 
 
 def _q_str(text: str) -> str:
