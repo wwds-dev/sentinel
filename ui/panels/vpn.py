@@ -912,10 +912,24 @@ class VpnPanel(AgentPanel):
         text = str(result.get("output") if result.get("success") else
                    result.get("error") or "Could not verify.")
         self.kill_switch_status_label.setText(text[:300])
-        if result.get("verify_state") != "verified_empty":
+        state = result.get("verify_state")
+        if state == "verified_inert":
+            # Rules sit in the anchor but are not enforcing; clearing the record
+            # would leave them loaded. Offer to flush them (Disarm), default No.
+            answer = QMessageBox.question(
+                self, "Kill switch",
+                "The kill-switch anchor holds rules that are not enforcing right now "
+                "(pf is off, or the anchor is not registered, or nothing blocks). They "
+                "could start blocking traffic if pf is switched on later.\n\n"
+                "Disarm now (flush the anchor)? It asks for your administrator password.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes:
+                self.disarm_kill_switch()
             return
-        # pf holds nothing, so the record Sentinel keeps is wrong; offer (default
-        # No) to drop it. Clearing the record never touches pf.
+        if state != "verified_empty":
+            return
+        # pf holds nothing in the anchor, so the record Sentinel keeps is wrong;
+        # offer (default No) to drop it. Clearing the record never touches pf.
         answer = QMessageBox.question(
             self, "Kill switch",
             "pf is not blocking anything, but Sentinel still has the kill switch "
