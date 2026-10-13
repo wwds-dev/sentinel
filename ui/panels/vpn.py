@@ -37,6 +37,7 @@ from ui.panels.vpn_servers import ServersTab
 from ui.widgets import MenuComboBox, SectionView
 from ui.workers import (
     DnsLeakWorker, IpSnapshotWorker, VpnConnectionWorker, VpnDiagnosticsWorker,
+    detach_worker,
 )
 
 
@@ -1045,18 +1046,38 @@ class VpnPanel(AgentPanel):
     def _on_health_info(self, text: str) -> None:
         self.connection_status_label.setText(text[:300])
 
+    def has_privileged_work(self) -> bool:
+        """True while an administrator action is running: a Connect, Disconnect,
+        kill-switch change or Verify (the connection worker), or a companion
+        tab's call. The window asks Wait / Quit anyway before closing on it."""
+        worker = getattr(self, "_connection_worker", None)
+        if worker is not None and worker.isRunning():
+            return True
+        for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None),
+                    getattr(self, "apps_tab", None)):
+            check = getattr(tab, "has_privileged_work", None)
+            if callable(check) and check():
+                return True
+        return False
+
     def shutdown(self, timeout_ms: int = 2000) -> None:
-        """Cancel and join Tunnel workers before their widgets are destroyed."""
+        """Cancel and join Tunnel workers before their widgets are destroyed.
+
+        A privileged worker (the connection worker, the companion tabs') that
+        outlasts the join is detached and left to finish, never terminate()d:
+        stopping it mid-call can leave pf or the tunnel changed with nothing
+        recorded.
+        """
         monitor = getattr(self, "health_monitor", None)
         if monitor is not None:
             monitor.stop()
-        workers = [self.worker, self._diagnostics_worker, self._ip_worker,
-                   self._dns_worker, getattr(self, "_connection_worker", None)]
+        connection = getattr(self, "_connection_worker", None)
+        workers = [self.worker, self._diagnostics_worker, self._ip_worker, self._dns_worker]
         for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None),
                     getattr(self, "apps_tab", None)):
             if tab is not None:
                 tab.shutdown(timeout_ms)
-        for worker in workers:
+        for worker in workers + [connection]:
             if worker is not None and worker.isRunning():
                 worker.cancel()
         for worker in workers:
@@ -1067,6 +1088,9 @@ class VpnPanel(AgentPanel):
                 # must not destroy a live QThread if an OS call ignores cancellation.
                 worker.terminate()
                 worker.wait(500)
+        if (connection is not None and connection.isRunning()
+                and not connection.wait(timeout_ms)):
+            detach_worker(connection)
 
     # ── Deliberately non-executing action preview ─────────────────────
     def preview_action(self) -> None:

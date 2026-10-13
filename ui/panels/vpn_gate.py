@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from services import vpn_execution
-from ui.workers import CallWorker
+from ui.workers import CallWorker, detach_worker
 
 
 class GatedTab(QWidget):
@@ -77,12 +77,20 @@ class GatedTab(QWidget):
     def _after_finish(self) -> None:
         """Subclasses refresh what the action may have changed."""
 
+    def has_privileged_work(self) -> bool:
+        """True while an action is running. Whether a given tab's call is
+        privileged (Tor, MAC) is not known here, so any running one counts."""
+        worker = self._worker
+        return worker is not None and worker.isRunning()
+
     def shutdown(self, timeout_ms: int = 2000) -> None:
         worker = self._worker
         if worker is None or not worker.isRunning():
             return
         worker.cancel()
         if not worker.wait(timeout_ms):
-            worker.terminate()
-            worker.wait(500)
+            # The call may be privileged (an administrator command in flight);
+            # terminate() could cut it between approval and the recorded result.
+            # Park the thread and let it finish on its own.
+            detach_worker(worker)
 
