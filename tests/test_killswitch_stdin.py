@@ -30,7 +30,9 @@ needs_tools = pytest.mark.skipif(
 def armed_script(monkeypatch, tmp_path):
     """arm() with only its privileged hop replaced; yields the script it built."""
     state_dir = tmp_path / "state"
-    got = types.SimpleNamespace(script="", rules="")
+    got = types.SimpleNamespace(script="", rules="", root_dir=tmp_path / "rootonly")
+    got.root_dir.mkdir()
+    monkeypatch.setattr(ks, "ROOT_TMP_DIR", str(got.root_dir))
     monkeypatch.setattr(ks.paths, "state_dir", lambda: state_dir)
     monkeypatch.setattr(ks, "is_supported", lambda: True)
     monkeypatch.setattr(ks, "_is_registered", lambda: True)
@@ -62,6 +64,7 @@ fi
 if [ "$3" = "-f" ]; then
   cp "$4" '{file_copy}'
   echo "$4" > '{tmp_path / "file.path"}'
+  ls -l "$4" | cut -c1-10 > '{tmp_path / "file.mode"}'
   exit {1 if fail_file else 0}
 fi
 exit 0
@@ -75,7 +78,7 @@ exit 0
 
 
 def run_script(script, tmp_path, stub):
-    stub.tmp.mkdir(exist_ok=True)
+    stub.tmp.mkdir(exist_ok=True)               # a decoy TMPDIR: must stay untouched
     env = {"PATH": f"{stub.stubs}:/usr/bin:/bin", "TMPDIR": str(stub.tmp)}
     return subprocess.run(["/bin/bash", "-c", script], env=env, capture_output=True,
                           text=True, timeout=30)
@@ -157,7 +160,11 @@ def test_when_pf_refuses_stdin_the_same_text_is_loaded_from_a_hash_checked_temp_
     text = ks.loadable_rules(armed_script.rules)
     assert stub.file.read_text() == text
     assert hashlib.sha256(stub.file.read_bytes()).hexdigest() in armed_script.script
-    assert list(stub.tmp.iterdir()) == []                    # the temp copy is gone
+    assert list(armed_script.root_dir.iterdir()) == []       # the temp copy is gone
+    assert list(stub.tmp.iterdir()) == []                    # TMPDIR was never used
+    path = stub.file_path.read_text().strip()
+    assert path.startswith(str(armed_script.root_dir) + "/sentinel-pf.")
+    assert (tmp_path / "file.mode").read_text().strip() == "-rw-------"
 
 
 @needs_tools
@@ -167,7 +174,7 @@ def test_a_temp_copy_whose_hash_does_not_match_is_never_loaded(armed_script, tmp
     done = run_script(armed_script.script, tmp_path, stub)
     assert done.returncode != 0
     assert calls(stub) == ["-a vpn-agent-killswitch -f -"]   # no file load, no -E
-    assert list(stub.tmp.iterdir()) == []
+    assert list(armed_script.root_dir.iterdir()) == []
 
 
 @needs_tools
@@ -177,4 +184,16 @@ def test_a_load_failure_does_not_enable_pf_and_reports_failure(armed_script, tmp
     done = run_script(armed_script.script, tmp_path, stub)
     assert done.returncode != 0
     assert "-E" not in calls(stub)
+    assert list(armed_script.root_dir.iterdir()) == []
     assert list(stub.tmp.iterdir()) == []
+
+
+def test_the_fallback_sets_a_private_umask_and_uses_an_explicit_root_path(armed_script):
+    script = armed_script.script
+    assert "umask 077" in script
+    assert f"mktemp {armed_script.root_dir}/sentinel-pf.XXXXXX" in script
+    assert "mktemp -t" not in script and "TMPDIR" not in script
+
+
+def test_the_default_temp_directory_is_a_root_only_location():
+    assert ks.ROOT_TMP_DIR == "/private/var/run"

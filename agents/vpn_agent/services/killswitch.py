@@ -57,6 +57,11 @@ MARKER_END = "# <<< vpn-agent-killswitch <<<"
 # Private ranges treated as "the LAN" when local access is kept.
 DEFAULT_LAN = ("192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12")
 
+# Where the stdin fallback writes its root-owned temp copy: a directory only
+# root can create files in, named explicitly so a TMPDIR in root's environment
+# cannot redirect it.
+ROOT_TMP_DIR = "/private/var/run"
+
 # Every range a LAN rule may name (the defaults plus link-local).
 LAN_RANGES = frozenset(DEFAULT_LAN) | {"169.254.0.0/16"}
 
@@ -463,9 +468,10 @@ def _load_rules_command(text: str) -> str:
     return (
         f"rules={_q_str(text)}; "
         f"{{ printf '%s' \"$rules\" | {load} - || "
-        f"{{ t=$(mktemp -t sentinel-pf.XXXXXX) && printf '%s' \"$rules\" > \"$t\" && "
+        f"( umask 077; t=$(mktemp {ROOT_TMP_DIR}/sentinel-pf.XXXXXX) && "
+        f"printf '%s' \"$rules\" > \"$t\" && "
         f"[ \"$(shasum -a 256 < \"$t\" | cut -d' ' -f1)\" = {digest} ] && {load} \"$t\"; "
-        f"r=$?; rm -f \"$t\"; [ \"$r\" -eq 0 ]; }}; }}"
+        f"r=$?; rm -f \"$t\"; [ \"$r\" -eq 0 ] ); }}"
     )
 
 
