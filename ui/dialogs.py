@@ -1304,7 +1304,13 @@ def show_settings(app):
             erase_portable_user_data()
         except Exception as exc:  # noqa: BLE001 - a failed reset must never
             # look like a successful one; any error here means data may remain.
-            QMessageBox.critical(dialog, "Reset refused", str(exc))
+            message = str(exc)
+            from services.portable_reset import PartialEraseError
+            if isinstance(exc, PartialEraseError):
+                message += ("\n\nSome of Sentinel's data may already have been erased; "
+                            "what remains is still on the drive. Quit Sentinel and "
+                            "check the Sentinel Data folder before using it again.")
+            QMessageBox.critical(dialog, "Reset refused", message)
             return
         app._portable_reset_committed = True
         QMessageBox.information(

@@ -12,6 +12,10 @@ from services.runtime_paths import (
 
 CONFIRMATION_PHRASE = "ERASE SENTINEL DATA"
 
+
+class PartialEraseError(PortableRuntimeError):
+    """Erasing started and then failed: some data may already be gone."""
+
 # Set once an Emergency Reset starts deleting, and never cleared in this
 # process (the reset ends by quitting). A parked worker thread that would still
 # write into the data folder checks it first (spec no-thread-terminate, A5).
@@ -49,12 +53,18 @@ def erase_portable_user_data() -> Path:
     if not data.is_dir():
         raise PortableRuntimeError("Portable data folder is unavailable; reset was refused.")
 
-    _ERASING.set()                 # before the first deletion, and it stays set
-    for child in tuple(data.iterdir()):
-        if child.is_symlink() or child.is_file():
-            child.unlink()
-        elif child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+    _ERASING.set()                 # before the first deletion; stays set once it succeeds
+    try:
+        for child in tuple(data.iterdir()):
+            if child.is_symlink() or child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    except Exception as exc:
+        # The app keeps running after a refused reset, so it must be able to
+        # write again; the user is told the folder may be half erased.
+        _ERASING.clear()
+        raise PartialEraseError(f"Erasing stopped part-way: {exc}") from exc
     return data

@@ -250,3 +250,47 @@ def test_no_data_write_once_erasing_has_started(tmp_path, latch, write):
         else:
             model_watch.ModelWatch(tmp_path / "data" / "model_watch.json").save()
     assert sorted(p.name for p in tmp_path.rglob("*")) == before
+
+
+# ── Review P3-2: a failed erase does not leave writes blocked ───────────────
+
+def _portable(tmp_path, monkeypatch):
+    root = tmp_path / "usb"
+    data = root / "Sentinel Data"
+    (data / "data").mkdir(parents=True)
+    (data / "a.txt").write_text("x")
+    (root / ".sentinel-portable").write_text("")
+    monkeypatch.setattr(portable_reset, "portable_root", lambda: root)
+    monkeypatch.setattr(portable_reset, "user_data_base", lambda: data)
+    return data
+
+
+def test_a_failed_erase_clears_the_latch_and_says_it_is_partial(tmp_path, monkeypatch, latch):
+    _portable(tmp_path, monkeypatch)
+
+    def broken(_path):
+        raise OSError("device removed")
+    monkeypatch.setattr(portable_reset.shutil, "rmtree", broken)
+    with pytest.raises(portable_reset.PartialEraseError, match="part-way"):
+        portable_reset.erase_portable_user_data()
+    assert portable_reset.writes_allowed()
+
+
+def test_the_refusal_dialog_says_data_may_be_partly_erased(win, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QInputDialog, QPushButton
+
+    def broken():
+        raise portable_reset.PartialEraseError("Erasing stopped part-way: device removed")
+    shown = []
+    monkeypatch.setattr(portable_reset, "erase_portable_user_data", broken)
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("ERASE SENTINEL DATA", True)))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: shown.append(a[2])))
+    opened = []
+    monkeypatch.setattr(QDialog, "exec", lambda self: opened.append(self) or 0)
+    dialogs.show_settings(win)
+    next(b for b in opened[0].findChildren(QPushButton)
+         if b.objectName() == "EmergencyPortableReset").click()
+    opened[0].reject()
+    assert len(shown) == 1 and "may already have been erased" in shown[0]
+    assert not getattr(win, "_portable_reset_committed", False)
