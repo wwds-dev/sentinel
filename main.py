@@ -5226,6 +5226,22 @@ def _finish_quit_anyway(window, settings) -> None:
     os._exit(0)
 
 
+def _run_event_loop(app, window, settings):
+    """Run the application until it quits, then leave.
+
+    Shared by the `__main__` block and tests/helpers/quit_harness.py, so the
+    quit test exercises the real exit path. aboutToQuit stores the window
+    geometry (skipped after a portable reset erased its folder).
+    """
+    app.aboutToQuit.connect(
+        lambda: None if getattr(window, "_portable_reset_committed", False)
+        else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
+    )
+    app.exec()
+    _finish_quit_anyway(window, settings)
+    sys.exit(0)
+
+
 def _show_main_window(window):
     """Show, restore, clamp to the primary work area, and foreground a window."""
     screen = QApplication.primaryScreen()
@@ -5338,9 +5354,4 @@ if __name__ == "__main__":
         menu_bar_item.quit_requested.connect(window.close)
         menu_bar_item.show()
 
-    app.aboutToQuit.connect(
-        lambda: None if getattr(window, "_portable_reset_committed", False)
-        else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
-    )
-    app.exec()
-    _finish_quit_anyway(window, settings)
+    _run_event_loop(app, window, settings)
