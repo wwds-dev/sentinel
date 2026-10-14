@@ -4172,22 +4172,17 @@ class GodAI(QWidget):
         A cancelled worker can still deliver a final answer or a usage report
         a moment later; delivered into the window, that would be rendered and
         billed against a run that was already closed as cancelled.
+
+        The chat slots stay connected on purpose and every handler drops a
+        sender carrying `_sentinel_detached`. Disconnecting does not help: a
+        call queued before Stop is still delivered afterwards, and then with
+        `sender()` None, so the flag could not be read (PySide6 6.11, spec
+        no-thread-terminate R7). Connected, `sender()` is always the worker.
         """
         try:
             worker._sentinel_detached = True
         except (AttributeError, RuntimeError):
             pass
-        for signal, handler in (
-            (worker.status_signal, self.handle_chat_status),
-            (worker.token_signal, self.handle_chat_token),
-            (worker.finished_signal, self.handle_chat_finished),
-            (worker.usage_signal, self.handle_chat_usage),
-            (worker.error_signal, self.handle_chat_error),
-        ):
-            try:
-                signal.disconnect(handler)
-            except (RuntimeError, TypeError):
-                pass
         # Keep the thread referenced until it ends (never terminate it).
         if isinstance(worker, QThread):
             park(worker)

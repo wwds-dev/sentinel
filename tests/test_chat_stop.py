@@ -168,13 +168,10 @@ def test_stop_current_task_after_stop_reports_nothing_running(win, no_terminate)
                if m.get("content", "").startswith("Chat request stopped")) == notices == 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "R7 settled at Build 2026-10-14: PySide6 6.11 still delivers a call queued "
-    "before disconnect(), with sender() None, so _from_detached_chat_worker cannot "
-    "see the flag. Fixing it changes A2 (stop disconnecting); left to the owner."))
 def test_m3_tokens_queued_before_stop_are_dropped(win, no_terminate):
-    """R7: events the worker posted before Stop, still in the queue when Stop
-    disconnects, must be dropped (the spec's detached-sender flag)."""
+    """R7: events the worker posted before Stop, still queued when Stop runs,
+    are dropped by the detached-sender flag. The slots stay connected because
+    a call delivered after disconnect() has sender() None (PySide6 6.11)."""
     queued = threading.Event()
     hold = threading.Event()
 
