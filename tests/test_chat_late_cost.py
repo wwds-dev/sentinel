@@ -225,3 +225,30 @@ def test_add_late_cost_touches_only_a_cancelled_row_and_keeps_its_duration():
     assert (row["status"], row["input_tokens"], row["output_tokens"], row["cost_eur"]) == \
         ("cancelled", 5, 6, 0.5)
     assert row["duration_sec"] == duration
+
+
+def test_a_stream_stopped_after_its_last_element_is_still_reported():
+    """Review P2-1: the cancel used to be checked only at the top of the stream
+    loop, so a Stop after the last element (often the usage sentinel) billed
+    the reply with no record."""
+    reports, finished = [], []
+
+    def stream(*_a):
+        yield "the whole reply"
+        yield {"__usage__": {"input_tokens": 9, "output_tokens": 2}}
+
+    worker = workers.ChatWorker(stream, "openai", "m", [], "p")
+    worker.stopped_usage_signal.connect(reports.append)
+    worker.finished_signal.connect(finished.append)
+    # Cancel once the stream is exhausted: after the last element was read.
+    gen = stream()
+
+    def exhausted_then_cancel(*_a):
+        yield from gen
+        worker.cancel()
+
+    worker.run_backend_func = exhausted_then_cancel
+    worker.run()                                                 # synchronously, no thread
+    assert reports == [{"usage": {"input_tokens": 9, "output_tokens": 2},
+                        "response_text": "the whole reply"}]
+    assert finished == []

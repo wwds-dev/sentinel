@@ -407,6 +407,12 @@ class ChatWorker(QThread):
                     self.token_signal.emit(token)
 
                 response = "".join(response_parts)
+                if self._cancel_requested:
+                    # Stopped after the last element: the provider has billed
+                    # the whole reply, so it is reported like any other stop.
+                    self._report_stopped(stream_usage, response)
+                    self.error_signal.emit("Request cancelled by user.")
+                    return
 
                 # Prefer the provider's real usage; fall back to the honest
                 # char/4 estimate only when no counts were reported.
