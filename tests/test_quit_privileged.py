@@ -158,7 +158,7 @@ def test_close_with_a_privileged_action_running_asks_and_wait_keeps_the_window(m
     assert order == ["ask", "ignore", "wait-timer"]          # nothing stopped, nothing closed
 
 
-def test_close_with_quit_anyway_detaches_and_marks_the_process_to_exit(monkeypatch):
+def test_close_with_quit_anyway_stops_background_work_and_accepts(monkeypatch):
     from main import GodAI
     order = []
     monkeypatch.setattr("ui.dialogs.ask_quit_with_privileged_work",

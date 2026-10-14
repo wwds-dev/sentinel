@@ -90,3 +90,21 @@ def test_bug_spray_parks_its_model_worker_and_bounds_its_process_waits(parked):
     assert parked == [model] and model.cancelled
     assert feed_waits and feed_waits[0] <= 200     # the feed's wait comes out of the budget
     assert elapsed < 0.35
+
+
+def test_the_privileged_connection_join_keeps_its_own_timeout(parked):
+    """D2 (owner decision): the privileged join is outside the shared budget,
+    so even an expired deadline leaves it its full timeout_ms."""
+    waited = []
+
+    class Connection(Stuck):
+        def wait(self, ms=0):
+            waited.append(ms)
+            return False
+
+    connection = Connection()
+    panel = SimpleNamespace(health_monitor=None, worker=None, _diagnostics_worker=None,
+                            _ip_worker=None, _dns_worker=None, _connection_worker=connection,
+                            privacy_tab=None, servers_tab=None, apps_tab=None)
+    VpnPanel.shutdown(panel, 1500, deadline=time.monotonic() - 1)
+    assert waited == [1500] and parked == [connection]

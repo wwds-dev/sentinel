@@ -252,3 +252,53 @@ def test_a_stream_stopped_after_its_last_element_is_still_reported():
     assert reports == [{"usage": {"input_tokens": 9, "output_tokens": 2},
                         "response_text": "the whole reply"}]
     assert finished == []
+
+
+# ── Verify gaps (survivors L2, L3, L4) ──────────────────────────────────────
+
+def test_late_usage_from_a_stopped_worker_is_not_billed_to_the_next_request(win):
+    """L2: a parked worker that misses its cancel still emits usage_signal;
+    handle_chat_usage must drop it, or it becomes the next request's counts."""
+    _use(win, "ollama")
+    first, first_run, first_call = _send(win)
+    win.stop_chat_worker()
+    second, second_run, second_call = _send(win, "A different question.")
+    first._cancel_requested = False          # the race: the cancel is missed
+    _finish_late(first, first_call, ("late text", {"input_tokens": 99, "output_tokens": 99}))
+    _finish_late(second, second_call, "the second answer")
+    row = _runs(second_run)
+    assert row["status"] == "success"
+    assert (row["input_tokens"], row["output_tokens"]) != (99, 99)
+    assert _runs(first_run)["status"] == "cancelled"
+
+
+def test_the_recorder_bills_each_worker_at_most_once(win):
+    """L3: the recorder's own once-per-worker guard, without the worker's."""
+    run_id = win.run_logger.start("chat", "General Chat", "openai", "m", "Hybrid", "p")
+    win.run_logger.cancel(run_id)
+    worker = workers.ChatWorker(lambda *a: "", "openai", "m", [], "p")
+    worker._sentinel_run = {"run_id": run_id, "agent": "chat", "tool": "General Chat",
+                            "backend": "openai", "model": "m", "prompt": "p", "project": None}
+    worker.stopped_usage_signal.connect(win._record_stopped_cost)
+    before = _last_usage_rowid()
+    payload = {"usage": {"input_tokens": 7, "output_tokens": 3}, "response_text": "x"}
+    worker.stopped_usage_signal.emit(payload)    # main thread: a direct call
+    worker.stopped_usage_signal.emit(payload)
+    assert len(_usage_rows_after(before)) == 1
+
+
+def test_a_mid_stream_stop_after_the_usage_element_reports_its_counts():
+    """L4: counts already received are reported, so the row is exact, not estimated."""
+    reports = []
+
+    def stream(*_a):
+        yield "a "
+        yield {"__usage__": {"input_tokens": 9, "output_tokens": 2}}
+        yield "b "
+        yield "c"
+
+    worker = workers.ChatWorker(stream, "openai", "m", [], "p")
+    worker.stopped_usage_signal.connect(reports.append)
+    worker.token_signal.connect(lambda t: worker.cancel() if t == "b " else None)
+    worker.run()
+    assert reports == [{"usage": {"input_tokens": 9, "output_tokens": 2}, "response_text": "a b "}]

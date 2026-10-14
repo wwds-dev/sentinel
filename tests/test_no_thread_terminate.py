@@ -180,6 +180,23 @@ def test_one_more_terminate_in_main_is_found():
     assert len(find_terminate_uses(planted)) == len(find_terminate_uses(real)) + 1
 
 
+def test_the_scanner_names_a_function_after_a_nested_sibling():
+    """G4: the qualname stack is popped on leaving a scope."""
+    source = ("class A:\n    def f(self):\n        def inner():\n            pass\n"
+              "    def g(self):\n        self.t.terminate()\n")
+    assert find_terminate_uses(source) == [("A.g", 6)]
+
+
+def test_the_scan_covers_every_directory_the_spec_names():
+    """G2: main.py, ui/, services/, providers/ and agents/ (spec A6), each with
+    at least one file actually scanned."""
+    assert set(SCAN_DIRS) >= {"ui", "services", "providers", "agents"}
+    rels = {p.relative_to(ROOT).as_posix() for p in _scope_files()}
+    for name in ("ui", "services", "providers", "agents"):
+        assert any(r.startswith(f"{name}/") for r in rels), name
+    assert "main.py" in rels
+
+
 def test_the_scan_is_not_vacuous():
     files = _scope_files()
     rels = {p.relative_to(ROOT).as_posix() for p in files}

@@ -217,3 +217,45 @@ def test_a_lambda_with_no_context_is_delivered_on_the_main_thread(threads):
     assert thread.wait(2000)
     _spin(lambda: bool(seen), 1)
     assert seen == [True]
+
+
+# ── Verify gaps (survivors W6, D1) ──────────────────────────────────────────
+
+def test_parking_a_thread_twice_keeps_one_entry_and_one_release(threads, release_spy):
+    thread = _start(threads)
+    workers.park(thread)
+    workers.park(thread)
+    assert workers._DETACHED_WORKERS.count(thread) == 1
+    thread.gate.set()
+    assert _spin(lambda: thread not in workers._DETACHED_WORKERS)
+    _spin(lambda: False, 0.1)
+    assert release_spy == [(True, False)]       # one connection, one release
+
+
+class Slow:
+    """Finishes after 0.3 s: wait(ms) returns True only if given that long."""
+
+    def __init__(self):
+        self.waited = []
+
+    def isRunning(self):                       # noqa: N802
+        return True
+
+    def cancel(self):
+        pass
+
+    def wait(self, ms=0):
+        self.waited.append(ms)
+        time.sleep(min(ms, 300) / 1000)
+        return ms >= 300
+
+
+def test_a_worker_that_finishes_inside_the_budget_is_joined_not_parked(monkeypatch):
+    """D1: a lower bound. Joins get what is left of the deadline, not a
+    fraction of it; a worker done in 0.3 s against 2.5 s is never parked."""
+    parked = []
+    monkeypatch.setattr(workers, "detach_worker", parked.append)
+    slow = Slow()
+    assert workers.join_or_park([slow], time.monotonic() + 2.5) == []
+    assert parked == [] and slow.waited[0] >= 2000
+    assert workers.remaining_ms(time.monotonic() + 1.0) >= 900
