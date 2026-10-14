@@ -5212,9 +5212,9 @@ class GodAI(QWidget):
                 event.ignore()
                 self._wait_for_privileged_work()
                 return
-            # Quit anyway: panels detach the worker; main() leaves with os._exit
-            # so Qt never aborts over a thread that is still running.
-            self._quit_anyway = True
+            # Quit anyway: panels detach the worker. Every quit, this one
+            # included, leaves through _leave and os._exit, so Qt never aborts
+            # over a thread that is still running (ADR 0001).
             timer = getattr(self, "_quit_wait_timer", None)
             if timer is not None:
                 timer.stop()            # an earlier "Wait" must not fire mid-close

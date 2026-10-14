@@ -166,7 +166,9 @@ def test_close_with_quit_anyway_detaches_and_marks_the_process_to_exit(monkeypat
     win = _window(True, order)
     GodAI.closeEvent(win, _event(order))
     assert order == ["ask", "stop", "accept"]
-    assert win._quit_anyway is True
+    # No per-quit marker any more: every quit leaves through main._leave and
+    # os._exit (ADR 0001; tests/test_quit_anyway_exit.py), so nothing to set.
+    assert not hasattr(win, "_quit_anyway")
 
 
 def test_close_with_nothing_privileged_running_does_not_ask(monkeypatch):
