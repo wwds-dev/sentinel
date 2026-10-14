@@ -365,3 +365,15 @@ def test_an_open_write_guard_writes_the_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "WRITE_GUARD", lambda: True)
     b.refresh(cache)
     assert cache.is_file()
+
+
+def test_sentinel_installs_the_write_guard_at_startup_not_in_the_worker():
+    """Review P3-3: the guard is set once when main is imported (on the main
+    thread), not lazily from the model-scan thread."""
+    import inspect
+
+    import main
+    from services import portable_reset
+    from ui import workers
+    assert main.benchmarks.WRITE_GUARD is portable_reset.writes_allowed
+    assert "WRITE_GUARD =" not in inspect.getsource(workers.ModelScanWorker)
