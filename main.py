@@ -5154,18 +5154,18 @@ class GodAI(QWidget):
                 self.run_logger.cancel(run_id)
             finally:
                 self.active_run_id = None
-        # The model scan and a model pull are QThreads of ours too; a quit
-        # while one ran destroyed a live thread (and could crash on exit).
+        # The model scan and the Muse Glimmer pull are QThreads of ours too; a
+        # quit while one ran destroyed a live thread (and could crash on exit).
         join_or_park([getattr(self, "model_scan_worker", None),
-                      getattr(self, "model_pull_worker", None)], deadline)
+                      getattr(self, "muse_pull_worker", None)], deadline)
         from ui.dialogs import shutdown_panels
         shutdown_panels(self, deadline)
         if fence:
             fence_parked()
-            # A scan that finished inside the join is not parked, so not
-            # fenced: stop listening to it before the folder it would record
-            # into is erased.
+            # A scan or pull that finished inside the join is not parked, so
+            # not fenced: stop listening to it before the folder is erased.
             drop_result_slots(getattr(self, "model_scan_worker", None))
+            drop_result_slots(getattr(self, "muse_pull_worker", None))
         # Whatever a panel left authorised but never recorded: close each row
         # so the Run log does not show it as running for ever.
         for request_id in list(self._pending_requests):

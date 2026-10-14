@@ -70,7 +70,7 @@ def _window(stuck):
     spray = PanelStub(BugBountyPanel, program_feed=SimpleNamespace(shutdown=lambda ms: None),
                       _nmap_stop_timer=lambda: None, _nmap_process=None, worker=stuck())
     win = SimpleNamespace(chat_worker=stuck(), active_run_id=None,
-                          model_scan_worker=stuck(), model_pull_worker=stuck(),
+                          model_scan_worker=stuck(), muse_pull_worker=stuck(),
                           panels={"vpn": vpn, "osint_heavy": hound, "bug_bounty": spray},
                           _pending_requests={}, _note_failure=lambda *a: None)
     win._detach_chat_worker = lambda worker: None
@@ -125,3 +125,12 @@ def test_every_join_comes_out_of_the_given_deadline(parked):
     start = time.monotonic()
     main.GodAI.stop_background_work(win, deadline=start + 0.2)
     assert time.monotonic() - start < 0.4      # the chat join included
+
+
+def test_the_pull_the_window_starts_is_the_one_quit_joins():
+    """Review P2-3: quit read `model_pull_worker`, a name the app never sets;
+    the Muse Glimmer pull lives in `muse_pull_worker`."""
+    import inspect
+    start = inspect.getsource(main.GodAI)
+    assert "self.muse_pull_worker = ModelPullWorker(" in start
+    assert "model_pull_worker" not in start

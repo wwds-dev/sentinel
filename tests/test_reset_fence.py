@@ -218,6 +218,21 @@ def test_the_fence_disconnects_the_model_scan_results(win, monkeypatch):
     assert got == []
 
 
+def test_the_fence_disconnects_the_muse_pull_results(win):
+    """Review P2-3: the pull's finish or error would open a second modal
+    during the post-erase dialog."""
+    got = []
+    pull = workers.ModelPullWorker(None, "muse")
+    pull.finished_signal.connect(got.append)
+    pull.error_signal.connect(got.append)
+    win.muse_pull_worker = pull
+    win.stop_background_work(fence=True)
+    pull.finished_signal.emit("muse")
+    pull.error_signal.emit("late")
+    QApplication.processEvents()
+    assert got == []
+
+
 @pytest.mark.parametrize("write", ["history_save", "history_update", "settings", "model_watch"])
 def test_no_data_write_once_erasing_has_started(tmp_path, latch, write):
     from services import history_store, model_watch, settings_store
