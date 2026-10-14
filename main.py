@@ -3635,6 +3635,16 @@ class GodAI(QWidget):
             self.chat_worker.finished_signal.connect(self.handle_chat_finished)
             self.chat_worker.usage_signal.connect(self.handle_chat_usage)
             self.chat_worker.error_signal.connect(self.handle_chat_error)
+            # Captured now: a late cost report after Stop must be billed to
+            # this request, never to whatever pending_* says by then.
+            self.chat_worker._sentinel_run = {
+                "run_id": self.active_run_id, "agent": selected_agent,
+                "tool": selected_tool, "backend": final_backend, "model": final_model,
+                "prompt": full_prompt, "project": self.active_project_id,
+            }
+            stopped_usage = getattr(self.chat_worker, "stopped_usage_signal", None)
+            if stopped_usage is not None:       # the Chat tests' fake worker has none
+                stopped_usage.connect(self._record_stopped_cost)
             self.chat_worker.start()
 
         except Exception as e:
@@ -4157,6 +4167,42 @@ class GodAI(QWidget):
         if self._from_detached_chat_worker():
             return
         self.pending_usage = usage
+
+    def _record_stopped_cost(self, payload) -> None:
+        """Bill a cloud request that was stopped after the provider answered.
+
+        Runs on the UI thread (queued from the worker), the same single writer
+        as every other usage row. It touches only the usage log, the run row
+        (already closed as cancelled) and the session total; never the
+        transcript, the timer, the buttons or the chat file. Local requests
+        cost nothing and record nothing; a fenced worker (Emergency Reset)
+        records nothing; each worker records at most once.
+        """
+        sender = self.sender()
+        run = getattr(sender, "_sentinel_run", None) if sender is not None else None
+        if not run or getattr(sender, "_sentinel_fenced", False):
+            return
+        if run.get("backend") not in CLOUD_PROVIDERS:
+            return
+        if getattr(sender, "_sentinel_cost_recorded", False):
+            return
+        sender._sentinel_cost_recorded = True
+        payload = payload or {}
+        counts = payload.get("usage")
+        usage = dict(counts) if counts else {}
+        usage["cost_type_override"] = "cancelled-exact" if counts else "cancelled-estimated"
+        entry = self.usage_tracker.log_request(
+            agent=run.get("agent", ""), backend=run["backend"], model=run.get("model", ""),
+            prompt_text=run.get("prompt", ""), response_text=payload.get("response_text", ""),
+            usage=usage, project=run.get("project"),
+        )
+        if run.get("run_id"):
+            self.run_logger.add_late_cost(
+                run["run_id"], entry.get("input_tokens", 0), entry.get("output_tokens", 0),
+                entry.get("cost_eur", 0.0),
+            )
+        self.session_cost_total += entry["estimated_cost"]
+        self.update_usage_labels()
 
     def _from_detached_chat_worker(self) -> bool:
         """True when the signal being handled came from a worker that was

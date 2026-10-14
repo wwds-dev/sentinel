@@ -341,6 +341,11 @@ class ChatWorker(QThread):
     finished_signal = Signal(str)
     error_signal = Signal(str)
     usage_signal = Signal(dict)
+    # A request stopped after the provider had already answered (or while it
+    # streamed): {"usage": provider counts or None, "response_text": what was
+    # received}. At most once. Separate from usage_signal, which panels connect
+    # to their own billing, so only Chat records a stopped request's cost.
+    stopped_usage_signal = Signal(dict)
 
     def __init__(self, run_backend_func, backend: str, model: str, messages: list, prompt: str):
         super().__init__()
@@ -353,6 +358,12 @@ class ChatWorker(QThread):
 
     def cancel(self):
         self._cancel_requested = True
+
+    def _report_stopped(self, usage, response_text) -> None:
+        if getattr(self, "_stopped_reported", False):
+            return
+        self._stopped_reported = True
+        self.stopped_usage_signal.emit({"usage": usage, "response_text": str(response_text or "")})
 
     def _emit_as_tokens(self, text: str):
         for part in re.split(r"(\s+)", text):
@@ -381,6 +392,7 @@ class ChatWorker(QThread):
                 stream_usage = None
                 for token in result:
                     if self._cancel_requested:
+                        self._report_stopped(stream_usage, "".join(response_parts))
                         self.error_signal.emit("Request cancelled by user.")
                         return
 
@@ -405,6 +417,7 @@ class ChatWorker(QThread):
                 response, usage = result
                 self._emit_as_tokens(response)
                 if self._cancel_requested:
+                    self._report_stopped(usage, response)
                     return
 
             # ===== NORMAL STRING RESPONSE =====
@@ -412,6 +425,7 @@ class ChatWorker(QThread):
                 response = result
                 self._emit_as_tokens(response)
                 if self._cancel_requested:
+                    self._report_stopped(None, response)
                     return
 
             if usage:
