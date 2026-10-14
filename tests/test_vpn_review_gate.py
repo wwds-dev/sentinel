@@ -612,3 +612,56 @@ def test_the_confirmation_dialog_lists_the_risks_of_a_disconnect(tmp_path):
     for item in r.risks:
         assert f"• {item}" in body
     assert any("Risks" in title and r.risks[0] in text for title, text, _ in r.sections())
+
+
+# ── Codex review of PR #3: the reviewed file is the file root runs ─────────
+
+def test_an_interface_only_connect_runs_the_reviewed_file_not_a_bare_name(tmp_path, monkeypatch):
+    conf = wg_conf(tmp_path, "wgx")
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(tmp_path),))
+    r = review("connect", IFACE_ONLY)
+    assert r.target == str(conf) and str(conf) in r.command
+    runner = Recorder()
+    outcome = vpn_execution.execute("connect", IFACE_ONLY, confirmed=r, run_as_root=runner,
+                                    probe=Probe(), killswitch_armed=lambda: False,
+                                    sleep=lambda s: None)
+    assert outcome.ran and len(runner.scripts) == 1
+    assert str(conf) in runner.scripts[0], "wg-quick must be given the hashed file"
+    assert "wgx'" not in runner.scripts[0].replace(str(conf), "")
+
+
+def test_an_interface_only_disconnect_also_names_the_reviewed_file(tmp_path, monkeypatch):
+    conf = wg_conf(tmp_path, "wgx")
+    monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(tmp_path),))
+    r = review("disconnect", IFACE_ONLY, Probe(up={"wgx"}))
+    runner = Recorder()
+    vpn_execution.execute("disconnect", IFACE_ONLY, confirmed=r, run_as_root=runner,
+                          probe=Probe(up={"wgx"}), killswitch_armed=lambda: False,
+                          sleep=lambda s: None)
+    assert runner.scripts and str(conf) in runner.scripts[0]
+
+
+def test_a_bare_hook_command_in_a_user_writable_path_directory_is_a_blocker(tmp_path, monkeypatch):
+    helper = tmp_path / "helper"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr(vpn_connection.shutil, "which",
+                        lambda name, *a, **k: str(tmp_path / "wg-quick") if name == "wg-quick" else None)
+    path = wg_conf(tmp_path, interface_extra="PostUp = helper --up\n")
+    r = review("connect", profile_for(path))
+    assert _blocked(r, "helper") and any("resolves to" in b for b in r.blockers)
+
+
+def test_a_bare_hook_command_that_resolves_to_a_root_owned_program_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: "/usr/bin/true")
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
+        "/usr/bin/true": (0, ROOT_FILE), "/usr/bin": (0, ROOT_DIR), "/usr": (0, ROOT_DIR),
+        "/": (0, ROOT_DIR)}))
+    path = wg_conf(tmp_path, interface_extra="PostUp = true\n")
+    assert review("connect", profile_for(path)).allowed
+
+
+def test_a_bare_hook_command_that_is_not_installed_is_left_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: None)
+    path = wg_conf(tmp_path, interface_extra="PostUp = some-builtin-or-missing\n")
+    assert review("connect", profile_for(path)).allowed

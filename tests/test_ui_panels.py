@@ -3538,7 +3538,9 @@ class TestTunnelPanel:
         tunnel.connect_vpn()
         confirmed = FakeVpnConnectionWorker.instances[0].confirmed
         assert isinstance(confirmed, ExecutionReview)
-        assert confirmed.action == "connect" and confirmed.target == "wg0"
+        # An interface-only profile now runs the reviewed file, named by absolute path.
+        assert confirmed.action == "connect" and confirmed.interface == "wg0"
+        assert os.path.isabs(confirmed.target) and confirmed.target.endswith("wg0.conf")
 
     def test_a_long_hook_is_shown_whole_in_the_dialog_detail(self, tunnel, monkeypatch, tmp_path):
         from PySide6.QtWidgets import QMessageBox
@@ -3576,7 +3578,7 @@ class TestTunnelPanel:
         tunnel.connect_vpn()
         assert FakeVpnConnectionWorker.instances == []
         (title, text, default), = asked
-        assert "Target: wg0" in text and "wg-quick" in text and "To undo" in text
+        assert "wg0.conf" in text and "Target: " in text and "wg-quick" in text and "To undo" in text
         assert default == QMessageBox.No
         assert tunnel.tabs.currentWidget() is tunnel.execution_view
 

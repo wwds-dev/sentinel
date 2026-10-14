@@ -272,10 +272,18 @@ def resolve_endpoints(hosts: list[str]) -> tuple[list[str], list[str]]:
         except (socket.gaierror, UnicodeError):
             unresolved.append(host)
             continue
+        accepted = False
         for info in infos:
             address = _rendered(str(info[4][0]))
-            if address is not None and address not in addresses:
+            if address is None:
+                continue
+            accepted = True
+            if address not in addresses:
                 addresses.append(address)
+        if not accepted:
+            # Answers came back but none can go in a pf rule (for example only
+            # scoped IPv6): the endpoint is as unreachable as an unresolved name.
+            unresolved.append(host)
 
     return addresses, unresolved
 
