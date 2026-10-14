@@ -191,6 +191,18 @@ def killswitch_supported() -> bool:
     return bool(ks and ks.is_supported())
 
 
+def killswitch_status_text() -> str | None:
+    """What Sentinel knows about the kill switch, in words (read-only, no root);
+    None when the service is unavailable. It never says more than "recorded"."""
+    ks = _killswitch()
+    try:
+        if ks is None or not ks.is_supported():
+            return None
+        return ks.status().summary()
+    except Exception:  # noqa: BLE001 - a label must never break the panel
+        return None
+
+
 DEFAULT_TUNNEL_PORTS = {"WireGuard": 51820, "OpenVPN": 1194}
 
 
@@ -262,6 +274,21 @@ def killswitch_recovery_command() -> str:
         return ks.recovery_command() if ks is not None else "sudo pfctl -d"
     except Exception:  # noqa: BLE001 - the dialog must open even if this fails
         return "sudo pfctl -d"
+
+
+def verify_killswitch():
+    """Ask pf what it holds (one administrator prompt, read-only). Returns
+    (state, message); state is "verified_armed", "verified_empty" or "unknown"."""
+    ks = _killswitch()
+    if ks is None:
+        return "unknown", "Could not verify: the kill switch module is unavailable."
+    return ks.verify()
+
+
+def clear_killswitch_record() -> bool:
+    """Drop the armed record after Verify found no rules (pf is not touched)."""
+    ks = _killswitch()
+    return bool(ks and ks.clear_record())
 
 
 def disarm_killswitch():

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from services.runtime_paths import (
     RuntimeDataError, ensure_seeded, is_frozen, is_portable,
-    resource_base, user_data_base,
+    resource_base, tighten_env_files, user_data_base,
 )
 try:
     ensure_seeded()
@@ -4661,7 +4661,8 @@ class GodAI(QWidget):
             QMessageBox.information(self, "No Selection", "Select a saved search first.")
             return
         if QMessageBox.question(
-                self, "Delete Search", f"Delete saved search?\n\n{item.text()}"
+                self, "Delete Search", f"Delete saved search?\n\n{item.text()}",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         ) != QMessageBox.Yes:
             return
         try:
@@ -4767,7 +4768,10 @@ class GodAI(QWidget):
             return
 
         filepath = item.data(Qt.UserRole)
-        confirm = QMessageBox.question(self, "Delete Chat", f"Delete saved chat?\n\n{item.text()}")
+        confirm = QMessageBox.question(
+            self, "Delete Chat", f"Delete saved chat?\n\n{item.text()}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
         if confirm != QMessageBox.Yes:
             return
 
@@ -5114,7 +5118,43 @@ class GodAI(QWidget):
                 self._note_failure("shutdown: abandon request", exc)
             self._pending_requests.pop(request_id, None)
 
+    def _wait_for_privileged_work(self) -> None:
+        """After "Wait": keep the window, close it once the administrator action
+        ends. Bounded by the longest the action can take (password entry plus
+        the command's timeout); after that the next close asks again."""
+        from agents.vpn_agent.services import privileged
+        from ui.dialogs import privileged_work_running
+        if getattr(self, "_quit_wait_timer", None) is not None:
+            return
+        deadline = time.monotonic() + privileged.PASSWORD_ENTRY_SECONDS + privileged.DEFAULT_TIMEOUT + 5
+        timer = QTimer(self)
+        self._quit_wait_timer = timer
+
+        def tick():
+            if privileged_work_running(self) and time.monotonic() < deadline:
+                return
+            timer.stop()
+            self._quit_wait_timer = None
+            self.close()            # asks again if it is somehow still running
+
+        timer.timeout.connect(tick)
+        timer.start(500)
+
     def closeEvent(self, event):
+        from ui.dialogs import ask_quit_with_privileged_work, privileged_work_running
+        if privileged_work_running(self):
+            # Never terminate a thread that is inside a privileged call: ask.
+            if not ask_quit_with_privileged_work(self):
+                event.ignore()
+                self._wait_for_privileged_work()
+                return
+            # Quit anyway: panels detach the worker; main() leaves with os._exit
+            # so Qt never aborts over a thread that is still running.
+            self._quit_anyway = True
+            timer = getattr(self, "_quit_wait_timer", None)
+            if timer is not None:
+                timer.stop()            # an earlier "Wait" must not fire mid-close
+                self._quit_wait_timer = None
         try:
             self.stop_background_work()
         except Exception as exc:
@@ -5166,6 +5206,26 @@ def _tray_status(window) -> str:
     return f"{activity}  ·  €{window.session_cost_total:.2f} this session"
 
 
+def _finish_quit_anyway(window, settings) -> None:
+    """After app.exec(): if the user chose Quit anyway, leave without Qt's teardown.
+
+    A detached thread is still inside a privileged call; a normal exit would
+    destroy it while running. os._exit skips Qt's own shutdown, so the window
+    geometry (set by aboutToQuit) is sync()ed to disk first, unless a portable
+    reset just erased that folder.
+    """
+    if not getattr(window, "_quit_anyway", False):
+        return
+    if not getattr(window, "_portable_reset_committed", False):
+        try:
+            settings.sync()
+        except Exception as exc:  # noqa: BLE001 - leaving matters more than the geometry
+            print(f"settings not saved: {exc}", file=sys.stderr)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
+
 def _show_main_window(window):
     """Show, restore, clamp to the primary work area, and foreground a window."""
     screen = QApplication.primaryScreen()
@@ -5207,6 +5267,10 @@ def _hand_off_to_running_instance() -> bool:
 
 
 if __name__ == "__main__":
+    # Keys must not stay world-readable from an older write. At launch only: doing
+    # this at import time made every test that imports main chmod the real files.
+    tighten_env_files()
+
     # Both before QApplication, and both for a reason. AppKit reads the name it
     # titles the application menu with when the application object is created,
     # which Qt does inside QApplication(); and the menu bar item's menu aborts
@@ -5279,3 +5343,4 @@ if __name__ == "__main__":
         else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
     )
     app.exec()
+    _finish_quit_anyway(window, settings)

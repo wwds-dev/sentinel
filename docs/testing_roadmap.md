@@ -8,7 +8,7 @@ it. Proposed V3 features get tests when their behavior is specified and built.
 
 ## Baseline and boundaries
 
-- The Sentinel suite collects about **1,356 tests** as of this update
+- The Sentinel suite collects about **2,243 tests** (2,232 pass, 11 skip) as of 2026-10-13
   (`.venv/bin/python -m pytest -q -p no:cacheprovider`); the pytest summary line
   is the authoritative, current figure, because parametrised cases move it. Most
   are unit, scenario, mocked integration, or offscreen Qt tests. That number is

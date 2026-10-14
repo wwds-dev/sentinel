@@ -92,7 +92,16 @@ def inspect_wireguard_config(path: str | Path) -> WireGuardConfigSummary:
         text = source.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError("The selected WireGuard configuration is not readable UTF-8 text.") from exc
+    return inspect_wireguard_text(text, source)
 
+
+def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSummary:
+    """Summarise config text already in memory.
+
+    The review hashes and inspects the same bytes through this entry point, so
+    the SHA-256 it shows describes exactly what was inspected.
+    """
+    source = Path(source)
     section = ""
     addresses: list[str] = []
     dns_servers: list[str] = []

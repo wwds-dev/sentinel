@@ -12,6 +12,9 @@ import pytest
 
 from services import settings_store
 
+# These tests build throwaway git repositories under tmp_path; nothing else runs.
+pytestmark = pytest.mark.allow_process
+
 SHIPPED = {
     "default_model_ollama": "deepseek-r1:8b",
     "default_model_openai": "gpt-4.1-mini",

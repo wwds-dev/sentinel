@@ -161,7 +161,7 @@ def seed_tooltips(app):
         "bug_bounty.severity_box":       "Severity you expect; sent to the model as an unverified hint. The Severity tile shows what the model rates.",
         "bug_bounty.findings_input":     "Paste raw findings: HTTP responses, Burp output, source snippets, recon notes.",
         "bug_bounty.nmap_cmd_input":     "An nmap command; only nmap will start. Leave empty to build one from the Target. Runs on your machine with no scope check.",
-        "bug_bounty.nmap_run_btn":       "Run nmap and capture its output below; stops after 10 minutes or 256 KB. With an empty field it builds and starts a default scan of the Target's host (nmap -sV -sC -T4 --open) immediately.",
+        "bug_bounty.nmap_run_btn":       "Run nmap and capture its output below; stops after 10 minutes or 256 KB. With an empty field it builds a default scan of the Target's host (nmap -sV -sC -T4 --open). Needs a Program entry and a Yes in the confirmation (default No) before anything runs.",
         "bug_bounty.nmap_stop_btn":      "Kill the running Nmap process.",
         "bug_bounty.nmap_output":        "Live Nmap output. Only the scanner's text is sent to the model, not the [Running]/[Done]/[Error] lines.",
         "bug_bounty.analyse_btn":        "Ask the selected model for a vulnerability report (CWE and CVSS are its suggestions, for your review) and a submission draft. Sends your inputs; a cloud model asks you to confirm the cost first.",

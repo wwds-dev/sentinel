@@ -15,6 +15,46 @@ from services.remote_file_search import search_remote_files
 from services.vpn_diagnostics import collect_vpn_diagnostics
 
 
+# Workers whose owner is gone (a closed dialog, a quitting window) but whose
+# thread is still inside a call that must not be cut short: a request in
+# flight, or a privileged command behind the administrator dialog. They are
+# parked here so the QThread is not garbage-collected while running, and each
+# removes itself when its thread ends.
+_DETACHED_WORKERS: list = []
+
+_RESULT_SIGNALS = ("finished_signal", "error_signal", "result_signal")
+
+
+def _discard_detached_worker(worker) -> None:
+    try:
+        _DETACHED_WORKERS.remove(worker)
+    except ValueError:
+        pass
+
+
+def detach_worker(worker) -> None:
+    """Let a running worker finish on its own instead of terminate()-ing it.
+
+    QThread.terminate() stops a thread wherever it happens to be. For a
+    request that leaves it in an undefined state; for a privileged command it
+    can end between "the password was accepted" and "the result was recorded".
+    The result slots are dropped first so a late finish cannot call into
+    widgets that are being destroyed, then the worker is kept alive until its
+    thread ends.
+    """
+    for name in _RESULT_SIGNALS:
+        signal = getattr(worker, name, None)
+        if signal is None:
+            continue
+        try:
+            signal.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+    if worker not in _DETACHED_WORKERS:
+        _DETACHED_WORKERS.append(worker)
+    worker.finished.connect(lambda w=worker: _discard_detached_worker(w))
+
+
 class DomainLookupWorker(QThread):
     """Run consented domain/IP public-source checks off the UI thread."""
 
@@ -409,10 +449,13 @@ class VpnConnectionWorker(QThread):
     finished_signal = Signal(dict)
     error_signal = Signal(str)
 
-    def __init__(self, action: str, profile: dict):
+    def __init__(self, action: str, profile: dict, confirmed=None):
+        """``confirmed`` is the ExecutionReview the user approved in the dialog;
+        connect/disconnect run only if a fresh review still matches it."""
         super().__init__()
         self._action = action
         self._profile = dict(profile or {})
+        self._confirmed = confirmed
         self._cancel_requested = False
 
     def cancel(self) -> None:
@@ -421,8 +464,10 @@ class VpnConnectionWorker(QThread):
         A privileged wg-quick/openvpn call cannot be interrupted safely once
         the authorisation dialog is up, so cancellation does not kill it; it
         tells the worker to drop its result instead of emitting it into a
-        panel that is being torn down. VpnPanel.shutdown() then waits for the
-        call to finish. Before this method existed, shutdown() raised
+        panel that is being torn down. VpnPanel.shutdown() gives it a moment,
+        then detaches it (detach_worker): the thread is never terminate()d,
+        and the window asks Wait / Quit anyway before closing at all while a
+        privileged call runs. Before this method existed, shutdown() raised
         AttributeError on an in-flight Connect (D6).
         """
         self._cancel_requested = True
@@ -431,7 +476,13 @@ class VpnConnectionWorker(QThread):
         try:
             from services import vpn_connection, vpn_execution
             if self._action in ("connect", "disconnect"):
-                result = vpn_execution.execute(self._action, self._profile).as_result()
+                result = vpn_execution.execute(
+                    self._action, self._profile, confirmed=self._confirmed).as_result()
+            elif self._action == "verify":
+                state, message = vpn_connection.verify_killswitch()
+                ok = state != "unknown"
+                result = {"success": ok, "protocol": "Kill switch", "output": message,
+                          "error": None if ok else message, "verify_state": state}
             elif self._action in ("arm", "disarm"):
                 if self._action == "arm":
                     ok, message = vpn_connection.arm_killswitch(self._profile)

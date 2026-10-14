@@ -29,25 +29,21 @@ from services.kimi_client import KimiClientWrapper
 from services.openai_client import OpenAIClientWrapper
 from services.provider_catalog import CLOUD_PROVIDERS
 from services.registry import Registry
-from services.runtime_paths import PortableRuntimeError, is_portable, user_data_base
+from services.runtime_paths import (
+    PortableRuntimeError, is_portable, user_data_base, write_private_text,
+)
 from services.validator import Validator, parse_money
 from ui.style import global_stylesheet, polish_combo_box
 from ui.theme import LABELS as THEME_LABELS, THEMES
 from ui.theme import current as current_theme, set_current as set_theme
 from ui.widgets import MenuComboBox
+from ui.workers import _DETACHED_WORKERS, detach_worker
 
 
-# Alias-mint workers whose settings dialog closed while a request was still in
-# flight are parked here so the QThread is not garbage-collected mid-request; a
-# worker removes itself via _discard_detached_worker when it finishes.
-_DETACHED_ALIAS_WORKERS = []
-
-
-def _discard_detached_worker(worker) -> None:
-    try:
-        _DETACHED_ALIAS_WORKERS.remove(worker)
-    except ValueError:
-        pass
+# Alias-mint and key-check workers whose settings dialog closed while a request
+# was still in flight are parked by ui.workers.detach_worker; this name stays
+# for the code and tests that already know it.
+_DETACHED_ALIAS_WORKERS = _DETACHED_WORKERS
 
 
 def esc(value) -> str:
@@ -72,6 +68,41 @@ def shutdown_panels(app) -> None:
             note = getattr(app, "_note_failure", None)
             if callable(note):
                 note(f"shutdown: {key}", exc)
+
+
+def privileged_work_running(app) -> bool:
+    """True while any panel has an administrator action (a privileged worker) running.
+
+    A panel that cannot answer, or fails to, counts as "no": this only decides
+    whether closing asks first, and must never block closing on a broken panel.
+    """
+    for panel in (getattr(app, "panels", None) or {}).values():
+        check = getattr(panel, "has_privileged_work", None)
+        try:
+            if callable(check) and check():
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def ask_quit_with_privileged_work(parent) -> bool:
+    """Wait / Quit anyway. True only for Quit anyway; Wait is the default."""
+    box = QMessageBox(
+        QMessageBox.Warning, "An administrator action is still running",
+        "Sentinel is waiting for an administrator action (the password dialog or the "
+        "command behind it).\n\n"
+        "Wait lets it finish and Sentinel then quits. Quit anyway ends Sentinel now: "
+        "the command may still complete without Sentinel recording the result, so a "
+        "kill switch or tunnel can be left changed. Open Sentinel again to check, or "
+        "use the recovery command shown when the action started.",
+        QMessageBox.NoButton, parent)
+    wait = box.addButton("Wait", QMessageBox.AcceptRole)
+    quit_anyway = box.addButton("Quit anyway", QMessageBox.DestructiveRole)
+    box.setDefaultButton(wait)
+    box.setEscapeButton(wait)
+    box.exec()
+    return box.clickedButton() is quit_anyway
 
 
 def show_cost_history(app):
@@ -689,10 +720,8 @@ def show_settings(app):
         value = value.replace("\r", "").replace("\n", "").strip()
         try:
             lines = env_path.read_text(encoding="utf-8").splitlines()
-            existed = True
         except FileNotFoundError:
             lines = []
-            existed = False
         new_line = f"{key}={value}"
         replaced = False
         for idx, line in enumerate(lines):
@@ -705,13 +734,8 @@ def show_settings(app):
                 break
         if not replaced:
             lines.append(new_line)
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        if not existed:
-            try:
-                os.chmod(env_path, 0o600)
-            except OSError:
-                pass
+        # Every write ends in 0600, not just the first: an older file may be 0644.
+        write_private_text(env_path, "\n".join(lines) + "\n")
         # Make the new key visible to the running app without a restart.
         if value:
             os.environ[key] = value
@@ -808,20 +832,12 @@ def show_settings(app):
         worker = getattr(dialog, "_alias_worker", None)
         if worker is None or not worker.isRunning():
             return
-        # The dialog is closing; its widgets are about to be destroyed. Drop the
-        # slots first so a late finish can't call into dead widgets. Do NOT
+        # The dialog is closing; its widgets are about to be destroyed. Do NOT
         # QThread.terminate() a thread blocked in an HTTP POST — Qt documents
         # that as unsafe and it can abort the addy.io alias-creation request in
-        # an undefined state. Instead park the worker in a module-level registry
-        # so it is not garbage-collected while running, and let it end on its
-        # own within the request timeout (~35s max); it removes itself when done.
-        for signal in (worker.finished_signal, worker.error_signal):
-            try:
-                signal.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-        _DETACHED_ALIAS_WORKERS.append(worker)
-        worker.finished.connect(lambda w=worker: _discard_detached_worker(w))
+        # an undefined state. Park the worker (slots dropped, kept alive) and
+        # let it end on its own within the request timeout (~35s max).
+        detach_worker(worker)
 
     dialog.finished.connect(_join_alias_worker)
 
@@ -1124,12 +1140,7 @@ def show_settings(app):
         # in a request; drop its slots and let it end inside its timeout.
         for worker in list(key_workers):
             worker.cancel()
-            try:
-                worker.result_signal.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            _DETACHED_ALIAS_WORKERS.append(worker)
-            worker.finished.connect(lambda w=worker: _discard_detached_worker(w))
+            detach_worker(worker)
 
     dialog.finished.connect(_stop_key_checks)
 
@@ -1257,6 +1268,14 @@ def show_settings(app):
             QMessageBox.No,
         )
         if answer != QMessageBox.Yes:
+            return
+        if privileged_work_running(app):
+            # The reset erases data under the workers it stops; an administrator
+            # action must finish (or be waited out on quit) before that.
+            QMessageBox.warning(
+                dialog, "Administrator action running",
+                "An administrator action (Connect, Disconnect, kill switch) is still "
+                "running. Wait for it to finish, then reset. Nothing was erased.")
             return
         try:
             if getattr(app, "chat_worker", None) is not None and app.chat_worker.isRunning():

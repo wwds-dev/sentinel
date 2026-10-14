@@ -35,11 +35,15 @@ from __future__ import annotations
 
 import re
 
+import hashlib
 import ipaddress
+import json
 import os
 import shutil
 import socket
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,12 +57,45 @@ MARKER_END = "# <<< vpn-agent-killswitch <<<"
 # Private ranges treated as "the LAN" when local access is kept.
 DEFAULT_LAN = ("192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12")
 
+# Where the stdin fallback writes its root-owned temp copy: a directory only
+# root can create files in, named explicitly so a TMPDIR in root's environment
+# cannot redirect it.
+ROOT_TMP_DIR = "/private/var/run"
+
+# Every range a LAN rule may name (the defaults plus link-local).
+LAN_RANGES = frozenset(DEFAULT_LAN) | {"169.254.0.0/16"}
+
 # macOS keeps a handful of utun devices for its own use (iCloud Private Relay,
 # Handoff). Passing every utun would quietly exempt those from the switch, so
 # the active WireGuard device is looked up instead and only that one passes.
 WG_RUN_DIR = Path("/var/run/wireguard")
 
 TIMEOUT = 30
+
+# The only interface names a rule may carry (an OpenVPN or WireGuard utun).
+TUNNEL_DEVICE = re.compile(r"(?:utun|tun)\d{1,4}")
+
+# What Sentinel knows about the switch. Only the marker file is read without
+# root, so "armed" is a record of what Sentinel did, never proof of what pf holds.
+STATE_DISARMED = "disarmed"                # no marker
+STATE_RECORDED_ARMED = "recorded_armed"    # marker present, newer than boot, anchor registered
+STATE_STALE = "stale"                      # marker older than the boot, or the anchor block is gone
+STATE_VERIFIED_ARMED = "verified_armed"    # set only by the explicit Verify step (privileged pfctl read)
+STATE_VERIFIED_EMPTY = "verified_empty"    # Verify found no rules in the anchor
+STATE_VERIFIED_BLOCKING = "verified_blocking"  # a blocking rule is there, the full set was not seen
+STATE_VERIFIED_INERT = "verified_inert"    # rules are loaded but not enforcing (pf off, anchor unregistered, nothing blocks)
+_ARMED_STATES = (STATE_RECORDED_ARMED, STATE_VERIFIED_ARMED, STATE_VERIFIED_BLOCKING)
+VERIFY_UNKNOWN = "unknown"                 # Verify could not reach a conclusion (not a switch state)
+# Printed between the two pfctl reads so one output can be split; chosen so pf's
+# own text cannot contain it.
+VERIFY_SEPARATOR = "--- sentinel-verify ---"
+# kern.boottime can move by a few seconds when the clock is corrected.
+BOOT_TOLERANCE = 5
+
+MARKER_NAME = "killswitch.armed"
+
+# The last Verify result ({"state", "at"}); memory only, never written to disk.
+_VERIFIED: dict = {}
 
 
 @dataclass
@@ -70,14 +107,53 @@ class KillSwitchState:
     interfaces: list[str] = field(default_factory=list)
     endpoints: list[str] = field(default_factory=list)
     error: str = ""
+    state: str = STATE_DISARMED
+    boot_known: bool = True
+    stale_reason: str = ""
+    arming: bool = False                   # marker written, arm not yet confirmed
+    disarming: bool = False                # marker written, disarm not yet confirmed
+    verified_at: float = 0.0               # when Verify last concluded (memory only)
+
+    def __post_init__(self) -> None:
+        # Older callers build the state with armed=True only.
+        if self.armed and self.state == STATE_DISARMED:
+            self.state = STATE_RECORDED_ARMED
+        self.armed = self.state in _ARMED_STATES
 
     def summary(self) -> str:
         if not self.available:
             return f"Unavailable: {self.error}"
-        if self.armed:
-            where = ", ".join(self.interfaces) or "no tunnel detected"
-            return f"ARMED — only {where} may carry traffic"
+        where = ", ".join(self.interfaces) or "no tunnel detected"
+        if self.state == STATE_VERIFIED_ARMED:
+            return (f"Verified armed ({_clock(self.verified_at)}): pf is on and the anchor holds "
+                    "the block-all and loopback rules. Verify again to re-check.")
+        if self.state == STATE_VERIFIED_BLOCKING:
+            return (f"A blocking rule is present in the anchor ({_clock(self.verified_at)}), but "
+                    "the full kill-switch rule set was not seen. Verify again to re-check.")
+        if self.state == STATE_VERIFIED_INERT:
+            return (f"Not armed: the anchor holds rules that are not enforcing "
+                    f"({_clock(self.verified_at)}). Disarm clears them.")
+        if self.state == STATE_RECORDED_ARMED and self.disarming:
+            return ("Disarming, unconfirmed — the disarm was started but not seen to finish; "
+                    "the block may or may not still be in place. Press Verify to check, or "
+                    "Disarm to try again.")
+        if self.state == STATE_RECORDED_ARMED and self.arming:
+            return (f"Arming, unconfirmed — the arm was started but not seen to finish; "
+                    f"if it did, only {where} may carry traffic. Disarm clears it.")
+        if self.state == STATE_RECORDED_ARMED:
+            note = "" if self.boot_known else " (boot time unknown)"
+            return (f"Recorded as armed (not verified){note} — only {where} "
+                    "may carry traffic")
+        if self.state == STATE_STALE:
+            return f"Not armed: {self.stale_reason or 'the record is out of date'}"
+        if self.state == STATE_VERIFIED_EMPTY:
+            return (f"Not armed: no rules loaded ({_clock(self.verified_at)}). "
+                    "Disarm clears the record.")
         return "Disarmed — traffic uses whatever route macOS picks"
+
+
+def _clock(epoch: float) -> str:
+    return time.strftime("%H:%M", time.localtime(epoch)) if epoch else "time unknown"
 
 
 def is_supported() -> bool:
@@ -120,11 +196,41 @@ def active_tunnel_interfaces() -> list[str]:
                 device = entry.read_text(encoding="utf-8").strip()
             except OSError:
                 continue
-            if device and device not in found:
+            # The file is written by root, but a name that is not a tunnel device
+            # must never become part of a rule.
+            if TUNNEL_DEVICE.fullmatch(device) and device not in found:
                 found.append(device)
     except OSError:
         pass
     return found
+
+
+def endpoint_problem(host: str) -> str:
+    """Why ``host`` can never be an endpoint, or "" when it may be tried.
+
+    The text ends up in a firewall rule, so anything but printable,
+    non-whitespace ASCII is out, and so is an IPv6 scope id (`fe80::1%en0`):
+    ipaddress accepts a scope id of any text, newlines included.
+    """
+    if not host or any(not 33 <= ord(ch) <= 126 for ch in host):
+        return "it is not plain printable ASCII (it has a space, control or other character)"
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        return ""                       # a hostname: its answers are cleaned below
+    if getattr(parsed, "scope_id", None):
+        return "a scoped (zone) address such as fe80::1%en0 is not supported"
+    return ""
+
+
+def _rendered(address: str) -> str | None:
+    """An address re-rendered from its parsed value, or None if it is not a plain IP."""
+    if endpoint_problem(address):
+        return None
+    try:
+        return str(ipaddress.ip_address(address))
+    except ValueError:
+        return None
 
 
 def resolve_endpoints(hosts: list[str]) -> tuple[list[str], list[str]]:
@@ -133,14 +239,19 @@ def resolve_endpoints(hosts: list[str]) -> tuple[list[str], list[str]]:
 
     Returns (addresses, unresolved). An endpoint that cannot be resolved is
     reported rather than skipped silently — arming without it would leave the
-    tunnel unable to reach its own server.
+    tunnel unable to reach its own server. Addresses are always the parsed,
+    re-rendered form (never the caller's text), and a host that is not plain
+    printable ASCII, or carries a scope id, is unresolved without a lookup.
     """
     addresses: list[str] = []
     unresolved: list[str] = []
 
     for host in hosts:
-        host = (host or "").strip()
+        host = host or ""
         if not host:
+            continue
+        if endpoint_problem(host):
+            unresolved.append(host)
             continue
         try:
             parsed = ipaddress.ip_address(host)
@@ -150,21 +261,29 @@ def resolve_endpoints(hosts: list[str]) -> tuple[list[str], list[str]]:
             if parsed.is_unspecified:
                 unresolved.append(host)
                 continue
-            if host not in addresses:
-                addresses.append(host)
+            if str(parsed) not in addresses:
+                addresses.append(str(parsed))
             continue
         except ValueError:
             pass
 
         try:
             infos = socket.getaddrinfo(host, None)
-        except socket.gaierror:
+        except (socket.gaierror, UnicodeError):
             unresolved.append(host)
             continue
+        accepted = False
         for info in infos:
-            address = info[4][0]
+            address = _rendered(str(info[4][0]))
+            if address is None:
+                continue
+            accepted = True
             if address not in addresses:
                 addresses.append(address)
+        if not accepted:
+            # Answers came back but none can go in a pf rule (for example only
+            # scoped IPv6): the endpoint is as unreachable as an unresolved name.
+            unresolved.append(host)
 
     return addresses, unresolved
 
@@ -291,8 +410,191 @@ def validate(rules_file: Path | None = None) -> tuple[bool, str]:
     return False, cleaned or "pf rejected the rules."
 
 
+_ADDR = r"[0-9A-Fa-f:.]{2,45}"
+_RULE_SHAPES = tuple(re.compile(p, re.ASCII) for p in (
+    r"block drop all",
+    r"pass quick on lo0 all",
+    r"pass quick on (?:utun|tun)\d{1,4} all",
+    rf"pass out quick (?:inet|inet6) proto (?:tcp|udp) from any to (?P<addr>{_ADDR}) port (?P<port>\d{{1,5}})",
+    rf"pass out quick (?:inet|inet6) proto (?:icmp|icmp6) from any to (?P<addr>{_ADDR})",
+    r"pass quick inet proto udp from any port 68 to any port 67",
+    r"pass quick inet proto udp from any port 67 to any port 68",
+    r"pass quick inet from (?P<net>[0-9./]{7,18}) to (?P<net2>[0-9./]{7,18})",
+    r"pass quick inet6 from fe80::/10 to fe80::/10",
+))
+
+
+def _rule_allowed(line: str) -> bool:
+    for shape in _RULE_SHAPES:
+        match = shape.fullmatch(line)
+        if match is None:
+            continue
+        groups = match.groupdict()
+        try:
+            if groups.get("addr") is not None:
+                parsed = ipaddress.ip_address(groups["addr"])
+                if parsed.is_unspecified or getattr(parsed, "scope_id", None):
+                    return False
+                if str(parsed) != groups["addr"]:
+                    return False
+                if (":" in groups["addr"]) != (" inet6 " in line):
+                    return False
+            if groups.get("port") is not None and not 1 <= int(groups["port"]) <= 65535:
+                return False
+            if groups.get("net") is not None:
+                # A LAN rule passes a private range to itself, never to anywhere else.
+                if groups["net"] != groups["net2"] or groups["net"] not in LAN_RANGES:
+                    return False
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def loadable_rules(text: str) -> str:
+    """The rule text root will load: comments and blank lines dropped, ASCII only,
+    and EVERY remaining line one of the shapes build_rules writes.
+
+    The comments exist for a person reading the file; pf needs none of them, and
+    the non-ASCII dash in the header would cross the AppleScript/shell boundary
+    for nothing. A control character anywhere (checked before the text is split
+    into lines, since splitlines treats several of them as line ends) or a line
+    that is not an expected rule raises ValueError: the rules are assembled from
+    values a profile and the filesystem supply, and root must only ever load the
+    fixed shapes.
+    """
+    if any((ord(ch) < 32 and ch != "\n") or ord(ch) == 127 for ch in text):
+        raise ValueError("it contains a control character")
+    lines = [ln.rstrip() for ln in text.split("\n")
+             if ln.strip() and not ln.lstrip().startswith("#")]
+    for line in lines:
+        if any(ord(ch) > 126 for ch in line):
+            raise ValueError("it contains a character outside printable ASCII")
+        if not _rule_allowed(line):
+            raise ValueError(f"not an expected rule: {line[:80]!r}")
+    return "\n".join(lines) + "\n"
+
+
+def _load_rules_command(text: str) -> str:
+    """Shell that loads ``text`` into our anchor, as root, from the script itself.
+
+    First choice: pipe it to `pfctl -f -`. Whether this macOS pfctl accepts
+    stdin is UNVERIFIED, so if that fails the same text goes to a root-owned
+    `mktemp` file (never a user directory), its SHA-256 is checked against the
+    hash computed here, it is loaded, and removed. Both failing is a failure
+    (non-zero), and the caller does not enable pf after it.
+    """
+    digest = hashlib.sha256(text.encode("ascii")).hexdigest()
+    load = f"pfctl -a {ANCHOR} -f"
+    return (
+        f"rules={_q_str(text)}; "
+        f"{{ printf '%s' \"$rules\" | {load} - || "
+        f"( umask 077; t=$(mktemp {ROOT_TMP_DIR}/sentinel-pf.XXXXXX) && "
+        f"printf '%s' \"$rules\" > \"$t\" && "
+        f"[ \"$(shasum -a 256 < \"$t\" | cut -d' ' -f1)\" = {digest} ] && {load} \"$t\"; "
+        f"r=$?; rm -f \"$t\"; [ \"$r\" -eq 0 ] ); }}"
+    )
+
+
+def _validate_text(text: str) -> tuple[bool, str]:
+    """validate() on a private (0600, mkstemp) copy of ``text``, removed afterwards."""
+    state = paths.state_dir()
+    state.mkdir(parents=True, exist_ok=True)      # write_rules has already made it private
+    fd, name = tempfile.mkstemp(prefix="killswitch-check.", dir=str(state))
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(text)
+        return validate(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def parse_boottime(text: str) -> int | None:
+    """Seconds since the epoch from `sysctl -n kern.boottime` ("{ sec = N, usec = M } …")."""
+    match = re.search(r"\bsec\s*=\s*(\d+)", text or "")
+    return int(match.group(1)) if match else None
+
+
+_BOOT_CACHE: list[int] = []        # one entry once read; the boot time cannot change
+
+
+def _boot_time() -> int | None:
+    """When this Mac booted, or None when it cannot be read (shown as unknown).
+    Read once per process, by absolute path, so a PATH entry cannot stand in."""
+    if _BOOT_CACHE:
+        return _BOOT_CACHE[0]
+    try:
+        proc = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.boottime"],
+                              capture_output=True, text=True, timeout=5)
+    except Exception:  # noqa: BLE001 - unknown boot time is a state, not a crash
+        return None
+    value = parse_boottime(proc.stdout) if proc.returncode == 0 else None
+    if value is not None:
+        _BOOT_CACHE.append(value)
+    return value
+
+
+def marker_path() -> Path:
+    return paths.state_dir() / MARKER_NAME
+
+
+def _read_marker() -> dict | None:
+    """The marker as a dict (state, at, boot, ifaces), or None if there is none.
+    The first-generation marker ("armed\\n") reads as armed at its mtime."""
+    path = marker_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        at = data.get("at")
+        return {"state": str(data.get("state") or "armed"),
+                "at": float(at) if isinstance(at, (int, float)) else mtime,
+                "boot": data.get("boot") if isinstance(data.get("boot"), int) else None,
+                "ifaces": [str(x) for x in data.get("ifaces") or []]}
+    return {"state": "armed", "at": mtime, "boot": None, "ifaces": []}
+
+
+def _write_marker(state: str, interfaces: list[str]) -> None:
+    path = marker_path()
+    paths.ensure_private_dir(path.parent)
+    payload = {"state": state, "at": int(time.time()), "boot": _boot_time(),
+               "ifaces": list(interfaces)}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _classify(marker: dict | None, registered: bool) -> tuple[str, bool, str]:
+    """(state, boot_known, stale_reason) for a marker."""
+    if marker is None:
+        return STATE_DISARMED, True, ""
+    boot = _boot_time()
+    if boot is not None:
+        # Only "written before this boot" counts; a differing boot field alone is
+        # not evidence enough to drop a record of a possibly live block.
+        if marker["at"] < boot - BOOT_TOLERANCE:
+            return STATE_STALE, True, "the Mac restarted since arming"
+    if marker["state"] not in ("arming", "disarming") and not registered:
+        return STATE_STALE, boot is not None, "the pf anchor registration is gone"
+    return STATE_RECORDED_ARMED, boot is not None, ""
+
+
 def status(endpoints: list[str] | None = None) -> KillSwitchState:
-    """Report whether the switch is currently armed. Read-only, needs no root."""
+    """Report what Sentinel knows about the switch. Read-only, needs no root.
+
+    `pfctl -a <anchor> -s rules` needs root, so this reads Sentinel's own
+    marker and the pf.conf registration, and says so: a marker is a record, not
+    a measurement. It is older than the boot (stale) or its anchor block is
+    gone when the record can no longer be right. Removing a stale marker is
+    reconcile()'s job, never status()'s.
+    """
     if not is_supported():
         return KillSwitchState(
             available=False, armed=False, registered=False,
@@ -300,20 +602,56 @@ def status(endpoints: list[str] | None = None) -> KillSwitchState:
         )
 
     registered = _is_registered()
-
-    # `pfctl -a <anchor> -s rules` needs root, so armed-ness is inferred from
-    # our own marker file instead. It is written under Application Support and
-    # removed on disarm, so it cannot drift from the anchor unless someone
-    # flushes pf by hand — which is the documented recovery anyway.
-    armed_marker = paths.state_dir() / "killswitch.armed"
+    marker = _read_marker()
+    state, boot_known, reason = _classify(marker, registered)
+    arming = bool(marker and marker["state"] == "arming" and state == STATE_RECORDED_ARMED)
+    disarming = bool(marker and marker["state"] == "disarming" and state == STATE_RECORDED_ARMED)
+    verified_at = 0.0
+    verified = dict(_VERIFIED)         # one copy: another thread may clear() it
+    if state == STATE_RECORDED_ARMED and not (arming or disarming) and verified.get("state"):
+        # The last explicit Verify, kept in memory only: it can be out of date
+        # (pf flushed by hand since), so it carries its time and arm/disarm drop it.
+        state, verified_at = verified["state"], float(verified.get("at") or 0.0)
 
     return KillSwitchState(
         available=True,
-        armed=armed_marker.exists() and registered,
+        armed=state in _ARMED_STATES,
         registered=registered,
         interfaces=active_tunnel_interfaces(),
         endpoints=endpoints or [],
+        state=state,
+        boot_known=boot_known,
+        stale_reason=reason,
+        arming=arming,
+        disarming=disarming,
+        verified_at=verified_at,
     )
+
+
+def reconcile() -> str:
+    """Remove a stale marker (older than the boot, or its anchor block gone).
+    Returns why it was removed ("" when nothing was), so the panel can say so
+    instead of silently showing "disarmed". Called when the panel shows and
+    before a disconnect review; never from status(). A marker that changed since
+    it was read (a new arm landed) is left alone."""
+    if not is_supported():
+        return ""
+    path = marker_path()
+    try:
+        before = path.read_bytes()
+    except OSError:
+        return ""
+    marker = _read_marker()
+    state, _, reason = _classify(marker, _is_registered())
+    if state != STATE_STALE:
+        return ""
+    try:
+        if path.read_bytes() != before:
+            return ""
+        path.unlink()
+    except OSError:
+        return ""
+    return reason or "the record is out of date"
 
 
 def arm(
@@ -338,6 +676,12 @@ def arm(
 
     addresses, unresolved = resolve_endpoints(endpoints)
     if unresolved and not addresses:
+        refused = [(h, endpoint_problem(h)) for h in unresolved if endpoint_problem(h)]
+        if refused:
+            host, why = refused[0]
+            return False, (
+                f"Refusing to arm — the endpoint {host!r} cannot be used in a firewall rule: "
+                f"{why}. Fix the profile's endpoint first.")
         return False, (
             f"Could not resolve any endpoint ({', '.join(unresolved)}). Arming now "
             "would block the tunnel from ever reconnecting. Fix the endpoint first."
@@ -350,20 +694,38 @@ def arm(
         if device not in interfaces:
             interfaces.append(device)
     rules = build_rules(addresses, allow, interfaces=interfaces, allow_lan=allow_lan)
-    path = write_rules(rules)
+    # Root loads the validated TEXT, carried inside the script, never a path in
+    # the user's state directory. The file written below is for recovery only.
+    try:
+        loadable = loadable_rules(rules)
+    except ValueError as exc:
+        return False, f"Refusing to arm — the rules cannot be passed to pf as plain text: {exc}"
+    write_rules(rules)
 
     # Never hand pf something that does not parse. A half-applied ruleset is
     # the one failure mode that could leave the machine unable to talk to
-    # anything, and this check costs nothing and needs no privileges.
-    ok, detail = validate(path)
+    # anything, and this check costs nothing and needs no privileges. It runs
+    # on a private 0600 copy of the exact text root will load, not on the
+    # user-readable recovery file.
+    ok, detail = _validate_text(loadable)
     if not ok:
         return False, f"Refusing to arm — the generated rules do not parse:\n{detail}"
 
     script = "; ".join([
         _ensure_registered_command(),
-        f"pfctl -a {ANCHOR} -f {_q(path)}",
-        "pfctl -E",
+        _load_rules_command(loadable) + " && pfctl -E",
     ])
+    # Record the intent BEFORE root runs: if this thread is lost mid-arm (the
+    # app quits during the administrator dialog) the record already says the
+    # switch may be live, and Disarm stays offered. The previous record is kept
+    # so a failed re-arm does not erase the memory of a block that is still up.
+    marker = marker_path()
+    try:
+        previous = marker.read_bytes()
+    except OSError:
+        previous = None
+    _VERIFIED.clear()
+    _write_marker("arming", interfaces)
     ok, output = _run_privileged(script, "Arm the VPN Agent kill switch")
 
     if not ok:
@@ -371,16 +733,22 @@ def arm(
             # Approved, then timed out: pf may hold the rules now. Recording it
             # as armed keeps Disarm offered; disarming rules that never loaded
             # is harmless, while showing "Disarmed" over a live block is not.
-            (paths.state_dir() / "killswitch.armed").write_text("armed\n", encoding="utf-8")
+            _write_marker("armed", interfaces)
             return False, (
                 f"{output}\nTreating the kill switch as armed so Disarm stays available. "
                 f"If the network is now broken, press Disarm or run:\n  {recovery_command()}"
             )
+        # A definitive failure (declined, pfctl error): the rules did not load,
+        # so put the record back as it was.
+        if previous is None:
+            marker.unlink(missing_ok=True)
+        else:
+            marker.write_bytes(previous)
         return False, (
             f"Failed to arm: {output}\n\nIf the network is now broken, run:\n  {recovery_command()}"
         )
 
-    (paths.state_dir() / "killswitch.armed").write_text("armed\n", encoding="utf-8")
+    _write_marker("armed", interfaces)
 
     detail = ", ".join(interfaces) if interfaces else "no tunnel is currently up"
     warning = ""
@@ -393,7 +761,7 @@ def arm(
         )
 
     return True, (
-        f"Kill switch ARMED (passing: {detail}).{warning}\n"
+        f"Kill switch recorded as armed (not verified; passing: {detail}).{warning}\n"
         f"Undo at any time with:\n  {recovery_command()}"
     )
 
@@ -403,19 +771,141 @@ def disarm() -> tuple[bool, str]:
     if not is_supported():
         return False, "Kill switch requires macOS pf."
 
+    # Record the intent BEFORE root runs, as arm() does: if this thread is lost
+    # mid-disarm (Quit anyway during the administrator dialog) root may still
+    # flush the anchor with nothing left to remove the record, so the record must
+    # say "unconfirmed" rather than keep claiming an armed block.
+    _VERIFIED.clear()
+    marker = marker_path()
+    previous = _read_marker()
+    try:
+        previous_bytes = marker.read_bytes()
+    except OSError:
+        previous_bytes = None
+    _write_marker("disarming", (previous or {}).get("ifaces") or [])
     ok, output = _run_privileged(
         f"pfctl -a {ANCHOR} -F rules", "Disarm the VPN Agent kill switch"
     )
     if not ok:
+        if "may still have happened" in output:
+            # Approved, then timed out: the flush may have happened. Keep the
+            # unconfirmed record; Verify or a second Disarm settles it.
+            return False, (f"{output}\nThe kill switch is shown as disarming, unconfirmed. "
+                           f"Press Verify, or run:\n  {recovery_command()}")
         # The anchor may still be loaded (a cancelled authorisation, a pfctl
-        # error), so the marker stays: status() must keep saying "armed" until
-        # the rules are really gone, never report a block that is still live.
+        # error), so the previous record is put back: status() must keep saying
+        # "armed" until the rules are really gone, never report a block that is
+        # still live.
+        if previous_bytes is None:
+            marker.unlink(missing_ok=True)
+        else:
+            marker.write_bytes(previous_bytes)
         return False, f"Failed to disarm: {output}\n\nRun manually:\n  {recovery_command()}"
 
-    marker = paths.state_dir() / "killswitch.armed"
-    if marker.exists():
-        marker.unlink()
+    marker.unlink(missing_ok=True)
     return True, "Kill switch disarmed — traffic routes normally again."
+
+
+# ── Verify (explicit, read-only) ─────────────────
+
+
+_PF_NOISE = ("no altq", "altq related", "altq", "warning", "#")
+_PF_STATUS = re.compile(r"^\s*Status:\s*(\w+)", re.IGNORECASE | re.MULTILINE)
+_ANCHOR_REF = re.compile(rf'^\s*anchor\s+"{re.escape(ANCHOR)}(?:/\*)?"')
+_BLOCK_ALL = re.compile(r"^\s*block\s+drop\s+all\b")
+_LOOPBACK = re.compile(r"^\s*pass\s+quick\s+on\s+lo0\s+all\b")
+
+
+def _rule_lines(section: str) -> list[str]:
+    return [ln.strip() for ln in section.splitlines()
+            if ln.strip() and not ln.strip().lower().startswith(_PF_NOISE)]
+
+
+def parse_verify_output(text: str) -> tuple[str, str]:
+    """Map the output of the Verify script (pf status, main ruleset, anchor rules,
+    split by VERIFY_SEPARATOR) to (state, message).
+
+    The real text of `pfctl -s info` / `-s rules` on macOS is UNVERIFIED, so this
+    reads loosely: the "Status:" word, an `anchor "vpn-agent-killswitch"` line in
+    the main ruleset, and in the anchor whether any rule line is present, one
+    says `block`, and `block drop all` plus the loopback pass are both seen.
+    "Verified armed" needs pf on, the anchor registered and both of those rules.
+    Anything not placeable is VERIFY_UNKNOWN, never a guess in either direction.
+    """
+    unknown = ("Could not verify: {} (the pfctl output format is UNVERIFIED on this Mac; "
+               "run `sudo pfctl -a {} -s rules` yourself to check).")
+    parts = (text or "").split(VERIFY_SEPARATOR)
+    if len(parts) != 3:
+        return VERIFY_UNKNOWN, unknown.format("the output was not in the expected shape", ANCHOR)
+    info, main_text, rules = parts
+    main = _rule_lines(main_text)
+    lines = _rule_lines(rules)
+    for line in main + lines:
+        if line.lower().startswith("pfctl:"):
+            return VERIFY_UNKNOWN, f"Could not verify: pfctl said \"{line[:160]}\"."
+    status = _PF_STATUS.search(info)
+    word = status.group(1).lower() if status else ""
+    enabled = True if word == "enabled" else False if word == "disabled" else None
+    now = _clock(time.time())
+    if not lines:
+        return STATE_VERIFIED_EMPTY, f"Not armed: no rules loaded in the anchor (verified {now})."
+    if enabled is None:
+        return VERIFY_UNKNOWN, unknown.format("pf's Status line was not recognised", ANCHOR)
+    if not enabled:
+        return STATE_VERIFIED_INERT, (f"Not enforcing: rules are loaded but pf is switched off "
+                                      f"(verified {now}).")
+    if not any(_ANCHOR_REF.match(line) for line in main):
+        return STATE_VERIFIED_INERT, (
+            f"Not enforcing: the anchor holds rules but is not registered in the main ruleset, "
+            f"so they are inert (verified {now}; the main ruleset text is UNVERIFIED).")
+    block_all = any(_BLOCK_ALL.match(line) for line in lines)
+    loopback = any(_LOOPBACK.match(line) for line in lines)
+    if block_all and loopback:
+        return STATE_VERIFIED_ARMED, (
+            f"Verified armed ({now}): pf is on, the anchor is registered and holds `block drop "
+            "all` and the loopback pass rule. Verify does not show what else it lets through.")
+    if any(re.search(r"\bblock\b", line) for line in lines):
+        return STATE_VERIFIED_BLOCKING, (
+            f"A blocking rule is present in the anchor ({now}), but the full kill-switch set "
+            "(block drop all plus the loopback pass) was not seen. Check "
+            f"`sudo pfctl -a {ANCHOR} -s rules`.")
+    return STATE_VERIFIED_INERT, (f"Not enforcing: the anchor holds rules but none of them blocks "
+                                  f"traffic (verified {now}).")
+
+
+def verify() -> tuple[str, str]:
+    """Ask pf what it holds (one administrator prompt) and report it.
+
+    Read-only: two `pfctl -s` queries and nothing that loads, flushes, enables
+    or disables anything. It always goes through the administrator dialog (see
+    _run_privileged), never a cached sudo ticket. The result is kept in memory
+    only. Returns (state, message); state is STATE_VERIFIED_ARMED,
+    STATE_VERIFIED_BLOCKING, STATE_VERIFIED_INERT, STATE_VERIFIED_EMPTY or VERIFY_UNKNOWN (cancelled, failed or unreadable,
+    in which case nothing about the recorded state changes).
+    """
+    if not is_supported():
+        return VERIFY_UNKNOWN, "Could not verify: the kill switch needs macOS pf."
+    script = (f"pfctl -s info; echo '{VERIFY_SEPARATOR}'; pfctl -s rules; "
+              f"echo '{VERIFY_SEPARATOR}'; pfctl -a {ANCHOR} -s rules")
+    ok, output = _run_privileged(script, "Check (read-only) the VPN Agent kill switch")
+    if not ok:
+        return VERIFY_UNKNOWN, f"Could not verify: {' '.join(output.split())[:240] or 'no answer'}"
+    state, message = parse_verify_output(output)
+    if state == VERIFY_UNKNOWN:
+        return state, message
+    _VERIFIED.update(state=state, at=time.time())
+    return state, message
+
+
+def clear_record() -> bool:
+    """Forget the armed record (the marker file and any verified result).
+    For after Verify found no rules; changes nothing in pf."""
+    _VERIFIED.clear()
+    try:
+        marker_path().unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
 
 
 # ── /etc/pf.conf registration ────────────────────
@@ -480,10 +970,6 @@ def _run(command: list[str]) -> tuple[bool, str]:
     if "User canceled" in output or "(-128)" in output:
         return False, "Cancelled."
     return False, output or f"exited {proc.returncode}"
-
-
-def _q(path: Path) -> str:
-    return "'" + str(path).replace("'", "'\\''") + "'"
 
 
 def _q_str(text: str) -> str:

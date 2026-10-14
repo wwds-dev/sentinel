@@ -24,7 +24,7 @@ quoted text. Each item is numbered once; the count at the bottom is the number o
 10. `ui/panels/osint.py:558` — Intelligence X checkbox text points at `.env`; should read "Save INTELX_API_KEY on Settings → OSINT Keys to enable Intelligence X."
 11. `ui/panels/osint.py:566` — DeHashed checkbox text points at `.env`; same fix with `DEHASHED_API_KEY`.
 12. `ui/panels/osint.py`, `ui/workers.py` — Structure Query Stop turns the plan into the red error "Request cancelled by user." and drops the partial text.
-13. `ui/panels/osint.py` — pre-flight cost estimate and cap see only the target text; Trace was not covered by the budget re-check that Bloodhound and Bug Spray got.
+13. `ui/panels/osint.py` — pre-flight cost estimate and cap see only the target text; Trace was not covered by the budget re-check that Bloodhound and Bug Spray got. **Fixed 2026-10-13:** `analyse()` now calls `reauthorize(messages)` before the worker starts.
 14. `providers/exposure_lookup.py` and the panel — the Exposure verdict ignores errors and cancellation; "direct victim" is a substring test of the domain's name part.
 15. `providers/domain_lookup.py` — IP DNS asks forward record types of the address string (no PTR lookup) and nothing filters private, loopback or link-local addresses.
 16. `ui/panels/osint.py` Auto-detect — dotted handles resolve to Domain, crypto addresses to Username, IDN domains fail validation.
@@ -102,7 +102,7 @@ quoted text. Each item is numbered once; the count at the bottom is the number o
 ## Forge
 
 72. `ui/panels/manager.py` `_on_finished` — `_populate_sections` runs before `validate_spec`, so a wrong-typed field (`allowed_tools: null`, a list `system_prompt`) raises inside the slot and leaves a blank review area; wrap it and fall back to the "Could not structure the response" card.
-73. `ui/panels/manager.py` — the confirmation `QMessageBox.question` still uses Qt's auto text format and sets no default button, and the Creation Log is not escaped.
+73. `ui/panels/manager.py` — the confirmation `QMessageBox.question` still uses Qt's auto text format and sets no default button, and the Creation Log is not escaped. **Default button fixed 2026-10-13** (now No); the Creation Log escaping is not re-verified.
 74. `services/agent_factory.py` `create_agent` — `os.link` fails closed on volumes without hard links (exFAT is a documented portable format).
 75. `services/agent_factory.py` — `RETIRED_BUILTIN_AGENTS` lacks `router`, `course` and `narrator`, and built-in display names are not reserved; `tests/test_agent_roster.py:33,40` treat `router` and `course` as retired.
 

@@ -37,6 +37,7 @@ from ui.panels.vpn_servers import ServersTab
 from ui.widgets import MenuComboBox, SectionView
 from ui.workers import (
     DnsLeakWorker, IpSnapshotWorker, VpnConnectionWorker, VpnDiagnosticsWorker,
+    detach_worker,
 )
 
 
@@ -128,7 +129,15 @@ class VpnPanel(AgentPanel):
         self.disarm_ks_btn = QPushButton("Disarm")
         self.disarm_ks_btn.clicked.connect(self.disarm_kill_switch)
         ks_row.addWidget(self.disarm_ks_btn)
-        self.kill_switch_status_label = QLabel("Kill switch not armed.")
+        self.verify_ks_btn = QPushButton("Verify")
+        self.verify_ks_btn.setToolTip(
+            "Ask pf what it really holds (read-only; never changes anything). "
+            "Always asks for your administrator password, so it only runs when you press it. "
+            "Without it the label is only a record of what Sentinel did.")
+        self.verify_ks_btn.clicked.connect(self.verify_kill_switch)
+        ks_row.addWidget(self.verify_ks_btn)
+        self.kill_switch_status_label = QLabel(
+            vpn_connection.killswitch_status_text() or "Kill switch not armed.")
         self.kill_switch_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
         ks_row.addWidget(self.kill_switch_status_label, 1)
         connect_layout.addLayout(ks_row)
@@ -691,10 +700,11 @@ class VpnPanel(AgentPanel):
                 "This is an example/template. Import a real WireGuard .conf or "
                 "OpenVPN .ovpn (or set a real endpoint) before connecting.")
             return
-        if not self._review_and_confirm("connect", profile, "Connect VPN"):
+        confirmed = self._review_and_confirm("connect", profile, "Connect VPN")
+        if confirmed is None:
             return
         self._start_connection("connect", profile,
-                               f"Connecting {profile.get('name')}…")
+                               f"Connecting {profile.get('name')}…", confirmed)
 
     def disconnect_vpn(self) -> None:
         if self._connection_busy():
@@ -703,13 +713,33 @@ class VpnPanel(AgentPanel):
         if not profile:
             QMessageBox.information(self, "No profile", "Choose the profile to disconnect.")
             return
-        if not self._review_and_confirm("disconnect", profile, "Disconnect VPN"):
+        confirmed = self._review_and_confirm("disconnect", profile, "Disconnect VPN")
+        if confirmed is None:
             return
         self._start_connection("disconnect", profile,
-                               f"Disconnecting {profile.get('name')}…")
+                               f"Disconnecting {profile.get('name')}…", confirmed)
 
-    def _review_and_confirm(self, action: str, profile: dict, title: str) -> bool:
-        """Show the target review; refuse on blockers, else ask (default No)."""
+    def _ask(self, ask_warning: bool, title: str, text: str, detail: str):
+        """question()/warning() with the default No. A detail that the body
+        shortened needs a real box to carry setDetailedText; otherwise the
+        static call is used."""
+        if not detail:
+            if ask_warning:
+                return QMessageBox.warning(self, title, text,
+                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            return QMessageBox.question(self, title, text,
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        box = QMessageBox(QMessageBox.Warning if ask_warning else QMessageBox.Question,
+                          title, text, QMessageBox.Yes | QMessageBox.No, self)
+        box.setDefaultButton(QMessageBox.No)
+        box.setDetailedText(detail)
+        return box.exec()
+
+    def _review_and_confirm(self, action: str, profile: dict, title: str):
+        """Show the target review; refuse on blockers, else ask (default No).
+
+        Returns the confirmed ExecutionReview (the worker hands it back to
+        execute(), which aborts if anything differs) or None."""
         review = vpn_execution.review_execution(action, profile)
         self.execution_view.show_sections(review.sections())
         self.tabs.setCurrentWidget(self.execution_view)
@@ -721,24 +751,33 @@ class VpnPanel(AgentPanel):
                 "Tunnel will not run this:\n\n"
                 + "\n".join(f"• {item}" for item in review.blockers)
                 + "\n\nNothing was executed.")
-            return False
-        confirm = QMessageBox.question(
-            self, title, review.confirmation_text(),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            return None
+        detail = review.confirmation_detail() if review.hooks_shortened else ""
+        confirm = self._ask(False, title, review.confirmation_text(), detail)
         if confirm == QMessageBox.Yes and review.root_hooks:
             # A config with hooks is a script run as root, not just keys and
             # routes; make that a decision of its own, default No.
-            confirm = QMessageBox.warning(
-                self, "This config runs commands as administrator",
+            confirm = self._ask(
+                True, "This config runs commands as administrator",
                 "The config file contains hook directives that wg-quick/openvpn "
                 "will execute with administrator rights:\n\n"
-                + "\n".join(f"• {item}" for item in review.root_hooks)
+                + "\n".join(f"• {review._shown_hook(item)}" for item in review.root_hooks)
                 + "\n\nOnly continue if you wrote these or trust their source.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                detail)
+        if confirm == QMessageBox.Yes and review.needs_second_confirmation:
+            # Findings that would block a Connect but must not make a Disconnect
+            # impossible (an unreadable config, a hook program a user could
+            # replace): the person decides, with the kill switch state in view.
+            confirm = self._ask(
+                True, "Disconnect anyway?",
+                "Tunnel could not fully review what this Disconnect will run:\n\n"
+                + "\n".join(f"• {item}" for item in review.risks)
+                + "\n\nDisconnect anyway only if you trust this config.",
+                "")
         if confirm != QMessageBox.Yes:
             self.connection_status_label.setText("Not run: confirmation declined.")
-            return False
-        return True
+            return None
+        return review
 
     def _connection_busy(self) -> bool:
         worker = getattr(self, "_connection_worker", None)
@@ -747,11 +786,12 @@ class VpnPanel(AgentPanel):
             return True
         return False
 
-    def _start_connection(self, action: str, profile: dict, status: str) -> None:
+    def _start_connection(self, action: str, profile: dict, status: str,
+                          confirmed=None) -> None:
         self.connection_status_label.setText(status)
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(False)
-        worker = self.connection_worker_class(action, profile)
+        worker = self.connection_worker_class(action, profile, confirmed)
         worker.finished_signal.connect(self._on_connection_finished)
         worker.error_signal.connect(self._on_connection_error)
         self._connection_worker = worker
@@ -833,10 +873,22 @@ class VpnPanel(AgentPanel):
         self._start_killswitch(
             "disarm", self.selected_connect_profile() or {}, "Disarming kill switch…")
 
+    def verify_kill_switch(self) -> None:
+        """Read what pf holds. Explicit only: it costs an administrator prompt."""
+        if self._connection_busy():
+            return
+        if not vpn_connection.killswitch_supported():
+            QMessageBox.information(
+                self, "Kill switch",
+                "The kill switch needs macOS pf (the packet filter) to be available.")
+            return
+        self._start_killswitch("verify", {}, "Verifying with pf (administrator prompt)…")
+
     def _start_killswitch(self, action: str, profile: dict, status: str) -> None:
         self.kill_switch_status_label.setText(status)
         self.arm_ks_btn.setEnabled(False)
         self.disarm_ks_btn.setEnabled(False)
+        self.verify_ks_btn.setEnabled(False)
         worker = self.connection_worker_class(action, profile)
         worker.finished_signal.connect(self._on_killswitch_finished)
         worker.error_signal.connect(self._on_killswitch_error)
@@ -846,16 +898,51 @@ class VpnPanel(AgentPanel):
     def _on_killswitch_finished(self, result: dict) -> None:
         self.arm_ks_btn.setEnabled(True)
         self.disarm_ks_btn.setEnabled(True)
-        if result.get("success"):
+        self.verify_ks_btn.setEnabled(True)
+        if "verify_state" in result:
+            self._show_verify_result(result)
+        elif result.get("success"):
             self.kill_switch_status_label.setText(
                 f"Kill switch: {result.get('output', 'done')}"[:200])
         else:
             self.kill_switch_status_label.setText(
                 f"Kill switch failed: {result.get('error', 'unknown')}"[:300])
 
+    def _show_verify_result(self, result: dict) -> None:
+        text = str(result.get("output") if result.get("success") else
+                   result.get("error") or "Could not verify.")
+        self.kill_switch_status_label.setText(text[:300])
+        state = result.get("verify_state")
+        if state == "verified_inert":
+            # Rules sit in the anchor but are not enforcing; clearing the record
+            # would leave them loaded. Offer to flush them (Disarm), default No.
+            answer = QMessageBox.question(
+                self, "Kill switch",
+                "The kill-switch anchor holds rules that are not enforcing right now "
+                "(pf is off, or the anchor is not registered, or nothing blocks). They "
+                "could start blocking traffic if pf is switched on later.\n\n"
+                "Disarm now (flush the anchor)? It asks for your administrator password.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes:
+                self.disarm_kill_switch()
+            return
+        if state != "verified_empty":
+            return
+        # pf holds nothing in the anchor, so the record Sentinel keeps is wrong;
+        # offer (default No) to drop it. Clearing the record never touches pf.
+        answer = QMessageBox.question(
+            self, "Kill switch",
+            "pf is not blocking anything, but Sentinel still has the kill switch "
+            "recorded as armed.\n\nClear that record?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes and vpn_connection.clear_killswitch_record():
+            self.kill_switch_status_label.setText(
+                "Not armed: no rules loaded. Record cleared.")
+
     def _on_killswitch_error(self, error: str) -> None:
         self.arm_ks_btn.setEnabled(True)
         self.disarm_ks_btn.setEnabled(True)
+        self.verify_ks_btn.setEnabled(True)
         self.kill_switch_status_label.setText(f"Kill switch error: {error}"[:300])
 
     def run_diagnostics(self) -> None:
@@ -978,8 +1065,30 @@ class VpnPanel(AgentPanel):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._refresh_kill_switch_label()
         self._watch_selected_profile()
         self.health_monitor.start()
+
+    def _refresh_kill_switch_label(self) -> None:
+        """Show what Sentinel knows now (the record survives a restart, a stale
+        one is dropped) unless an action is rewriting the label."""
+        worker = getattr(self, "_connection_worker", None)
+        if worker is not None and worker.isRunning():
+            return
+        ks = vpn_connection._killswitch()
+        reason = ""
+        try:
+            if ks is not None and ks.is_supported():
+                reason = ks.reconcile()
+        except Exception:  # noqa: BLE001 - housekeeping must not break showing the panel
+            pass
+        if reason:
+            # The stale record is gone; say why instead of a bare "disarmed".
+            self.kill_switch_status_label.setText(f"Not armed: {reason}"[:300])
+            return
+        text = vpn_connection.killswitch_status_text()
+        if text:
+            self.kill_switch_status_label.setText(text[:300])
 
     def hideEvent(self, event) -> None:
         self.health_monitor.stop()
@@ -991,18 +1100,38 @@ class VpnPanel(AgentPanel):
     def _on_health_info(self, text: str) -> None:
         self.connection_status_label.setText(text[:300])
 
+    def has_privileged_work(self) -> bool:
+        """True while an administrator action is running: a Connect, Disconnect,
+        kill-switch change or Verify (the connection worker), or a companion
+        tab's call. The window asks Wait / Quit anyway before closing on it."""
+        worker = getattr(self, "_connection_worker", None)
+        if worker is not None and worker.isRunning():
+            return True
+        for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None),
+                    getattr(self, "apps_tab", None)):
+            check = getattr(tab, "has_privileged_work", None)
+            if callable(check) and check():
+                return True
+        return False
+
     def shutdown(self, timeout_ms: int = 2000) -> None:
-        """Cancel and join Tunnel workers before their widgets are destroyed."""
+        """Cancel and join Tunnel workers before their widgets are destroyed.
+
+        A privileged worker (the connection worker, the companion tabs') that
+        outlasts the join is detached and left to finish, never terminate()d:
+        stopping it mid-call can leave pf or the tunnel changed with nothing
+        recorded.
+        """
         monitor = getattr(self, "health_monitor", None)
         if monitor is not None:
             monitor.stop()
-        workers = [self.worker, self._diagnostics_worker, self._ip_worker,
-                   self._dns_worker, getattr(self, "_connection_worker", None)]
+        connection = getattr(self, "_connection_worker", None)
+        workers = [self.worker, self._diagnostics_worker, self._ip_worker, self._dns_worker]
         for tab in (getattr(self, "privacy_tab", None), getattr(self, "servers_tab", None),
                     getattr(self, "apps_tab", None)):
             if tab is not None:
                 tab.shutdown(timeout_ms)
-        for worker in workers:
+        for worker in workers + [connection]:
             if worker is not None and worker.isRunning():
                 worker.cancel()
         for worker in workers:
@@ -1013,6 +1142,9 @@ class VpnPanel(AgentPanel):
                 # must not destroy a live QThread if an OS call ignores cancellation.
                 worker.terminate()
                 worker.wait(500)
+        if (connection is not None and connection.isRunning() and hasattr(connection, "wait")
+                and not connection.wait(timeout_ms)):
+            detach_worker(connection)
 
     # ── Deliberately non-executing action preview ─────────────────────
     def preview_action(self) -> None:

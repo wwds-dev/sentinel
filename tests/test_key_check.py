@@ -248,6 +248,38 @@ def test_save_key_checks_the_key_straight_away(tab):
     assert "HIBP_API_KEY=" + "h" * 32 in dialogs._osint_env_path().read_text()
 
 
+def test_save_key_tightens_a_loose_env_and_removal_still_works(tab):
+    import os
+    import stat
+    from PySide6.QtWidgets import QPushButton
+    from ui import dialogs
+
+    env = dialogs._osint_env_path()
+    saved = env.read_text() if env.exists() else None
+    try:
+        env.write_text("KEEP_ME=1\n")
+        os.chmod(env, 0o644)
+        edit, button = _row(tab, "hibp")
+        save = next(b for b in button.parentWidget().findChildren(QPushButton)
+                    if b.text() == "Save Key")
+        edit.setText("h" * 32)
+        save.click()
+        assert stat.S_IMODE(env.stat().st_mode) == 0o600
+        assert "KEEP_ME=1" in env.read_text()
+        assert "HIBP_API_KEY=" + "h" * 32 in env.read_text()
+        # An empty value is written as an empty assignment and leaves the environment.
+        edit.setText("")
+        save.click()
+        assert "HIBP_API_KEY=\n" in env.read_text() and "KEEP_ME=1" in env.read_text()
+        assert "HIBP_API_KEY" not in os.environ
+        assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    finally:
+        if saved is None:
+            env.unlink(missing_ok=True)
+        else:
+            env.write_text(saved)
+
+
 def test_check_all_runs_only_free_checks_and_names_the_rest(tab):
     from PySide6.QtWidgets import QLabel, QPushButton
 

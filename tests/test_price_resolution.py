@@ -225,3 +225,119 @@ def test_blank_dashscope_base_url_means_the_default(monkeypatch):
     assert qwen_client._base_url() == qwen_client.INTL_BASE_URL
     monkeypatch.setenv("DASHSCOPE_BASE_URL", qwen_client.CHINA_BASE_URL)
     assert qwen_client._base_url() == qwen_client.CHINA_BASE_URL
+
+
+# ── Nothing that can be selected is ever free ────────────────────────────────
+# TODO "Prices the router cannot see": Gemini's `default` row was 0/0, so every
+# Gemini model without a row of its own cost EUR 0 and never counted against a
+# budget cap.
+
+def _selectable(provider):
+    """Every cloud model id the app can put in front of the user for `provider`."""
+    models = set(CLIENTS[provider].KNOWN_MODELS)
+    models |= {p.model for p in mr.MODEL_CATALOG if p.provider == provider}
+    return sorted(models)
+
+
+def _billed(provider, model):
+    return UsageTracker().calculate_cost_eur(provider, model, 10_000, 2_000)
+
+
+def test_no_shipped_rate_is_zero_or_blank(fresh_db):
+    """A 0 in the seed, the shipped JSON or the live table reads as free."""
+    import json
+    from pathlib import Path
+
+    for backend, model, inp, out in database._seeded_prices():
+        assert inp > 0 and out > 0, (backend, model)
+    shipped = json.loads((Path(__file__).resolve().parents[1] / "config" / "pricing.json").read_text())
+    for backend, models in shipped.items():
+        if isinstance(models, dict):
+            for model, rates in models.items():
+                assert rates["input_per_1m_usd"] > 0 and rates["output_per_1m_usd"] > 0, (backend, model)
+    with database.get_connection() as conn:
+        for r in conn.execute("SELECT backend, model, input_per_1m_usd, output_per_1m_usd FROM pricing"):
+            assert r["input_per_1m_usd"] > 0 and r["output_per_1m_usd"] > 0, (r["backend"], r["model"])
+
+
+def test_every_cloud_provider_has_a_positive_default_row(fresh_db):
+    from services.provider_catalog import CLOUD_PROVIDERS
+
+    assert set(CLIENTS) == set(CLOUD_PROVIDERS)
+    assert set(database.DEFAULT_PRICES) == set(CLOUD_PROVIDERS)
+    with database.get_connection() as conn:
+        for provider in CLOUD_PROVIDERS:
+            found = _rates(conn, provider, "default")
+            assert found and found[0] > 0 and found[1] > 0, provider
+
+
+@pytest.mark.parametrize("provider", sorted(CLIENTS))
+def test_every_selectable_model_and_an_unlisted_one_costs_money(fresh_db, provider):
+    for model in _selectable(provider) + [f"{provider}-not-yet-released"]:
+        assert _billed(provider, model) > 0, (provider, model)
+
+
+def test_gemini_models_count_against_the_budget(fresh_db):
+    """The reported defect, end to end: a Gemini 2.5 call lands in the usage log with a cost."""
+    tracker = UsageTracker()
+    for model in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"):
+        entry = tracker.log_request("chat", "gemini", model, "p" * 4000, "r" * 800,
+                                    {"input_tokens": 10_000, "output_tokens": 2_000})
+        assert entry["cost_eur"] > 0, model
+
+
+def test_a_zero_provider_default_never_makes_a_model_free(fresh_db):
+    """A database left with the 0/0 default (or one a user zeroed) still bills."""
+    from services import usage_tracker
+
+    with database.get_connection() as conn:
+        conn.execute("UPDATE pricing SET input_per_1m_usd = 0, output_per_1m_usd = 0 "
+                     "WHERE backend = 'gemini' AND model IN ('default', 'gemini-2.5-flash')")
+        conn.commit()
+        dearest = usage_tracker.dearest_price_row(conn)
+    unlisted = _billed("gemini", "gemini-9-unlisted")
+    zeroed_row = _billed("gemini", "gemini-2.5-flash")
+    assert unlisted == zeroed_row > 0
+    assert unlisted == pytest.approx(eur(dearest["input_per_1m_usd"], dearest["output_per_1m_usd"]), abs=1e-6)
+
+
+def test_an_empty_or_all_zero_pricing_table_still_bills_the_ceiling(fresh_db):
+    from services import usage_tracker
+
+    with database.get_connection() as conn:
+        conn.execute("UPDATE pricing SET input_per_1m_usd = 0, output_per_1m_usd = 0")
+        conn.commit()
+    ceiling = usage_tracker.UNKNOWN_PRICE_ROW
+    expected = eur(ceiling["input_per_1m_usd"], ceiling["output_per_1m_usd"])
+    for provider in CLIENTS:
+        assert _billed(provider, "anything") == pytest.approx(expected, abs=1e-6), provider
+    with database.get_connection() as conn:
+        conn.execute("DELETE FROM pricing")
+        conn.commit()
+    assert _billed("gemini", "gemini-2.5-flash") == pytest.approx(expected, abs=1e-6)
+    assert _billed("ollama", "llama3") == 0.0       # local stays free
+
+
+def test_the_correction_is_idempotent_and_repairs_a_zero_gemini_database(fresh_db):
+    conn = database.get_connection()
+    _as_shipped_before(conn)
+    conn.execute("UPDATE pricing SET input_per_1m_usd = 0, output_per_1m_usd = 0 "
+                 "WHERE backend = 'gemini' AND model = 'default'")
+    conn.commit()
+    snapshot = lambda: conn.execute(  # noqa: E731
+        "SELECT backend, model, input_per_1m_usd, cached_input_per_1m_usd, output_per_1m_usd "
+        "FROM pricing ORDER BY backend, model").fetchall()
+    database._correct_pricing_2026_10(conn)
+    assert _rates(conn, "gemini", "default") == (4.0, 18.0, None)
+    assert _rates(conn, "gemini", "gemini-2.5-flash") == (0.30, 2.50, None)
+    once = [tuple(r) for r in snapshot()]
+    database._correct_pricing_2026_10(conn)
+    database._seed_missing_pricing(conn)
+    assert [tuple(r) for r in snapshot()] == once
+    # A full restart changes nothing either.
+    conn.close()
+    database.init_db()
+    with database.get_connection() as again:
+        assert [tuple(r) for r in again.execute(
+            "SELECT backend, model, input_per_1m_usd, cached_input_per_1m_usd, output_per_1m_usd "
+            "FROM pricing ORDER BY backend, model")] == once
