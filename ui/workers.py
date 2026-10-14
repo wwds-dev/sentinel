@@ -120,6 +120,16 @@ def detach_worker(worker) -> None:
     park(worker)
 
 
+def remaining_ms(deadline: float) -> int:
+    """Milliseconds left until a time.monotonic() deadline, never negative."""
+    return max(0, int((deadline - time.monotonic()) * 1000))
+
+
+def shutdown_deadline(timeout_ms: int, deadline: float | None) -> float:
+    """The shared quit deadline when one is given, else `timeout_ms` from now."""
+    return deadline if deadline is not None else time.monotonic() + timeout_ms / 1000
+
+
 def join_or_park(workers, deadline: float) -> list:
     """Cancel every worker, join each against one shared monotonic deadline,
     and park (detach_worker) whatever is still running when it passes.
@@ -144,8 +154,7 @@ def join_or_park(workers, deadline: float) -> list:
     for worker in live:
         if not hasattr(worker, "wait"):
             continue
-        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
-        if not worker.wait(remaining_ms):
+        if not worker.wait(remaining_ms(deadline)):
             detach_worker(worker)
             parked.append(worker)
     return parked

@@ -37,7 +37,7 @@ from ui.panels.vpn_servers import ServersTab
 from ui.widgets import MenuComboBox, SectionView
 from ui.workers import (
     DnsLeakWorker, IpSnapshotWorker, VpnConnectionWorker, VpnDiagnosticsWorker,
-    detach_worker, park,
+    detach_worker, join_or_park, park, shutdown_deadline,
 )
 
 
@@ -1115,14 +1115,17 @@ class VpnPanel(AgentPanel):
                 return True
         return False
 
-    def shutdown(self, timeout_ms: int = 2000) -> None:
+    def shutdown(self, timeout_ms: int = 2000, *, deadline: float | None = None) -> None:
         """Cancel and join Tunnel workers before their widgets are destroyed.
 
-        A privileged worker (the connection worker, the companion tabs') that
-        outlasts the join is detached and left to finish, never terminate()d:
-        stopping it mid-call can leave pf or the tunnel changed with nothing
-        recorded.
+        No worker is ever terminate()d. The diagnostic workers are joined
+        against `deadline` (the window's shared quit budget) and parked if
+        they outlast it. A privileged worker (the connection worker, the
+        companion tabs') keeps its own `timeout_ms` join and is then detached
+        and left to finish: stopping it mid-call can leave pf or the tunnel
+        changed with nothing recorded.
         """
+        deadline = shutdown_deadline(timeout_ms, deadline)
         monitor = getattr(self, "health_monitor", None)
         if monitor is not None:
             monitor.stop()
@@ -1132,17 +1135,9 @@ class VpnPanel(AgentPanel):
                     getattr(self, "apps_tab", None)):
             if tab is not None:
                 tab.shutdown(timeout_ms)
-        for worker in workers + [connection]:
-            if worker is not None and worker.isRunning():
-                worker.cancel()
-        for worker in workers:
-            if worker is None or not worker.isRunning() or not hasattr(worker, "wait"):
-                continue
-            if not worker.wait(timeout_ms) and hasattr(worker, "terminate"):
-                # Every diagnostic command is bounded, but application shutdown
-                # must not destroy a live QThread if an OS call ignores cancellation.
-                worker.terminate()
-                worker.wait(500)
+        if connection is not None and connection.isRunning():
+            connection.cancel()
+        join_or_park(workers, deadline)
         if (connection is not None and connection.isRunning() and hasattr(connection, "wait")
                 and not connection.wait(timeout_ms)):
             detach_worker(connection)
