@@ -1295,8 +1295,9 @@ def show_settings(app):
             stopper = getattr(app, "stop_background_work", None)
             if callable(stopper):
                 # Chat, model scan and pull, panels and open run-log rows: all
-                # quiet before the folder they write to is erased.
-                stopper()
+                # quiet before the folder they write to is erased. fence marks
+                # every parked worker so a late result writes nothing.
+                stopper(fence=True)
             else:
                 shutdown_panels(app)
             from services.portable_reset import erase_portable_user_data
