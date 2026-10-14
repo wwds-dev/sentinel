@@ -123,6 +123,11 @@ future and cross-project items are listed under V3 or in their owning project.
 - [ ] `P2` `feature` `@ai` `agent:vpn` In-panel **How-to** button in the Tunnel panel that opens the "How-to: get a working tunnel" steps, the "Scenarios: which functions to use when" section (VPN app running, no VPN, own server, provider config) and the command list from `docs/training/tunnel.md`, with a copy button per command. Render from that lesson so the panel and the Learning Centre cannot drift apart. Add a test that the panel text matches the lesson.
 - [ ] `P2` `feature` `@ai` `agent:vpn` Add Nym (mixnet) to Tunnel alongside Tor, proxy chain and multi-hop: drive the official NymVPN client (mixnet mode), show its status in Connection Check, and include it in the leak/DNS test. First confirm the current NymVPN CLI/daemon interface; state in the UI that mixnet mode is slower than Tor and has a smaller anonymity set.
 
+- [ ] `P1` `bug` `@me` `agent:vpn` pytest on ubuntu-latest exited 1 on PR #3's head, `cdc79c9`, now merged (macOS passes; 0 failures locally as non-root). The job log cannot be read from Claude's sandbox: paste the `FAILED` lines from Actions > pytest (ubuntu-latest) > Test, then Claude fixes it. The earlier 30-minute hang is fixed (`ce6b182`).
+- [ ] `P2` `infra` `@me` Decide whether to copy `docs/company/tooling/python/quality.yml` into `.github/workflows/` (Ruff ratchet and coverage floor). It would fail builds until the lint and coverage baseline is measured on `main`; Codex flagged it on PR #3.
+- [ ] `P2` `security` `@me` `agent:vpn` Independent review of the privileged-code changes from PR #3 (audit tier-2 S1-S6 and `cdc79c9`: reviewed WireGuard file is the file root runs, bare hook commands resolved through the privileged PATH, filtered DNS counts as unresolved). Codex hit its review limit, so only the author's tests and mutation checks cover them.
+- [ ] `P2` `testing` `@me` Mac-only checks before the testing phase: full pytest on the Mac, `python scripts/capture_training_screenshots.py` (five screenshots), manual cases section 15-16 (throwaway-VPS deploy, Tor and MAC changer on hardware).
+- [ ] `P3` `security` `@ai` `agent:vpn` `paramiko` has an unfixed pip-audit advisory (the `dependencies` job is non-blocking). Upgrade when a fixed release exists.
 ---
 
 # Detail
