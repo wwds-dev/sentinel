@@ -313,3 +313,13 @@ def _dispose_windows_a_module_leaked():
     from PySide6.QtCore import QEvent
     app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
+
+
+@pytest.fixture(autouse=True)
+def _no_reset_latch_leaks_between_tests():
+    """A real Emergency Reset erase (tests/test_portable_reset.py) sets a
+    process-wide latch that refuses data writes for the rest of the process.
+    In the app the process then quits; here the next test must start clean."""
+    yield
+    from services import portable_reset
+    portable_reset._ERASING.clear()

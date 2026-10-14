@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from services import model_recommendations as mr
+from services.portable_reset import require_writes_allowed
 from services.model_recommendations import (
     ModelProfile, Recommendation, RoutingPreferences, classify_request,
     route_request,
@@ -432,6 +433,7 @@ class ModelWatch:
         return data
 
     def save(self) -> None:
+        require_writes_allowed()        # never into a folder a Reset is erasing
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.state, indent=2, sort_keys=True), encoding="utf-8")

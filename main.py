@@ -193,7 +193,7 @@ AGENT_SETUP_WIDGETS = {
 from ui import app_identity, appkit_guard, tray
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker, ModelScanWorker,
-    fence_parked, join_or_park, park, remaining_ms,
+    drop_result_slots, fence_parked, join_or_park, park, remaining_ms,
 )
 from ui.model_updates import ModelReviewDialog, ModelUpdatesCard
 from ui.widgets import (
@@ -5162,6 +5162,10 @@ class GodAI(QWidget):
         shutdown_panels(self, deadline)
         if fence:
             fence_parked()
+            # A scan that finished inside the join is not parked, so not
+            # fenced: stop listening to it before the folder it would record
+            # into is erased.
+            drop_result_slots(getattr(self, "model_scan_worker", None))
         # Whatever a panel left authorised but never recorded: close each row
         # so the Run log does not show it as running for ever.
         for request_id in list(self._pending_requests):

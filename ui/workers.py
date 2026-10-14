@@ -7,6 +7,7 @@ arguments and touch no application state, which is why they move first.
 import re
 import subprocess
 import time
+import warnings
 
 import shiboken6
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
@@ -109,15 +110,30 @@ def detach_worker(worker) -> None:
     widgets that are being destroyed, then the worker is parked until its
     thread ends.
     """
+    drop_result_slots(worker)
+    park(worker)
+
+
+def drop_result_slots(worker) -> None:
+    """Disconnect every receiver of a worker's result signals.
+
+    A result emitted afterwards reaches nobody. One already queued is still
+    delivered (with sender() None, spec no-thread-terminate R7), which is why
+    the data writes themselves check portable_reset.writes_allowed().
+    """
+    if worker is None:
+        return
     for name in _RESULT_SIGNALS:
         signal = getattr(worker, name, None)
         if signal is None:
             continue
-        try:
-            signal.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-    park(worker)
+        with warnings.catch_warnings():
+            # PySide warns when a signal had no receivers left; that is fine.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
 
 
 def remaining_ms(deadline: float) -> int:

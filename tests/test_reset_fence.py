@@ -159,3 +159,79 @@ def test_a_fenced_workers_late_report_writes_nothing(win):
     with get_connection() as conn:
         row = conn.execute("SELECT status, cost_eur FROM runs WHERE run_id = ?", (run_id,)).fetchone()
     assert row["status"] == "cancelled" and not row["cost_eur"]
+
+
+# ── Review P2-2: a scan that finished inside the join writes nothing ────────
+
+def test_a_reset_during_the_model_scan_writes_nothing(win, monkeypatch, latch):
+    """The scan finishes during the reset's join, so it is not parked and not
+    fenced; its result is still queued when the post-erase dialog runs its
+    nested event loop. Nothing may land in the erased folder."""
+    from PySide6.QtWidgets import QDialog, QInputDialog, QPushButton
+    from services import model_watch
+
+    watch_file = win.model_watch.path
+    monkeypatch.setattr(model_watch, "list_live", lambda classes: [])
+    scan = workers.ModelScanWorker({}, None)
+    scan.finished_signal.connect(win._on_model_scan_finished)
+    scan.error_signal.connect(win._on_model_scan_error)
+    win.model_scan_worker = scan
+    win.started.append(scan)
+    scan.start()
+    assert scan.wait(5000)            # its finished_signal is queued, not yet delivered
+
+    def erase():
+        portable_reset._ERASING.set()
+        watch_file.unlink(missing_ok=True)
+
+    def post_erase_dialog(*_a, **_k):
+        _spin(lambda: False, 0.3)    # the information box's nested event loop
+
+    monkeypatch.setattr(portable_reset, "erase_portable_user_data", erase)
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("ERASE SENTINEL DATA", True)))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(post_erase_dialog))
+    monkeypatch.setattr(QApplication, "quit", staticmethod(lambda: None))
+    recorded = []
+    real_record = win.model_watch.record_scan
+    monkeypatch.setattr(win.model_watch, "record_scan",
+                        lambda *a, **k: recorded.append(True) or real_record(*a, **k))
+    opened = []
+    monkeypatch.setattr(QDialog, "exec", lambda self: opened.append(self) or 0)
+    dialogs.show_settings(win)
+    next(b for b in opened[0].findChildren(QPushButton)
+         if b.objectName() == "EmergencyPortableReset").click()
+    opened[0].reject()
+    _spin(lambda: False, 0.2)
+    assert recorded == [True]          # the queued result did arrive (R7) ...
+    assert not watch_file.exists()     # ... and wrote nothing
+
+
+def test_the_fence_disconnects_the_model_scan_results(win, monkeypatch):
+    got = []
+    scan = workers.ModelScanWorker({}, None)
+    scan.finished_signal.connect(lambda *a: got.append(a))
+    win.model_scan_worker = scan
+    win.stop_background_work(fence=True)
+    scan.finished_signal.emit([], None)
+    QApplication.processEvents()
+    assert got == []
+
+
+@pytest.mark.parametrize("write", ["history_save", "history_update", "settings", "model_watch"])
+def test_no_data_write_once_erasing_has_started(tmp_path, latch, write):
+    from services import history_store, model_watch, settings_store
+    store = history_store.HistoryStore(tmp_path / "chats")
+    saved = store.save_chat("chat", "ollama", "m", "", [], "r")
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    latch.set()
+    with pytest.raises(PortableRuntimeError):
+        if write == "history_save":
+            store.save_chat("chat", "ollama", "m", "", [], "r")
+        elif write == "history_update":
+            store.update_chat(saved, messages=[], response="changed")
+        elif write == "settings":
+            settings_store.save_override(tmp_path / "data" / "settings.local.json", "k", "v")
+        else:
+            model_watch.ModelWatch(tmp_path / "data" / "model_watch.json").save()
+    assert sorted(p.name for p in tmp_path.rglob("*")) == before
