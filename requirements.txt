@@ -11,7 +11,7 @@ jiter==0.14.0
 Markdown==3.10.2
 openai==2.31.0
 pillow==12.3.0
-pydantic==2.13.0
+pydantic==2.14.0
 pydantic_core==2.46.0
 python-dotenv==1.2.2
 regex==2026.4.4
