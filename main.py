@@ -193,6 +193,7 @@ AGENT_SETUP_WIDGETS = {
 from ui import app_identity, appkit_guard, tray
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker, ModelScanWorker,
+    fence_parked, join_or_park, park, remaining_ms,
 )
 from ui.model_updates import ModelReviewDialog, ModelUpdatesCard
 from ui.widgets import (
@@ -4187,6 +4188,9 @@ class GodAI(QWidget):
                 signal.disconnect(handler)
             except (RuntimeError, TypeError):
                 pass
+        # Keep the thread referenced until it ends (never terminate it).
+        if isinstance(worker, QThread):
+            park(worker)
 
     def stop_chat_worker(self):
         if self.chat_worker is not None and self.chat_worker.isRunning():
@@ -5075,17 +5079,26 @@ class GodAI(QWidget):
         search_box.setFocus()
         dialog.exec()
 
-    def stop_background_work(self) -> None:
-        """Stop and join everything Sentinel started, and close its run-log rows.
+    def stop_background_work(self, deadline: float | None = None, fence: bool = False) -> None:
+        """Stop everything Sentinel started, and close its run-log rows.
 
         Shared by quitting and by Emergency Reset, which erases the database
-        the run log writes to and so needs the same quiet first.
+        the run log writes to and so needs the same quiet first. Nothing is
+        terminated: every join comes out of one budget (`deadline`, by default
+        QUIT_JOIN_BUDGET_S from now) and whatever outlasts it is parked.
+        `fence` marks every parked worker so a late result writes nothing.
         """
-        if self.chat_worker is not None and self.chat_worker.isRunning():
-            self.chat_worker.cancel()
-            self._detach_chat_worker(self.chat_worker)
-            self.chat_worker.terminate()
-            self.chat_worker.wait(1000)
+        if deadline is None:
+            deadline = time.monotonic() + QUIT_JOIN_BUDGET_S
+        worker = self.chat_worker
+        if worker is not None and worker.isRunning():
+            # Cancel, stop listening and park first; then a join out of the
+            # shared budget, which ends a streamed reply (the cancel flag is
+            # read between tokens). A blocked call just stays parked.
+            worker.cancel()
+            self._detach_chat_worker(worker)
+            self.chat_worker = None
+            worker.wait(remaining_ms(deadline))
         # The run log must not keep a request "running" after the app is
         # gone: close it as cancelled, as the Stop button would.
         run_id = getattr(self, "active_run_id", None)
@@ -5096,17 +5109,12 @@ class GodAI(QWidget):
                 self.active_run_id = None
         # The model scan and a model pull are QThreads of ours too; a quit
         # while one ran destroyed a live thread (and could crash on exit).
-        for name in ("model_scan_worker", "model_pull_worker"):
-            thread = getattr(self, name, None)
-            if thread is not None and thread.isRunning():
-                cancel = getattr(thread, "cancel", None)
-                if callable(cancel):
-                    cancel()
-                if not thread.wait(2000):
-                    thread.terminate()
-                    thread.wait(1000)
+        join_or_park([getattr(self, "model_scan_worker", None),
+                      getattr(self, "model_pull_worker", None)], deadline)
         from ui.dialogs import shutdown_panels
-        shutdown_panels(self)
+        shutdown_panels(self, deadline)
+        if fence:
+            fence_parked()
         # Whatever a panel left authorised but never recorded: close each row
         # so the Run log does not show it as running for ever.
         for request_id in list(self._pending_requests):
@@ -5160,6 +5168,11 @@ class GodAI(QWidget):
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
+
+# How long closing the window may spend joining non-privileged background work,
+# all of it together, before what is still running is parked. The owner's
+# limit for a whole quit is 5 s (spec no-thread-terminate, Q4).
+QUIT_JOIN_BUDGET_S = 2.5
 
 SINGLE_INSTANCE_KEY = "sentinel.single-instance.v2"
 WINDOW_SETTINGS_KEY = "mainWindow/geometry"

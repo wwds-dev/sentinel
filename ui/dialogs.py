@@ -7,6 +7,7 @@ bodies are moved verbatim; only the receiver was renamed from `self` to `app`.
 """
 
 import html
+import inspect
 from datetime import datetime
 import json
 import os
@@ -51,23 +52,34 @@ def esc(value) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
-def shutdown_panels(app) -> None:
+def shutdown_panels(app, deadline: float | None = None) -> None:
     """Stop panel work and join workers that provide a shutdown contract.
 
-    One panel's failure must not leave the others running: the exception is
-    noted and the loop goes on.
+    `deadline` (time.monotonic()) is the window's shared quit budget; it is
+    passed to every shutdown that accepts one. One panel's failure must not
+    leave the others running: the exception is noted and the loop goes on.
     """
     for key, panel in getattr(app, "panels", {}).items():
         try:
             shutdown = getattr(panel, "shutdown", None)
             if callable(shutdown):
-                shutdown()
+                if deadline is not None and _accepts_deadline(shutdown):
+                    shutdown(deadline=deadline)
+                else:
+                    shutdown()
             elif panel.is_running():
                 panel.stop()
         except Exception as exc:  # noqa: BLE001
             note = getattr(app, "_note_failure", None)
             if callable(note):
                 note(f"shutdown: {key}", exc)
+
+
+def _accepts_deadline(func) -> bool:
+    try:
+        return "deadline" in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def privileged_work_running(app) -> bool:

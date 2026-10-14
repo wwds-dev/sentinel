@@ -29,7 +29,6 @@ _REFLECTIVE = {"getattr", "hasattr", "setattr", "delattr", "methodcaller", "invo
 # (path relative to the repo, enclosing function qualname) -> (uses, reason)
 ALLOWED: dict[tuple[str, str], tuple[int, str]] = {
     ("main.py", "GodAI.stop_chat_worker"): (1, "thread: removed by task 7"),
-    ("main.py", "GodAI.stop_background_work"): (2, "thread: removed by task 6"),
 }
 
 
