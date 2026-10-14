@@ -4193,17 +4193,23 @@ class GodAI(QWidget):
             park(worker)
 
     def stop_chat_worker(self):
-        if self.chat_worker is not None and self.chat_worker.isRunning():
-            self.chat_worker.cancel()
-            self._detach_chat_worker(self.chat_worker)
-            self.chat_worker.terminate()
-            self.chat_worker.wait(2000)
+        """Stop at once: cancel, stop listening and park the request.
+
+        No wait and no terminate(). The model call cannot be interrupted, so
+        the thread is parked until it returns, and nothing it delivers after
+        this is shown, saved or billed against the cancelled run.
+        """
+        worker = self.chat_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            self._detach_chat_worker(worker)
+            self.chat_worker = None
             if (self.current_messages
                     and self.current_messages[-1].get("role") == "assistant"
                     and not self.current_messages[-1].get("content")):
                 self.current_messages.pop()
             self.current_messages.append(
-                self._ui_notice("Chat request stopped by user.")
+                self._ui_notice(_stop_notice(getattr(worker, "backend", "")))
             )
             self._render_chat_conversation()
         self.stop_chat_timer()
@@ -5168,6 +5174,15 @@ class GodAI(QWidget):
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
+
+def _stop_notice(backend: str) -> str:
+    """What Chat says after Stop. The billing clause is only for cloud providers."""
+    if backend in CLOUD_PROVIDERS:
+        return ("Chat request stopped. The model may still finish in the background. "
+                "A cloud provider may bill for it; Sentinel will not show the reply.")
+    return ("Chat request stopped. The model may still finish in the background. "
+            "Sentinel will not show the reply.")
+
 
 # How long closing the window may spend joining non-privileged background work,
 # all of it together, before what is still running is parked. The owner's

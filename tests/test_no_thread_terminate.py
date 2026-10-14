@@ -28,7 +28,6 @@ _REFLECTIVE = {"getattr", "hasattr", "setattr", "delattr", "methodcaller", "invo
 
 # (path relative to the repo, enclosing function qualname) -> (uses, reason)
 ALLOWED: dict[tuple[str, str], tuple[int, str]] = {
-    ("main.py", "GodAI.stop_chat_worker"): (1, "thread: removed by task 7"),
 }
 
 
@@ -146,6 +145,13 @@ def test_no_thread_is_terminated_outside_the_allow_list():
     over = {key: lines for key, lines in uses.items()
             if key in ALLOWED and len(lines) > ALLOWED[key][0]}
     assert not over, f"more terminate uses than the allow-list declares: {over}"
+
+
+def test_the_allow_list_names_no_thread():
+    """Every thread terminate is gone (task 7); an entry may only ever name a
+    process handle, never a thread."""
+    assert not [key for key, (_, reason) in ALLOWED.items()
+                if "thread" in reason.lower() or "removed by task" in reason]
 
 
 def test_no_allow_list_entry_is_stale():
