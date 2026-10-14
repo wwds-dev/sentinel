@@ -24,7 +24,36 @@ ROOT = Path(__file__).resolve().parents[1]
 SCAN_DIRS = ("ui", "services", "providers", "agents")
 EXCLUDED = (ROOT / "agents" / "bug_spray",)     # a git submodule with its own suite
 
-_REFLECTIVE = {"getattr", "hasattr", "setattr", "delattr", "methodcaller", "invokeMethod"}
+_REFLECTIVE = {
+    "getattr", "hasattr", "setattr", "delattr", "methodcaller", "attrgetter",
+    "invokeMethod", "__getattribute__", "__getattr__",
+}
+_NAMESPACES = {"__dict__"}           # w.__dict__["terminate"], type(w).__dict__[...]
+
+
+def _folded(node):
+    """The str a node always evaluates to: a str or bytes constant, `+` of
+    such, or an f-string made only of constants. None when it is not one."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+        value = node.value
+        return value.decode("latin-1") if isinstance(value, bytes) else value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _folded(node.left), _folded(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.FormattedValue) and node.format_spec is None:
+        return _folded(node.value)
+    if isinstance(node, ast.JoinedStr):
+        parts = [_folded(v) for v in node.values]
+        return None if any(p is None for p in parts) else "".join(parts)
+    return None
+
+
+def _is_namespace(node) -> bool:
+    """`x.__dict__` or `vars(x)`."""
+    if isinstance(node, ast.Attribute) and node.attr in _NAMESPACES:
+        return True
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "vars")
 
 # (path relative to the repo, enclosing function qualname) -> (uses, reason)
 ALLOWED: dict[tuple[str, str], tuple[int, str]] = {
@@ -54,9 +83,17 @@ class _Scanner(ast.NodeVisitor):
     def visit_Call(self, node):
         func = node.func
         name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-        if name in _REFLECTIVE and any(
-                isinstance(arg, ast.Constant) and arg.value == "terminate" for arg in node.args):
+        args = list(node.args) + [kw.value for kw in node.keywords]
+        if name in _REFLECTIVE and any(_folded(arg) == "terminate" for arg in args):
             self._note(node)
+        elif (name == "get" and isinstance(func, ast.Attribute) and _is_namespace(func.value)
+              and any(_folded(arg) == "terminate" for arg in node.args)):
+            self._note(node)                     # vars(w).get("terminate")
+        self.generic_visit(node)
+
+    def visit_Subscript(self, node):
+        if _is_namespace(node.value) and _folded(node.slice) == "terminate":
+            self._note(node)                     # type(w).__dict__["terminate"]
         self.generic_visit(node)
 
 
@@ -98,6 +135,18 @@ def _all_uses() -> dict[tuple[str, str], list[int]]:
     "f = w.terminate",
     "operator.methodcaller('terminate')(w)",
     "QMetaObject.invokeMethod(w, 'terminate')",
+    # Review P3-1: the five bypasses the first version missed.
+    "operator.attrgetter('terminate')(w)()",
+    "w.__getattribute__('terminate')()",
+    "type(w).__dict__['terminate'](w)",
+    "QMetaObject.invokeMethod(w, b'terminate')",
+    "getattr(w, 'term' + 'inate')()",
+    # and their near relatives
+    "w.__getattr__('terminate')",
+    "vars(type(w))['terminate'](w)",
+    "vars(type(w)).get('terminate')(w)",
+    "getattr(w, f'term{\"inate\"}')()",
+    "QMetaObject.invokeMethod(w, member='terminate')",
 ])
 def test_the_scanner_finds(source):
     assert len(find_terminate_uses(source)) == 1
@@ -110,6 +159,9 @@ def test_the_scanner_finds(source):
     "# worker.terminate()\nx = 1",
     "'''worker.terminate()'''",
     "w.kill()",
+    "getattr(w, 'kill')()",
+    "x.__dict__['other']",
+    "getattr(w, name)()",                        # not a constant: out of an AST's reach
 ])
 def test_the_scanner_ignores(source):
     assert find_terminate_uses(source) == []
