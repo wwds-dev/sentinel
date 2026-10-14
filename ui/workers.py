@@ -8,7 +8,8 @@ import re
 import subprocess
 import time
 
-from PySide6.QtCore import QThread, Signal
+import shiboken6
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from services.local_file_search import FileSearchFilters, FileSearchReport, search_files
 from services.remote_file_search import search_remote_files
@@ -19,8 +20,14 @@ from services.vpn_diagnostics import collect_vpn_diagnostics
 # thread is still inside a call that must not be cut short: a request in
 # flight, or a privileged command behind the administrator dialog. They are
 # parked here so the QThread is not garbage-collected while running, and each
-# removes itself when its thread ends.
+# is released when its thread ends. Never terminate() one instead: a thread
+# killed while it holds the GIL leaves every other Python thread blocked for
+# good (docs/adr/0001-park-workers-and-leave-with-os-exit.md).
 _DETACHED_WORKERS: list = []
+
+# Objects that must outlive a parked thread with it (HealthMonitor's worker,
+# moved into the thread), keyed by id() of the parked thread.
+_PARKED_COMPANIONS: dict = {}
 
 _RESULT_SIGNALS = ("finished_signal", "error_signal", "result_signal")
 
@@ -30,6 +37,66 @@ def _discard_detached_worker(worker) -> None:
         _DETACHED_WORKERS.remove(worker)
     except ValueError:
         pass
+    _PARKED_COMPANIONS.pop(id(worker), None)
+
+
+def _release_parked(thread) -> None:
+    """Let go of a parked thread whose run() has returned.
+
+    Runs on the UI thread (see _Parking). wait() returns at once because
+    `finished` has fired; deleteLater() then hands the C++ objects to Qt's
+    event loop, and only after that is the last Python reference dropped, so
+    nothing ever deletes a running QThread.
+    """
+    if thread not in _DETACHED_WORKERS:
+        return                                   # released already
+    if not shiboken6.isValid(thread):
+        _discard_detached_worker(thread)
+        return
+    if thread.isRunning():
+        return                                   # never release a running thread
+    thread.wait()
+    for obj in (thread, *_PARKED_COMPANIONS.get(id(thread), ())):
+        if isinstance(obj, QObject) and shiboken6.isValid(obj):
+            obj.deleteLater()
+    _discard_detached_worker(thread)
+
+
+class _Parking(QObject):
+    """Receives `finished` from parked threads on the UI thread.
+
+    Created at import, in the main thread. A slot on a QObject that lives
+    there is reached through a queued connection when `finished` is emitted
+    by the worker thread, so the release runs on the UI thread after the
+    thread has returned. Qt guarantees that for a slot; for a bare lambda it
+    is PySide's choice (it happens to queue it in 6.11, see
+    tests/test_thread_parking.py), so the release does not rely on one.
+    """
+
+    @Slot()
+    def on_finished(self) -> None:
+        thread = self.sender()
+        if thread is not None:
+            _release_parked(thread)
+
+
+_PARKING = _Parking()
+
+
+def park(thread, *companions) -> None:
+    """Keep a thread (and companions) referenced until it finishes, then release.
+
+    The thread is never terminated and never dropped while it runs.
+    """
+    if thread not in _DETACHED_WORKERS:
+        _DETACHED_WORKERS.append(thread)
+        thread.finished.connect(_PARKING.on_finished)
+    if companions:
+        kept = _PARKED_COMPANIONS.setdefault(id(thread), ())
+        _PARKED_COMPANIONS[id(thread)] = kept + tuple(c for c in companions if c not in kept)
+    if thread.isFinished():
+        # It ended before the connection existed; release from the event loop.
+        QTimer.singleShot(0, _PARKING, lambda t=thread: _release_parked(t))
 
 
 def detach_worker(worker) -> None:
@@ -39,7 +106,7 @@ def detach_worker(worker) -> None:
     request that leaves it in an undefined state; for a privileged command it
     can end between "the password was accepted" and "the result was recorded".
     The result slots are dropped first so a late finish cannot call into
-    widgets that are being destroyed, then the worker is kept alive until its
+    widgets that are being destroyed, then the worker is parked until its
     thread ends.
     """
     for name in _RESULT_SIGNALS:
@@ -50,9 +117,51 @@ def detach_worker(worker) -> None:
             signal.disconnect()
         except (RuntimeError, TypeError):
             pass
-    if worker not in _DETACHED_WORKERS:
-        _DETACHED_WORKERS.append(worker)
-    worker.finished.connect(lambda w=worker: _discard_detached_worker(w))
+    park(worker)
+
+
+def join_or_park(workers, deadline: float) -> list:
+    """Cancel every worker, join each against one shared monotonic deadline,
+    and park (detach_worker) whatever is still running when it passes.
+
+    Returns the workers that were parked.
+    """
+    live = []
+    for worker in workers:
+        if worker is None:
+            continue
+        try:
+            running = worker.isRunning()
+        except RuntimeError:                     # its C++ object is gone
+            continue
+        if running:
+            live.append(worker)
+    for worker in live:
+        cancel = getattr(worker, "cancel", None)
+        if callable(cancel):
+            cancel()
+    parked = []
+    for worker in live:
+        if not hasattr(worker, "wait"):
+            continue
+        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+        if not worker.wait(remaining_ms):
+            detach_worker(worker)
+            parked.append(worker)
+    return parked
+
+
+def fence_parked() -> None:
+    """Mark every parked object so a late result from it writes nothing.
+
+    Emergency Reset calls this before it erases the data folder.
+    """
+    for thread in list(_DETACHED_WORKERS):
+        for obj in (thread, *_PARKED_COMPANIONS.get(id(thread), ())):
+            try:
+                obj._sentinel_fenced = True
+            except (AttributeError, RuntimeError):
+                pass
 
 
 class DomainLookupWorker(QThread):
