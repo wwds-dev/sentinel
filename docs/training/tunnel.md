@@ -124,11 +124,12 @@ ask for a username and password, pushed DNS and live status are not supported.
 
 ### If you close Sentinel mid-connection
 
-Normal app close and Portable Emergency Reset cancel every Tunnel worker, wait
-about two seconds for each, then end any that is still running. Cancelling does
-not interrupt the macOS prompt or a command already handed to macOS: Sentinel
-drops the result, so it may not be shown, and a change that
-already happened is not undone. After reopening, run Connection Check before
+Normal app close and Portable Emergency Reset cancel every Tunnel worker. A
+Connect in flight gets about two seconds of its own; the checks share the quit's
+2.5-second allowance and are left to finish on their own if they take longer.
+Nothing is force-stopped. Cancelling does not interrupt the macOS prompt or a
+command already handed to macOS: Sentinel drops the result, so it may not be
+shown, and a change that already happened is not undone. After reopening, run Connection Check before
 relying on the tunnel.
 
 ### Kill switch
@@ -302,9 +303,10 @@ shows the exact command that would really run. After any change, return to
 Connection Check and collect a fresh snapshot rather than relying on old status.
 
 If Sentinel is closed or Portable Emergency Reset is used during a check, the
-app first cancels and finishes the background worker before closing or erasing
-Sentinel-owned portable data. This avoids leaving the check running after its
-screen has gone away. A Connect in flight is handled as described under VPN
+app first cancels the background worker and waits briefly for it, then closes
+or erases its portable data. A check that takes longer is left to finish on its
+own; its result is ignored, and after Emergency Reset it writes nothing into the
+data being erased. A Connect in flight is handled as described under VPN
 Connection.
 
 ![Tunnel action preview](docs/training/images/tunnel-action-preview.png)
@@ -374,9 +376,12 @@ devices have handshaked. *Teardown…* removes the server (type the site name).
 *Use for Connect…* adds one peer as a profile so Tunnel's Connect can use it from
 this Mac. Nothing here is logged (`deploy`, `teardown`, `export`, `backup`, …).
 
-While Tunnel is on screen a local health monitor watches the selected profile's
-tunnel and your DNS resolvers and warns in the status line if the tunnel drops. It
-never contacts the internet and never changes anything.
+While Tunnel is on screen a local health monitor checks, every 30 seconds, the
+selected profile's tunnel and your DNS resolvers. It warns in the status line if
+the tunnel drops ("TUNNEL DROPPED") or the resolvers change ("DNS resolvers
+changed"). It never contacts the internet and never changes anything. Until the
+build that fixed it, these checks were scheduled but never ran, so you may now
+see warnings you have not seen before.
 
 ## VPN Apps tab
 
