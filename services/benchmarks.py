@@ -54,6 +54,15 @@ ROWS_API = "https://datasets-server.huggingface.co/rows"
 SNAPSHOT_FILE = Path(__file__).resolve().parents[1] / "config" / "lmarena_snapshot.json"
 MAX_AGE = timedelta(hours=24)
 
+# Asked before every write to a ratings cache. An app sets it to a function
+# that returns False while its data folder must not be written (Sentinel: an
+# Emergency Reset in progress). None means writes are always allowed.
+WRITE_GUARD: Callable[[], bool] | None = None
+
+
+def _writes_allowed() -> bool:
+    return WRITE_GUARD is None or bool(WRITE_GUARD())
+
 # Sentinel's task -> (leaderboard subset, category). A task with no entry
 # (image generation) has no rating and falls back to the router's own score.
 TASK_CATEGORIES: dict[str, tuple[str, str]] = {
@@ -370,6 +379,8 @@ def _older_than_max_age(cache_file: Path, now: datetime | None = None) -> bool:
 
 def note_attempt(cache_file: Path, now: datetime | None = None) -> None:
     """Record that a refresh was tried and failed, keeping any cached tables."""
+    if not _writes_allowed():
+        return
     cache_file = Path(cache_file)
     data = _read_raw(cache_file) or {}
     data["attempted"] = (now or datetime.now()).isoformat(timespec="seconds")
@@ -394,6 +405,8 @@ def refresh(cache_file: Path, **kwargs) -> RatingTable:
             if rows:
                 data["categories"].setdefault(table, rows)
         data["published"] = data["published"] or str(previous.get("published", ""))
+    if not _writes_allowed():
+        return RatingTable(data, origin="live")
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     tmp = cache_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")

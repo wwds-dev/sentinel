@@ -342,3 +342,26 @@ def test_public_ratings_refresh_can_be_switched_off_and_is_off_in_local_only(mon
     stub.execution_mode_box = SimpleNamespace(currentText=lambda: "Cloud only")
     setting["value"] = "off"
     assert GodAI.public_ratings_refresh_enabled(stub) is False
+
+
+def test_a_closed_write_guard_keeps_the_cache_untouched(tmp_path, monkeypatch):
+    """Emergency Reset (spec no-thread-terminate, A5): a refresh that finishes
+    after the reset started returns its table but writes nothing."""
+    cache = tmp_path / "ratings" / "cache.json"
+    monkeypatch.setattr(b, "fetch_live", lambda **kw: {
+        "categories": {"text": [{"model": "m", "rating": 1}]},
+        "published": "2026-10-14", "missing": []})
+    monkeypatch.setattr(b, "WRITE_GUARD", lambda: False)
+    table = b.refresh(cache)
+    b.note_attempt(cache)
+    assert table.origin == "live"
+    assert not cache.parent.exists()
+
+
+def test_an_open_write_guard_writes_the_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "cache.json"
+    monkeypatch.setattr(b, "fetch_live", lambda **kw: {
+        "categories": {}, "published": "2026-10-14", "missing": []})
+    monkeypatch.setattr(b, "WRITE_GUARD", lambda: True)
+    b.refresh(cache)
+    assert cache.is_file()

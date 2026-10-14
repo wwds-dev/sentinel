@@ -887,7 +887,9 @@ class ModelScanWorker(QThread):
         ratings = None
         if self._ratings_cache is not None:
             from services import benchmarks
+            from services.portable_reset import writes_allowed
 
+            benchmarks.WRITE_GUARD = writes_allowed   # nothing lands mid-reset
             if benchmarks.is_stale(self._ratings_cache):
                 try:
                     ratings = benchmarks.refresh(self._ratings_cache)
