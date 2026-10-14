@@ -19,7 +19,6 @@ Sentinel's built-in roster is intentionally limited to eight agents:
 | Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, self-hosted VPN design, and detection and start/stop of the Mullvad and ProtonVPN apps; keeps no log |
 | Forge | `manager` | Drafts agent specifications and, after your approval, writes an inactive scaffold and disabled registry rows |
 
-Writing and Coding are Chat tools, not standalone agents. Creative publishing, audiobook, health, investing, and sports-betting workflows are not part of the current Sentinel product.
 
 ## Run locally
 
