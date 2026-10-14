@@ -8,7 +8,8 @@ still running" abort. A run that outlives the hard timeout is killed and
 reported as hung.
 
 Modelled on SONAR's quit-mid-fetch test. `spin` holds the GIL in a pure-Python
-loop (the SONAR freeze); `blocked` waits in C without it.
+loop (the SONAR freeze); `blocked` waits in C without it. The default suite
+runs each once; the 20-run check carries the `slow` marker.
 """
 
 from __future__ import annotations
@@ -67,13 +68,16 @@ def _check(run: dict) -> None:
 
 
 @pytest.mark.allow_process
-@pytest.mark.parametrize("variant, runs", [
-    # Failure first: on the code before task 10 a terminate() during a GIL-holding
-    # loop hangs the process (recorded in the spec's build log). Task 10 removes this.
-    pytest.param("spin", SPIN_RUNS, marks=pytest.mark.xfail(
-        strict=True, reason="old quit path terminates the chat thread and can hang")),
-    ("blocked", 1),
-])
-def test_quit_with_a_request_in_flight_ends_the_process_in_time(tmp_path, variant, runs):
-    for attempt in range(runs):
-        _check(_run_once(tmp_path / f"run{attempt}", variant))
+@pytest.mark.parametrize("variant", ["spin", "blocked"])
+def test_quit_with_a_request_in_flight_ends_the_process_in_time(tmp_path, variant):
+    _check(_run_once(tmp_path, variant))
+
+
+@pytest.mark.slow
+@pytest.mark.allow_process
+def test_quit_holding_the_gil_ends_in_time_every_time(tmp_path):
+    """M4 in full: 20 runs of the GIL-holding variant. On the code before the
+    fix one in two or three runs hung. About 90 s; run with `-m slow` at
+    Verify and Release (owner decision D5)."""
+    for attempt in range(SPIN_RUNS):
+        _check(_run_once(tmp_path / f"run{attempt}", "spin"))

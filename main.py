@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 from uuid import uuid4
 
 from services.runtime_paths import (
@@ -5275,16 +5275,18 @@ def _tray_status(window) -> str:
     return f"{activity}  ·  €{window.session_cost_total:.2f} this session"
 
 
-def _finish_quit_anyway(window, settings) -> None:
-    """After app.exec(): if the user chose Quit anyway, leave without Qt's teardown.
+def _leave(window, settings, code: int = 0) -> None:
+    """After app.exec(): every quit leaves here, without Qt's teardown.
 
-    A detached thread is still inside a privileged call; a normal exit would
-    destroy it while running. os._exit skips Qt's own shutdown, so the window
-    geometry (set by aboutToQuit) is sync()ed to disk first, unless a portable
-    reset just erased that folder.
+    Workers that could not be stopped in time are parked, not terminated, and
+    some (panel requests, Sentry's watch, a Wi-Fi scan) are only cancelled; a
+    normal exit would destroy a running QThread and abort. So the process
+    always ends with os._exit (docs/adr/0001-park-workers-and-leave-with-os-exit.md).
+    That skips every atexit hook, finally and destructor: state is written
+    through, and anything that truly must happen at quit goes here, first.
+    The window geometry (set by aboutToQuit) is sync()ed to disk, unless a
+    portable reset just erased that folder.
     """
-    if not getattr(window, "_quit_anyway", False):
-        return
     if not getattr(window, "_portable_reset_committed", False):
         try:
             settings.sync()
@@ -5292,10 +5294,10 @@ def _finish_quit_anyway(window, settings) -> None:
             print(f"settings not saved: {exc}", file=sys.stderr)
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(0)
+    os._exit(code)
 
 
-def _run_event_loop(app, window, settings):
+def _run_event_loop(app, window, settings) -> NoReturn:
     """Run the application until it quits, then leave.
 
     Shared by the `__main__` block and tests/helpers/quit_harness.py, so the
@@ -5306,9 +5308,8 @@ def _run_event_loop(app, window, settings):
         lambda: None if getattr(window, "_portable_reset_committed", False)
         else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
     )
-    app.exec()
-    _finish_quit_anyway(window, settings)
-    sys.exit(0)
+    code = app.exec()
+    _leave(window, settings, code)
 
 
 def _show_main_window(window):
