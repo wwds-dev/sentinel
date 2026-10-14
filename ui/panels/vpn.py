@@ -37,7 +37,7 @@ from ui.panels.vpn_servers import ServersTab
 from ui.widgets import MenuComboBox, SectionView
 from ui.workers import (
     DnsLeakWorker, IpSnapshotWorker, VpnConnectionWorker, VpnDiagnosticsWorker,
-    detach_worker,
+    detach_worker, park,
 )
 
 
@@ -1039,7 +1039,8 @@ class VpnPanel(AgentPanel):
     # ── Health monitor (local only; it never changes anything) ──────────
     def _build_health_monitor(self) -> None:
         from agents.vpn_agent.services.health_monitor import HealthMonitor
-        self.health_monitor = HealthMonitor(30, self, tunnel_source=self._local_tunnels)
+        self.health_monitor = HealthMonitor(30, self, tunnel_source=self._local_tunnels,
+                                            park=park)
         self.health_monitor.warning.connect(self._on_health_warning)
         self.health_monitor.info.connect(self._on_health_info)
         self.connect_profile_box.currentIndexChanged.connect(self._watch_selected_profile)

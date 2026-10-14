@@ -32,8 +32,6 @@ ALLOWED: dict[tuple[str, str], tuple[int, str]] = {
     ("main.py", "GodAI.stop_background_work"): (2, "thread: removed by task 6"),
     ("ui/panels/vpn.py", "VpnPanel.shutdown"): (2, "thread: removed by task 5"),
     ("ui/panels/osint_heavy.py", "OsintHeavyPanel.shutdown"): (2, "thread: removed by task 5"),
-    ("agents/vpn_agent/services/health_monitor.py", "HealthMonitor.stop"):
-        (1, "thread: removed by task 4"),
 }
 
 
