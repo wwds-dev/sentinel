@@ -9,7 +9,7 @@ jobs:
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: gitleaks (blocks on any finding)
@@ -21,6 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true   # reported, not blocking, until the baseline is clean
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Audit
         run: pip install pip-audit && pip-audit -r requirements.txt
