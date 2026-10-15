@@ -38,7 +38,7 @@ pip install -r requirements-dev.txt
 python main.py
 ```
 
-API keys are read from the process environment or from a `.env` file: the project's own when Sentinel runs from this checkout (`python main.py` or the installed thin launcher), `~/Library/Application Support/Sentinel/.env` for a packaged build, and `Sentinel Data/.env` in portable mode. The easiest way is **Settings → API Keys**: paste a provider's key, press Save, and it is written to that `.env` and used from the next request, with no restart. (OSINT source keys have their own **OSINT Keys** tab.) To edit the file by hand instead, copy `.env.example` there, paste each key after its `=`, and restart; the file is read once, at startup. Step by step, with where to create each key: the Learning Centre lesson [API keys and new models](docs/training/api_keys.md). Supported provider variables include:
+API keys are read from the process environment or from a `.env` file: the project's own when Sentinel runs from this checkout (`python main.py` or the installed thin launcher), `~/Library/Application Support/Sentinel/.env` for a packaged build, and `Sentinel Data/.env` in portable mode. The easiest way is **Settings → API Keys**: paste a provider's key, press Save, and it is written to that `.env` and used from the next request, with no restart. (OSINT source keys have their own **OSINT Keys** tab.) To edit the file by hand instead, copy `.env.example` there, paste each key after its `=`, and restart; the file is read once, at startup. At launch Sentinel also re-tightens each `.env` it may read — the checkout's, the Application Support copy and the portable one — to owner-only (`0600`) permissions, skipping symlinks and reporting any file it cannot restrict by path only, so a key file left group- or world-readable by an older write or a hand copy does not stay that way; the tightening runs at launch rather than at import, so the test suite's import of `main` never touches the real key files (`services/runtime_paths.py`). Step by step, with where to create each key: the Learning Centre lesson [API keys and new models](docs/training/api_keys.md). Supported provider variables include:
 
 ```text
 OPENAI_API_KEY
@@ -107,13 +107,28 @@ read; an underscore caret in the multi-line composer whose blink cadence differs
 per theme (single-line fields keep the native caret); and, under the blue theme
 only, HUD corner brackets around the focused composer.
 
+**Stop** (or **Esc**) in Chat gives you control back at once. A model request
+cannot be interrupted part-way, so the model may still finish in the background;
+Sentinel never shows that reply. A cloud provider may still bill for it: when
+the late reply arrives while Sentinel is open, its cost is recorded in Cost
+history as a cancelled run (`cancelled-exact`, or `cancelled-estimated` when the
+provider's token counts never arrived), and the Run log row keeps the status
+`cancelled` with that cost. A local Ollama model may stay busy until it
+finishes, so your next local request can wait behind it.
+
 While Sentinel is open it also places an item in the macOS menu bar — a shield
 glyph that takes the menu bar's own colours. Its menu reads the current state
 off the running window: whether a request is in flight and which agent is
 running it, and what the session has cost so far. **Open Sentinel** brings the
 window forward; **Quit Sentinel** closes it the same way the window's own close
-does, so an in-flight request is cancelled and background work is shut down
-rather than left running. The one exception is Sentry's optional background
+does, so an in-flight request is cancelled and background work is told to
+stop. With work running, quitting takes up to about 2.5
+seconds: Sentinel gives all background work that long, in total, to finish, then
+exits and abandons whatever is still running. A cloud request abandoned this way
+may still be billed by the provider, and Sentinel has no record of that cost,
+because it is known only when the reply arrives. (An administrator action, such
+as a Tunnel Connect, still asks **Wait** or **Quit anyway** first and is not part
+of that limit.) The one exception is Sentry's optional background
 watch: a launchd agent that you install and remove yourself, which keeps running
 after Sentinel quits and after a restart. Closing the window still quits
 Sentinel: the menu bar item accompanies the app, and nothing hides to it.
@@ -131,8 +146,12 @@ For a removable, self-contained macOS copy, see
 history, logs and API-key storage on the removable volume and never silently
 mixes them with the Lab checkout or Application Support. Its portable-only
 **Settings → General → Emergency Reset** can erase Sentinel-owned data and API
-keys after two confirmations. If any step fails, it reports **Reset refused**
-and Sentinel does not quit, so a failed reset never looks like a successful one.
+keys after two confirmations. Before erasing, it stops Sentinel's background
+work and fences off anything still running, so a late result writes nothing into
+the folder being erased. If any step fails, it reports **Reset refused** and
+Sentinel does not quit, so a failed reset never looks like a successful one; if
+the failure came part-way through erasing, the message says some data may
+already be erased, so check the `Sentinel Data` folder before using it again.
 It is a privacy reset, not a Tails-style amnesic
 session or forensic wipe: macOS, network equipment and providers may retain
 separate records, and files deliberately exported elsewhere are not removed.
@@ -251,10 +270,18 @@ and no Run log row (`NO_CONTENT_LOG_AGENTS` in `main.py`); only the usage row
 stays (agent, provider, model, token counts and price, no text), because the
 budget caps are computed from it. The question still goes to the selected
 provider, which may keep its own records.
-Normal app close and Portable Emergency Reset cancel every Tunnel worker and wait
-about two seconds for each, then end any still running. A Connect in flight is
-not interrupted (the macOS prompt and any command already handed to macOS
-continue); its result is dropped, so it may not be shown.
+Normal app close and Portable Emergency Reset cancel every Tunnel worker. The
+checks (diagnostics, IP, DNS, Advisor) share the quit's 2.5-second allowance and
+are left to finish on their own if they outlast it; nothing is force-stopped. A
+Connect in flight gets its own two seconds and is not interrupted (the macOS
+prompt and any command already handed to macOS continue); its result is
+dropped, so it may not be shown.
+While the Tunnel panel is on screen, a health monitor checks every 30 seconds,
+using only this Mac's own state, whether the selected profile's tunnel is still
+up and whether the DNS resolvers changed, and warns in the status line
+("TUNNEL DROPPED", "DNS resolvers changed"). Until this change the checks
+were scheduled but never actually ran, so these warnings may appear for the
+first time.
 Packaged builds include a non-secret starter profile
 catalog so Tunnel does not depend on source-tree files.
 
@@ -283,7 +310,7 @@ Tunnel compares the file's intended full/split routing and DNS with that snapsho
 
 ### Safety boundaries
 
-Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Bug Spray does not verify a program or scope; the Program and Scope Type fields are declared by the operator. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Before Bloodhound sends a target to public sources it lists them and asks, with No as the default; image metadata (EXIF, GPS) is sent to a model only if you tick the box. Generated commands and findings require human review before execution or submission. One exception to flag: Bug Spray's **Run Nmap** with an empty command field builds `nmap -sV -sC -T4 --open <host>` and starts it in the same click; only nmap can start, and no scope check runs.
+Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Bug Spray does not verify a program or scope; the Program and Scope Type fields are declared by the operator. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Before Bloodhound sends a target to public sources it lists them and asks, with No as the default; image metadata (EXIF, GPS) is sent to a model only if you tick the box. Generated commands and findings require human review before execution or submission. One exception to flag: Bug Spray's **Run Nmap** with an empty command field builds `nmap -sV -sC -T4 --open <host>` and starts it in the same click; only nmap can start, and no scope check runs. Beacon's Kali Command Builder refuses injection operations on an adapter whose chipset cannot inject: instead of a command sequence it returns an explanation naming the limitation and a supported-adapter hint, and passive operations are unaffected.
 
 Beacon's **AI Analysis** and Sentry's **Explain findings with AI** are off by
 default. Ticking them sends the scan output (network names, signal and security)

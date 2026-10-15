@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 from uuid import uuid4
 
 from services.runtime_paths import (
@@ -86,6 +86,11 @@ from services.model_recommendations import (
 from services.model_watch import ModelWatch
 from services.price_resolution import table_lookup
 from services import benchmarks
+from services import portable_reset
+
+# Once, on the main thread at startup: no ratings-cache write lands while an
+# Emergency Reset is erasing the data folder, whoever calls benchmarks.
+benchmarks.WRITE_GUARD = portable_reset.writes_allowed
 
 
 # Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
@@ -193,6 +198,7 @@ AGENT_SETUP_WIDGETS = {
 from ui import app_identity, appkit_guard, tray
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker, ModelScanWorker,
+    drop_result_slots, fence_parked, join_or_park, park, remaining_ms,
 )
 from ui.model_updates import ModelReviewDialog, ModelUpdatesCard
 from ui.widgets import (
@@ -3634,6 +3640,16 @@ class GodAI(QWidget):
             self.chat_worker.finished_signal.connect(self.handle_chat_finished)
             self.chat_worker.usage_signal.connect(self.handle_chat_usage)
             self.chat_worker.error_signal.connect(self.handle_chat_error)
+            # Captured now: a late cost report after Stop must be billed to
+            # this request, never to whatever pending_* says by then.
+            self.chat_worker._sentinel_run = {
+                "run_id": self.active_run_id, "agent": selected_agent,
+                "tool": selected_tool, "backend": final_backend, "model": final_model,
+                "prompt": full_prompt, "project": self.active_project_id,
+            }
+            stopped_usage = getattr(self.chat_worker, "stopped_usage_signal", None)
+            if stopped_usage is not None:       # the Chat tests' fake worker has none
+                stopped_usage.connect(self._record_stopped_cost)
             self.chat_worker.start()
 
         except Exception as e:
@@ -4157,6 +4173,42 @@ class GodAI(QWidget):
             return
         self.pending_usage = usage
 
+    def _record_stopped_cost(self, payload) -> None:
+        """Bill a cloud request that was stopped after the provider answered.
+
+        Runs on the UI thread (queued from the worker), the same single writer
+        as every other usage row. It touches only the usage log, the run row
+        (already closed as cancelled) and the session total; never the
+        transcript, the timer, the buttons or the chat file. Local requests
+        cost nothing and record nothing; a fenced worker (Emergency Reset)
+        records nothing; each worker records at most once.
+        """
+        sender = self.sender()
+        run = getattr(sender, "_sentinel_run", None) if sender is not None else None
+        if not run or getattr(sender, "_sentinel_fenced", False):
+            return
+        if run.get("backend") not in CLOUD_PROVIDERS:
+            return
+        if getattr(sender, "_sentinel_cost_recorded", False):
+            return
+        sender._sentinel_cost_recorded = True
+        payload = payload or {}
+        counts = payload.get("usage")
+        usage = dict(counts) if counts else {}
+        usage["cost_type_override"] = "cancelled-exact" if counts else "cancelled-estimated"
+        entry = self.usage_tracker.log_request(
+            agent=run.get("agent", ""), backend=run["backend"], model=run.get("model", ""),
+            prompt_text=run.get("prompt", ""), response_text=payload.get("response_text", ""),
+            usage=usage, project=run.get("project"),
+        )
+        if run.get("run_id"):
+            self.run_logger.add_late_cost(
+                run["run_id"], entry.get("input_tokens", 0), entry.get("output_tokens", 0),
+                entry.get("cost_eur", 0.0),
+            )
+        self.session_cost_total += entry["estimated_cost"]
+        self.update_usage_labels()
+
     def _from_detached_chat_worker(self) -> bool:
         """True when the signal being handled came from a worker that was
         already stopped. Disconnecting does not drop events Qt had queued
@@ -4171,35 +4223,39 @@ class GodAI(QWidget):
         A cancelled worker can still deliver a final answer or a usage report
         a moment later; delivered into the window, that would be rendered and
         billed against a run that was already closed as cancelled.
+
+        The chat slots stay connected on purpose and every handler drops a
+        sender carrying `_sentinel_detached`. Disconnecting does not help: a
+        call queued before Stop is still delivered afterwards, and then with
+        `sender()` None, so the flag could not be read (PySide6 6.11, spec
+        no-thread-terminate R7). Connected, `sender()` is always the worker.
         """
         try:
             worker._sentinel_detached = True
         except (AttributeError, RuntimeError):
             pass
-        for signal, handler in (
-            (worker.status_signal, self.handle_chat_status),
-            (worker.token_signal, self.handle_chat_token),
-            (worker.finished_signal, self.handle_chat_finished),
-            (worker.usage_signal, self.handle_chat_usage),
-            (worker.error_signal, self.handle_chat_error),
-        ):
-            try:
-                signal.disconnect(handler)
-            except (RuntimeError, TypeError):
-                pass
+        # Keep the thread referenced until it ends (never terminate it).
+        if isinstance(worker, QThread):
+            park(worker)
 
     def stop_chat_worker(self):
-        if self.chat_worker is not None and self.chat_worker.isRunning():
-            self.chat_worker.cancel()
-            self._detach_chat_worker(self.chat_worker)
-            self.chat_worker.terminate()
-            self.chat_worker.wait(2000)
+        """Stop at once: cancel, stop listening and park the request.
+
+        No wait and no terminate(). The model call cannot be interrupted, so
+        the thread is parked until it returns, and nothing it delivers after
+        this is shown, saved or billed against the cancelled run.
+        """
+        worker = self.chat_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            self._detach_chat_worker(worker)
+            self.chat_worker = None
             if (self.current_messages
                     and self.current_messages[-1].get("role") == "assistant"
                     and not self.current_messages[-1].get("content")):
                 self.current_messages.pop()
             self.current_messages.append(
-                self._ui_notice("Chat request stopped by user.")
+                self._ui_notice(_stop_notice(getattr(worker, "backend", "")))
             )
             self._render_chat_conversation()
         self.stop_chat_timer()
@@ -5075,17 +5131,26 @@ class GodAI(QWidget):
         search_box.setFocus()
         dialog.exec()
 
-    def stop_background_work(self) -> None:
-        """Stop and join everything Sentinel started, and close its run-log rows.
+    def stop_background_work(self, deadline: float | None = None, fence: bool = False) -> None:
+        """Stop everything Sentinel started, and close its run-log rows.
 
         Shared by quitting and by Emergency Reset, which erases the database
-        the run log writes to and so needs the same quiet first.
+        the run log writes to and so needs the same quiet first. Nothing is
+        terminated: every join comes out of one budget (`deadline`, by default
+        QUIT_JOIN_BUDGET_S from now) and whatever outlasts it is parked.
+        `fence` marks every parked worker so a late result writes nothing.
         """
-        if self.chat_worker is not None and self.chat_worker.isRunning():
-            self.chat_worker.cancel()
-            self._detach_chat_worker(self.chat_worker)
-            self.chat_worker.terminate()
-            self.chat_worker.wait(1000)
+        if deadline is None:
+            deadline = time.monotonic() + QUIT_JOIN_BUDGET_S
+        worker = self.chat_worker
+        if worker is not None and worker.isRunning():
+            # Cancel, stop listening and park first; then a join out of the
+            # shared budget, which ends a streamed reply (the cancel flag is
+            # read between tokens). A blocked call just stays parked.
+            worker.cancel()
+            self._detach_chat_worker(worker)
+            self.chat_worker = None
+            worker.wait(remaining_ms(deadline))
         # The run log must not keep a request "running" after the app is
         # gone: close it as cancelled, as the Stop button would.
         run_id = getattr(self, "active_run_id", None)
@@ -5094,19 +5159,18 @@ class GodAI(QWidget):
                 self.run_logger.cancel(run_id)
             finally:
                 self.active_run_id = None
-        # The model scan and a model pull are QThreads of ours too; a quit
-        # while one ran destroyed a live thread (and could crash on exit).
-        for name in ("model_scan_worker", "model_pull_worker"):
-            thread = getattr(self, name, None)
-            if thread is not None and thread.isRunning():
-                cancel = getattr(thread, "cancel", None)
-                if callable(cancel):
-                    cancel()
-                if not thread.wait(2000):
-                    thread.terminate()
-                    thread.wait(1000)
+        # The model scan and the Muse Glimmer pull are QThreads of ours too; a
+        # quit while one ran destroyed a live thread (and could crash on exit).
+        join_or_park([getattr(self, "model_scan_worker", None),
+                      getattr(self, "muse_pull_worker", None)], deadline)
         from ui.dialogs import shutdown_panels
-        shutdown_panels(self)
+        shutdown_panels(self, deadline)
+        if fence:
+            fence_parked()
+            # A scan or pull that finished inside the join is not parked, so
+            # not fenced: stop listening to it before the folder is erased.
+            drop_result_slots(getattr(self, "model_scan_worker", None))
+            drop_result_slots(getattr(self, "muse_pull_worker", None))
         # Whatever a panel left authorised but never recorded: close each row
         # so the Run log does not show it as running for ever.
         for request_id in list(self._pending_requests):
@@ -5148,9 +5212,9 @@ class GodAI(QWidget):
                 event.ignore()
                 self._wait_for_privileged_work()
                 return
-            # Quit anyway: panels detach the worker; main() leaves with os._exit
-            # so Qt never aborts over a thread that is still running.
-            self._quit_anyway = True
+            # Quit anyway: panels detach the worker. Every quit, this one
+            # included, leaves through _leave and os._exit, so Qt never aborts
+            # over a thread that is still running (ADR 0001).
             timer = getattr(self, "_quit_wait_timer", None)
             if timer is not None:
                 timer.stop()            # an earlier "Wait" must not fire mid-close
@@ -5160,6 +5224,20 @@ class GodAI(QWidget):
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
+
+def _stop_notice(backend: str) -> str:
+    """What Chat says after Stop. The billing clause is only for cloud providers."""
+    if backend in CLOUD_PROVIDERS:
+        return ("Chat request stopped. The model may still finish in the background. "
+                "A cloud provider may bill for it; Sentinel will not show the reply.")
+    return ("Chat request stopped. The model may still finish in the background. "
+            "Sentinel will not show the reply.")
+
+
+# How long closing the window may spend joining non-privileged background work,
+# all of it together, before what is still running is parked. The owner's
+# limit for a whole quit is 5 s (spec no-thread-terminate, Q4).
+QUIT_JOIN_BUDGET_S = 2.5
 
 SINGLE_INSTANCE_KEY = "sentinel.single-instance.v2"
 WINDOW_SETTINGS_KEY = "mainWindow/geometry"
@@ -5206,16 +5284,18 @@ def _tray_status(window) -> str:
     return f"{activity}  ·  €{window.session_cost_total:.2f} this session"
 
 
-def _finish_quit_anyway(window, settings) -> None:
-    """After app.exec(): if the user chose Quit anyway, leave without Qt's teardown.
+def _leave(window, settings, code: int = 0) -> None:
+    """After app.exec(): every quit leaves here, without Qt's teardown.
 
-    A detached thread is still inside a privileged call; a normal exit would
-    destroy it while running. os._exit skips Qt's own shutdown, so the window
-    geometry (set by aboutToQuit) is sync()ed to disk first, unless a portable
-    reset just erased that folder.
+    Workers that could not be stopped in time are parked, not terminated, and
+    some (panel requests, Sentry's watch, a Wi-Fi scan) are only cancelled; a
+    normal exit would destroy a running QThread and abort. So the process
+    always ends with os._exit (docs/adr/0001-park-workers-and-leave-with-os-exit.md).
+    That skips every atexit hook, finally and destructor: state is written
+    through, and anything that truly must happen at quit goes here, first.
+    The window geometry (set by aboutToQuit) is sync()ed to disk, unless a
+    portable reset just erased that folder.
     """
-    if not getattr(window, "_quit_anyway", False):
-        return
     if not getattr(window, "_portable_reset_committed", False):
         try:
             settings.sync()
@@ -5223,7 +5303,22 @@ def _finish_quit_anyway(window, settings) -> None:
             print(f"settings not saved: {exc}", file=sys.stderr)
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(0)
+    os._exit(code)
+
+
+def _run_event_loop(app, window, settings) -> NoReturn:
+    """Run the application until it quits, then leave.
+
+    Shared by the `__main__` block and tests/helpers/quit_harness.py, so the
+    quit test exercises the real exit path. aboutToQuit stores the window
+    geometry (skipped after a portable reset erased its folder).
+    """
+    app.aboutToQuit.connect(
+        lambda: None if getattr(window, "_portable_reset_committed", False)
+        else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
+    )
+    code = app.exec()
+    _leave(window, settings, code)
 
 
 def _show_main_window(window):
@@ -5338,9 +5433,4 @@ if __name__ == "__main__":
         menu_bar_item.quit_requested.connect(window.close)
         menu_bar_item.show()
 
-    app.aboutToQuit.connect(
-        lambda: None if getattr(window, "_portable_reset_committed", False)
-        else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
-    )
-    app.exec()
-    _finish_quit_anyway(window, settings)
+    _run_event_loop(app, window, settings)

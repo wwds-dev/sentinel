@@ -42,6 +42,20 @@ class RunLogger:
     def cancel(self, run_id: str) -> None:
         self.finish(run_id, status="cancelled")
 
+    def add_late_cost(self, run_id: str, input_tokens: int, output_tokens: int,
+                      cost_eur: float) -> None:
+        """Record what a run already closed as cancelled cost after all.
+
+        Only a cancelled row is touched, and its status and duration stay as
+        they are (finish() would reset the duration to 0).
+        """
+        with get_connection() as conn:
+            conn.execute("""
+                UPDATE runs SET input_tokens = ?, output_tokens = ?, cost_eur = ?
+                WHERE run_id = ? AND status = 'cancelled'
+            """, (input_tokens, output_tokens, cost_eur, run_id))
+            conn.commit()
+
     def load_recent(self, limit: int = 200) -> list[dict]:
         with get_connection() as conn:
             rows = conn.execute(

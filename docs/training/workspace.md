@@ -61,8 +61,12 @@ While Sentinel is open, a shield icon sits in the macOS menu bar. Its menu
 shows whether Sentinel is **Idle** or **Working** (and for which agent) and what
 this session has cost, followed by **Open Sentinel** and **Quit Sentinel**.
 Quit behaves exactly like closing the window: an active request is cancelled
-and background work stops. Closing the window still quits Sentinel; nothing
-keeps running in the menu bar.
+and background work stops. With work running, quitting takes up to about 2.5
+seconds: Sentinel waits that long in total, then exits and abandons whatever is
+still running. A cloud request abandoned this way may still be billed by the
+provider without a record in Sentinel, because the cost is only known when the
+reply arrives. Closing the window still quits Sentinel; nothing keeps running in
+the menu bar.
 
 ## Good habits
 
