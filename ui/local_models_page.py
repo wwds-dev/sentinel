@@ -43,7 +43,10 @@ class LocalModelsPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, len(COLUMNS)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
         layout.addWidget(self.table, 1)
         self.note = QLabel(
             "Ratings are measured automatically in a later release; until then "

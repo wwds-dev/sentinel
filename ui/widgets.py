@@ -132,7 +132,7 @@ class SelectorMenu(QMenu):
 
     def sectionTitles(self) -> list:  # noqa: N802
         """Section headings in order. For tests."""
-        return [a.text() for a in self.actions() if a.isSeparator() and a.text()]
+        return [a.text() for a in self.actions() if a.data() == "section"]
 
     def tagBadges(self) -> dict:  # noqa: N802
         """{QAction: tag text}. For tests."""
@@ -210,9 +210,6 @@ class SelectorMenu(QMenu):
             right = row.right() - self.BADGE_MARGIN
             if action in self._badges:
                 right -= self._badge_width(self._badges[action]) + 6
-            if action in self._details:
-                right -= (QFontMetrics(self.font()).horizontalAdvance(
-                    self._details[action]) + 16)
             _paint_tag(painter, self._badge_font(), text, right,
                        row.center().y(), self.BADGE_HEIGHT, self.BADGE_INSET)
         for action, text in self._details.items():
@@ -388,7 +385,13 @@ class MenuComboBox(QComboBox):
             for index in range(self.count()):
                 heading = self.itemData(index, SECTION_ROLE)
                 if heading and heading != section:
-                    menu.addSection(str(heading))
+                    head = menu.addAction(str(heading).upper())
+                    head.setEnabled(False)
+                    head.setData("section")
+                    head_font = QFont(self.font())
+                    head_font.setPointSizeF(max(8.0, head_font.pointSizeF() - 2.0))
+                    head_font.setWeight(QFont.DemiBold)
+                    head.setFont(head_font)
                     section = heading
                 self._add_choice(menu, index)
         else:

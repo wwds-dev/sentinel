@@ -77,12 +77,19 @@ def _offline_model_lists():
 
         lm_off = SimpleNamespace(server_up=lambda: False, model_details=lambda: [])
         real_init = local_models.LocalInventory.__init__
+        real_discover = local_models.discover
+
+        def stubbed(*a, **k):
+            return real_discover(lm_off, OllamaClient(),
+                                 memory=lambda: (16e9, 24e9), lms_binary=lambda: None)
 
         def seeded(self, *a, **k):
             real_init(self, *a, **k)
-            self.store(local_models.discover(
-                lm_off, OllamaClient(),
-                memory=lambda: (16e9, 24e9), lms_binary=lambda: None))
+            self.store(stubbed())
+
+        # A live event loop lets the startup discovery fire; it must not read
+        # this Mac either.
+        patch.setattr(local_models, "discover", stubbed)
 
         patch.setattr(local_models.LocalInventory, "__init__", seeded)
         patch.setattr(local_models.LocalInventory, "stale", lambda self, now=None: False)

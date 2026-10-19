@@ -13,6 +13,9 @@ from services import local_models as lm
 from services.local_models import LocalInventory, LocalModel, Snapshot
 
 GB = 1e9
+# The suite's conftest stubs discovery for the whole session; the tests of
+# discovery itself need the real function, captured before the stub goes in.
+REAL_DISCOVER = lm.discover
 
 
 class FakeLM:
@@ -56,7 +59,7 @@ ROWS = [
 
 
 def snap(up=True, ollama=None, free=12 * GB, total=24 * GB):
-    return lm.discover(FakeLM(up, ROWS), FakeOllama(ollama or {}),
+    return REAL_DISCOVER(FakeLM(up, ROWS), FakeOllama(ollama or {}),
                        memory=lambda: (free, total), lms_binary=lambda: None)
 
 
@@ -106,7 +109,7 @@ def test_sections_are_named_per_runtime():
 
 
 def test_empty_runtimes_say_what_to_do():
-    s = lm.discover(FakeLM(False, []), FakeOllama({}, up=True),
+    s = REAL_DISCOVER(FakeLM(False, []), FakeOllama({}, up=True),
                     memory=lambda: (1, 2), lms_binary=lambda: None)
     assert lm.empty_section_note(s, "ollama") == "No models · ollama pull …"
     assert "Start" in lm.empty_section_note(s, "lmstudio")
@@ -119,7 +122,7 @@ def test_the_ui_reads_a_cache_and_never_fetches():
     inv = LocalInventory()
     inv.snapshot(); inv.stale()
     assert lmstudio.calls == 0 and ollama.calls == 0       # reading never fetches
-    inv.refresh(lmstudio, ollama, memory=lambda: (1, 2), lms_binary=lambda: None)
+    inv.store(REAL_DISCOVER(lmstudio, ollama, memory=lambda: (1, 2), lms_binary=lambda: None))
     assert lmstudio.calls and len(inv.snapshot().models) == 3
 
 
@@ -127,7 +130,7 @@ def test_a_broken_runtime_is_an_error_row_not_a_crash():
     class Boom(FakeLM):
         def server_up(self):
             raise OSError("nope")
-    s = lm.discover(Boom(), FakeOllama({}), memory=lambda: (1, 2), lms_binary=lambda: None)
+    s = REAL_DISCOVER(Boom(), FakeOllama({}), memory=lambda: (1, 2), lms_binary=lambda: None)
     assert s.errors and not s.lmstudio_up
 
 
@@ -168,8 +171,8 @@ def test_the_picker_menu_shows_sections_details_tags_and_best_fit(qapp):
         combo.setItemData(i, e["detail"], DETAIL_ROLE)
     combo.setItemData(0, True, RECOMMENDED_ROLE)
     menu = combo.buildMenu()
-    assert menu.sectionTitles() == ["On this Mac · LM Studio"]
-    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert menu.sectionTitles() == ["ON THIS MAC · LM STUDIO"]
+    texts = [a.text() for a in menu.actions() if a.data() != "section"]
     assert texts[0] == "DeepSeek R1 Distill 14B · Q6_K"
     assert combo.itemText(0) == "deepseek-r1-distill-qwen-14b-abliterated"   # id stays the text
     details = {a.text(): t for a, t in menu.detailTexts().items()}

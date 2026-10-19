@@ -840,7 +840,7 @@ class TestWorkspaceLayoutRegressions:
         assert not [
             action for action in model_menu.actions() if action.menu() is not None
         ]
-        assert [a.text() for a in model_menu.actions() if not a.isSeparator()] == [
+        assert [a.text() for a in model_menu.actions() if a.data() != "section"] == [
             model.itemText(index) for index in range(model.count())
         ]
 
