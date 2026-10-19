@@ -107,7 +107,7 @@ def win(qapp, monkeypatch):
     window.warnings = warnings
     # The local-model memory pre-flight is not under test here; this machine
     # may have less RAM than the saved default model wants.
-    window.assess_local_model = lambda model: None
+    window.assess_local_model = lambda model, provider="ollama": None
     # Local only with an Ollama model: no permission, no cost confirmation.
     window.agent_box.setCurrentText("chat")
     window.execution_mode_box.setCurrentText("Local only")

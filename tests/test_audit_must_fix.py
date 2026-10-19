@@ -79,7 +79,7 @@ def win(qapp, monkeypatch):
     monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: None))
     window = main.GodAI()
     window.warnings = warnings
-    window.assess_local_model = lambda model: None
+    window.assess_local_model = lambda model, provider="ollama": None
     window.agent_box.setCurrentText("chat")
     window.execution_mode_box.setCurrentText("Local only")
     idx = window.provider_box.findText("ollama")

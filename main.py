@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from services import providers
+from services.providers import is_local as is_local_provider
+from services.lmstudio_client import LMStudioClient
 from services.runtime_paths import (
     RuntimeDataError, ensure_seeded, is_frozen, is_portable,
     resource_base, tighten_env_files, user_data_base,
@@ -74,7 +77,8 @@ from agents.vpn_agent.sentinel_chat_agent import VpnAgent
 from services.agent_factory import AgentFactory
 from services.agent_catalog import BUILTIN_AGENTS, BUILTIN_AGENT_ORDER
 from services.provider_catalog import (
-    CLOUD_PROVIDERS, DEFAULT_LOCAL_MODEL, LOCAL_PROVIDER, SUPPORTED_PROVIDERS,
+    CLOUD_PROVIDERS, DEFAULT_LOCAL_MODEL, LOCAL_PROVIDERS,
+    SUPPORTED_PROVIDERS,
 )
 from services.tool_catalog import runtime_tool_prompts
 from services.app_version import DISPLAY_VERSION, build_description
@@ -296,7 +300,8 @@ class GodAI(QWidget):
         # apply_global_style repaints them with everything else.
         self._inline_sheets: list[tuple[QWidget, str]] = []
 
-        self.ollama = OllamaClient()
+        self.ollama = OllamaClient(providers.ollama_host())
+        self.lmstudio = LMStudioClient()
         self.openai = OpenAIClientWrapper()
         self.deepseek = DeepSeekClientWrapper()
         self.kimi = KimiClientWrapper()
@@ -396,6 +401,8 @@ class GodAI(QWidget):
         self.install_agent_recommendations()
         self.muse_pull_worker: Optional[ModelPullWorker] = None
         self.refresh_muse_button()
+        self.provider_box.currentTextChanged.connect(self.refresh_lmstudio_button)
+        self.refresh_lmstudio_button()
         self.load_history_list()
         self.load_saved_searches()
         self.update_resource_label()
@@ -550,7 +557,7 @@ class GodAI(QWidget):
     def estimate_chat_seconds(self, backend: str, model: str, prompt: str) -> int:
         words = max(1, len(prompt.split()))
         base = 10
-        if backend == "ollama":
+        if is_local_provider(backend):
             if "8b" in model.lower():
                 base = 35
             elif "1.5b" in model.lower():
@@ -574,7 +581,7 @@ class GodAI(QWidget):
         approx_output_tokens = max(250, int(approx_input_tokens * 1.2))
         approx_total_tokens = approx_input_tokens + approx_output_tokens
 
-        if backend == "ollama":
+        if is_local_provider(backend):
             return 0.0, approx_total_tokens
 
         estimated_cost = self.usage_tracker.calculate_cost_eur(
@@ -654,7 +661,7 @@ class GodAI(QWidget):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
             if backend is None:
                 pass                      # a blocked route already set the text
-            elif backend == "ollama":
+            elif is_local_provider(backend):
                 notice = getattr(self, "_route_resolution_notice", "")
                 self.runbar_cost.setText(
                     f"free · {tokens} tok" + (" · local only" if notice else ""))
@@ -663,7 +670,7 @@ class GodAI(QWidget):
 
         if hasattr(self, "cost_rows"):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
-            if backend == "ollama":
+            if is_local_provider(backend):
                 estimate = f"free · {tokens} tok"
             elif backend:
                 estimate = f"~€{estimated_cost:.2f} · {tokens} tok"
@@ -671,7 +678,7 @@ class GodAI(QWidget):
                 estimate = "€0.00 · 0 tok"
             self.cost_rows["estimate"].set(estimate)
 
-        if backend == "ollama":
+        if is_local_provider(backend):
             self.live_estimate_label.setText("")
         elif backend in CLOUD_PROVIDERS:
             self.live_estimate_label.setText(
@@ -683,7 +690,7 @@ class GodAI(QWidget):
     def show_cost_estimate_popup(self):
         estimated_cost, approx_tokens, backend, model = self.get_current_cost_estimate()
 
-        if backend == "ollama":
+        if is_local_provider(backend):
             msg = (
                 f"Agent: {self.agent_box.currentText()}\n"
                 f"Backend: {backend}\n"
@@ -721,48 +728,48 @@ class GodAI(QWidget):
     # every last byte of physical RAM.
     MEMORY_HEADROOM_GB = 3.0
 
-    def assess_local_model(self, model: str) -> dict | None:
+    def assess_local_model(self, model: str, provider: str = "ollama") -> dict | None:
         """Weigh a local model against this machine's memory.
 
         Returns None when the check does not apply (not a known local model, or
-        the daemon is unreachable and the size is unknowable). Otherwise a dict
+        the runtime is unreachable and the size is unknowable). Otherwise a dict
         with level "ok" | "tight" | "too_big", the numbers behind it, and a
-        human-readable message.
+        human-readable message. "tight" is "too big right now": it fits on this
+        machine but not in the memory that is free at the moment.
         """
         import psutil
 
-        size_bytes = self.ollama.model_size_bytes(model)
+        if provider == "lmstudio":
+            size_bytes = self.lmstudio.model_size_bytes(model)
+        else:
+            size_bytes = self.ollama.model_size_bytes(model)
         if size_bytes is None:
             # Not pulled yet — fall back to the published download size for the
             # builds we ship a figure for, so the dropdown can grey them out.
             published_gb = MUSE_GLIMMER_VARIANTS.get(model)
-            if published_gb is None:
+            if published_gb is None or provider != "ollama":
                 return None
-            size_gb = float(published_gb)
-        else:
-            size_gb = size_bytes / 1e9
+            size_bytes = float(published_gb) * 1e9
 
-        needed_gb = size_gb * self.MEMORY_OVERHEAD_FACTOR
         vm = psutil.virtual_memory()
-        total_gb = vm.total / 1e9
-        available_gb = vm.available / 1e9
+        fit = providers.fit_check(size_bytes, vm.available, vm.total)
+        needed_gb, available_gb, total_gb = (
+            fit["needed_gb"], fit["available_gb"], fit["total_gb"])
+        level = fit["level"]
 
-        if needed_gb > total_gb - self.MEMORY_HEADROOM_GB:
-            level = "too_big"
+        if level == "too_big":
             message = (
                 f"{model} needs about {needed_gb:.1f} GB of memory, but this machine "
                 f"only has {total_gb:.0f} GB in total. It cannot run here without "
                 "swapping so hard the system becomes unresponsive."
             )
-        elif needed_gb > available_gb:
-            level = "tight"
+        elif level == "tight":
             message = (
                 f"{model} needs about {needed_gb:.1f} GB, but only {available_gb:.1f} GB "
                 f"is free right now (of {total_gb:.0f} GB). It will fit, but expect "
                 "heavy swapping and slow replies — closing other apps will help."
             )
         else:
-            level = "ok"
             message = f"{model} needs ~{needed_gb:.1f} GB; {available_gb:.1f} GB free."
 
         return {
@@ -779,10 +786,10 @@ class GodAI(QWidget):
 
         Must be called from the GUI thread, before the worker is constructed.
         """
-        if backend != "ollama":
+        if not is_local_provider(backend):
             return True
 
-        verdict = self.assess_local_model(model)
+        verdict = self.assess_local_model(model, backend)
         if verdict is None or verdict["level"] == "ok":
             return True
 
@@ -800,7 +807,7 @@ class GodAI(QWidget):
         return choice == QMessageBox.Yes
 
     def check_budget_before_request(self, estimated_cost: float, backend: str) -> bool:
-        if backend == "ollama":
+        if is_local_provider(backend):
             return True
 
         today_total = self.usage_tracker.get_today_total()
@@ -910,7 +917,7 @@ class GodAI(QWidget):
                 }
 
             # ===== VALID CASE =====
-            mode = "Local only" if tool_provider == "ollama" else "Hybrid allowed"
+            mode = "Local only" if is_local_provider(tool_provider) else "Hybrid allowed"
 
             return {
                 "mode": mode,
@@ -970,7 +977,7 @@ class GodAI(QWidget):
             provider = self.provider_box.currentText() if hasattr(self, "provider_box") else "ollama"
             model = self.model_box.currentText() if hasattr(self, "model_box") else ""
             pricing = pricing_metadata(provider, model)
-            return {"mode": "Local only" if provider == "ollama" else "Hybrid allowed",
+            return {"mode": "Local only" if is_local_provider(provider) else "Hybrid allowed",
                     "provider": provider, "model": model, "reason": str(exc),
                     "fallbacks": [], "pricing": vars(pricing),
                     "cost_label": pricing.compact}
@@ -1057,7 +1064,7 @@ class GodAI(QWidget):
         """The Muse Glimmer build best suited to this machine: (tag, size_gb)."""
         return muse_glimmer_default(self._total_ram_gb())
 
-    def mark_oversized_models(self, combo) -> None:
+    def mark_oversized_models(self, combo, provider: str = "ollama") -> None:
         """Grey out local models this machine cannot physically run.
 
         Advisory only — the entry stays selectable, and run_backend() is the
@@ -1070,7 +1077,7 @@ class GodAI(QWidget):
             # No longer has to skip the recommended entry: that marking is a
             # role of its own now, so grey-for-too-big and BEST FIT can land on
             # the same model without either one erasing the other.
-            verdict = self.assess_local_model(combo.itemText(i))
+            verdict = self.assess_local_model(combo.itemText(i), provider)
             if verdict is None:
                 continue
             if verdict["level"] == "too_big":
@@ -1102,6 +1109,30 @@ class GodAI(QWidget):
         if menu_action is not None:
             menu_action.setVisible(not installed)
             menu_action.setToolTip(btn.toolTip())
+
+    def refresh_lmstudio_button(self, *_args) -> None:
+        """Offer "Start LM Studio server" while LM Studio is picked and off.
+
+        With the server off the picker lists what is on disk
+        ("on disk · server off"); this is the one-click way to turn it on.
+        """
+        action = getattr(self, "start_lmstudio_menu_action", None)
+        if action is None:
+            return
+        off = (self.provider_box.currentText() == "lmstudio"
+               and not self.lmstudio.server_up())
+        self.start_lmstudio_btn.setVisible(off)
+        action.setVisible(off)
+
+    def start_lmstudio_server(self) -> None:
+        started, message = self.lmstudio.start_server()
+        if started:
+            self._set_chat_status("LM Studio server started.")
+            if self.provider_box.currentText() == "lmstudio":
+                self.load_provider_models()
+        else:
+            QMessageBox.warning(self, "LM Studio", message)
+        self.refresh_lmstudio_button()
 
     def pull_muse_glimmer(self) -> None:
         if getattr(self, "muse_pull_worker", None) is not None and self.muse_pull_worker.isRunning():
@@ -1183,6 +1214,7 @@ class GodAI(QWidget):
         """
         clients = {
             "ollama": self.ollama,
+            "lmstudio": self.lmstudio,
             "openai": self.openai,
             "deepseek": self.deepseek,
             "kimi": self.kimi,
@@ -1221,7 +1253,7 @@ class GodAI(QWidget):
             model_box.addItems(models)
         elif empty_placeholder:
             model_box.addItem(
-                "(no local models)" if provider == "ollama" else "(unavailable)"
+                "(no local models)" if is_local_provider(provider) else "(unavailable)"
             )
         self._mark_new_models(provider, model_box)
         polish_combo_box(provider_box)
@@ -1336,8 +1368,8 @@ class GodAI(QWidget):
         set_rating_lookup(self.ratings.rating if self.ratings else None)
 
     def _usable_providers(self) -> set[str]:
-        """Ollama plus every cloud provider with a key: what a pick may use."""
-        usable = {"ollama"}
+        """Every local provider plus every cloud provider with a key: what a pick may use."""
+        usable = set(LOCAL_PROVIDERS)
         for provider, cls in CLOUD_CLIENT_CLASSES.items():
             try:
                 if cls.key_available():
@@ -1617,7 +1649,9 @@ class GodAI(QWidget):
                 f"Selected model: {selected_provider} · "
                 f"{model_box.currentText()}.\n{tooltip}"
             )
-            self.mark_oversized_models(model_box)
+            self.mark_oversized_models(
+                model_box,
+                selected_provider if is_local_provider(selected_provider) else "ollama")
 
     def _on_recommended_provider_changed(self, agent_key: str) -> None:
         """React to the user switching provider on an agent panel.
@@ -2287,6 +2321,11 @@ class GodAI(QWidget):
         self.get_muse_btn.clicked.connect(self.pull_muse_glimmer)
         self.get_muse_btn.hide()
 
+        self.start_lmstudio_btn = QPushButton("Start LM Studio server", self)
+        self.start_lmstudio_btn.setObjectName("ChipBtn")
+        self.start_lmstudio_btn.clicked.connect(self.start_lmstudio_server)
+        self.start_lmstudio_btn.hide()
+
         self.model_guide_btn = QPushButton("Model guide", self)
         self.model_guide_btn.setObjectName("ChipBtn")
         self.model_guide_btn.clicked.connect(self.show_model_guide)
@@ -2379,6 +2418,9 @@ class GodAI(QWidget):
         )
         self.get_muse_menu_action = models_menu.addAction("Get Muse Glimmer")
         self.get_muse_menu_action.triggered.connect(self.get_muse_btn.click)
+        self.start_lmstudio_menu_action = models_menu.addAction("Start LM Studio server")
+        self.start_lmstudio_menu_action.triggered.connect(self.start_lmstudio_btn.click)
+        self.start_lmstudio_menu_action.setVisible(False)
         models_menu.addAction("Open model guide").triggered.connect(
             self.model_guide_btn.click
         )
@@ -3163,7 +3205,7 @@ class GodAI(QWidget):
         self._show_route(decision)
 
     def _enabled_provider_names(self) -> set[str]:
-        enabled = {LOCAL_PROVIDER}
+        enabled = set(LOCAL_PROVIDERS)
         for provider in (p for p in SUPPORTED_PROVIDERS if p in CLOUD_PROVIDERS):
             checkbox = getattr(self, f"allow_{provider}_checkbox", None)
             if checkbox is not None and checkbox.isChecked():
@@ -3245,10 +3287,10 @@ class GodAI(QWidget):
         panel = self.panels.get(agent) if hasattr(self, "panels") else None
         if not force and getattr(panel, "_prefer_local_retry_once", False):
             panel._prefer_local_retry_once = False
-            if provider == "ollama":
+            if is_local_provider(provider):
                 return None
         permissions = self.current_api_permissions()
-        permitted = provider == "ollama" or permissions.get(f"allow_{provider}", False)
+        permitted = is_local_provider(provider) or permissions.get(f"allow_{provider}", False)
         # A configured cloud provider can be granted for this request by the
         # single consent dialog in authorize_request(). Do not silently replace
         # the user's explicit selection merely because persistent permission is off.
@@ -3311,9 +3353,9 @@ class GodAI(QWidget):
             # D3: a cloud provider picked in the run bar used to be sent to
             # Ollama under its cloud model name, silently. Local only means
             # Ollama with an Ollama model, and the substitution is shown.
-            if provider == "ollama":
+            if is_local_provider(provider):
                 self._set_route_notice("")
-                return "ollama", model if model else DEFAULT_LOCAL_MODEL
+                return provider, model if model else DEFAULT_LOCAL_MODEL
             local_model = self._local_default_model()
             self._set_route_notice(
                 f"Local only mode: using ollama · {local_model} instead of "
@@ -3324,8 +3366,8 @@ class GodAI(QWidget):
         self._set_route_notice("")
 
         if execution_mode == "Cloud only":
-            if provider == "ollama":
-                raise RuntimeError("Cloud only mode selected, but provider is Ollama/local.")
+            if is_local_provider(provider):
+                raise RuntimeError("Cloud only mode selected, but provider is local (Ollama or LM Studio).")
 
             if provider not in allowed_apis:
                 raise RuntimeError(f"Unknown cloud provider: {provider}")
@@ -3336,8 +3378,8 @@ class GodAI(QWidget):
             return provider, model
 
         if execution_mode == "Hybrid allowed":
-            if provider == "ollama":
-                return "ollama", model if model else DEFAULT_LOCAL_MODEL
+            if is_local_provider(provider):
+                return provider, model if model else DEFAULT_LOCAL_MODEL
 
             if provider in allowed_apis and not allowed_apis[provider]:
                 raise RuntimeError(f"{provider} API is not enabled. Tick the checkbox first.")
@@ -3644,7 +3686,7 @@ class GodAI(QWidget):
             QMessageBox.warning(self, "Request failed", str(e))
 
     def confirm_external_api_request(self, backend, model, estimated_cost, approx_tokens):
-        if backend == "ollama":
+        if is_local_provider(backend):
             return True
 
         message = (
@@ -3699,7 +3741,7 @@ class GodAI(QWidget):
         }
 
     def provider_key_available(self, provider: str) -> bool:
-        if provider == "ollama":
+        if is_local_provider(provider):
             return True
         client = getattr(self, provider, None)
         checker = getattr(client, "key_available", None)
@@ -3755,7 +3797,7 @@ class GodAI(QWidget):
         permissions = self.current_api_permissions()
         one_time_consent = False
         permission_key = f"allow_{provider}"
-        if provider != "ollama" and not permissions.get(permission_key, False):
+        if not is_local_provider(provider) and not permissions.get(permission_key, False):
             panel = self.panels.get(agent) if hasattr(self, "panels") else None
             status = getattr(panel, "status_label", None)
             if not self.provider_key_available(provider):
@@ -3951,77 +3993,37 @@ class GodAI(QWidget):
         self.load_saved_searches()
 
     def run_backend(self, backend, model, messages, prompt):
-        if backend == "ollama":
+        """Send one request to `backend`, dispatching on its registry spec.
+
+        Local providers (any protocol) are fit-checked against memory first;
+        the call itself is the same for every client: stream if it can, else
+        chat, else generate.
+        """
+        spec = providers.get(backend)
+        client = getattr(self, backend, None) if spec is not None else None
+        if spec is None or client is None:
+            raise RuntimeError(f"No compatible backend method found for backend: {backend}")
+
+        if spec.is_local:
             # Runs on the worker thread, so this cannot prompt — it is the hard
             # floor only. Every agent funnels through here, so a model that
             # physically cannot fit is stopped once, for all of them, and the
             # message surfaces via each agent's existing error path instead of
             # freezing the machine for the full request timeout.
-            verdict = self.assess_local_model(model)
+            verdict = self.assess_local_model(model, backend)
             if verdict is not None and verdict["level"] == "too_big":
                 raise RuntimeError(verdict["message"])
 
-            # Stream like every cloud provider: the worker checks its cancel
-            # flag per token, so Stop interrupts a local reply instead of
-            # waiting for the whole thing (and the transcript fills as it goes).
-            if hasattr(self.ollama, "stream_chat"):
-                return self.ollama.stream_chat(model=model, messages=messages)
-            if hasattr(self.ollama, "chat"):
-                return self.ollama.chat(model=model, messages=messages)
-            if hasattr(self.ollama, "generate"):
-                return self.ollama.generate(model=model, prompt=prompt)
-
-        if backend == "openai":
-            if is_image_model(model):
-                return self.openai.generate_image(prompt, model=model)
-            if hasattr(self.openai, "stream_chat"):
-                return self.openai.stream_chat(messages=messages, model=model)
-            if hasattr(self.openai, "chat"):
-                return self.openai.chat(messages=messages, model=model)
-            if hasattr(self.openai, "generate"):
-                return self.openai.generate(prompt, model=model)
-
-        if backend == "deepseek":
-            if hasattr(self.deepseek, "stream_chat"):
-                return self.deepseek.stream_chat(messages=messages, model=model)
-            if hasattr(self.deepseek, "chat"):
-                return self.deepseek.chat(messages=messages, model=model)
-            if hasattr(self.deepseek, "generate"):
-                return self.deepseek.generate(prompt, model=model)
-
-        if backend == "kimi":
-            if hasattr(self.kimi, "stream_chat"):
-                return self.kimi.stream_chat(messages=messages, model=model)
-            if hasattr(self.kimi, "chat"):
-                return self.kimi.chat(messages=messages, model=model)
-            if hasattr(self.kimi, "generate"):
-                return self.kimi.generate(prompt, model=model)
-
-        if backend == "qwen":
-            if hasattr(self.qwen, "stream_chat"):
-                return self.qwen.stream_chat(messages=messages, model=model)
-            if hasattr(self.qwen, "chat"):
-                return self.qwen.chat(messages=messages, model=model)
-            if hasattr(self.qwen, "generate"):
-                return self.qwen.generate(prompt, model=model)
-
-        if backend == "gemini":
-            if hasattr(self.gemini, "stream_chat"):
-                return self.gemini.stream_chat(messages=messages, model=model)
-
-            if hasattr(self.gemini, "chat"):
-                return self.gemini.chat(messages=messages, model=model)
-
-            if hasattr(self.gemini, "generate"):
-                return self.gemini.generate(prompt, model=model)
-
-        if backend == "anthropic":
-            if hasattr(self.anthropic, "stream_chat"):
-                return self.anthropic.stream_chat(messages=messages, model=model)
-
-            if hasattr(self.anthropic, "chat"):
-                return self.anthropic.chat(messages=messages, model=model)
-
+        if backend == "openai" and is_image_model(model):
+            return client.generate_image(prompt, model=model)
+        if hasattr(client, "stream_chat"):
+            return client.stream_chat(messages=messages, model=model)
+        if hasattr(client, "chat"):
+            return client.chat(messages=messages, model=model)
+        if hasattr(client, "generate"):
+            if spec.protocol == providers.PROTOCOL_OLLAMA:
+                return client.generate(model=model, prompt=prompt)
+            return client.generate(prompt, model=model)
         raise RuntimeError(f"No compatible backend method found for backend: {backend}")
 
     def start_chat_timer(self, backend: str, model: str, prompt: str):

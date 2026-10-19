@@ -53,8 +53,9 @@ def _registry(agent, tool):
 def test_registry_intersects_agent_and_tool_allow_lists():
     reg = _registry({"allowed_providers": ["ollama", "openai", "gemini"]},
                     {"allowed_providers": ["ollama", "gemini", "kimi"]})
-    assert reg.permitted_providers("a", "t") == {"ollama", "gemini"}
-    assert reg.permitted_providers("a", "") == {"ollama", "openai", "gemini"}
+    assert reg.permitted_providers("a", "t") == {"ollama", "lmstudio", "gemini"}
+    # (naming a local runtime admits every local runtime: services/providers.py)
+    assert reg.permitted_providers("a", "") == {"ollama", "lmstudio", "openai", "gemini"}
     assert reg.permitted_providers("zzz", "zzz") is None          # unregistered: no restriction
     assert _registry({"allowed_providers": []}, None).permitted_providers("a", "t") is None
 

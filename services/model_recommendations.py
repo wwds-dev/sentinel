@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence
 
+from services.providers import is_local as is_local_provider
 from services.provider_catalog import provider_metadata
 
 
@@ -91,7 +92,7 @@ class RouteDecision:
 
     @property
     def mode(self) -> str:
-        return "Local only" if self.provider == "ollama" else "Cloud only"
+        return "Local only" if is_local_provider(self.provider) else "Cloud only"
 
     @property
     def pricing(self) -> PricingMetadata:
@@ -673,7 +674,7 @@ TASK_RECOMMENDATIONS = {
 
 def as_dict(rec: Recommendation, *, mode: str | None = None) -> dict:
     pricing = pricing_metadata(rec.provider, rec.model)
-    return {"mode": mode or ("Local only" if rec.provider == "ollama" else "Hybrid allowed"), "provider": rec.provider, "model": rec.model, "reason": rec.reason, "pricing": pricing, "cost_label": pricing.compact}
+    return {"mode": mode or ("Local only" if is_local_provider(rec.provider) else "Hybrid allowed"), "provider": rec.provider, "model": rec.model, "reason": rec.reason, "pricing": pricing, "cost_label": pricing.compact}
 
 
 def find_model(names: Sequence[str], wanted: str) -> int:

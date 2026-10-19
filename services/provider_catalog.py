@@ -1,16 +1,25 @@
-"""Provider identifiers and billing metadata shared by runtime and UI."""
+"""Provider identifiers and billing metadata shared by runtime and UI.
+
+The registry itself is `services/providers.py` (a byte-identical copy lives in
+Imprint). This module keeps the names the rest of Sentinel already imports and
+derives them from the registry, so there is one list of providers to edit.
+"""
 
 from dataclasses import dataclass
 
-SUPPORTED_PROVIDERS = (
-    "ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen",
-)
+from services import providers
 
+SUPPORTED_PROVIDERS = providers.SUPPORTED
+
+# The local runtime used when nothing else is chosen. Other local providers
+# (lmstudio) are listed in LOCAL_PROVIDERS; ask `providers.is_local(name)`
+# rather than comparing against this.
 LOCAL_PROVIDER = "ollama"
+LOCAL_PROVIDERS = providers.LOCAL_PROVIDERS
 # What Local only mode runs when the user has not saved a default model.
 DEFAULT_LOCAL_MODEL = "deepseek-r1:8b"
 
-CLOUD_PROVIDERS = frozenset(provider for provider in SUPPORTED_PROVIDERS if provider != "ollama")
+CLOUD_PROVIDERS = providers.CLOUD_PROVIDERS
 
 
 @dataclass(frozen=True)
@@ -23,11 +32,8 @@ class ProviderMetadata:
 # interpreted as free: cloud APIs are metered even when an exact model rate is
 # unavailable or depends on the customer's provider agreement.
 PROVIDER_METADATA = {
-    "ollama": ProviderMetadata("local", "free_local"),
-    **{
-        provider: ProviderMetadata("cloud", "paid")
-        for provider in CLOUD_PROVIDERS
-    },
+    name: ProviderMetadata(spec.kind, "free_local" if spec.is_local else "paid")
+    for name, spec in providers.REGISTRY.items()
 }
 
 
