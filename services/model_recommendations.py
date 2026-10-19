@@ -170,6 +170,31 @@ def register_profile(profile: ModelProfile) -> None:
     _ADOPTED_PROFILES[(profile.provider, profile.model)] = profile
 
 
+_LOCAL_PROFILES: set[tuple[str, str]] = set()
+
+
+def register_local_models(models) -> None:
+    """Make every discovered local model a router candidate, from any selection.
+
+    `models` are services.local_models.LocalModel rows. They are unrated, so the
+    value rule keeps them out of a rated pick until a rating exists (Phase 3);
+    Privacy first and Local only already prefer them. Models that disappeared
+    since the last call are withdrawn.
+    """
+    seen = set()
+    for m in models:
+        key = (m.provider, m.id)
+        seen.add(key)
+        register_profile(ModelProfile(
+            m.provider, m.id,
+            _caps(reasoning=2, coding=1, context_window=int(m.max_context or 8_000),
+                  cost=1, latency=2, local=True, privacy=3), 2))
+    for key in _LOCAL_PROFILES - seen:
+        unregister_profile(*key)
+    _LOCAL_PROFILES.clear()
+    _LOCAL_PROFILES.update(seen)
+
+
 def unregister_profile(provider: str, model: str) -> None:
     _ADOPTED_PROFILES.pop((provider, model), None)
 

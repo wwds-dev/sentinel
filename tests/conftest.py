@@ -67,6 +67,25 @@ def _offline_model_lists():
         patch.setattr(benchmarks, "_get_json", _no_network)
         patch.setattr(benchmarks, "is_stale", lambda *a, **k: False)
         patch.setattr(OllamaClient, "loaded_models", lambda self: [])
+
+        # What is "on this Mac" must not depend on this Mac. The inventory
+        # starts pre-seeded from the stubbed Ollama (its KNOWN_MODELS, no
+        # sizes) with LM Studio off and nothing on disk, so no test reaches a
+        # socket or ~/.lmstudio, and nothing runs discovery on the UI thread.
+        from types import SimpleNamespace
+        from services import local_models
+
+        lm_off = SimpleNamespace(server_up=lambda: False, model_details=lambda: [])
+        real_init = local_models.LocalInventory.__init__
+
+        def seeded(self, *a, **k):
+            real_init(self, *a, **k)
+            self.store(local_models.discover(
+                lm_off, OllamaClient(),
+                memory=lambda: (16e9, 24e9), lms_binary=lambda: None))
+
+        patch.setattr(local_models.LocalInventory, "__init__", seeded)
+        patch.setattr(local_models.LocalInventory, "stale", lambda self, now=None: False)
         yield
 
 

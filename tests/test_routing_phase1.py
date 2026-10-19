@@ -260,9 +260,13 @@ def test_there_is_no_provider_name_comparison_left_in_the_app():
 
 def _fit_stub(size_by_provider):
     import main
-    stub = SimpleNamespace(
-        ollama=SimpleNamespace(model_size_bytes=lambda m: size_by_provider.get("ollama")),
-        lmstudio=SimpleNamespace(model_size_bytes=lambda m: size_by_provider.get("lmstudio")))
+    # Sizes come from the cached inventory; assessing never asks a server.
+    def find(provider, model):
+        size = size_by_provider.get(provider)
+        return SimpleNamespace(size_bytes=size) if size else None
+
+    stub = SimpleNamespace(local_inventory=SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(find=find)))
     return stub, main.GodAI.assess_local_model
 
 

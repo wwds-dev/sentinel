@@ -25,7 +25,8 @@ _HERE = Path(__file__).resolve()
 MINE = _HERE.parents[1]
 SELF = MINE.name.split("-")[0]
 OTHER = "imprint" if SELF == "sentinel" else "sentinel"
-FILES = ("services/providers.py", "services/lmstudio_client.py")
+FILES = ("services/providers.py", "services/lmstudio_client.py",
+         "services/local_models.py")
 
 
 def _sibling() -> Path | None:

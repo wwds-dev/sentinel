@@ -11,6 +11,7 @@ from typing import Optional
 from uuid import uuid4
 
 from services import providers
+from services import local_models
 from services.providers import is_local as is_local_provider
 from services.lmstudio_client import LMStudioClient
 from services.runtime_paths import (
@@ -87,7 +88,7 @@ from services.model_recommendations import (
     TASK_RECOMMENDATIONS, as_dict, find_model, resolve_model,
     RoutingPreferences, route_request, pricing_metadata, set_price_lookup,
     set_rating_lookup, set_recommendation_context, derive_agent_recommendations,
-    ratings_loaded, MODEL_CATALOG,
+    ratings_loaded, MODEL_CATALOG, register_local_models,
 )
 from services.model_watch import ModelWatch
 from services.price_resolution import table_lookup
@@ -199,10 +200,11 @@ AGENT_SETUP_WIDGETS = {
 from ui import app_identity, appkit_guard, tray
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker, ModelScanWorker,
+    LocalDiscoveryWorker,
 )
 from ui.model_updates import ModelReviewDialog, ModelUpdatesCard
 from ui.widgets import (
-    BEST_FIT_BADGE, KeyValue, ScreenCard, MenuComboBox, Meter, NEW_MODEL_ROLE, RECOMMENDED_ROLE,
+    BEST_FIT_BADGE, DETAIL_ROLE, LABEL_ROLE, SECTION_ROLE, KeyValue, ScreenCard, MenuComboBox, Meter, NEW_MODEL_ROLE, RECOMMENDED_ROLE,
     RECOMMENDATION_BADGE_ROLE, RECOMMENDATION_REASON_ROLE, SectionView,
     ThemeDots,
 )
@@ -302,6 +304,10 @@ class GodAI(QWidget):
 
         self.ollama = OllamaClient(providers.ollama_host())
         self.lmstudio = LMStudioClient()
+        # What is on this Mac. Read by the UI from the cache only; the worker
+        # below is the one place that talks to LM Studio, Ollama and the disk.
+        self.local_inventory = local_models.LocalInventory()
+        self.local_discovery_worker = None
         self.openai = OpenAIClientWrapper()
         self.deepseek = DeepSeekClientWrapper()
         self.kimi = KimiClientWrapper()
@@ -414,6 +420,7 @@ class GodAI(QWidget):
         # Every start, but after the window is up: the scan is network-bound
         # and the first paint should not wait for six providers to answer.
         QTimer.singleShot(4000, self.start_model_scan)
+        QTimer.singleShot(0, self.start_local_discovery)
 
     def _polish_tab_widgets(self):
         """Disable text elision and enable scroll buttons on every QTabWidget
@@ -739,10 +746,10 @@ class GodAI(QWidget):
         """
         import psutil
 
-        if provider == "lmstudio":
-            size_bytes = self.lmstudio.model_size_bytes(model)
-        else:
-            size_bytes = self.ollama.model_size_bytes(model)
+        # Sizes come from the cached inventory: this runs on the UI thread and
+        # a runtime that is down would otherwise block it for the timeout.
+        known = self.local_inventory.snapshot().find(provider, model)
+        size_bytes = known.size_bytes if known else None
         if size_bytes is None:
             # Not pulled yet — fall back to the published download size for the
             # builds we ship a figure for, so the dropdown can grey them out.
@@ -1120,7 +1127,7 @@ class GodAI(QWidget):
         if action is None:
             return
         off = (self.provider_box.currentText() == "lmstudio"
-               and not self.lmstudio.server_up())
+               and not self.local_inventory.snapshot().lmstudio_up)
         self.start_lmstudio_btn.setVisible(off)
         action.setVisible(off)
 
@@ -1128,8 +1135,7 @@ class GodAI(QWidget):
         started, message = self.lmstudio.start_server()
         if started:
             self._set_chat_status("LM Studio server started.")
-            if self.provider_box.currentText() == "lmstudio":
-                self.load_provider_models()
+            self.start_local_discovery()
         else:
             QMessageBox.warning(self, "LM Studio", message)
         self.refresh_lmstudio_button()
@@ -1225,6 +1231,15 @@ class GodAI(QWidget):
         client = clients.get(provider)
         if client is None:
             return []
+        if is_local_provider(provider):
+            # Cached inventory only — never a request from the UI thread.
+            if self.local_inventory.stale():
+                self.start_local_discovery()
+            models = [m.id for m in self.local_inventory.snapshot().of(provider)]
+            watch = getattr(self, "model_watch", None)
+            if watch is not None:
+                models += [m for m in watch.adopted_models(provider) if m not in models]
+            return models
         try:
             models = list(client.list_models())
         except Exception as exc:
@@ -1256,9 +1271,64 @@ class GodAI(QWidget):
                 "(no local models)" if is_local_provider(provider) else "(unavailable)"
             )
         self._mark_new_models(provider, model_box)
+        self.apply_picker_roles(provider, model_box)
         polish_combo_box(provider_box)
         polish_combo_box(model_box)
         self._mark_paid_route_choices(provider_box, model_box)
+
+    # ── Local models: discovery, picker rows, router candidates ──────────────
+
+    def start_local_discovery(self) -> None:
+        """Refresh the local inventory in the background (startup, Settings, Start server)."""
+        worker = self.local_discovery_worker
+        if worker is not None and worker.isRunning():
+            return
+        worker = LocalDiscoveryWorker(self.lmstudio, self.ollama, self.local_inventory)
+        worker.finished_signal.connect(self._on_local_discovery)
+        self.local_discovery_worker = worker
+        worker.start()
+
+    def _on_local_discovery(self, snap) -> None:
+        """Runs on the UI thread: rows, router candidates and BEST FIT follow the snapshot."""
+        register_local_models(local_models.router_candidates(snap))
+        try:
+            self.refresh_agent_recommendations()
+            self._reload_all_model_lists()
+            if hasattr(self, "provider_box"):
+                self.load_provider_models()
+            self._remark_all_recommendations()
+            self.refresh_lmstudio_button()
+        except Exception as exc:  # noqa: BLE001
+            self._note_failure("local models: refresh", exc)
+        listener = getattr(self, "_local_models_listener", None)
+        if callable(listener):
+            listener(snap)
+
+    def apply_picker_roles(self, provider: str, model_box) -> None:
+        """Section, detail and tag data for every row of a model combo.
+
+        The item text stays the model id; the picker reads these roles.
+        """
+        if model_box is None:
+            return
+        if is_local_provider(provider):
+            snap = self.local_inventory.snapshot()
+            rows = {r["id"]: r for r in local_models.picker_entries(snap, provider)}
+            section = local_models.SECTION_LABELS.get(provider, provider)
+            for i in range(model_box.count()):
+                row = rows.get(model_box.itemText(i))
+                model_box.setItemData(i, section, SECTION_ROLE)
+                if row is None:
+                    continue
+                model_box.setItemData(i, row["label"], LABEL_ROLE)
+                model_box.setItemData(i, row["detail"], DETAIL_ROLE)
+                if row["tooltip"]:
+                    model_box.setItemData(i, row["tooltip"], Qt.ToolTipRole)
+                if row["fit"] in {"tight", "too_big"}:
+                    model_box.setItemData(i, QColor("#666666"), Qt.ForegroundRole)
+        else:
+            for i in range(model_box.count()):
+                model_box.setItemData(i, local_models.CLOUD_SECTION, SECTION_ROLE)
 
     def _mark_new_models(self, provider: str, model_box) -> None:
         """Badge the models a scan found that nobody has reviewed yet."""
@@ -1394,6 +1464,12 @@ class GodAI(QWidget):
                            [m.model for m in MODEL_CATALOG if m.provider == provider])
             for provider in enabled
         }
+        if self.local_inventory.has_data:
+            # Local models from any provider selection, and only those that exist.
+            snap = self.local_inventory.snapshot()
+            for provider in providers.LOCAL_PROVIDERS:
+                if provider in enabled:
+                    available[provider] = [m.id for m in snap.of(provider)]
         set_recommendation_context(enabled, available, self._routing_preferences())
         if ratings_loaded():
             derived = derive_agent_recommendations()
@@ -2987,6 +3063,7 @@ class GodAI(QWidget):
 
             self.model_box.addItems(models)
             self._mark_new_models(provider, self.model_box)
+            self.apply_picker_roles(provider, self.model_box)
 
             if previous_model:
                 idx = self.model_box.findText(previous_model)
@@ -5102,7 +5179,8 @@ class GodAI(QWidget):
                 self.active_run_id = None
         # The model scan and a model pull are QThreads of ours too; a quit
         # while one ran destroyed a live thread (and could crash on exit).
-        for name in ("model_scan_worker", "model_pull_worker"):
+        for name in ("model_scan_worker", "model_pull_worker",
+                     "local_discovery_worker"):
             thread = getattr(self, name, None)
             if thread is not None and thread.isRunning():
                 cancel = getattr(thread, "cancel", None)

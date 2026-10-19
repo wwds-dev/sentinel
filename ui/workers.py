@@ -763,3 +763,20 @@ class ModelScanWorker(QThread):
                     benchmarks.note_attempt(self._ratings_cache)
                     ratings = str(e)
         self.finished_signal.emit(listings, ratings)
+
+
+class LocalDiscoveryWorker(QThread):
+    """Read LM Studio, Ollama and free memory off the UI thread.
+
+    Only the I/O runs here; the result is cached by the caller back on the UI
+    thread. Never raises: a broken runtime comes back as a Snapshot error.
+    """
+    finished_signal = Signal(object)
+
+    def __init__(self, lmstudio, ollama, inventory):
+        super().__init__()
+        self._lmstudio, self._ollama, self._inventory = lmstudio, ollama, inventory
+
+    def run(self):
+        self.finished_signal.emit(
+            self._inventory.refresh(self._lmstudio, self._ollama))
