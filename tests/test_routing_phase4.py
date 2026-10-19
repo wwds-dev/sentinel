@@ -60,6 +60,12 @@ def win(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
     monkeypatch.setattr(main, "SETTINGS_OVERRIDE_FILE", tmp_path / "override.json")
 
+    # A database of its own: the suite's session database carries spend from
+    # every other test, and that spend decides whether a paid suggestion fits
+    # today's budget.
+    from services import database
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "sentinel.db")
+    database.init_db()
     window = main.GodAI()
     window.questions = questions
     window.assess_local_model = lambda model, provider="ollama": None
