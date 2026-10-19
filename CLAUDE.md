@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-`AGENTS.md` is the company pipeline (installed from `software_company`); app facts are in `docs/company/app-context.md`. The rules below are this app's own and win on conflict.
+`AGENTS.md` is the company pipeline (installed from `foundry`); app facts are in `docs/company/app-context.md`. The rules below are this app's own and win on conflict.
 
 ## Task lists
 - `TODO.md` and `SUGGESTIONS.md` in this folder feed the Lab Projects Monitor. Keep their existing format exactly.

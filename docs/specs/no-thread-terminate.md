@@ -350,7 +350,7 @@ Totals over the whole build: 64 mutants planted, 63 killed. The one survivor (ta
 
 
 ### Build log, review fixes (2026-10-14)
-Fixes for the code review (`software_company/audits/sentinel/no-thread-terminate-review.md`: P0 0, P1 0, P2 3, P3 5). `d1c32b2` (owner option a, benchmarks `WRITE_GUARD` mirrored in Imprint) was already on the branch from another session. P3-5 is left for the Document phase.
+Fixes for the code review (`foundry/audits/sentinel/no-thread-terminate-review.md`: P0 0, P1 0, P2 3, P3 5). `d1c32b2` (owner option a, benchmarks `WRITE_GUARD` mirrored in Imprint) was already on the branch from another session. P3-5 is left for the Document phase.
 
 | Finding | Commit | Tests | Mutants (planted / killed), file:line at the time |
 |---|---|---|---|
@@ -376,7 +376,7 @@ Totals for the review fixes: 23 mutants planted, 23 killed. One was killed only 
 **Not run.** `agents/bug_spray/tests` and `agents/sentry/tests` (not touched), CI on Linux, Imprint's drift test (`services/benchmarks.py` unchanged by these fixes).
 
 ### Build log, Verify gaps (2026-10-14)
-Test-only commit for the eight mutants that survived Verify (`software_company/audits/sentinel/no-thread-terminate-verify.md`, section 3). No production change, and no test exposed a bug. Commit: see `git log` ("Tests for the eight mutants Verify left alive").
+Test-only commit for the eight mutants that survived Verify (`foundry/audits/sentinel/no-thread-terminate-verify.md`, section 3). No production change, and no test exposed a bug. Commit: see `git log` ("Tests for the eight mutants Verify left alive").
 
 | Survivor | file:line | Test added | Re-planted |
 |---|---|---|---|
@@ -398,4 +398,4 @@ Tech writer. Playbook `tech-writer.md` is `status: current`, last-reviewed 2026-
 - User-facing text for Stop, Quit, Emergency Reset and the Tunnel health checks: `README.md`; Learning Centre `docs/training/chat.md`, `workspace.md`, `controls_settings.md`, `portable.md`, `tunnel.md`; developer reference `docs/agents/chat.md`, `vpn.md`, `osint_heavy.md`; `tests/manual_test_cases.md` (the old "stopped by user" notice).
 - `CHANGELOG.md` created (Keep a Changelog, `## Unreleased` plus the current v2.002). `VERSION` not bumped; Release does that, and adds the `docs/versioning.md` row.
 - `docs/qa_audit/chat.md` finding 16 marked resolved; `TODO.md` items updated; ADR 0001 status set to Accepted.
-- Not done here: the HQ handoff item (`software_company/audits/sentinel/HANDOFF.md:27`) lives in another repo.
+- Not done here: the HQ handoff item (`foundry/audits/sentinel/HANDOFF.md:27`) lives in another repo.
