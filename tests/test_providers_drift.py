@@ -5,7 +5,7 @@ Type: Cross-repository consistency check.
 `services/providers.py` (the registry), `services/lmstudio_client.py`,
 `services/local_models.py` and `services/local_ratings.py` (with its prompt set
 and its tests) exist twice in this workspace, byte for byte, in Sentinel and in
-Imprint. A change to
+Imprint, and so does the Settings → Local models page. A change to
 one that is not made to the other would let the two apps disagree about which
 providers are local, what is free, or which models carry the uncensored tag.
 
@@ -29,7 +29,8 @@ SELF = MINE.name.split("-")[0]
 OTHER = "imprint" if SELF == "sentinel" else "sentinel"
 FILES = ("services/providers.py", "services/lmstudio_client.py",
          "services/local_models.py", "services/local_ratings.py",
-         "config/local_rating_prompts.json", "tests/test_local_ratings.py")
+         "config/local_rating_prompts.json", "tests/test_local_ratings.py",
+         "ui/local_models_page.py")
 
 
 def _sibling() -> Path | None:
