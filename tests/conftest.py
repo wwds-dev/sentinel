@@ -93,6 +93,25 @@ def _offline_model_lists():
 
         patch.setattr(local_models.LocalInventory, "__init__", seeded)
         patch.setattr(local_models.LocalInventory, "stale", lambda self, now=None: False)
+
+        # Building a window must never start a measurement run (the tests that
+        # check the automatic trigger switch it back on), and the window's
+        # rating store must not read this Mac's measured ratings: a store
+        # outside the temp folder (tmp_path) is kept in memory only.
+        import tempfile
+        from pathlib import Path
+        from services import local_ratings
+
+        patch.setattr(local_ratings, "AUTOMATIC", False)
+        real_store_init = local_ratings.RatingStore.__init__
+        temp_root = str(Path(tempfile.gettempdir()).resolve())
+
+        def memory_store(self, path):
+            if path is not None and not str(Path(path).resolve()).startswith(temp_root):
+                path = None
+            real_store_init(self, path)
+
+        patch.setattr(local_ratings.RatingStore, "__init__", memory_store)
         yield
 
 

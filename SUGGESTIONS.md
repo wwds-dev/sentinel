@@ -15,6 +15,10 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | 27 | **LM Studio model ids.** With the server off the picker lists `publisher/repo/file.gguf` (the path LM Studio loads by); with it on, the server's own ids. A saved default can therefore stop matching after the server starts. Map between the two in `LMStudioClient` (match on file stem) and keep the saved choice stable. | bug | S | IDEA |
 | 28 | **Share more with Imprint.** `services/ollama_client.py` and `benchmarks.py` are copies that differ only by Imprint's `UsageStream`; the registry and LM Studio client set the precedent of a drift test with no allowed differences. | infra | M | IDEA |
 | 29 | **One model list across providers.** The picker shows the selected provider's models in sections; mockup A's single list (local and cloud together, choosing one switches the provider) needs the provider and model boxes merged. | feature | M | IDEA |
+| 30 | **Calibrate the judge.** Before trusting measured local ratings, run the judge on cloud pairs LMArena already rates and check its verdict shares predict their rating gaps; record the agreement with each measurement. | quality | M | IDEA |
+| 31 | **Measure reasoning, research and vision.** Local models are measured on writing, code, summarising and extraction only, so they stay unrated for the other router tasks. A short hard-prompt set would cover reasoning; vision needs a local model that takes images. | feature | M | IDEA |
+| 32 | **Offer Re-measure when the reference changes.** A measured rating rests on the reference model's LMArena score at the time; when a better cloud model becomes the reference or its score moves by more than the band, mark the measurement stale in Settings (manual re-measure stays the rule). | feature | S | IDEA |
+| 33 | **An abliteration penalty instead of measuring.** Abliterated builds of a rated base currently inherit nothing and are measured; once a few have been measured, a fixed penalty per method could rate the next one without the cloud calls. | quality | S | IDEA |
 
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|

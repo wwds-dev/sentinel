@@ -176,9 +176,11 @@ _LOCAL_PROFILES: set[tuple[str, str]] = set()
 def register_local_models(models) -> None:
     """Make every discovered local model a router candidate, from any selection.
 
-    `models` are services.local_models.LocalModel rows. They are unrated, so the
-    value rule keeps them out of a rated pick until a rating exists (Phase 3);
-    Privacy first and Local only already prefer them. Models that disappeared
+    `models` are services.local_models.LocalModel rows. A rated one (inherited
+    from its base model, or measured: services/local_ratings.py) enters the
+    rating band at a known price of zero; an unrated one stays out of a rated
+    pick, because nothing shows it is good enough. Privacy first and Local only
+    prefer them either way. Models that disappeared
     since the last call are withdrawn.
     """
     seen = set()
@@ -501,18 +503,18 @@ def _route_by_rating(request: RequestProfile, prefs: RoutingPreferences,
                   key=lambda m: (-rated[key(m)].score, _price_key(m, prices), m.provider, m.model))
     rating = rated[key(chosen)]
     price = _describe_price(chosen, prices)
-    source = "LMArena"
+    source = _rating_source(rating)
     if chosen is top:
         reason = (f"Detected {request.task}; {chosen.model} rates highest for "
-                  f"{rating.label} on {source} ({rating.score:.0f})"
+                  f"{rating.label} {source} ({rating.score:.0f})"
                   + (f" and is the cheapest of the {len(fit)} within {margin} points"
                      if len(fit) > 1 else "")
                   + f" ({price}).")
     else:
         top_rating = rated[key(top)]
         reason = (f"Detected {request.task}; {chosen.model} rates {rating.score:.0f} for "
-                  f"{rating.label} on {source}, within {margin} points of the best "
-                  f"({top.model}, {top_rating.score:.0f}, "
+                  f"{rating.label} {source}, within {margin} points of the best "
+                  f"({top.model}, {top_rating.score:.0f} {_rating_source(top_rating)}, "
                   f"{_describe_price(top, prices)}), and is the "
                   f"cheapest of the {len(fit)} that are ({price}).")
     unrated = len(eligible) - len(pool)
@@ -523,6 +525,14 @@ def _route_by_rating(request: RequestProfile, prefs: RoutingPreferences,
                      for m in rest)[:3]
     return RouteDecision(request.task, chosen.provider, chosen.model, reason, fallback,
                          basis="rating")
+
+
+def _rating_source(rating) -> str:
+    """Where a rating comes from, as the reason says it: LMArena for a cloud
+    model; for a local one, measured on this Mac or its base model's rating
+    (services/local_ratings.py)."""
+    source = getattr(rating, "source", None)
+    return f"({source})" if source else "on LMArena"
 
 
 def _price_key(profile: ModelProfile, prices: PriceLookup | None) -> tuple[bool, float]:

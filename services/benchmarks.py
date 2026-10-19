@@ -26,8 +26,9 @@ conservative: dots and dashes are unified, date stamps dropped, and an effort
 suffix (-high, -max, ...) is matched only when no plain entry exists — and
 then the *lowest*-rated variant is used, because the app calls a model with
 its default settings and must not credit it with a setting it never asks for.
-Local Ollama models are never rated: the leaderboard rates the full model, not
-the quantised copy on this Mac.
+Local models are never rated here: the leaderboard rates the full model, not
+the quantised copy on this Mac. `services/local_ratings.py` rates them, from a
+base model's rating less a quantisation penalty or from a measurement.
 """
 
 from __future__ import annotations

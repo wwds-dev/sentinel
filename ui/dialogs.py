@@ -1270,7 +1270,9 @@ def show_settings(app):
 
     local_page = LocalModelsPage(
         on_refresh=app.start_local_discovery,
-        on_start=lambda: app.start_lmstudio_server(), parent=dialog)
+        on_start=lambda: app.start_lmstudio_server(), parent=dialog,
+        on_measure=lambda model: app.start_local_measure(model, automatic=False),
+        ratings=getattr(app, "local_ratings", None))
     local_page.set_snapshot(app.local_inventory.snapshot(), used_by())
     app._local_models_listener = lambda snap: local_page.set_snapshot(snap, used_by())
     dialog.finished.connect(lambda _r: setattr(app, "_local_models_listener", None))
