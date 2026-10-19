@@ -30,7 +30,9 @@ OTHER = "imprint" if SELF == "sentinel" else "sentinel"
 FILES = ("services/providers.py", "services/lmstudio_client.py",
          "services/local_models.py", "services/local_ratings.py",
          "config/local_rating_prompts.json", "tests/test_local_ratings.py",
-         "ui/local_models_page.py")
+         "ui/local_models_page.py", "services/routing_advisor.py",
+         "tests/test_routing_advisor.py", "ui/routing_advice.py",
+         "ui/routing_page.py")
 
 
 def _sibling() -> Path | None:

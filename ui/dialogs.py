@@ -1277,6 +1277,17 @@ def show_settings(app):
     app._local_models_listener = lambda snap: local_page.set_snapshot(snap, used_by())
     dialog.finished.connect(lambda _r: setattr(app, "_local_models_listener", None))
     tabs.addTab(_scrolling(local_page), "Local models")
+
+    # ── Models: routing mode, per-agent overrides, remembered rules ───
+    from ui.routing_page import RoutingModesPage
+    models_page = RoutingModesPage(
+        app.settings, BUILTIN_AGENTS_LABELS(app), app.routing_rules,
+        getattr(app, "savings_tally", None), on_change=app.apply_routing_settings,
+        privacy_note=("Privacy first (Chat → Options → Routing priority) keeps every "
+                      "job on this Mac whatever the mode: no cloud suggestion and "
+                      "no cloud fallback."),
+        parent=dialog)
+    tabs.addTab(_scrolling(models_page), "Models")
     if app.local_inventory.stale():
         app.start_local_discovery()
 

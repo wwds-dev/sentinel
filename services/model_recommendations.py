@@ -480,6 +480,20 @@ def set_rating_lookup(lookup: RatingLookup | None) -> None:
     _RATING_LOOKUP = lookup
 
 
+def rating_for(provider: str, model: str, task: str):
+    """The installed rating for one model and kind of work, or None.
+
+    What the router itself would read; the routing advisor
+    (services/routing_advisor.py) compares the selected model with the best
+    one through this."""
+    if _RATING_LOOKUP is None:
+        return None
+    try:
+        return _RATING_LOOKUP(provider, model, task)
+    except Exception:
+        return None
+
+
 def _rate(lookup: RatingLookup, profile: ModelProfile, task: str):
     try:
         return lookup(profile.provider, profile.model, task)

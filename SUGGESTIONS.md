@@ -19,6 +19,9 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | 31 | **Measure reasoning, research and vision.** Local models are measured on writing, code, summarising and extraction only, so they stay unrated for the other router tasks. A short hard-prompt set would cover reasoning; vision needs a local model that takes images. | feature | M | IDEA |
 | 32 | **Offer Re-measure when the reference changes.** A measured rating rests on the reference model's LMArena score at the time; when a better cloud model becomes the reference or its score moves by more than the band, mark the measurement stale in Settings (manual re-measure stays the rule). | feature | S | IDEA |
 | 33 | **An abliteration penalty instead of measuring.** Abliterated builds of a rated base currently inherit nothing and are measured; once a few have been measured, a fixed penalty per method could rate the next one without the cloud calls. | quality | S | IDEA |
+| 34 | **Learn local speed.** The advisor's time estimate uses fixed throughput (12 tokens/s local, 60 cloud). Record tokens/s per model from finished runs and use it, so *about 25 s* means something. | quality | S | IDEA |
+| 35 | **Auto-route still lists models on the UI thread.** `route_for_request` (Auto-route, the Auto checkbox) calls `models_for_provider`, which asks each cloud API for its list synchronously. The advisor avoids it by reading the last model scan; Auto-route should too. | bug | S | IDEA |
+| 36 | **Keep local as a rule.** Only *Always* (switch) is remembered; a *Keep local for this kind* rule would stop repeat banners for a model the user trusts but that is unmeasured. | feature | S | IDEA |
 
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|
