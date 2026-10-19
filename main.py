@@ -73,12 +73,14 @@ from agents.osint_heavy_agent import OsintHeavyAgent
 from agents.vpn_agent.sentinel_chat_agent import VpnAgent
 from services.agent_factory import AgentFactory
 from services.agent_catalog import BUILTIN_AGENTS, BUILTIN_AGENT_ORDER
-from services.provider_catalog import CLOUD_PROVIDERS
+from services.provider_catalog import (
+    CLOUD_PROVIDERS, DEFAULT_LOCAL_MODEL, LOCAL_PROVIDER, SUPPORTED_PROVIDERS,
+)
 from services.tool_catalog import runtime_tool_prompts
 from services.app_version import DISPLAY_VERSION, build_description
 from services.model_recommendations import (
     AGENT_RECOMMENDATIONS as RECOMMENDATION_OBJECTS,
-    TASK_RECOMMENDATIONS, as_dict, find_model, resolve_available_model,
+    TASK_RECOMMENDATIONS, as_dict, find_model, resolve_model,
     RoutingPreferences, route_request, pricing_metadata, set_price_lookup,
     set_rating_lookup, set_recommendation_context, derive_agent_recommendations,
     ratings_loaded, MODEL_CATALOG,
@@ -861,8 +863,10 @@ class GodAI(QWidget):
         
         if tool_provider:
             available = self.models_for_provider(tool_provider)
-            model = resolve_available_model(tool_model, available) if tool_model else (
+            resolved = resolve_model(tool_model, available) if tool_model else None
+            model = resolved.model if resolved else (
                 available[0] if available else self.model_box.currentText())
+            substitution = f" {resolved.note}" if resolved and resolved.substituted else ""
 
             # ===== CHECK API PERMISSION =====
             if tool_provider == "openai" and not self.allow_openai_checkbox.isChecked():
@@ -912,7 +916,7 @@ class GodAI(QWidget):
                 "mode": mode,
                 "provider": tool_provider,
                 "model": model,
-                "reason": policy.reason if policy else f"{tool} recommends {tool_provider}."
+                "reason": (policy.reason if policy else f"{tool} recommends {tool_provider}.") + substitution
             }
 
         text = f"{agent} {tool} {command} {prompt}".lower()
@@ -3159,8 +3163,8 @@ class GodAI(QWidget):
         self._show_route(decision)
 
     def _enabled_provider_names(self) -> set[str]:
-        enabled = {"ollama"}
-        for provider in ("openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"):
+        enabled = {LOCAL_PROVIDER}
+        for provider in (p for p in SUPPORTED_PROVIDERS if p in CLOUD_PROVIDERS):
             checkbox = getattr(self, f"allow_{provider}_checkbox", None)
             if checkbox is not None and checkbox.isChecked():
                 enabled.add(provider)
@@ -3180,6 +3184,9 @@ class GodAI(QWidget):
     def route_for_request(self, prompt: str, *, agent: str = "chat", tool: str = "",
                           keep_manual: bool = True, context_text: str | None = None):
         enabled = self._enabled_provider_names()
+        # What this agent and tool may use, per the registry: the Validator
+        # refuses anything else after the fact, so the router must not pick it.
+        permitted = self.registry.permitted_providers(agent, tool)
         available = {provider: self.models_for_provider(provider) for provider in sorted(enabled)}
         manual_provider = self.provider_box.currentText() if keep_manual and hasattr(self, "provider_box") else None
         manual_model = self.model_box.currentText() if keep_manual and hasattr(self, "model_box") else None
@@ -3194,6 +3201,7 @@ class GodAI(QWidget):
                 context_text if context_text is not None else prompt),
             preferences=self._routing_preferences(),
             available_models=available, enabled_providers=enabled,
+            allowed_providers=permitted,
             manual_provider=manual_provider, manual_model=manual_model,
         )
 
@@ -3295,12 +3303,8 @@ class GodAI(QWidget):
             return decision.provider, decision.model
 
         allowed_apis = {
-            "openai": self.allow_openai_checkbox.isChecked(),
-            "deepseek": self.allow_deepseek_checkbox.isChecked(),
-            "kimi": self.allow_kimi_checkbox.isChecked(),
-            "gemini": self.allow_gemini_checkbox.isChecked(),
-            "anthropic": self.allow_anthropic_checkbox.isChecked(),
-            "qwen": self.allow_qwen_checkbox.isChecked(),
+            name: getattr(self, f"allow_{name}_checkbox").isChecked()
+            for name in SUPPORTED_PROVIDERS if name in CLOUD_PROVIDERS
         }
 
         if execution_mode == "Local only":
@@ -3309,7 +3313,7 @@ class GodAI(QWidget):
             # Ollama with an Ollama model, and the substitution is shown.
             if provider == "ollama":
                 self._set_route_notice("")
-                return "ollama", model if model else "deepseek-r1:8b"
+                return "ollama", model if model else DEFAULT_LOCAL_MODEL
             local_model = self._local_default_model()
             self._set_route_notice(
                 f"Local only mode: using ollama · {local_model} instead of "
@@ -3333,14 +3337,14 @@ class GodAI(QWidget):
 
         if execution_mode == "Hybrid allowed":
             if provider == "ollama":
-                return "ollama", model if model else "deepseek-r1:8b"
+                return "ollama", model if model else DEFAULT_LOCAL_MODEL
 
             if provider in allowed_apis and not allowed_apis[provider]:
                 raise RuntimeError(f"{provider} API is not enabled. Tick the checkbox first.")
 
             return provider, model
 
-        return "ollama", model if model else "deepseek-r1:8b"
+        return "ollama", model if model else DEFAULT_LOCAL_MODEL
 
     @staticmethod
     def _continuable_chat_path(record: dict, filepath) -> str | None:
@@ -3356,7 +3360,7 @@ class GodAI(QWidget):
         """The Ollama model Local only mode falls back to."""
         settings = getattr(self, "settings", None) or {}
         saved = str(settings.get("default_model_ollama") or "").strip()
-        return saved or "deepseek-r1:8b"
+        return saved or DEFAULT_LOCAL_MODEL
 
     def _set_route_notice(self, text: str) -> None:
         """Show (or clear) a one-line notice about how the route was resolved."""

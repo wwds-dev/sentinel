@@ -6,6 +6,10 @@ SUPPORTED_PROVIDERS = (
     "ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen",
 )
 
+LOCAL_PROVIDER = "ollama"
+# What Local only mode runs when the user has not saved a default model.
+DEFAULT_LOCAL_MODEL = "deepseek-r1:8b"
+
 CLOUD_PROVIDERS = frozenset(provider for provider in SUPPORTED_PROVIDERS if provider != "ollama")
 
 

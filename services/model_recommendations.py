@@ -304,11 +304,33 @@ def _score(model: ModelProfile, request: RequestProfile, prefs: RoutingPreferenc
     return score
 
 
+_DATED_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
+
+
+def same_model(wanted: str, listed: str) -> bool:
+    """True when `listed` names the model `wanted` and not merely a sibling of it.
+
+    Exact, ignoring case, or one known alias form: a dated snapshot of the same
+    model ("claude-sonnet-5-5-20261001"), "-latest", or Ollama's ":latest" tag.
+    A bare prefix is not enough: "gpt-4o" is not "gpt-4o-mini".
+    """
+    a, b = wanted.strip().lower(), listed.strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    for short, long in ((a, b), (b, a)):
+        if long.startswith(short) and (
+                long[len(short):] in ("-latest", ":latest")
+                or _DATED_SUFFIX.fullmatch(long[len(short):])):
+            return True
+    return False
+
+
 def _available(model: ModelProfile, available: Mapping[str, Sequence[str]] | None) -> bool:
     if available is None:
         return True
-    models = available.get(model.provider, ())
-    return model.model in models or any(item.startswith(model.model) or model.model.startswith(item) for item in models)
+    return any(same_model(model.model, item) for item in available.get(model.provider, ()))
 
 
 # ── Value: never pay more for the same fit ──────────────────────────────────
@@ -497,11 +519,16 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
                   preferences: RoutingPreferences | None = None,
                   available_models: Mapping[str, Sequence[str]] | None = None,
                   enabled_providers: Iterable[str] | None = None,
+                  allowed_providers: Iterable[str] | None = None,
                   manual_provider: str | None = None, manual_model: str | None = None,
                   candidates: Sequence[ModelProfile] | None = None,
                   prices: PriceLookup | None = None,
                   ratings: RatingLookup | None = None) -> RouteDecision:
     """Pick a provider/model for one request.
+
+    `allowed_providers` is the agent/tool allow-list from the registry; it
+    narrows `enabled_providers`, so the router never picks what the Validator
+    would refuse afterwards. None means no restriction.
 
     `candidates` replaces the catalog for this call only; model_watch uses it
     to ask "where would this route if that model were adopted?" without
@@ -511,6 +538,8 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
     prefs = preferences or RoutingPreferences()
     profiles = tuple(candidates) if candidates is not None else catalog()
     enabled = set(enabled_providers) if enabled_providers is not None else {m.provider for m in profiles}
+    if allowed_providers is not None:
+        enabled &= set(allowed_providers)
     if manual_provider and manual_model:
         match = next((m for m in profiles if m.provider == manual_provider and m.model == manual_model), None)
         if manual_provider in enabled and match and _compatible(match, request, prefs) and _available(match, available_models):
@@ -670,11 +699,24 @@ def find_model(names: Sequence[str], wanted: str) -> int:
     return -1
 
 
-def resolve_available_model(wanted: str, available: list[str]) -> str:
-    if not available: return wanted
-    if wanted in available: return wanted
-    target = wanted.lower()
+@dataclass(frozen=True)
+class ResolvedModel:
+    model: str
+    substituted: bool = False
+    note: str = ""
+
+
+def resolve_model(wanted: str, available: Sequence[str]) -> ResolvedModel:
+    """The listed id for `wanted`, saying so when a different model stands in."""
+    if not available:
+        return ResolvedModel(wanted)
     for model in available:
-        candidate = model.lower()
-        if candidate.startswith(target) or target.startswith(candidate): return model
-    return available[0]
+        if same_model(wanted, model):
+            return ResolvedModel(model)
+    return ResolvedModel(
+        available[0], True,
+        f"{wanted} is not available from this provider; using {available[0]} instead.")
+
+
+def resolve_available_model(wanted: str, available: list[str]) -> str:
+    return resolve_model(wanted, available).model

@@ -484,6 +484,10 @@ GEMINI_38_FLASH_LIST = (1.50, 7.50)
 GEMINI_38_FLASH_PRICE_CHANGE = "2027-01-01"
 
 
+# Rows whose rate changes on a date, so config/pricing.json cannot hold them.
+DATE_DEPENDENT_PRICES = frozenset({("gemini", "gemini-3.8-flash")})
+
+
 def _gemini_38_flash_rate(today=None) -> tuple[float, float]:
     from datetime import date
 

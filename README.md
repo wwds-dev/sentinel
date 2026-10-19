@@ -79,6 +79,12 @@ until you switch to Hybrid allowed or Cloud only and tick that provider; while
 that substitution applies, the cost beside Run ends with "local only" and
 hovering it names the substitution.
 
+Auto-route only considers providers the agent **and** the tool may use
+(`allowed_providers` in `config/registry.json`), so it never proposes a route
+the validator would refuse. A model counts as available only when the provider
+lists that exact id (or a dated snapshot / `-latest` form of it), and when a
+recommended model is missing and another stands in, the route's reason says so.
+
 Chat's **Options → Execution mode** is enforced at send time. In **Local only**
 a cloud provider still selected in the run bar is never contacted and its model
 name is never sent to Ollama: the request goes to Ollama with the saved Ollama
