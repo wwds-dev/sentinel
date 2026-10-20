@@ -28,5 +28,5 @@ jobs:
           set +e
           PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -q -x --tb=short --cov --cov-report= > out.txt 2>&1
           code=$?
-          tail -c 3300 out.txt |Current thread\|Aborted" out.txt | cut -c1-200 | head -c 3500 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=pytest tail (exit $code)::'+t)"
+          tail -c 3300 out.txt | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=pytest tail (exit $code)::'+t)"
           exit $code
