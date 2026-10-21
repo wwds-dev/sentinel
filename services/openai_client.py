@@ -7,6 +7,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from services.api_limits import REQUEST_TIMEOUT_SECONDS, MAX_RETRIES
+from services.portable_reset import require_writes_allowed
 from services.runtime_paths import user_data_base
 
 # dall-e-3 left OpenAI's model list in Sep 2026; the gpt-image models replace it.
@@ -136,6 +137,9 @@ class OpenAIClientWrapper:
 
         extension = getattr(response, "output_format", None) or "png"
         folder = Path(output_dir) if output_dir is not None else image_output_dir()
+        # A request parked by Stop can return during an Emergency Reset; it
+        # must not recreate the folder the reset is erasing.
+        require_writes_allowed()
         folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         safe_model = re.sub(r"[^A-Za-z0-9._-]", "_", model)

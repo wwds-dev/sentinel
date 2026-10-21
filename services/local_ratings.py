@@ -268,7 +268,8 @@ class RatingStore:
                 pass
 
     def _save(self) -> None:
-        if self.path is None:
+        from services.portable_reset import writes_allowed
+        if self.path is None or not writes_allowed():   # never into a folder a Reset is erasing
             return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)

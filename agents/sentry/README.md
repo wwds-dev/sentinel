@@ -98,15 +98,21 @@ The directory is resolved in this order (`default_state_dir()` in `sentry/baseli
 
 The app's **Install background watch** writes
 `~/Library/LaunchAgents/com.sentinel.sentry.watch.plist` (`sentry/watchd.py`) and
-loads it with `launchctl load -w`. It is a `StartInterval` job (60 s minimum) that
+loads it with `launchctl load -w`, then confirms the job is really loaded with
+`launchctl print gui/<uid>/<label>` rather than trusting the `launchctl load`
+exit code (which can be 0 with no loaded job). It is a `StartInterval` job (60 s minimum) that
 runs `<repo>/.venv/bin/python main.py --headless` — one `watch-once` pass — with
 `agents/sentry` as its working directory and `SENTRY_STATE_DIR` set; `RunAtLoad` is
 on, so it also runs at install and at every login. It has no alert channel: findings
 are only written to the log. `launchd/com.sentinel.sentry.watch.plist.template` is a
 reference for installing by hand; it uses placeholders and omits the
 `WorkingDirectory` and `SENTRY_STATE_DIR` entries the app adds. The background watch
-is meant for a source checkout with a `.venv`; it has not been tried from a
-self-contained app.
+requires a source checkout with a `.venv`: in a packaged (frozen) build
+`install()` refuses and returns "The background watch is not available in the
+packaged app; run Sentinel from the checkout (developer mode).", because the
+plist runs `main.py --headless`, which the bundle does not contain. `status()`
+reports `frozen`, plus `last_run` and `last_exit_code` read from `launchctl
+print`, alongside `installed`, `loaded` and `interval`.
 
 ## CLI
 

@@ -6,7 +6,7 @@ Emits Qt signals when unexpected changes are detected so the GUI can warn the us
 All checks run in background threads — never blocks the GUI.
 """
 
-from PySide6.QtCore import QObject, QTimer, QThread, Signal
+from PySide6.QtCore import QObject, QTimer, QThread, Signal, Slot
 
 
 class _Worker(QObject):
@@ -50,13 +50,18 @@ class HealthMonitor(QObject):
     tunnel_up = Signal(str)
 
     def __init__(self, interval_seconds: int = 30, parent=None, *,
-                 check_public_ip: bool = False, tunnel_source=None):
+                 check_public_ip: bool = False, tunnel_source=None, park=None):
         """``check_public_ip`` is off by default: it contacts an outside service every
         interval, which Sentinel only does when the person asks. ``tunnel_source`` lets
-        the host report tunnels the WireGuard run directory cannot see (OpenVPN)."""
+        the host report tunnels the WireGuard run directory cannot see (OpenVPN).
+        ``park(thread, worker)`` keeps a check that is still running when the monitor
+        stops alive until it ends (Sentinel passes ``ui.workers.park``); without one,
+        the monitor keeps such checks itself until their thread finishes."""
         super().__init__(parent)
         self._check_public_ip = check_public_ip
         self._tunnel_source = tunnel_source
+        self._park = park
+        self._parked: list = []
         self._interval_ms = interval_seconds * 1000
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._run_checks)
@@ -66,7 +71,7 @@ class HealthMonitor(QObject):
         self._last_dns: list | None = None
         self._last_tunnels: set = set()
         self._watched_interfaces: list[str] = []
-        self._threads: list = []
+        self._threads: list = []     # (thread, worker) pairs of running checks
 
     def set_watched_interfaces(self, interfaces: list[str]) -> None:
         """Tell the monitor which WireGuard interfaces should stay up."""
@@ -76,15 +81,34 @@ class HealthMonitor(QObject):
         self._timer.start(self._interval_ms)
 
     def stop(self) -> None:
-        """Stop the timer and hard-kill any in-flight check threads."""
+        """Stop the timer and let in-flight checks end on their own, unheard.
+
+        Never waits and never terminates: a check is one blocking call that
+        cannot be interrupted, and a thread killed while it holds the GIL
+        freezes the whole app. Its result is disconnected so a late answer
+        cannot warn into a hidden or destroyed panel, and the thread with its
+        worker is parked until it finishes.
+        """
         self._timer.stop()
-        for thread in list(self._threads):
-            if thread.isRunning():
-                thread.quit()
-                if not thread.wait(1500):
-                    thread.terminate()
-                    thread.wait()
+        for thread, worker in list(self._threads):
+            try:
+                worker.result.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            if not thread.isRunning():
+                continue
+            thread.quit()               # takes effect once the running check returns
+            if self._park is not None:
+                self._park(thread, worker)
+            else:
+                self._parked.append((thread, worker))
+                thread.finished.connect(self._forget_parked)
         self._threads.clear()
+
+    @Slot()
+    def _forget_parked(self) -> None:
+        thread = self.sender()
+        self._parked = [pair for pair in self._parked if pair[0] is not thread]
 
     def force_check(self) -> None:
         """Run an immediate check outside the normal interval."""
@@ -103,9 +127,10 @@ class HealthMonitor(QObject):
         thread.finished.connect(thread.deleteLater)
         if on_result:
             worker.result.connect(on_result)
-        self._threads.append(thread)
+        pair = (thread, worker)
+        self._threads.append(pair)
         thread.finished.connect(
-            lambda: self._threads.remove(thread) if thread in self._threads else None
+            lambda: self._threads.remove(pair) if pair in self._threads else None
         )
         thread.start()
 

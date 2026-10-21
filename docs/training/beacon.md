@@ -63,7 +63,7 @@ message — it is silently swapped for a placeholder in the generated commands,
 so check the command header rather than assuming your input was used. Note
 too that Run Preflight is re-read automatically every time you generate Kali
 commands, and that Save in Kali mode stores only the commands, not the
-Preflight warning shown above them.
+Preflight warning shown above them. If the chosen operation needs packet injection and the selected adapter's chipset cannot inject, the builder does not emit a command sequence: it returns a short explanation naming the limitation and pointing to a supported adapter instead.
 
 **AI interpretation** is optional and off by default because raw network output
 may reveal device names, addresses and infrastructure details. Tick **AI

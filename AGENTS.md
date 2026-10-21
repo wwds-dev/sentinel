@@ -28,6 +28,13 @@ Every change that is more than a typo goes through these phases. Each ends in a 
 9. **Document** (`tech-writer`): README, user docs, CHANGELOG.
 10. **Release** (`sre-release`): build, sign, install, smoke test. **GATE**.
 
+**Domain specialist (optional).** When `.claude/agents/domain-<key>.md` is installed (a
+read-only reviewer for a regulated or expert domain, briefed by the `## Domain specialist`
+section of app-context), it reviews three times: at **Define**, the spec before its gate; at
+**Architect**, the architecture section before its gate (both into
+`docs/audit/<slug>-domain-<key>.md`); at **Review**, the diff, in parallel with
+`code-reviewer`. Its P0/P1 findings count like a reviewer's.
+
 Skip phases only for: typos, comment fixes, test-only changes, dependency-free refactors with
 unchanged behaviour. Say which phases were skipped and why.
 

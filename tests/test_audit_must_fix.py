@@ -89,7 +89,7 @@ def win(qapp, monkeypatch):
     yield window
     window.chat_worker = None
     window.model_scan_worker = None
-    window.model_pull_worker = None
+    window.muse_pull_worker = None
     window._pending_requests.clear()
     # One window per test: without this, 20+ live windows (each with panel
     # timers) pile up and slow every later test in the session.
@@ -182,8 +182,8 @@ def _authorise_pending(win, request_id="req-1"):
 def test_a10_close_event_abandons_pending_requests_and_stops_scan_and_pull(win):
     run_id = _authorise_pending(win)
     assert _run(run_id)["status"] == "running"
-    win.model_scan_worker, win.model_pull_worker = _Thread(), _Thread()
-    scan, pull = win.model_scan_worker, win.model_pull_worker
+    win.model_scan_worker, win.muse_pull_worker = _Thread(), _Thread()
+    scan, pull = win.model_scan_worker, win.muse_pull_worker
 
     event = QCloseEvent()
     win.closeEvent(event)

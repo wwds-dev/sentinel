@@ -21,6 +21,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from services.portable_reset import require_writes_allowed
+
 DEFAULTS_RELPATH = Path("config") / "settings.json"
 OVERRIDE_RELPATH = Path("data") / "settings.local.json"
 
@@ -50,6 +52,7 @@ def load_settings(defaults: Path, override: Path) -> dict:
 
 
 def _write_json_atomic(path: Path, data: dict) -> None:
+    require_writes_allowed()        # never into a folder a Reset is erasing
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

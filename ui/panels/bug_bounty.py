@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from ui.panels.base import AgentPanel
 from ui.panels.bug_spray_feed import BugSprayFeed
 from ui.widgets import MenuComboBox, SectionView
+from ui.workers import join_or_park, remaining_ms, shutdown_deadline
 
 SEVERITY_COLOURS = {
     "Critical": "#ff3333", "High": "#ff7722", "Medium": "#f0c040",
@@ -471,18 +472,20 @@ class BugBountyPanel(AgentPanel):
             self._nmap_process.kill()
         self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
 
-    def shutdown(self, timeout_ms: int = 2000) -> None:
-        """Kill a running scan and cancel the model worker before the widgets go."""
-        self.program_feed.shutdown(timeout_ms)
+    def shutdown(self, timeout_ms: int = 2000, *, deadline: float | None = None) -> None:
+        """Kill a running scan and cancel the model worker before the widgets go.
+
+        Every wait comes out of `deadline` (the window's shared quit budget);
+        a model worker still running when it passes is parked, never dropped.
+        """
+        deadline = shutdown_deadline(timeout_ms, deadline)
+        self.program_feed.shutdown(min(timeout_ms, remaining_ms(deadline)))
         self._nmap_stop_timer()
         process = self._nmap_process
         if process is not None and process.state() != QProcess.NotRunning:
             process.kill()
-            process.waitForFinished(timeout_ms)
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.cancel()
-            if hasattr(self.worker, "wait"):
-                self.worker.wait(timeout_ms)
+            process.waitForFinished(min(timeout_ms, remaining_ms(deadline)))
+        join_or_park([self.worker], deadline)
 
     # ── Analysis (paid) ─────────────────────────────────────────────────
     def analyse(self) -> None:

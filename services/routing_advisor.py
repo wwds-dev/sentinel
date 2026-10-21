@@ -620,6 +620,9 @@ def _read_json(path: Path, default):
 
 
 def _write_json(path: Path, data) -> None:
+    from services.portable_reset import writes_allowed
+    if not writes_allowed():        # never into a folder a Reset is erasing
+        return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
