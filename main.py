@@ -7,9 +7,15 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 from uuid import uuid4
 
+from services import providers
+from services import local_models
+from services import local_ratings
+from services import routing_advisor
+from services.providers import is_local as is_local_provider
+from services.lmstudio_client import LMStudioClient
 from services.runtime_paths import (
     RuntimeDataError, ensure_seeded, is_frozen, is_portable,
     resource_base, tighten_env_files, user_data_base,
@@ -73,19 +79,28 @@ from agents.osint_heavy_agent import OsintHeavyAgent
 from agents.vpn_agent.sentinel_chat_agent import VpnAgent
 from services.agent_factory import AgentFactory
 from services.agent_catalog import BUILTIN_AGENTS, BUILTIN_AGENT_ORDER
-from services.provider_catalog import CLOUD_PROVIDERS
+from services.provider_catalog import (
+    CLOUD_PROVIDERS, DEFAULT_LOCAL_MODEL, LOCAL_PROVIDERS,
+    SUPPORTED_PROVIDERS,
+)
 from services.tool_catalog import runtime_tool_prompts
 from services.app_version import DISPLAY_VERSION, build_description
 from services.model_recommendations import (
     AGENT_RECOMMENDATIONS as RECOMMENDATION_OBJECTS,
-    TASK_RECOMMENDATIONS, as_dict, find_model, resolve_available_model,
+    TASK_RECOMMENDATIONS, as_dict, find_model, resolve_model,
     RoutingPreferences, route_request, pricing_metadata, set_price_lookup,
     set_rating_lookup, set_recommendation_context, derive_agent_recommendations,
-    ratings_loaded, MODEL_CATALOG,
+    ratings_loaded, MODEL_CATALOG, register_local_models, catalog, blended_price,
+    classify_request, rating_for, same_model,
 )
 from services.model_watch import ModelWatch
 from services.price_resolution import table_lookup
 from services import benchmarks
+from services import portable_reset
+
+# Once, on the main thread at startup: no ratings-cache write lands while an
+# Emergency Reset is erasing the data folder, whoever calls benchmarks.
+benchmarks.WRITE_GUARD = portable_reset.writes_allowed
 
 
 # Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
@@ -113,6 +128,15 @@ RATINGS_CACHE_FILE = DATA_DIR / "lmarena_ratings.json"
 # or shipped ratings only and never contacts the leaderboard.
 PUBLIC_RATINGS_SETTING = "public_ratings_refresh"
 RATINGS_SNAPSHOT_FILE = benchmarks.SNAPSHOT_FILE
+# Measured ratings of the local models on this Mac, and the cached reference
+# answers they were measured against (services/local_ratings.py).
+LOCAL_RATINGS_FILE = DATA_DIR / "local_ratings.json"
+# The run log / usage agent name measurement calls are billed under.
+LOCAL_RATINGS_AGENT = "local_ratings"
+# Hybrid routing (services/routing_advisor.py): the rules made with "Always
+# for this kind of job", and what running local saved.
+ROUTING_RULES_FILE = DATA_DIR / "routing_rules.json"
+ROUTING_SAVINGS_FILE = DATA_DIR / "routing_savings.json"
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
 ALL_AGENTS_FILTER = "All agents"
@@ -158,6 +182,20 @@ def sync_agent_recommendations() -> None:
     )
 
 
+def execution_mode_for(window, agent: str = "chat") -> str:
+    """The three-way mode the run path reads. An agent with a routing mode of
+    its own (Settings → Models) answers for itself; otherwise the run bar's
+    Execution mode box, which follows the app's routing mode."""
+    settings = getattr(window, "settings", None) or {}
+    overrides = settings.get(routing_advisor.OVERRIDES_KEY) if isinstance(settings, dict) else None
+    if isinstance(overrides, dict) and overrides.get(agent) in routing_advisor.MODES:
+        return routing_advisor.LEGACY_EXECUTION[overrides[agent]]
+    box = getattr(window, "execution_mode_box", None)
+    if box is not None:
+        return box.currentText()
+    return routing_advisor.LEGACY_EXECUTION[routing_advisor.mode_for(settings, agent)]
+
+
 # Options → Routing priority: menu label -> RoutingPreferences.priority.
 ROUTING_PRIORITIES = {
     "Balanced (cheapest within 20 points)": "balanced",
@@ -193,10 +231,13 @@ AGENT_SETUP_WIDGETS = {
 from ui import app_identity, appkit_guard, tray
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker, ModelScanWorker,
+    drop_result_slots, fence_parked, join_or_park, park, remaining_ms,
+    LocalDiscoveryWorker,
+    LocalMeasureWorker,
 )
 from ui.model_updates import ModelReviewDialog, ModelUpdatesCard
 from ui.widgets import (
-    BEST_FIT_BADGE, KeyValue, ScreenCard, MenuComboBox, Meter, NEW_MODEL_ROLE, RECOMMENDED_ROLE,
+    BEST_FIT_BADGE, DETAIL_ROLE, LABEL_ROLE, SECTION_ROLE, KeyValue, ScreenCard, MenuComboBox, Meter, NEW_MODEL_ROLE, RECOMMENDED_ROLE,
     RECOMMENDATION_BADGE_ROLE, RECOMMENDATION_REASON_ROLE, SectionView,
     ThemeDots,
 )
@@ -294,7 +335,25 @@ class GodAI(QWidget):
         # apply_global_style repaints them with everything else.
         self._inline_sheets: list[tuple[QWidget, str]] = []
 
-        self.ollama = OllamaClient()
+        self.ollama = OllamaClient(providers.ollama_host())
+        self.lmstudio = LMStudioClient()
+        # What is on this Mac. Read by the UI from the cache only; the worker
+        # below is the one place that talks to LM Studio, Ollama and the disk.
+        self.local_inventory = local_models.LocalInventory()
+        self.local_discovery_worker = None
+        # Ratings for local models: inherited from a base model or measured
+        # here. Read from caches only; a measurement runs on its own worker.
+        self.local_rating_store = local_ratings.RatingStore(LOCAL_RATINGS_FILE)
+        self.local_ratings = local_ratings.LocalRatings(
+            self.local_rating_store, self.local_inventory,
+            lambda: getattr(self, "ratings", None))
+        local_models.set_rating_lookup(self.local_ratings.text)
+        self.local_measure_worker = None
+        # Hybrid routing: one advice per new job, rules, savings (phase 4).
+        self.routing_rules = routing_advisor.RoutingRules(ROUTING_RULES_FILE)
+        self.savings_tally = routing_advisor.SavingsTally(ROUTING_SAVINGS_FILE)
+        self._held_job = None       # a job the advice banner is holding
+        self._job = None            # the Chat job in flight, for failover/tally
         self.openai = OpenAIClientWrapper()
         self.deepseek = DeepSeekClientWrapper()
         self.kimi = KimiClientWrapper()
@@ -394,6 +453,8 @@ class GodAI(QWidget):
         self.install_agent_recommendations()
         self.muse_pull_worker: Optional[ModelPullWorker] = None
         self.refresh_muse_button()
+        self.provider_box.currentTextChanged.connect(self.refresh_lmstudio_button)
+        self.refresh_lmstudio_button()
         self.load_history_list()
         self.load_saved_searches()
         self.update_resource_label()
@@ -405,6 +466,7 @@ class GodAI(QWidget):
         # Every start, but after the window is up: the scan is network-bound
         # and the first paint should not wait for six providers to answer.
         QTimer.singleShot(4000, self.start_model_scan)
+        QTimer.singleShot(0, self.start_local_discovery)
 
     def _polish_tab_widgets(self):
         """Disable text elision and enable scroll buttons on every QTabWidget
@@ -548,7 +610,7 @@ class GodAI(QWidget):
     def estimate_chat_seconds(self, backend: str, model: str, prompt: str) -> int:
         words = max(1, len(prompt.split()))
         base = 10
-        if backend == "ollama":
+        if is_local_provider(backend):
             if "8b" in model.lower():
                 base = 35
             elif "1.5b" in model.lower():
@@ -572,7 +634,7 @@ class GodAI(QWidget):
         approx_output_tokens = max(250, int(approx_input_tokens * 1.2))
         approx_total_tokens = approx_input_tokens + approx_output_tokens
 
-        if backend == "ollama":
+        if is_local_provider(backend):
             return 0.0, approx_total_tokens
 
         estimated_cost = self.usage_tracker.calculate_cost_eur(
@@ -652,7 +714,7 @@ class GodAI(QWidget):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
             if backend is None:
                 pass                      # a blocked route already set the text
-            elif backend == "ollama":
+            elif is_local_provider(backend):
                 notice = getattr(self, "_route_resolution_notice", "")
                 self.runbar_cost.setText(
                     f"free · {tokens} tok" + (" · local only" if notice else ""))
@@ -661,7 +723,7 @@ class GodAI(QWidget):
 
         if hasattr(self, "cost_rows"):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
-            if backend == "ollama":
+            if is_local_provider(backend):
                 estimate = f"free · {tokens} tok"
             elif backend:
                 estimate = f"~€{estimated_cost:.2f} · {tokens} tok"
@@ -669,7 +731,7 @@ class GodAI(QWidget):
                 estimate = "€0.00 · 0 tok"
             self.cost_rows["estimate"].set(estimate)
 
-        if backend == "ollama":
+        if is_local_provider(backend):
             self.live_estimate_label.setText("")
         elif backend in CLOUD_PROVIDERS:
             self.live_estimate_label.setText(
@@ -681,7 +743,7 @@ class GodAI(QWidget):
     def show_cost_estimate_popup(self):
         estimated_cost, approx_tokens, backend, model = self.get_current_cost_estimate()
 
-        if backend == "ollama":
+        if is_local_provider(backend):
             msg = (
                 f"Agent: {self.agent_box.currentText()}\n"
                 f"Backend: {backend}\n"
@@ -719,48 +781,48 @@ class GodAI(QWidget):
     # every last byte of physical RAM.
     MEMORY_HEADROOM_GB = 3.0
 
-    def assess_local_model(self, model: str) -> dict | None:
+    def assess_local_model(self, model: str, provider: str = "ollama") -> dict | None:
         """Weigh a local model against this machine's memory.
 
         Returns None when the check does not apply (not a known local model, or
-        the daemon is unreachable and the size is unknowable). Otherwise a dict
+        the runtime is unreachable and the size is unknowable). Otherwise a dict
         with level "ok" | "tight" | "too_big", the numbers behind it, and a
-        human-readable message.
+        human-readable message. "tight" is "too big right now": it fits on this
+        machine but not in the memory that is free at the moment.
         """
         import psutil
 
-        size_bytes = self.ollama.model_size_bytes(model)
+        # Sizes come from the cached inventory: this runs on the UI thread and
+        # a runtime that is down would otherwise block it for the timeout.
+        known = self.local_inventory.snapshot().find(provider, model)
+        size_bytes = known.size_bytes if known else None
         if size_bytes is None:
             # Not pulled yet — fall back to the published download size for the
             # builds we ship a figure for, so the dropdown can grey them out.
             published_gb = MUSE_GLIMMER_VARIANTS.get(model)
-            if published_gb is None:
+            if published_gb is None or provider != "ollama":
                 return None
-            size_gb = float(published_gb)
-        else:
-            size_gb = size_bytes / 1e9
+            size_bytes = float(published_gb) * 1e9
 
-        needed_gb = size_gb * self.MEMORY_OVERHEAD_FACTOR
         vm = psutil.virtual_memory()
-        total_gb = vm.total / 1e9
-        available_gb = vm.available / 1e9
+        fit = providers.fit_check(size_bytes, vm.available, vm.total)
+        needed_gb, available_gb, total_gb = (
+            fit["needed_gb"], fit["available_gb"], fit["total_gb"])
+        level = fit["level"]
 
-        if needed_gb > total_gb - self.MEMORY_HEADROOM_GB:
-            level = "too_big"
+        if level == "too_big":
             message = (
                 f"{model} needs about {needed_gb:.1f} GB of memory, but this machine "
                 f"only has {total_gb:.0f} GB in total. It cannot run here without "
                 "swapping so hard the system becomes unresponsive."
             )
-        elif needed_gb > available_gb:
-            level = "tight"
+        elif level == "tight":
             message = (
                 f"{model} needs about {needed_gb:.1f} GB, but only {available_gb:.1f} GB "
                 f"is free right now (of {total_gb:.0f} GB). It will fit, but expect "
                 "heavy swapping and slow replies — closing other apps will help."
             )
         else:
-            level = "ok"
             message = f"{model} needs ~{needed_gb:.1f} GB; {available_gb:.1f} GB free."
 
         return {
@@ -777,10 +839,10 @@ class GodAI(QWidget):
 
         Must be called from the GUI thread, before the worker is constructed.
         """
-        if backend != "ollama":
+        if not is_local_provider(backend):
             return True
 
-        verdict = self.assess_local_model(model)
+        verdict = self.assess_local_model(model, backend)
         if verdict is None or verdict["level"] == "ok":
             return True
 
@@ -798,7 +860,7 @@ class GodAI(QWidget):
         return choice == QMessageBox.Yes
 
     def check_budget_before_request(self, estimated_cost: float, backend: str) -> bool:
-        if backend == "ollama":
+        if is_local_provider(backend):
             return True
 
         today_total = self.usage_tracker.get_today_total()
@@ -861,8 +923,10 @@ class GodAI(QWidget):
         
         if tool_provider:
             available = self.models_for_provider(tool_provider)
-            model = resolve_available_model(tool_model, available) if tool_model else (
+            resolved = resolve_model(tool_model, available) if tool_model else None
+            model = resolved.model if resolved else (
                 available[0] if available else self.model_box.currentText())
+            substitution = f" {resolved.note}" if resolved and resolved.substituted else ""
 
             # ===== CHECK API PERMISSION =====
             if tool_provider == "openai" and not self.allow_openai_checkbox.isChecked():
@@ -906,13 +970,13 @@ class GodAI(QWidget):
                 }
 
             # ===== VALID CASE =====
-            mode = "Local only" if tool_provider == "ollama" else "Hybrid allowed"
+            mode = "Local only" if is_local_provider(tool_provider) else "Hybrid allowed"
 
             return {
                 "mode": mode,
                 "provider": tool_provider,
                 "model": model,
-                "reason": policy.reason if policy else f"{tool} recommends {tool_provider}."
+                "reason": (policy.reason if policy else f"{tool} recommends {tool_provider}.") + substitution
             }
 
         text = f"{agent} {tool} {command} {prompt}".lower()
@@ -966,7 +1030,7 @@ class GodAI(QWidget):
             provider = self.provider_box.currentText() if hasattr(self, "provider_box") else "ollama"
             model = self.model_box.currentText() if hasattr(self, "model_box") else ""
             pricing = pricing_metadata(provider, model)
-            return {"mode": "Local only" if provider == "ollama" else "Hybrid allowed",
+            return {"mode": "Local only" if is_local_provider(provider) else "Hybrid allowed",
                     "provider": provider, "model": model, "reason": str(exc),
                     "fallbacks": [], "pricing": vars(pricing),
                     "cost_label": pricing.compact}
@@ -977,7 +1041,12 @@ class GodAI(QWidget):
         if hasattr(self, "execution_mode_box"):
             index = self.execution_mode_box.findText(rec["mode"])
             if index >= 0:
-                self.execution_mode_box.setCurrentIndex(index)
+                # A recommendation moves this box, not the saved routing mode.
+                self._applying_recommendation = True
+                try:
+                    self.execution_mode_box.setCurrentIndex(index)
+                finally:
+                    self._applying_recommendation = False
 
         if hasattr(self, "provider_box"):
             index = self.provider_box.findText(rec["provider"])
@@ -1053,7 +1122,7 @@ class GodAI(QWidget):
         """The Muse Glimmer build best suited to this machine: (tag, size_gb)."""
         return muse_glimmer_default(self._total_ram_gb())
 
-    def mark_oversized_models(self, combo) -> None:
+    def mark_oversized_models(self, combo, provider: str = "ollama") -> None:
         """Grey out local models this machine cannot physically run.
 
         Advisory only — the entry stays selectable, and run_backend() is the
@@ -1066,7 +1135,7 @@ class GodAI(QWidget):
             # No longer has to skip the recommended entry: that marking is a
             # role of its own now, so grey-for-too-big and BEST FIT can land on
             # the same model without either one erasing the other.
-            verdict = self.assess_local_model(combo.itemText(i))
+            verdict = self.assess_local_model(combo.itemText(i), provider)
             if verdict is None:
                 continue
             if verdict["level"] == "too_big":
@@ -1098,6 +1167,29 @@ class GodAI(QWidget):
         if menu_action is not None:
             menu_action.setVisible(not installed)
             menu_action.setToolTip(btn.toolTip())
+
+    def refresh_lmstudio_button(self, *_args) -> None:
+        """Offer "Start LM Studio server" while LM Studio is picked and off.
+
+        With the server off the picker lists what is on disk
+        ("on disk · server off"); this is the one-click way to turn it on.
+        """
+        action = getattr(self, "start_lmstudio_menu_action", None)
+        if action is None:
+            return
+        off = (self.provider_box.currentText() == "lmstudio"
+               and not self.local_inventory.snapshot().lmstudio_up)
+        self.start_lmstudio_btn.setVisible(off)
+        action.setVisible(off)
+
+    def start_lmstudio_server(self) -> None:
+        started, message = self.lmstudio.start_server()
+        if started:
+            self._set_chat_status("LM Studio server started.")
+            self.start_local_discovery()
+        else:
+            QMessageBox.warning(self, "LM Studio", message)
+        self.refresh_lmstudio_button()
 
     def pull_muse_glimmer(self) -> None:
         if getattr(self, "muse_pull_worker", None) is not None and self.muse_pull_worker.isRunning():
@@ -1179,6 +1271,7 @@ class GodAI(QWidget):
         """
         clients = {
             "ollama": self.ollama,
+            "lmstudio": self.lmstudio,
             "openai": self.openai,
             "deepseek": self.deepseek,
             "kimi": self.kimi,
@@ -1189,6 +1282,15 @@ class GodAI(QWidget):
         client = clients.get(provider)
         if client is None:
             return []
+        if is_local_provider(provider):
+            # Cached inventory only — never a request from the UI thread.
+            if self.local_inventory.stale():
+                self.start_local_discovery()
+            models = [m.id for m in self.local_inventory.snapshot().of(provider)]
+            watch = getattr(self, "model_watch", None)
+            if watch is not None:
+                models += [m for m in watch.adopted_models(provider) if m not in models]
+            return models
         try:
             models = list(client.list_models())
         except Exception as exc:
@@ -1217,12 +1319,243 @@ class GodAI(QWidget):
             model_box.addItems(models)
         elif empty_placeholder:
             model_box.addItem(
-                "(no local models)" if provider == "ollama" else "(unavailable)"
+                "(no local models)" if is_local_provider(provider) else "(unavailable)"
             )
         self._mark_new_models(provider, model_box)
+        self.apply_picker_roles(provider, model_box)
         polish_combo_box(provider_box)
         polish_combo_box(model_box)
         self._mark_paid_route_choices(provider_box, model_box)
+
+    # ── Local models: discovery, picker rows, router candidates ──────────────
+
+    def start_local_discovery(self) -> None:
+        """Refresh the local inventory in the background (startup, Settings, Start server)."""
+        worker = self.local_discovery_worker
+        if worker is not None and worker.isRunning():
+            return
+        worker = LocalDiscoveryWorker(self.lmstudio, self.ollama, self.local_inventory)
+        worker.finished_signal.connect(self._on_local_discovery)
+        self.local_discovery_worker = worker
+        worker.start()
+
+    def _on_local_discovery(self, snap) -> None:
+        """Runs on the UI thread: rows, router candidates and BEST FIT follow the snapshot."""
+        register_local_models(local_models.router_candidates(snap))
+        self.maybe_measure_local_models()
+        try:
+            self.refresh_agent_recommendations()
+            self._reload_all_model_lists()
+            if hasattr(self, "provider_box"):
+                self.load_provider_models()
+            self._remark_all_recommendations()
+            self.refresh_lmstudio_button()
+        except Exception as exc:  # noqa: BLE001
+            self._note_failure("local models: refresh", exc)
+        listener = getattr(self, "_local_models_listener", None)
+        if callable(listener):
+            listener(snap)
+
+    # ── Local models: ratings (Phase 3) ──────────────────────────────────────
+    # A new local model is measured once, automatically, in the background;
+    # every later run is the Measure / Re-measure button. The spend guard is
+    # asked first: automatically, only providers already allowed under API
+    # permissions and within every budget may be used (there is nobody to ask);
+    # from the button, one confirmation covers the whole run.
+
+    def maybe_measure_local_models(self) -> None:
+        """Start the automatic measurement of the next never-measured model."""
+        if not local_ratings.AUTOMATIC:
+            return
+        worker = self.local_measure_worker
+        if worker is not None and worker.isRunning():
+            return
+        waiting = local_ratings.auto_candidates(
+            self.local_inventory.snapshot(), self.local_rating_store)
+        if waiting:
+            self.start_local_measure(waiting[0], automatic=True)
+
+    def _measurement_plan(self):
+        """(plan, why not): the reference per kind of work and the judge."""
+        if not getattr(self, "ratings", None):
+            return None, "no LMArena ratings are loaded to place a result on"
+        usable = {p for p in self._usable_providers() if providers.is_cloud(p)}
+        models, prices = [], {}
+        for profile in catalog():
+            if profile.provider not in usable or profile.capabilities.local:
+                continue
+            if profile.provider == "openai" and is_image_model(profile.model):
+                continue
+            models.append((profile.provider, profile.model))
+            prices[(profile.provider, profile.model)] = blended_price(profile)
+        return local_ratings.choose_plan(models, self.ratings.rating,
+                                         lambda p, m: prices.get((p, m)))
+
+    def _measurement_cost(self, plan):
+        """EUR per call, priced on the UI thread from the bill's own table."""
+        rates = {}
+        for provider, model in plan.cloud_models():
+            rates[(provider, model)] = (
+                self.usage_tracker.calculate_cost_eur(provider, model, 1_000_000, 0),
+                self.usage_tracker.calculate_cost_eur(provider, model, 0, 1_000_000))
+
+        def by_tokens(provider, model, tokens_in, tokens_out):
+            per_in, per_out = rates.get((provider, model), (0.0, 0.0))
+            return (tokens_in * per_in + tokens_out * per_out) / 1_000_000
+
+        def by_text(provider, model, prompt, reply):
+            return by_tokens(provider, model, estimate_prompt_tokens(prompt),
+                             estimate_prompt_tokens(reply))
+        return by_tokens, by_text
+
+    def _authorize_measurement(self, model, plan, ceiling_eur, interactive):
+        """(allowed, reason). The spend guard for one measurement run."""
+        permissions = self.current_api_permissions()
+        cloud = plan.cloud_models()
+        for provider, _ in cloud:
+            if not self.provider_key_available(provider):
+                return False, f"no {provider} API key is set"
+            if not permissions.get(f"allow_{provider}", False) and not interactive:
+                return False, (f"automatic measuring needs {provider} allowed under "
+                               "API permissions; press Measure to confirm once")
+        for provider in {p for p, _ in cloud}:
+            verdict = self.validator.validate_budget(
+                agent_name=LOCAL_RATINGS_AGENT, tool_name=None, provider=provider,
+                session_cost=self.session_cost_total,
+                session_budget=self.session_budget_eur,
+                daily_cost=self.usage_tracker.get_today_total(),
+                daily_budget=self.daily_budget_eur, estimated_cost=ceiling_eur)
+            if not verdict.allowed:
+                return False, verdict.reason
+        if interactive:
+            refs = sorted({f"{p} · {m}" for p, m, _ in plan.references.values()})
+            answer = QMessageBox.question(
+                self, "Measure local model",
+                f"Measuring {model.id} sends {self.local_measure_prompts().total} "
+                f"prompts to it, compares its answers with {', '.join(refs)} and "
+                f"asks {plan.judge[0]} · {plan.judge[1]} to judge each pair.\n\n"
+                f"Estimated cost: at most ~€{ceiling_eur:.2f}. Continue?",
+                QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return False, "cancelled"
+        return True, ""
+
+    def local_measure_prompts(self):
+        prompts = getattr(self, "_local_measure_prompts", None)
+        if prompts is None:
+            prompts = local_ratings.load_prompts(
+                RESOURCE_DIR / "config" / "local_rating_prompts.json")
+            self._local_measure_prompts = prompts
+        return prompts
+
+    def start_local_measure(self, model, automatic: bool = False) -> bool:
+        """Measure one local model in the background. False if it did not start."""
+        worker = self.local_measure_worker
+        if worker is not None and worker.isRunning():
+            self._set_chat_status("A local model is already being measured.")
+            return False
+        plan, why = self._measurement_plan()
+        if plan is None:
+            self.local_rating_store.record_refusal(model, why, automatic=automatic)
+            self._local_ratings_changed()
+            return False
+        prompts = self.local_measure_prompts()
+        by_tokens, by_text = self._measurement_cost(plan)
+        ceiling = round(1.5 * local_ratings.estimate_cost(
+            plan, prompts, by_tokens, self.local_rating_store) + 0.01, 2)
+        allowed, reason = self._authorize_measurement(
+            model, plan, ceiling, interactive=not automatic)
+        if not allowed:
+            if reason != "cancelled":
+                self.local_rating_store.record_refusal(model, reason,
+                                                       automatic=automatic)
+            self._local_ratings_changed()
+            return False
+        worker = LocalMeasureWorker(model, plan, prompts, self._measure_ask,
+                                    self.local_rating_store, by_text, ceiling)
+        worker.automatic = automatic
+        worker.progress_signal.connect(
+            lambda done, total, m=model: self._on_measure_progress(m, done, total))
+        worker.usage_signal.connect(self._on_measure_usage)
+        worker.finished_signal.connect(
+            lambda result, m=model, a=automatic: self._on_measure_finished(m, result, a))
+        self.local_measure_worker = worker
+        self.local_ratings.set_progress(model, 0, prompts.total)
+        self._local_ratings_changed()
+        worker.start()
+        return True
+
+    def _measure_ask(self, provider, model, prompt) -> str:
+        """One request for a measurement run. Runs on the measure worker."""
+        reply = self.run_backend(provider, model,
+                                 [{"role": "user", "content": prompt}], prompt)
+        return reply if isinstance(reply, str) else "".join(reply)
+
+    def _on_measure_progress(self, model, done, total) -> None:
+        self.local_ratings.set_progress(model, done, total)
+        self._local_ratings_changed(reload_lists=False)
+
+    def _on_measure_usage(self, provider, model, prompt, reply) -> None:
+        """Bill one cloud call of a measurement run, as every request is billed."""
+        try:
+            entry = self.usage_tracker.log_request(
+                agent=LOCAL_RATINGS_AGENT, backend=provider, model=model,
+                prompt_text=prompt, response_text=reply)
+            self.session_cost_total += entry.get("estimated_cost", 0.0)
+            self.session_request_count += 1
+            self.update_usage_labels()
+        except Exception as exc:  # noqa: BLE001
+            self._note_failure("local ratings: bill", exc)
+
+    def _on_measure_finished(self, model, result, automatic) -> None:
+        self.local_ratings.clear_progress(model)
+        self.local_rating_store.record_result(model, result, automatic=automatic)
+        name = local_models.row_label(model)
+        if result.status == local_ratings.STATUS_MEASURED:
+            self._set_chat_status(f"Measured {name}: {self.local_ratings.text(model.provider, model.id)}.")
+        else:
+            self._set_chat_status(f"{name} stays unrated: {result.reason}.")
+        self._local_ratings_changed()
+        QTimer.singleShot(0, self.maybe_measure_local_models)
+
+    def _local_ratings_changed(self, reload_lists: bool = True) -> None:
+        """A rating, a refusal or progress changed: BEST FIT and the pages follow."""
+        try:
+            if reload_lists:
+                self.refresh_agent_recommendations()
+                self._reload_all_model_lists()
+                self._remark_all_recommendations()
+        except Exception as exc:  # noqa: BLE001
+            self._note_failure("local ratings: refresh", exc)
+        listener = getattr(self, "_local_models_listener", None)
+        if callable(listener):
+            listener(self.local_inventory.snapshot())
+
+    def apply_picker_roles(self, provider: str, model_box) -> None:
+        """Section, detail and tag data for every row of a model combo.
+
+        The item text stays the model id; the picker reads these roles.
+        """
+        if model_box is None:
+            return
+        if is_local_provider(provider):
+            snap = self.local_inventory.snapshot()
+            rows = {r["id"]: r for r in local_models.picker_entries(snap, provider)}
+            section = local_models.SECTION_LABELS.get(provider, provider)
+            for i in range(model_box.count()):
+                row = rows.get(model_box.itemText(i))
+                model_box.setItemData(i, section, SECTION_ROLE)
+                if row is None:
+                    continue
+                model_box.setItemData(i, row["label"], LABEL_ROLE)
+                model_box.setItemData(i, row["detail"], DETAIL_ROLE)
+                if row["tooltip"]:
+                    model_box.setItemData(i, row["tooltip"], Qt.ToolTipRole)
+                if row["fit"] in {"tight", "too_big"}:
+                    model_box.setItemData(i, QColor("#666666"), Qt.ForegroundRole)
+        else:
+            for i in range(model_box.count()):
+                model_box.setItemData(i, local_models.CLOUD_SECTION, SECTION_ROLE)
 
     def _mark_new_models(self, provider: str, model_box) -> None:
         """Badge the models a scan found that nobody has reviewed yet."""
@@ -1267,9 +1600,13 @@ class GodAI(QWidget):
         self.model_updates_card.set_checking(False)
         if isinstance(ratings, benchmarks.RatingTable) and ratings:
             self.ratings = ratings
-            set_rating_lookup(ratings.rating)
+            self._install_rating_lookup()
         elif isinstance(ratings, str):
             print(f"[ratings] kept {self.ratings.origin} ratings: {ratings}")
+        # What the providers listed, for the routing advisor's cache-only reads.
+        self._listed_models = {
+            listing.provider: list(listing.models) for listing in listings or ()
+            if getattr(listing, "models", None)}
         try:
             summary = self.model_watch.record_scan(
                 listings, known_models(CLOUD_CLIENT_CLASSES))
@@ -1329,11 +1666,21 @@ class GodAI(QWidget):
         except Exception as exc:
             print(f"[ratings] none loaded: {exc}")
             self.ratings = benchmarks.RatingTable()
-        set_rating_lookup(self.ratings.rating if self.ratings else None)
+        self._install_rating_lookup()
+
+    def _install_rating_lookup(self) -> None:
+        """The router's ratings: LMArena for cloud models, and for local ones
+        an inherited or measured rating (services/local_ratings.py)."""
+        if not self.ratings:
+            set_rating_lookup(None)
+            return
+        local = getattr(self, "local_ratings", None)
+        set_rating_lookup(local_ratings.combined_lookup(self.ratings.rating, local)
+                          if local is not None else self.ratings.rating)
 
     def _usable_providers(self) -> set[str]:
-        """Ollama plus every cloud provider with a key: what a pick may use."""
-        usable = {"ollama"}
+        """Every local provider plus every cloud provider with a key: what a pick may use."""
+        usable = set(LOCAL_PROVIDERS)
         for provider, cls in CLOUD_CLIENT_CLASSES.items():
             try:
                 if cls.key_available():
@@ -1358,6 +1705,12 @@ class GodAI(QWidget):
                            [m.model for m in MODEL_CATALOG if m.provider == provider])
             for provider in enabled
         }
+        if self.local_inventory.has_data:
+            # Local models from any provider selection, and only those that exist.
+            snap = self.local_inventory.snapshot()
+            for provider in providers.LOCAL_PROVIDERS:
+                if provider in enabled:
+                    available[provider] = [m.id for m in snap.of(provider)]
         set_recommendation_context(enabled, available, self._routing_preferences())
         if ratings_loaded():
             derived = derive_agent_recommendations()
@@ -1613,7 +1966,9 @@ class GodAI(QWidget):
                 f"Selected model: {selected_provider} · "
                 f"{model_box.currentText()}.\n{tooltip}"
             )
-            self.mark_oversized_models(model_box)
+            self.mark_oversized_models(
+                model_box,
+                selected_provider if is_local_provider(selected_provider) else "ollama")
 
     def _on_recommended_provider_changed(self, agent_key: str) -> None:
         """React to the user switching provider on an agent panel.
@@ -2283,6 +2638,11 @@ class GodAI(QWidget):
         self.get_muse_btn.clicked.connect(self.pull_muse_glimmer)
         self.get_muse_btn.hide()
 
+        self.start_lmstudio_btn = QPushButton("Start LM Studio server", self)
+        self.start_lmstudio_btn.setObjectName("ChipBtn")
+        self.start_lmstudio_btn.clicked.connect(self.start_lmstudio_server)
+        self.start_lmstudio_btn.hide()
+
         self.model_guide_btn = QPushButton("Model guide", self)
         self.model_guide_btn.setObjectName("ChipBtn")
         self.model_guide_btn.clicked.connect(self.show_model_guide)
@@ -2375,6 +2735,9 @@ class GodAI(QWidget):
         )
         self.get_muse_menu_action = models_menu.addAction("Get Muse Glimmer")
         self.get_muse_menu_action.triggered.connect(self.get_muse_btn.click)
+        self.start_lmstudio_menu_action = models_menu.addAction("Start LM Studio server")
+        self.start_lmstudio_menu_action.triggered.connect(self.start_lmstudio_btn.click)
+        self.start_lmstudio_menu_action.setVisible(False)
         models_menu.addAction("Open model guide").triggered.connect(
             self.model_guide_btn.click
         )
@@ -2402,6 +2765,16 @@ class GodAI(QWidget):
         # corner marks the blue theme puts around whatever has focus.
         vibe.install_caret(self.input_box)
         self.prompt_brackets = vibe.install_brackets(self.input_box)
+        # Mockup C: holds a job until the user answers; also the failover offer.
+        from ui.routing_advice import AdviceBanner
+        self.advice_banner = AdviceBanner(self)
+        self.advice_banner.switch_requested.connect(self._advice_switch)
+        self.advice_banner.always_requested.connect(self._advice_always)
+        self.advice_banner.keep_requested.connect(self._advice_keep)
+        self.advice_banner.dismissed.connect(self._advice_dismissed)
+        # Above the run bar, which stays glued to the prompt.
+        normal_layout.insertWidget(normal_layout.indexOf(runbar_container),
+                                   self.advice_banner)
         normal_layout.addWidget(self.input_box)
 
         self.send_btn = self.run_btn
@@ -2435,6 +2808,8 @@ class GodAI(QWidget):
         self.model_box.currentTextChanged.connect(self.update_live_cost_estimate)
 
         # ===== MODE =====
+        self._sync_execution_mode()
+        self.execution_mode_box.currentTextChanged.connect(self._execution_mode_picked)
         self.execution_mode_box.currentTextChanged.connect(self.update_live_cost_estimate)
         self.execution_mode_box.currentTextChanged.connect(self.update_recommendation_label)
 
@@ -2671,6 +3046,11 @@ class GodAI(QWidget):
             "session": KeyValue("Session", "€0.00", "Spent this session"),
             "today": KeyValue("Today", "€0.00"),
             "requests": KeyValue("Requests", "0"),
+            # Hybrid routing: saved by running local, spent on suggestions
+            # you accepted (services/routing_advisor.SavingsTally).
+            "local": KeyValue("Local", "saved €0.00 · spent €0.00",
+                              "Saved by running local today, and spent on "
+                              "suggestions you accepted"),
         }
         for row in self.cost_rows.values():
             cost_layout.addWidget(row)
@@ -2941,6 +3321,7 @@ class GodAI(QWidget):
 
             self.model_box.addItems(models)
             self._mark_new_models(provider, self.model_box)
+            self.apply_picker_roles(provider, self.model_box)
 
             if previous_model:
                 idx = self.model_box.findText(previous_model)
@@ -3159,8 +3540,8 @@ class GodAI(QWidget):
         self._show_route(decision)
 
     def _enabled_provider_names(self) -> set[str]:
-        enabled = {"ollama"}
-        for provider in ("openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"):
+        enabled = set(LOCAL_PROVIDERS)
+        for provider in (p for p in SUPPORTED_PROVIDERS if p in CLOUD_PROVIDERS):
             checkbox = getattr(self, f"allow_{provider}_checkbox", None)
             if checkbox is not None and checkbox.isChecked():
                 enabled.add(provider)
@@ -3180,6 +3561,9 @@ class GodAI(QWidget):
     def route_for_request(self, prompt: str, *, agent: str = "chat", tool: str = "",
                           keep_manual: bool = True, context_text: str | None = None):
         enabled = self._enabled_provider_names()
+        # What this agent and tool may use, per the registry: the Validator
+        # refuses anything else after the fact, so the router must not pick it.
+        permitted = self.registry.permitted_providers(agent, tool)
         available = {provider: self.models_for_provider(provider) for provider in sorted(enabled)}
         manual_provider = self.provider_box.currentText() if keep_manual and hasattr(self, "provider_box") else None
         manual_model = self.model_box.currentText() if keep_manual and hasattr(self, "model_box") else None
@@ -3194,6 +3578,7 @@ class GodAI(QWidget):
                 context_text if context_text is not None else prompt),
             preferences=self._routing_preferences(),
             available_models=available, enabled_providers=enabled,
+            allowed_providers=permitted,
             manual_provider=manual_provider, manual_model=manual_model,
         )
 
@@ -3237,10 +3622,10 @@ class GodAI(QWidget):
         panel = self.panels.get(agent) if hasattr(self, "panels") else None
         if not force and getattr(panel, "_prefer_local_retry_once", False):
             panel._prefer_local_retry_once = False
-            if provider == "ollama":
+            if is_local_provider(provider):
                 return None
         permissions = self.current_api_permissions()
-        permitted = provider == "ollama" or permissions.get(f"allow_{provider}", False)
+        permitted = is_local_provider(provider) or permissions.get(f"allow_{provider}", False)
         # A configured cloud provider can be granted for this request by the
         # single consent dialog in authorize_request(). Do not silently replace
         # the user's explicit selection merely because persistent permission is off.
@@ -3280,7 +3665,8 @@ class GodAI(QWidget):
     def resolve_backend_model(self):
         provider = self.provider_box.currentText()
         model = self.model_box.currentText()
-        execution_mode = self.execution_mode_box.currentText()
+        execution_mode = execution_mode_for(
+            self, self.agent_box.currentText() if hasattr(self, "agent_box") else "chat")
 
         auto = getattr(self, "auto_recommend_checkbox", None)
         if auto is not None and auto.isChecked():
@@ -3295,21 +3681,17 @@ class GodAI(QWidget):
             return decision.provider, decision.model
 
         allowed_apis = {
-            "openai": self.allow_openai_checkbox.isChecked(),
-            "deepseek": self.allow_deepseek_checkbox.isChecked(),
-            "kimi": self.allow_kimi_checkbox.isChecked(),
-            "gemini": self.allow_gemini_checkbox.isChecked(),
-            "anthropic": self.allow_anthropic_checkbox.isChecked(),
-            "qwen": self.allow_qwen_checkbox.isChecked(),
+            name: getattr(self, f"allow_{name}_checkbox").isChecked()
+            for name in SUPPORTED_PROVIDERS if name in CLOUD_PROVIDERS
         }
 
         if execution_mode == "Local only":
             # D3: a cloud provider picked in the run bar used to be sent to
             # Ollama under its cloud model name, silently. Local only means
             # Ollama with an Ollama model, and the substitution is shown.
-            if provider == "ollama":
+            if is_local_provider(provider):
                 self._set_route_notice("")
-                return "ollama", model if model else "deepseek-r1:8b"
+                return provider, model if model else DEFAULT_LOCAL_MODEL
             local_model = self._local_default_model()
             self._set_route_notice(
                 f"Local only mode: using ollama · {local_model} instead of "
@@ -3320,8 +3702,8 @@ class GodAI(QWidget):
         self._set_route_notice("")
 
         if execution_mode == "Cloud only":
-            if provider == "ollama":
-                raise RuntimeError("Cloud only mode selected, but provider is Ollama/local.")
+            if is_local_provider(provider):
+                raise RuntimeError("Cloud only mode selected, but provider is local (Ollama or LM Studio).")
 
             if provider not in allowed_apis:
                 raise RuntimeError(f"Unknown cloud provider: {provider}")
@@ -3332,15 +3714,15 @@ class GodAI(QWidget):
             return provider, model
 
         if execution_mode == "Hybrid allowed":
-            if provider == "ollama":
-                return "ollama", model if model else "deepseek-r1:8b"
+            if is_local_provider(provider):
+                return provider, model if model else DEFAULT_LOCAL_MODEL
 
             if provider in allowed_apis and not allowed_apis[provider]:
                 raise RuntimeError(f"{provider} API is not enabled. Tick the checkbox first.")
 
             return provider, model
 
-        return "ollama", model if model else "deepseek-r1:8b"
+        return "ollama", model if model else DEFAULT_LOCAL_MODEL
 
     @staticmethod
     def _continuable_chat_path(record: dict, filepath) -> str | None:
@@ -3356,7 +3738,7 @@ class GodAI(QWidget):
         """The Ollama model Local only mode falls back to."""
         settings = getattr(self, "settings", None) or {}
         saved = str(settings.get("default_model_ollama") or "").strip()
-        return saved or "deepseek-r1:8b"
+        return saved or DEFAULT_LOCAL_MODEL
 
     def _set_route_notice(self, text: str) -> None:
         """Show (or clear) a one-line notice about how the route was resolved."""
@@ -3367,6 +3749,308 @@ class GodAI(QWidget):
         bar = getattr(self, "runbar_cost", None)
         if bar is not None:
             bar.setToolTip(text)
+
+    # ── Hybrid routing (phase 4): advisor, banner, failover, tally ──────────
+    # services/routing_advisor.py decides; these methods only gather what it
+    # needs from caches (ratings, prices, the local inventory, the last model
+    # scan) and act on the user's answer. Nothing here fetches: it all runs on
+    # the UI thread, once per new job.
+
+    def routing_mode(self, agent: str = "chat") -> str:
+        """The mode a job of `agent` runs under: its override, else the run
+        bar's Local only / Cloud only, else the mode in Settings → Models."""
+        box = getattr(self, "execution_mode_box", None)
+        return routing_advisor.effective_mode(
+            getattr(self, "settings", None), agent,
+            box.currentText() if box is not None else None)
+
+    def _privacy_routing(self) -> bool:
+        """Privacy first: no cloud suggestion and no cloud fallback, ever."""
+        settings = getattr(self, "settings", None) or {}
+        return str(settings.get("routing_priority", "")).lower() == "privacy"
+
+    def _execution_mode(self, agent: str = "chat") -> str:
+        return execution_mode_for(self, agent)
+
+    def _sync_execution_mode(self) -> None:
+        """Point the run bar's Execution mode at the app's routing mode."""
+        box = getattr(self, "execution_mode_box", None)
+        if box is None:
+            return
+        wanted = routing_advisor.LEGACY_EXECUTION[routing_advisor.mode_for(self.settings)]
+        if box.currentText() != wanted:
+            box.blockSignals(True)
+            box.setCurrentText(wanted)
+            box.blockSignals(False)
+
+    def _execution_mode_picked(self, text: str) -> None:
+        """The user moved the run bar's Execution mode: keep the saved routing
+        mode in step. Applying a recommended setup moves the box too, and must
+        not rewrite the user's setting."""
+        if getattr(self, "_applying_recommendation", False):
+            return
+        mode = routing_advisor.mode_for(self.settings)
+        if text == "Local only":
+            wanted = routing_advisor.LOCAL_ONLY
+        elif text == "Cloud only":
+            wanted = routing_advisor.CLOUD_ONLY
+        elif mode in (routing_advisor.LOCAL_ONLY, routing_advisor.CLOUD_ONLY):
+            wanted = routing_advisor.DEFAULT_MODE
+        else:
+            return
+        if wanted != mode:
+            routing_advisor.set_mode(self.settings, wanted)
+            self._save_routing_settings()
+
+    def apply_routing_settings(self, _settings=None) -> None:
+        """Settings → Models changed the mode or an override (in self.settings)."""
+        self._save_routing_settings()
+        self._sync_execution_mode()
+        self.update_live_cost_estimate()
+
+    def _save_routing_settings(self) -> None:
+        for key in (routing_advisor.MODE_KEY, routing_advisor.OVERRIDES_KEY):
+            if key in self.settings:
+                try:
+                    settings_store.save_override(SETTINGS_OVERRIDE_FILE, key, self.settings[key])
+                except Exception as exc:
+                    self._note_failure("routing mode: save", exc)
+
+    def _cached_models(self, provider: str) -> list[str]:
+        """What a provider offers, from the last model scan or the shipped
+        lists. Never a request: the advisor runs on the UI thread."""
+        listed = (getattr(self, "_listed_models", None) or {}).get(provider)
+        if listed:
+            return list(listed)
+        cls = CLOUD_CLIENT_CLASSES.get(provider)
+        known = list(getattr(cls, "KNOWN_MODELS", ()) or ())
+        return known + [m.model for m in MODEL_CATALOG if m.provider == provider]
+
+    def _advisor_candidate(self, provider: str, model: str, task: str,
+                           request_text: str, snap) -> "routing_advisor.Candidate":
+        local = is_local_provider(provider)
+        profile = next((m for m in catalog()
+                        if m.provider == provider and same_model(m.model, model)), None)
+        cap = profile.capabilities if profile is not None else None
+        caps = frozenset(name for name in ("text", "vision", "image_generation", "tool_use",
+                                           "coding", "reasoning")
+                         if cap is not None and getattr(cap, name, False)) or frozenset({"text"})
+        rating = rating_for(provider, model, task)
+        score = getattr(rating, "score", None)
+        source = (getattr(rating, "source", None) or "LMArena") if rating is not None else ""
+        window = cap.context_window if cap is not None else None
+        runnable, why, size, tag = True, "", None, ""
+        if local:
+            cost = 0.0
+            found = snap.find(provider, model)
+            if found is not None:
+                window = found.max_context or window
+                size, tag = found.size_gb, found.tag or ""
+                if found.fit in {"tight", "too_big"}:
+                    runnable = False
+                    why = (f"{found.name} needs about {(found.size_gb or 0) * 1.2:.0f} GB "
+                           f"of memory, and {snap.ram_free_gb:.0f} GB is free right now.")
+            if runnable and snap.taken_at:
+                if provider == local_models.LMSTUDIO and not snap.lmstudio_up:
+                    runnable, why = False, ("The LM Studio server is off. Start it under "
+                                            "Settings → Local models.")
+                elif provider == local_models.OLLAMA and not snap.ollama_up:
+                    runnable, why = False, "Ollama is not running."
+        else:
+            cost = self.estimate_chat_cost(provider, model, request_text)[0]
+        return routing_advisor.Candidate(
+            provider, model, local, rating=score, rating_source=source, cost_eur=cost,
+            context_window=window, capabilities=caps, runnable=runnable,
+            not_runnable=why, tag=tag, size_gb=size)
+
+    def _budget_left_eur(self) -> float | None:
+        try:
+            today = self.usage_tracker.get_today_total()
+            return max(0.0, min(self.session_budget_eur - self.session_cost_total,
+                                self.daily_budget_eur - today))
+        except Exception:
+            return None
+
+    def _advisor_context(self, agent, tool, full_prompt, backend, model):
+        """Everything the advisor needs for one job, from caches only."""
+        from types import SimpleNamespace
+
+        request_text = self._request_text(agent, tool, full_prompt)
+        tokens = estimate_prompt_tokens(request_text)
+        request = classify_request(full_prompt, agent=agent, tool=tool, context_tokens=tokens)
+        snap = self.local_inventory.snapshot()
+        mode, privacy = self.routing_mode(agent), self._privacy_routing()
+        enabled = self._enabled_provider_names()
+        permitted = self.registry.permitted_providers(agent, tool)
+        if permitted is not None:
+            enabled &= set(permitted)
+        if not routing_advisor.allows_cloud(mode, privacy=privacy):
+            enabled = {p for p in enabled if is_local_provider(p)}
+        make = lambda p, m: self._advisor_candidate(p, m, request.task, request_text, snap)  # noqa: E731
+        local = [make(m.provider, m.id) for m in local_models.router_candidates(snap)
+                 if m.provider in enabled]
+        available = {p: (self._cached_models(p) if not is_local_provider(p)
+                         else [m.id for m in snap.of(p)]) for p in sorted(enabled)}
+        cloud = [make(p.provider, p.model) for p in catalog()
+                 if p.provider in enabled and not is_local_provider(p.provider)
+                 and any(same_model(p.model, x) for x in available.get(p.provider, ()))]
+        selected = make(backend, model)
+        try:
+            decision = route_request(
+                full_prompt, agent=agent, tool=tool, context_tokens=tokens,
+                preferences=self._routing_preferences(), available_models=available,
+                enabled_providers=enabled, allowed_providers=permitted)
+        except RuntimeError:
+            decision = None
+        recommended = make(decision.provider, decision.model) if decision else None
+        job = routing_advisor.Job(agent, request.task, context_tokens=tokens,
+                                  output_tokens=max(250, int(tokens * 1.2)),
+                                  required=frozenset(request.required))
+        advice = routing_advisor.advise(
+            job, selected, mode=mode, local=local, cloud=cloud, recommended=recommended,
+            rules=self.routing_rules, privacy=privacy, budget_left_eur=self._budget_left_eur())
+        by_key = {c.key: c for c in [*local, *cloud, selected]}
+        fallbacks = [c for c in ([recommended] if recommended else [])
+                     + [by_key.get((f.provider, f.model)) for f in
+                        (decision.fallbacks if decision else ())]
+                     + sorted(local, key=lambda c: (c.rating is None, -(c.rating or 0)))
+                     + sorted(cloud, key=lambda c: (c.rating is None, -(c.rating or 0)))
+                     if c is not None]
+        return SimpleNamespace(job=job, selected=selected, local=local, cloud=cloud,
+                               recommended=recommended, decision=decision, advice=advice,
+                               mode=mode, privacy=privacy, fallbacks=fallbacks,
+                               saved_eur=routing_advisor.saved_by_local(job, cloud))
+
+    def _advise_job(self, agent, tool, raw_text, full_prompt, backend, model):
+        """None: send as resolved. (provider, model, accepted): send that.
+        False: the job is held on the banner, or refused there."""
+        self._advised_context = None
+        try:
+            context = self._advisor_context(agent, tool, full_prompt, backend, model)
+        except Exception as exc:  # noqa: BLE001 - advice must never block Send
+            self._note_failure("routing advisor", exc)
+            return None
+        self._advised_context = context
+        advice = context.advice
+        if advice.action == routing_advisor.RUN:
+            if advice.run is None or advice.run.same(context.selected):
+                return None
+            if advice.message:
+                self._set_chat_status(advice.message)
+            return advice.run.provider, advice.run.model, advice.rule is not None
+        self._held_job = {"agent": agent, "tool": tool, "raw_text": raw_text,
+                          "context": context}
+        self.advice_banner.show_advice(advice, context.job, context.selected)
+        if advice.action == routing_advisor.REFUSE:
+            self._held_job = None
+        return False
+
+    def _resume_held(self, provider=None, model=None, *, accepted=False) -> None:
+        held, self._held_job = self._held_job, None
+        if held is None:
+            return
+        if self.input_box.toPlainText().strip() != held["raw_text"]:
+            self._send_chat()                # the job changed: advise afresh
+            return
+        self._advised_context = held["context"]
+        override = (provider, model) if provider else None
+        self._send_chat(override, advised=True, accepted=accepted)
+
+    def _advice_switch(self) -> None:
+        offer = self.advice_banner.offer
+        if offer is not None:
+            self._resend_failed(offer.cloud)
+            return
+        held = self._held_job
+        if held is None or held["context"].advice.suggestion is None:
+            return
+        target = held["context"].advice.suggestion
+        self._resume_held(target.provider, target.model, accepted=not target.local)
+
+    def _advice_always(self) -> None:
+        held = self._held_job
+        if held is None or held["context"].advice.suggestion is None:
+            return
+        context, target = held["context"], held["context"].advice.suggestion
+        try:
+            self.routing_rules.add(context.job.agent, context.job.kind, target.provider,
+                                   target.model, context.job.label)
+        except OSError as exc:
+            self._note_failure("routing rules: save", exc)
+        self._resume_held(target.provider, target.model, accepted=not target.local)
+
+    def _advice_keep(self) -> None:
+        offer = self.advice_banner.offer
+        if offer is not None:
+            self._resend_failed(offer.local)
+            return
+        held = self._held_job
+        if held is None:
+            return
+        selected = held["context"].selected
+        self._resume_held(selected.provider, selected.model)
+
+    def _advice_dismissed(self) -> None:
+        self._held_job = None
+        self._failed_job = None
+
+    def _offer_failover(self, error) -> None:
+        """A run failed: offer the router's next candidate. Never sends."""
+        job, self._job = getattr(self, "_job", None), None
+        self._failed_job = None
+        context = (job or {}).get("context")
+        if job is None or context is None:
+            return
+        failed = next((c for c in context.fallbacks + [context.selected]
+                       if c.key == (job["provider"], job["model"])), None)
+        if failed is None:
+            return
+        offer = routing_advisor.failover(
+            failed, context.fallbacks, mode=context.mode, error=str(error)[:160],
+            privacy=context.privacy, job=context.job,
+            budget_left_eur=self._budget_left_eur())
+        if offer.empty:
+            return
+        self._failed_job = job
+        self.advice_banner.show_failover(offer)
+
+    def _resend_failed(self, target) -> None:
+        job, self._failed_job = getattr(self, "_failed_job", None), None
+        self.advice_banner.clear()
+        if job is None or target is None:
+            return
+        # The failed turn is dropped, its notice kept: the job is sent again,
+        # not added to the conversation twice.
+        notices = [m for m in self.current_messages[len(job["prior"]):] if m.get("ui_only")]
+        self.current_messages = list(job["prior"]) + notices
+        self._render_chat_conversation()
+        self.input_box.setPlainText(job["raw_text"])
+        self._advised_context = job["context"]
+        self._send_chat((target.provider, target.model), advised=True,
+                        accepted=not target.local)
+
+    def _tally_finished_job(self, cost_eur) -> None:
+        """Count what a finished job saved (local) or spent (an accepted
+        suggestion or rule), and write the status line for a local run."""
+        self._job_status_line = ""
+        job, self._job = getattr(self, "_job", None), None
+        if job is None:
+            return
+        context = job.get("context")
+        try:
+            if is_local_provider(job["provider"]):
+                saved = context.saved_eur if context is not None else None
+                self.savings_tally.record_local_run(saved)
+                if context is not None:
+                    ran = next((c for c in context.local + [context.selected]
+                                if c.key == (job["provider"], job["model"])), context.selected)
+                    best = routing_advisor.best_rated(context.local + context.cloud)
+                    self._job_status_line = routing_advisor.status_line(
+                        ran, context.job, best, saved, self.savings_tally.today()["saved"])
+            elif job.get("accepted"):
+                self.savings_tally.record_accepted(cost_eur)
+        except OSError as exc:
+            self._note_failure("routing savings: save", exc)
 
     def build_user_prompt(self, raw_text: str):
         command_name = self.command_box.currentText()
@@ -3516,6 +4200,13 @@ class GodAI(QWidget):
             return full_prompt
 
     def send_prompt(self):
+        """Send: the routing advisor looks at the job first (phase 4)."""
+        self._send_chat()
+
+    def _send_chat(self, route_override=None, *, advised=False, accepted=False):
+        """One Chat job. `route_override` is a (provider, model) the user chose
+        on the advice banner or the failover offer, or a rule they made; it
+        still passes every gate below, the paid-request prompt included."""
         selected_agent = self.agent_box.currentText()
 
         if selected_agent == "manager":
@@ -3535,6 +4226,23 @@ class GodAI(QWidget):
         except RuntimeError as exc:
             QMessageBox.warning(self, "Request blocked", str(exc))
             return
+
+        context = None
+        if route_override is not None:
+            final_backend, final_model = route_override
+            context = getattr(self, "_advised_context", None)
+        elif not advised:
+            self.advice_banner.clear()
+            self._held_job = None
+            answer = self._advise_job(selected_agent, selected_tool, raw_text,
+                                      full_prompt, final_backend, final_model)
+            if answer is False:
+                return                       # held on the banner, or refused
+            context = getattr(self, "_advised_context", None)
+            if answer is not None:
+                final_backend, final_model, accepted = answer
+        else:
+            context = getattr(self, "_advised_context", None)
 
         # The specialist panels stop here (authorize_request) when a provider
         # has no key; Chat used to start the run and fail inside the worker.
@@ -3590,6 +4298,12 @@ class GodAI(QWidget):
             return
 
         try:
+            self._job = {
+                "agent": selected_agent, "tool": selected_tool, "raw_text": raw_text,
+                "prior": list(self.current_messages), "context": context,
+                "accepted": bool(accepted) and not is_local_provider(final_backend),
+                "provider": final_backend, "model": final_model,
+            }
             self.pending_agent = selected_agent
             self.pending_tool = selected_tool
             self.pending_backend = final_backend
@@ -3634,13 +4348,23 @@ class GodAI(QWidget):
             self.chat_worker.finished_signal.connect(self.handle_chat_finished)
             self.chat_worker.usage_signal.connect(self.handle_chat_usage)
             self.chat_worker.error_signal.connect(self.handle_chat_error)
+            # Captured now: a late cost report after Stop must be billed to
+            # this request, never to whatever pending_* says by then.
+            self.chat_worker._sentinel_run = {
+                "run_id": self.active_run_id, "agent": selected_agent,
+                "tool": selected_tool, "backend": final_backend, "model": final_model,
+                "prompt": full_prompt, "project": self.active_project_id,
+            }
+            stopped_usage = getattr(self.chat_worker, "stopped_usage_signal", None)
+            if stopped_usage is not None:       # the Chat tests' fake worker has none
+                stopped_usage.connect(self._record_stopped_cost)
             self.chat_worker.start()
 
         except Exception as e:
             QMessageBox.warning(self, "Request failed", str(e))
 
     def confirm_external_api_request(self, backend, model, estimated_cost, approx_tokens):
-        if backend == "ollama":
+        if is_local_provider(backend):
             return True
 
         message = (
@@ -3695,7 +4419,7 @@ class GodAI(QWidget):
         }
 
     def provider_key_available(self, provider: str) -> bool:
-        if provider == "ollama":
+        if is_local_provider(provider):
             return True
         client = getattr(self, provider, None)
         checker = getattr(client, "key_available", None)
@@ -3751,7 +4475,7 @@ class GodAI(QWidget):
         permissions = self.current_api_permissions()
         one_time_consent = False
         permission_key = f"allow_{provider}"
-        if provider != "ollama" and not permissions.get(permission_key, False):
+        if not is_local_provider(provider) and not permissions.get(permission_key, False):
             panel = self.panels.get(agent) if hasattr(self, "panels") else None
             status = getattr(panel, "status_label", None)
             if not self.provider_key_available(provider):
@@ -3947,77 +4671,37 @@ class GodAI(QWidget):
         self.load_saved_searches()
 
     def run_backend(self, backend, model, messages, prompt):
-        if backend == "ollama":
+        """Send one request to `backend`, dispatching on its registry spec.
+
+        Local providers (any protocol) are fit-checked against memory first;
+        the call itself is the same for every client: stream if it can, else
+        chat, else generate.
+        """
+        spec = providers.get(backend)
+        client = getattr(self, backend, None) if spec is not None else None
+        if spec is None or client is None:
+            raise RuntimeError(f"No compatible backend method found for backend: {backend}")
+
+        if spec.is_local:
             # Runs on the worker thread, so this cannot prompt — it is the hard
             # floor only. Every agent funnels through here, so a model that
             # physically cannot fit is stopped once, for all of them, and the
             # message surfaces via each agent's existing error path instead of
             # freezing the machine for the full request timeout.
-            verdict = self.assess_local_model(model)
+            verdict = self.assess_local_model(model, backend)
             if verdict is not None and verdict["level"] == "too_big":
                 raise RuntimeError(verdict["message"])
 
-            # Stream like every cloud provider: the worker checks its cancel
-            # flag per token, so Stop interrupts a local reply instead of
-            # waiting for the whole thing (and the transcript fills as it goes).
-            if hasattr(self.ollama, "stream_chat"):
-                return self.ollama.stream_chat(model=model, messages=messages)
-            if hasattr(self.ollama, "chat"):
-                return self.ollama.chat(model=model, messages=messages)
-            if hasattr(self.ollama, "generate"):
-                return self.ollama.generate(model=model, prompt=prompt)
-
-        if backend == "openai":
-            if is_image_model(model):
-                return self.openai.generate_image(prompt, model=model)
-            if hasattr(self.openai, "stream_chat"):
-                return self.openai.stream_chat(messages=messages, model=model)
-            if hasattr(self.openai, "chat"):
-                return self.openai.chat(messages=messages, model=model)
-            if hasattr(self.openai, "generate"):
-                return self.openai.generate(prompt, model=model)
-
-        if backend == "deepseek":
-            if hasattr(self.deepseek, "stream_chat"):
-                return self.deepseek.stream_chat(messages=messages, model=model)
-            if hasattr(self.deepseek, "chat"):
-                return self.deepseek.chat(messages=messages, model=model)
-            if hasattr(self.deepseek, "generate"):
-                return self.deepseek.generate(prompt, model=model)
-
-        if backend == "kimi":
-            if hasattr(self.kimi, "stream_chat"):
-                return self.kimi.stream_chat(messages=messages, model=model)
-            if hasattr(self.kimi, "chat"):
-                return self.kimi.chat(messages=messages, model=model)
-            if hasattr(self.kimi, "generate"):
-                return self.kimi.generate(prompt, model=model)
-
-        if backend == "qwen":
-            if hasattr(self.qwen, "stream_chat"):
-                return self.qwen.stream_chat(messages=messages, model=model)
-            if hasattr(self.qwen, "chat"):
-                return self.qwen.chat(messages=messages, model=model)
-            if hasattr(self.qwen, "generate"):
-                return self.qwen.generate(prompt, model=model)
-
-        if backend == "gemini":
-            if hasattr(self.gemini, "stream_chat"):
-                return self.gemini.stream_chat(messages=messages, model=model)
-
-            if hasattr(self.gemini, "chat"):
-                return self.gemini.chat(messages=messages, model=model)
-
-            if hasattr(self.gemini, "generate"):
-                return self.gemini.generate(prompt, model=model)
-
-        if backend == "anthropic":
-            if hasattr(self.anthropic, "stream_chat"):
-                return self.anthropic.stream_chat(messages=messages, model=model)
-
-            if hasattr(self.anthropic, "chat"):
-                return self.anthropic.chat(messages=messages, model=model)
-
+        if backend == "openai" and is_image_model(model):
+            return client.generate_image(prompt, model=model)
+        if hasattr(client, "stream_chat"):
+            return client.stream_chat(messages=messages, model=model)
+        if hasattr(client, "chat"):
+            return client.chat(messages=messages, model=model)
+        if hasattr(client, "generate"):
+            if spec.protocol == providers.PROTOCOL_OLLAMA:
+                return client.generate(model=model, prompt=prompt)
+            return client.generate(prompt, model=model)
         raise RuntimeError(f"No compatible backend method found for backend: {backend}")
 
     def start_chat_timer(self, backend: str, model: str, prompt: str):
@@ -4087,6 +4771,7 @@ class GodAI(QWidget):
         )
 
         self.last_request_cost = usage_entry.get("cost_eur", usage_entry.get("estimated_cost", 0.0))
+        self._tally_finished_job(self.last_request_cost)
         tool = getattr(self, "pending_tool", "General Chat")
         self.last_tool_name = f"{self.pending_agent}/{tool} - {self.pending_backend}"
         self.session_cost_total += usage_entry["estimated_cost"]
@@ -4129,6 +4814,10 @@ class GodAI(QWidget):
 
         self.load_history_list()
         self.route_result_label.setText(f"Router: {self.pending_agent} · {self.pending_backend} · {self.pending_model}")
+        status = getattr(self, "_job_status_line", "")
+        if status:
+            self._set_chat_status(status)
+            self.route_result_label.setText(status)
 
     def handle_chat_error(self, error):
         if self._from_detached_chat_worker():
@@ -4151,11 +4840,48 @@ class GodAI(QWidget):
         if run_id:
             self.run_logger.finish(run_id=run_id, status="error", error=error)
             self.active_run_id = None
-        
+        self._offer_failover(error)
+
     def handle_chat_usage(self, usage):
         if self._from_detached_chat_worker():
             return
         self.pending_usage = usage
+
+    def _record_stopped_cost(self, payload) -> None:
+        """Bill a cloud request that was stopped after the provider answered.
+
+        Runs on the UI thread (queued from the worker), the same single writer
+        as every other usage row. It touches only the usage log, the run row
+        (already closed as cancelled) and the session total; never the
+        transcript, the timer, the buttons or the chat file. Local requests
+        cost nothing and record nothing; a fenced worker (Emergency Reset)
+        records nothing; each worker records at most once.
+        """
+        sender = self.sender()
+        run = getattr(sender, "_sentinel_run", None) if sender is not None else None
+        if not run or getattr(sender, "_sentinel_fenced", False):
+            return
+        if run.get("backend") not in CLOUD_PROVIDERS:
+            return
+        if getattr(sender, "_sentinel_cost_recorded", False):
+            return
+        sender._sentinel_cost_recorded = True
+        payload = payload or {}
+        counts = payload.get("usage")
+        usage = dict(counts) if counts else {}
+        usage["cost_type_override"] = "cancelled-exact" if counts else "cancelled-estimated"
+        entry = self.usage_tracker.log_request(
+            agent=run.get("agent", ""), backend=run["backend"], model=run.get("model", ""),
+            prompt_text=run.get("prompt", ""), response_text=payload.get("response_text", ""),
+            usage=usage, project=run.get("project"),
+        )
+        if run.get("run_id"):
+            self.run_logger.add_late_cost(
+                run["run_id"], entry.get("input_tokens", 0), entry.get("output_tokens", 0),
+                entry.get("cost_eur", 0.0),
+            )
+        self.session_cost_total += entry["estimated_cost"]
+        self.update_usage_labels()
 
     def _from_detached_chat_worker(self) -> bool:
         """True when the signal being handled came from a worker that was
@@ -4171,35 +4897,40 @@ class GodAI(QWidget):
         A cancelled worker can still deliver a final answer or a usage report
         a moment later; delivered into the window, that would be rendered and
         billed against a run that was already closed as cancelled.
+
+        The chat slots stay connected on purpose and every handler drops a
+        sender carrying `_sentinel_detached`. Disconnecting does not help: a
+        call queued before Stop is still delivered afterwards, and then with
+        `sender()` None, so the flag could not be read (PySide6 6.11, spec
+        no-thread-terminate R7). Connected, `sender()` is always the worker.
         """
         try:
             worker._sentinel_detached = True
         except (AttributeError, RuntimeError):
             pass
-        for signal, handler in (
-            (worker.status_signal, self.handle_chat_status),
-            (worker.token_signal, self.handle_chat_token),
-            (worker.finished_signal, self.handle_chat_finished),
-            (worker.usage_signal, self.handle_chat_usage),
-            (worker.error_signal, self.handle_chat_error),
-        ):
-            try:
-                signal.disconnect(handler)
-            except (RuntimeError, TypeError):
-                pass
+        # Keep the thread referenced until it ends (never terminate it).
+        if isinstance(worker, QThread):
+            park(worker)
 
     def stop_chat_worker(self):
-        if self.chat_worker is not None and self.chat_worker.isRunning():
-            self.chat_worker.cancel()
-            self._detach_chat_worker(self.chat_worker)
-            self.chat_worker.terminate()
-            self.chat_worker.wait(2000)
+        """Stop at once: cancel, stop listening and park the request.
+
+        No wait and no terminate(). The model call cannot be interrupted, so
+        the thread is parked until it returns, and nothing it delivers after
+        this is shown, saved or billed against the cancelled run.
+        """
+        self._job = None            # stopped by the user: no failover offer
+        worker = self.chat_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            self._detach_chat_worker(worker)
+            self.chat_worker = None
             if (self.current_messages
                     and self.current_messages[-1].get("role") == "assistant"
                     and not self.current_messages[-1].get("content")):
                 self.current_messages.pop()
             self.current_messages.append(
-                self._ui_notice("Chat request stopped by user.")
+                self._ui_notice(_stop_notice(getattr(worker, "backend", "")))
             )
             self._render_chat_conversation()
         self.stop_chat_timer()
@@ -4293,6 +5024,13 @@ class GodAI(QWidget):
                 f"{today_requests} · {self.session_request_count}",
                 f"{today_requests} requests today, "
                 f"{self.session_request_count} this session")
+
+        tally = getattr(self, "savings_tally", None)
+        if tally is not None and hasattr(self, "cost_rows") and "local" in self.cost_rows:
+            today = tally.today()
+            self.cost_rows["local"].set(
+                f"saved €{today['saved']:.2f} · spent €{today['spent']:.2f}",
+                tally.summary())
 
         # keep your existing labels
         self.session_cost_label.setText(f"Session Cost: €{self.session_cost_total:.2f}")
@@ -5075,17 +5813,26 @@ class GodAI(QWidget):
         search_box.setFocus()
         dialog.exec()
 
-    def stop_background_work(self) -> None:
-        """Stop and join everything Sentinel started, and close its run-log rows.
+    def stop_background_work(self, deadline: float | None = None, fence: bool = False) -> None:
+        """Stop everything Sentinel started, and close its run-log rows.
 
         Shared by quitting and by Emergency Reset, which erases the database
-        the run log writes to and so needs the same quiet first.
+        the run log writes to and so needs the same quiet first. Nothing is
+        terminated: every join comes out of one budget (`deadline`, by default
+        QUIT_JOIN_BUDGET_S from now) and whatever outlasts it is parked.
+        `fence` marks every parked worker so a late result writes nothing.
         """
-        if self.chat_worker is not None and self.chat_worker.isRunning():
-            self.chat_worker.cancel()
-            self._detach_chat_worker(self.chat_worker)
-            self.chat_worker.terminate()
-            self.chat_worker.wait(1000)
+        if deadline is None:
+            deadline = time.monotonic() + QUIT_JOIN_BUDGET_S
+        worker = self.chat_worker
+        if worker is not None and worker.isRunning():
+            # Cancel, stop listening and park first; then a join out of the
+            # shared budget, which ends a streamed reply (the cancel flag is
+            # read between tokens). A blocked call just stays parked.
+            worker.cancel()
+            self._detach_chat_worker(worker)
+            self.chat_worker = None
+            worker.wait(remaining_ms(deadline))
         # The run log must not keep a request "running" after the app is
         # gone: close it as cancelled, as the Stop button would.
         run_id = getattr(self, "active_run_id", None)
@@ -5094,19 +5841,21 @@ class GodAI(QWidget):
                 self.run_logger.cancel(run_id)
             finally:
                 self.active_run_id = None
-        # The model scan and a model pull are QThreads of ours too; a quit
-        # while one ran destroyed a live thread (and could crash on exit).
-        for name in ("model_scan_worker", "model_pull_worker"):
-            thread = getattr(self, name, None)
-            if thread is not None and thread.isRunning():
-                cancel = getattr(thread, "cancel", None)
-                if callable(cancel):
-                    cancel()
-                if not thread.wait(2000):
-                    thread.terminate()
-                    thread.wait(1000)
+        # The model scan, the Muse Glimmer pull and the local-model discovery
+        # and measurement runs are QThreads of ours too; a quit while one ran
+        # destroyed a live thread (and could crash on exit).
+        join_or_park([getattr(self, "model_scan_worker", None),
+                      getattr(self, "muse_pull_worker", None),
+                      getattr(self, "local_discovery_worker", None),
+                      getattr(self, "local_measure_worker", None)], deadline)
         from ui.dialogs import shutdown_panels
-        shutdown_panels(self)
+        shutdown_panels(self, deadline)
+        if fence:
+            fence_parked()
+            # A scan or pull that finished inside the join is not parked, so
+            # not fenced: stop listening to it before the folder is erased.
+            drop_result_slots(getattr(self, "model_scan_worker", None))
+            drop_result_slots(getattr(self, "muse_pull_worker", None))
         # Whatever a panel left authorised but never recorded: close each row
         # so the Run log does not show it as running for ever.
         for request_id in list(self._pending_requests):
@@ -5148,9 +5897,9 @@ class GodAI(QWidget):
                 event.ignore()
                 self._wait_for_privileged_work()
                 return
-            # Quit anyway: panels detach the worker; main() leaves with os._exit
-            # so Qt never aborts over a thread that is still running.
-            self._quit_anyway = True
+            # Quit anyway: panels detach the worker. Every quit, this one
+            # included, leaves through _leave and os._exit, so Qt never aborts
+            # over a thread that is still running (ADR 0001).
             timer = getattr(self, "_quit_wait_timer", None)
             if timer is not None:
                 timer.stop()            # an earlier "Wait" must not fire mid-close
@@ -5160,6 +5909,20 @@ class GodAI(QWidget):
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
+
+def _stop_notice(backend: str) -> str:
+    """What Chat says after Stop. The billing clause is only for cloud providers."""
+    if backend in CLOUD_PROVIDERS:
+        return ("Chat request stopped. The model may still finish in the background. "
+                "A cloud provider may bill for it; Sentinel will not show the reply.")
+    return ("Chat request stopped. The model may still finish in the background. "
+            "Sentinel will not show the reply.")
+
+
+# How long closing the window may spend joining non-privileged background work,
+# all of it together, before what is still running is parked. The owner's
+# limit for a whole quit is 5 s (spec no-thread-terminate, Q4).
+QUIT_JOIN_BUDGET_S = 2.5
 
 SINGLE_INSTANCE_KEY = "sentinel.single-instance.v2"
 WINDOW_SETTINGS_KEY = "mainWindow/geometry"
@@ -5206,16 +5969,18 @@ def _tray_status(window) -> str:
     return f"{activity}  ·  €{window.session_cost_total:.2f} this session"
 
 
-def _finish_quit_anyway(window, settings) -> None:
-    """After app.exec(): if the user chose Quit anyway, leave without Qt's teardown.
+def _leave(window, settings, code: int = 0) -> None:
+    """After app.exec(): every quit leaves here, without Qt's teardown.
 
-    A detached thread is still inside a privileged call; a normal exit would
-    destroy it while running. os._exit skips Qt's own shutdown, so the window
-    geometry (set by aboutToQuit) is sync()ed to disk first, unless a portable
-    reset just erased that folder.
+    Workers that could not be stopped in time are parked, not terminated, and
+    some (panel requests, Sentry's watch, a Wi-Fi scan) are only cancelled; a
+    normal exit would destroy a running QThread and abort. So the process
+    always ends with os._exit (docs/adr/0001-park-workers-and-leave-with-os-exit.md).
+    That skips every atexit hook, finally and destructor: state is written
+    through, and anything that truly must happen at quit goes here, first.
+    The window geometry (set by aboutToQuit) is sync()ed to disk, unless a
+    portable reset just erased that folder.
     """
-    if not getattr(window, "_quit_anyway", False):
-        return
     if not getattr(window, "_portable_reset_committed", False):
         try:
             settings.sync()
@@ -5223,7 +5988,22 @@ def _finish_quit_anyway(window, settings) -> None:
             print(f"settings not saved: {exc}", file=sys.stderr)
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(0)
+    os._exit(code)
+
+
+def _run_event_loop(app, window, settings) -> NoReturn:
+    """Run the application until it quits, then leave.
+
+    Shared by the `__main__` block and tests/helpers/quit_harness.py, so the
+    quit test exercises the real exit path. aboutToQuit stores the window
+    geometry (skipped after a portable reset erased its folder).
+    """
+    app.aboutToQuit.connect(
+        lambda: None if getattr(window, "_portable_reset_committed", False)
+        else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
+    )
+    code = app.exec()
+    _leave(window, settings, code)
 
 
 def _show_main_window(window):
@@ -5338,9 +6118,4 @@ if __name__ == "__main__":
         menu_bar_item.quit_requested.connect(window.close)
         menu_bar_item.show()
 
-    app.aboutToQuit.connect(
-        lambda: None if getattr(window, "_portable_reset_committed", False)
-        else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
-    )
-    app.exec()
-    _finish_quit_anyway(window, settings)
+    _run_event_loop(app, window, settings)

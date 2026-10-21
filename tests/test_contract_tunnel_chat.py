@@ -1099,7 +1099,7 @@ def make_window(env, guard, qapp):
     def make():
         with guard.open():
             window = main.GodAI()
-        window.assess_local_model = lambda model: None
+        window.assess_local_model = lambda model, provider="ollama": None
         window.agent_box.setCurrentText("chat")
         window.execution_mode_box.setCurrentText("Local only")
         idx = window.provider_box.findText("ollama")

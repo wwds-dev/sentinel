@@ -2,6 +2,7 @@ import json
 import re
 from datetime import datetime
 from services.database import get_connection
+from services.providers import expand_allowed
 
 
 def _row_to_agent(row) -> dict:
@@ -136,14 +137,30 @@ class Registry:
         if not a:
             return False
         allowed = a.get("allowed_providers", [])
-        return not allowed or provider in allowed
+        return not allowed or str(provider).casefold() in expand_allowed(allowed)
 
     def tool_allows_provider(self, tool_name: str, provider: str) -> bool:
         t = self.get_tool(tool_name)
         if not t:
             return True
         allowed = t.get("allowed_providers", [])
-        return not allowed or provider in allowed
+        return not allowed or str(provider).casefold() in expand_allowed(allowed)
+
+    def permitted_providers(self, agent_name: str = "", tool_name: str = "") -> set[str] | None:
+        """Providers this agent and tool both allow, or None when neither restricts.
+
+        The router asks this before choosing, so it never picks a provider the
+        Validator would reject afterwards. An unregistered agent or tool adds no
+        restriction here (the Validator still refuses an unregistered agent).
+        """
+        permitted: set[str] | None = None
+        for entry in (self.get_agent(agent_name) if agent_name else None,
+                      self.get_tool(tool_name) if tool_name else None):
+            allowed = (entry or {}).get("allowed_providers") or []
+            if allowed:
+                names = expand_allowed(allowed)
+                permitted = names if permitted is None else permitted & names
+        return permitted
 
     def agent_allows_tool(self, agent_name: str, tool_name: str) -> bool:
         a = self.get_agent(agent_name)

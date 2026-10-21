@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ui.widgets import MenuComboBox, SectionView
 from ui.panels.base import AgentPanel
+from services.providers import is_local as is_local_provider
 from services import osint_catalog
 from services.deepseek_client import is_insufficient_balance_error
 from agents.osint_agent import classify_target
@@ -225,7 +226,7 @@ class OsintPanel(AgentPanel):
         self._append_activity(
             f"Target accepted: {target} ({effective_type}{detected_note})."
         )
-        if self.provider == "ollama":
+        if is_local_provider(self.provider):
             self._append_activity(
                 f"Running locally with Ollama · {self.model}; the target stays on this Mac."
             )
@@ -317,7 +318,7 @@ class OsintPanel(AgentPanel):
         if balance_error:
             self.status_label.setText(
                 "Ready to retry locally."
-                if self.provider == "ollama" else "Action needed."
+                if is_local_provider(self.provider) else "Action needed."
             )
         else:
             self.status_label.setText("Error.")

@@ -1,0 +1,334 @@
+{
+ "version": 1,
+ "about": "Local model test set (services/local_ratings.py). Shared by Sentinel and Imprint, byte for byte. Changing a prompt means bumping version, which invalidates cached reference answers.",
+ "kinds": {
+  "writing": [
+   {
+    "id": "w01",
+    "prompt": "Write the opening paragraph of a short story about a lighthouse keeper who finds a letter addressed to someone who died a century ago. Keep it under 120 words."
+   },
+   {
+    "id": "w02",
+    "prompt": "Write a polite email declining a meeting invitation because of a scheduling conflict, and propose two alternative times next week. Keep it under 120 words."
+   },
+   {
+    "id": "w03",
+    "prompt": "Write a product description for a reusable glass water bottle with a bamboo lid, aimed at office workers. Keep it under 120 words."
+   },
+   {
+    "id": "w04",
+    "prompt": "Write a haiku sequence of three haiku about the first frost of autumn. Keep it under 120 words."
+   },
+   {
+    "id": "w05",
+    "prompt": "Write a short, friendly announcement telling a team that the office kitchen will be closed for renovation for two weeks. Keep it under 120 words."
+   },
+   {
+    "id": "w06",
+    "prompt": "Rewrite this sentence to be clearer and more direct: 'It has come to our attention that there may possibly be some delays with regard to the shipment of the orders that were placed.' Keep it under 120 words."
+   },
+   {
+    "id": "w07",
+    "prompt": "Write a limerick about a cat who is convinced it is the manager of a bookshop. Keep it under 120 words."
+   },
+   {
+    "id": "w08",
+    "prompt": "Write a two-paragraph cover letter opening for a junior data analyst applying to a public library. Keep it under 120 words."
+   },
+   {
+    "id": "w09",
+    "prompt": "Write a eulogy-style tribute to an old laptop that is finally being retired. Keep it under 120 words."
+   },
+   {
+    "id": "w10",
+    "prompt": "Write a scene of dialogue between two strangers stuck in a lift, where one of them slowly realises they went to the same school. Keep it under 120 words."
+   },
+   {
+    "id": "w11",
+    "prompt": "Write an apology message from a small bakery to customers whose weekend orders were cancelled because an oven broke. Keep it under 120 words."
+   },
+   {
+    "id": "w12",
+    "prompt": "Write a persuasive paragraph arguing that every town should have a free tool library. Keep it under 120 words."
+   },
+   {
+    "id": "w13",
+    "prompt": "Write a short poem in free verse about commuting by train before sunrise. Keep it under 120 words."
+   },
+   {
+    "id": "w14",
+    "prompt": "Write the back-cover blurb for a cosy mystery novel set in a seaside knitting shop. Keep it under 120 words."
+   },
+   {
+    "id": "w15",
+    "prompt": "Write a toast for a friend's 40th birthday that is warm and lightly funny, without any embarrassing stories. Keep it under 120 words."
+   },
+   {
+    "id": "w16",
+    "prompt": "Write a short fable with a clear moral about a river that refused to share its water. Keep it under 120 words."
+   },
+   {
+    "id": "w17",
+    "prompt": "Write a LinkedIn post announcing that a two-person design studio has just completed its hundredth project. Keep it under 120 words."
+   },
+   {
+    "id": "w18",
+    "prompt": "Describe a busy night market to someone who has never seen one, using all five senses. Keep it under 120 words."
+   },
+   {
+    "id": "w19",
+    "prompt": "Write a gentle reminder to a neighbour that their dog barks for hours when they are away, without sounding hostile. Keep it under 120 words."
+   },
+   {
+    "id": "w20",
+    "prompt": "Write the first paragraph of a travel article about a small mountain village in winter. Keep it under 120 words."
+   }
+  ],
+  "code": [
+   {
+    "id": "c01",
+    "prompt": "Write a Python function `is_palindrome(s)` that ignores case, spaces and punctuation. Include two example calls. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c02",
+    "prompt": "Write a Python function that merges two sorted lists into one sorted list in linear time, without using sort(). Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c03",
+    "prompt": "Write a SQL query that returns the five customers with the highest total order value from tables `customers(id, name)` and `orders(id, customer_id, amount)`. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c04",
+    "prompt": "Write a JavaScript function `debounce(fn, ms)` and explain in one sentence when to use it. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c05",
+    "prompt": "Write a Python function that returns the n-th Fibonacci number iteratively, and raise ValueError for negative n. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c06",
+    "prompt": "Write a bash one-liner that counts the lines in every .py file under the current directory and prints the total. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c07",
+    "prompt": "Find and fix the bug in this Python code: `def average(xs): return sum(xs) / len(xs) if xs else sum(xs) / 0`. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c08",
+    "prompt": "Write a Python class `Stack` with push, pop, peek and is_empty, raising IndexError when popping an empty stack. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c09",
+    "prompt": "Write a regular expression that matches ISO dates like 2026-10-19 and explain each part briefly. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c10",
+    "prompt": "Write a Python function that groups a list of words into lists of anagrams. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c11",
+    "prompt": "Write a TypeScript interface for a blog post with id, title, body, tags (array of strings), and an optional publishedAt date. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c12",
+    "prompt": "Write a Python function that parses a query string like 'a=1&b=2&b=3' into a dict mapping each key to a list of values, without using urllib. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c13",
+    "prompt": "Explain the difference between a list and a tuple in Python in three sentences, with one example each. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c14",
+    "prompt": "Write a Python generator that yields the lines of a text file that contain a given word, case-insensitively. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c15",
+    "prompt": "Write a Python function `chunk(items, size)` that splits a list into chunks of at most `size` elements. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c16",
+    "prompt": "Write a SQL statement that creates a table `events` with an auto-incrementing id, a non-null name, and a created_at timestamp defaulting to now, for SQLite. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c17",
+    "prompt": "Write a Python function that returns True if a string of brackets like '([]{})' is balanced. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c18",
+    "prompt": "Write a small Python script that reads a CSV file named 'data.csv' with columns name and score, and prints the average score. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c19",
+    "prompt": "Write a JavaScript function that removes duplicate objects from an array by their `id` field, keeping the first. Reply with the code and at most two sentences."
+   },
+   {
+    "id": "c20",
+    "prompt": "Write a Python function that converts a number of seconds into a string like '2h 05m 09s'. Reply with the code and at most two sentences."
+   }
+  ],
+  "summarising": [
+   {
+    "id": "s01",
+    "prompt": "Summarise the following text in two sentences.\n\nThe town council voted on Tuesday to convert the disused railway line into a cycle path. The project will cost an estimated two million euros, half of which will come from a regional grant. Supporters say it will reduce traffic in the centre and give children a safe route to school. Opponents, mostly residents whose gardens back onto the line, worry about noise and privacy. Construction is expected to start next spring and take about eighteen months."
+   },
+   {
+    "id": "s02",
+    "prompt": "Summarise the following text in two sentences.\n\nResearchers studying honeybees found that colonies exposed to a common pesticide foraged less efficiently, returning with about a third less pollen. The effect appeared at doses lower than those currently allowed in agriculture. The team stressed that the study was carried out in controlled conditions and that field trials are needed. Beekeeping associations have called for a review of the approval process."
+   },
+   {
+    "id": "s03",
+    "prompt": "Summarise the following text in two sentences.\n\nOur quarterly results show revenue up 12 percent year on year, driven mainly by subscription sales in Europe. Hardware sales fell slightly because of supply problems with one supplier, which have now been resolved. Operating costs rose 8 percent as we hired forty new support staff. We expect growth to slow in the next quarter as a large customer contract ends, but we remain on track for our annual target."
+   },
+   {
+    "id": "s04",
+    "prompt": "Summarise the following text in two sentences.\n\nThe new library opened its doors after three years of construction. Besides books, it offers a recording studio, a makerspace with 3D printers, and rooms that local groups can book for free. The architect designed the building around a central courtyard to bring daylight into every floor. In the first week, more than eight thousand people visited, and the library issued over a thousand new cards."
+   },
+   {
+    "id": "s05",
+    "prompt": "Summarise the following text in two sentences.\n\nA software update released last week caused some users' calendars to show events an hour late. The problem affected only devices whose time zone had recently changed its daylight-saving rules. The company has published a fix and advises affected users to install it and then restart the calendar app. Events created during the faulty period may need to be checked manually."
+   },
+   {
+    "id": "s06",
+    "prompt": "Summarise the following text in two sentences.\n\nSleep researchers compared people who used screens in the hour before bed with those who read paper books. The screen users took on average ten minutes longer to fall asleep and reported feeling less alert the next morning. However, the difference shrank when screens were set to a warm night mode. The authors suggest that brightness, not just content, plays a role."
+   },
+   {
+    "id": "s07",
+    "prompt": "Summarise the following text in two sentences.\n\nThe museum has returned a collection of carved masks to the community they were taken from more than a hundred years ago. The handover followed five years of research into how the masks were acquired, which showed they had been removed without consent. Community leaders said the masks will be used again in ceremonies. The museum plans to review the origins of other items in its collection."
+   },
+   {
+    "id": "s08",
+    "prompt": "Summarise the following text in two sentences.\n\nVolunteers counted birds in city parks over a single weekend. They recorded 64 species, including several that had not been seen in the city for a decade, such as the kingfisher. Organisers credit new wetland areas created two years ago. The most common bird was, as every year, the wood pigeon, followed by the blackbird and the magpie."
+   },
+   {
+    "id": "s09",
+    "prompt": "Summarise the following text in two sentences.\n\nThe company is introducing a four-day working week as a six-month trial. Staff will work 32 hours for the same pay, and teams will decide among themselves which day to take off, provided customer support is always covered. Productivity, sick days and customer satisfaction will be measured throughout. If the results are good, the policy may become permanent."
+   },
+   {
+    "id": "s10",
+    "prompt": "Summarise the following text in two sentences.\n\nA storm brought down power lines across the northern region overnight, leaving about 40,000 homes without electricity. Repair crews have restored power to most of them, but some rural areas may wait until Thursday. The utility has opened warm spaces in three community centres and asks people not to approach fallen cables. Schools in the worst-hit areas are closed today."
+   },
+   {
+    "id": "s11",
+    "prompt": "Summarise the following text in two sentences.\n\nOur customer survey had 1,200 responses. Most customers rated delivery speed highly, but many complained that the returns process is confusing and requires printing a label. Several asked for a way to pause their subscription rather than cancel it. Price was rarely mentioned as a problem. The product team will prioritise a simpler returns flow and a pause option."
+   },
+   {
+    "id": "s12",
+    "prompt": "Summarise the following text in two sentences.\n\nThe study followed 3,000 adults for ten years and found that those who walked at least 7,000 steps a day had a lower risk of heart disease than those who walked fewer than 4,000. Beyond about 10,000 steps, there was little extra benefit. Walking speed mattered less than total steps. The researchers note that the study shows an association, not proof of cause."
+   },
+   {
+    "id": "s13",
+    "prompt": "Summarise the following text in two sentences.\n\nCity planners propose turning a four-lane road into two lanes with wider pavements, trees and a tram line. They argue it will make the area more pleasant and support local shops. Delivery companies fear longer journey times. A public consultation runs until the end of the month, and three information evenings are planned in the neighbourhood."
+   },
+   {
+    "id": "s14",
+    "prompt": "Summarise the following text in two sentences.\n\nA team of students built a small satellite that measures air pollution from orbit. It was launched last month and has already sent back its first measurements, which match those from ground stations. The satellite cost less than 50,000 euros, mostly funded by local businesses. The students hope their open-source design will help other universities build similar projects."
+   },
+   {
+    "id": "s15",
+    "prompt": "Summarise the following text in two sentences.\n\nThe restaurant has changed its menu to use only ingredients grown within 100 kilometres. That means no lemons, coffee or chocolate, and the menu changes every few weeks with the season. The chef says it was hard at first but has made the kitchen more creative. Prices went up slightly, but bookings have increased since the change was announced."
+   },
+   {
+    "id": "s16",
+    "prompt": "Summarise the following text in two sentences.\n\nAfter complaints about noise, the airport has agreed to stop scheduled flights between 23:30 and 06:00 from next year. Airlines will have to move about twenty night flights, mostly cargo. The airport expects a small loss of income but says better relations with neighbours matter more. Residents' groups welcome the decision but want the hours extended."
+   },
+   {
+    "id": "s17",
+    "prompt": "Summarise the following text in two sentences.\n\nA new study of remote workers found that those who kept fixed working hours reported less stress than those who worked whenever they felt like it. People with a separate room for work also slept better. However, flexible workers felt more in control of their lives. The authors recommend agreeing core hours with a team while leaving the rest flexible."
+   },
+   {
+    "id": "s18",
+    "prompt": "Summarise the following text in two sentences.\n\nThe council has launched an app that lets residents report potholes, broken street lights and graffiti by taking a photo. Reports go straight to the right department, and users get a message when the problem is fixed. In its first month, the app received 2,400 reports, and the average repair time for potholes fell from three weeks to nine days."
+   },
+   {
+    "id": "s19",
+    "prompt": "Summarise the following text in two sentences.\n\nThe hospital is trialling a system in which pharmacists review every patient's medication within a day of admission. In the first six months, they found errors or risky combinations in about one in five patients, most of them minor. Doctors say the reviews save them time. The hospital wants to expand the trial but needs funding for four more pharmacists."
+   },
+   {
+    "id": "s20",
+    "prompt": "Summarise the following text in two sentences.\n\nScientists have mapped a large cave system beneath a national park using laser scanners carried by drones. The caves stretch for more than 20 kilometres and include an underground lake. Some passages were too narrow for people and had never been explored. The park plans to keep most of the system closed to protect rare bats that live there."
+   }
+  ],
+  "extraction": [
+   {
+    "id": "e01",
+    "prompt": "Extract these fields from the text and reply with JSON only: name, company, order_number, email, deadline. Use null for anything missing.\n\nTEXT: Hi, this is Maria Lopez from Greenfield Ltd. Please send the invoice for order 4471 to accounts@greenfield.example by Friday 24 October. Thanks!"
+   },
+   {
+    "id": "e02",
+    "prompt": "Extract these fields from the text and reply with JSON only: event, date, time, room, duration_minutes. Use null for anything missing.\n\nTEXT: Meeting moved: the design review is now on 3 November at 14:30 in Room B2, and will last about 45 minutes. Bring the printed mock-ups."
+   },
+   {
+    "id": "e03",
+    "prompt": "Extract these fields from the text and reply with JSON only: items (list of name, quantity, unit_price), shipping, total. Use null for anything missing.\n\nTEXT: Order summary: 2 x Ceramic Mug (€12.50 each), 1 x Tea Towel (€6.00). Shipping €4.95. Total €35.95."
+   },
+   {
+    "id": "e04",
+    "prompt": "Extract these fields from the text and reply with JSON only: bedrooms, size_m2, floor, has_lift, has_balcony, available_from, rent, service_charges. Use null for anything missing.\n\nTEXT: Apartment for rent: 2 bedrooms, 68 m², third floor with lift, balcony, available from 1 December, €1,150 per month plus €120 service charges."
+   },
+   {
+    "id": "e05",
+    "prompt": "Extract these fields from the text and reply with JSON only: flight_number, origin, destination, departure, arrival, gate, seat. Use null for anything missing.\n\nTEXT: Flight LX 318 from Zurich to London Heathrow departs at 07:40 and arrives at 08:25 local time. Gate A54. Seat 14C."
+   },
+   {
+    "id": "e06",
+    "prompt": "Extract these fields from the text and reply with JSON only: person, title, specialty, organisation, date, topic. Use null for anything missing.\n\nTEXT: Dr. Aisha Rahman, a cardiologist at St. Mary's Hospital, will speak at the conference on 12 March about early detection of heart failure."
+   },
+   {
+    "id": "e07",
+    "prompt": "Extract these fields from the text and reply with JSON only: dish, ingredients (list of item and amount), rest_minutes, servings. Use null for anything missing.\n\nTEXT: Recipe: Pancakes. Mix 200 g flour, 2 eggs, 300 ml milk and a pinch of salt. Rest the batter 20 minutes. Serves 4."
+   },
+   {
+    "id": "e08",
+    "prompt": "Extract these fields from the text and reply with JSON only: action, condition, device, os_version, app_version, reproducible. Use null for anything missing.\n\nTEXT: Bug report: the app crashes when I tap 'Export' on an empty project. iPhone 15, iOS 27.0, app version 3.4.1. Happens every time."
+   },
+   {
+    "id": "e09",
+    "prompt": "Extract these fields from the text and reply with JSON only: title, location, required_skills, nice_to_have, salary_min, salary_max, deadline. Use null for anything missing.\n\nTEXT: Job ad: Senior Backend Engineer, remote within the EU, Python and PostgreSQL required, Kubernetes a plus, salary €70k-€85k, apply by 30 November."
+   },
+   {
+    "id": "e10",
+    "prompt": "Extract these fields from the text and reply with JSON only: winner, winner_points, other_teams (list of name and points), day. Use null for anything missing.\n\nTEXT: Our team won the regional quiz on Saturday with 48 points, beating The Know-Alls (45) and Quizzly Bears (41)."
+   },
+   {
+    "id": "e11",
+    "prompt": "Extract these fields from the text and reply with JSON only: events (list of date and status), delivered_at, delivery_note. Use null for anything missing.\n\nTEXT: Package tracking: Shipped 14 Oct from Rotterdam. Arrived at sorting centre Cologne 15 Oct. Out for delivery 16 Oct. Delivered 16 Oct 11:02, left with neighbour at No. 12."
+   },
+   {
+    "id": "e12",
+    "prompt": "Extract these fields from the text and reply with JSON only: name, party_size, day, time, dietary_notes, special_requests. Use null for anything missing.\n\nTEXT: Please book a table for six under the name Okafor on Saturday at 19:00. One guest is vegan and we need a high chair."
+   },
+   {
+    "id": "e13",
+    "prompt": "Extract these fields from the text and reply with JSON only: battery_kwh, range_km, charge_10_80_minutes, price. Use null for anything missing.\n\nTEXT: The 2026 model has a 75 kWh battery, a range of 520 km, charges from 10 to 80 percent in 28 minutes, and starts at €46,900."
+   },
+   {
+    "id": "e14",
+    "prompt": "Extract these fields from the text and reply with JSON only: doctor, day, date, time, arrive_early_minutes, cancel_phone. Use null for anything missing.\n\nTEXT: Reminder: your dentist appointment with Dr. Novak is on Wednesday 5 November at 09:15. Please arrive 10 minutes early. To cancel, call 030 1234567."
+   },
+   {
+    "id": "e15",
+    "prompt": "Extract these fields from the text and reply with JSON only: title, author, pages, year, publisher, isbn. Use null for anything missing.\n\nTEXT: Book: 'The Quiet Harbour' by Lena Fischer, 312 pages, published 2024 by Northwind Press, ISBN 978-3-16-148410-0."
+   },
+   {
+    "id": "e16",
+    "prompt": "Extract these fields from the text and reply with JSON only: morning, afternoon, high_c, low_c, rain_chance_percent, wind_direction, wind_kmh. Use null for anything missing.\n\nTEXT: Weather tomorrow: cloudy in the morning, sunny spells after noon, high of 14°C, low of 6°C, 20 percent chance of rain, wind from the west at 15 km/h."
+   },
+   {
+    "id": "e17",
+    "prompt": "Extract these fields from the text and reply with JSON only: category, description, date, amount, payment_method, receipt_attached. Use null for anything missing.\n\nTEXT: Expense: taxi from the airport to the hotel on 8 October, €42.00, paid by company card ending 4402, receipt attached."
+   },
+   {
+    "id": "e18",
+    "prompt": "Extract these fields from the text and reply with JSON only: event, date, start, end, meeting_point, provided, contact_name, contact_phone. Use null for anything missing.\n\nTEXT: Volunteers needed: beach clean-up on Sunday 9 November, 10:00-13:00, meeting at the north car park. Gloves and bags provided. Contact Tom on 0170 555 0199."
+   },
+   {
+    "id": "e19",
+    "prompt": "Extract these fields from the text and reply with JSON only: timestamp, level, service, message, timeout_seconds, request_id, retries. Use null for anything missing.\n\nTEXT: Error log: 2026-10-18 22:14:03 ERROR payment-service: timeout after 30s calling bank API (request id 8f2a91). Retried 3 times."
+   },
+   {
+    "id": "e20",
+    "prompt": "Extract these fields from the text and reply with JSON only: course, sessions, weekday, start_time, end_time, start_date, price, includes_materials, max_participants. Use null for anything missing.\n\nTEXT: Course: Introduction to Watercolour, 6 Tuesday evenings from 18:30 to 20:30, starting 4 November, €180 including materials, max 10 participants."
+   }
+  ]
+ }
+}

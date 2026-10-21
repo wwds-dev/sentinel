@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel
                                QLayout, QMenu, QPushButton, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
+from services.providers import is_local as is_local_provider, uncensored_tag
 from ui import theme
 from ui.theme import accent
 
@@ -38,6 +39,44 @@ BEST_FIT_BADGE = "BEST FIT"
 NEW_MODEL_ROLE = int(Qt.UserRole) + 106
 NEW_MODEL_BADGE = "NEW"
 
+# Local model rows (services/local_models.py). The item's text stays the model
+# id — panels read currentText() back as the model name — so what a person
+# reads lives in roles: a section heading, a friendlier label for the menu row
+# and a muted detail line (state · size · rating · €0).
+SECTION_ROLE = int(Qt.UserRole) + 107
+DETAIL_ROLE = int(Qt.UserRole) + 108
+LABEL_ROLE = int(Qt.UserRole) + 109
+
+
+TAG_TONE = "#d9a441"
+TAG_NOTES = {
+    "abliterated": "Abliterated: this model's refusal behaviour was removed. "
+                   "It will answer requests a standard model declines.",
+    "uncensored": "Uncensored: this model was tuned not to refuse. "
+                  "It will answer requests a standard model declines.",
+}
+
+
+def _paint_tag(painter, font, text: str, right: int, centre_y: int,
+               height: int, inset: int) -> None:
+    """A warning pill whose right edge is at `right` (shared by menu and combo)."""
+    width = QFontMetrics(font).horizontalAdvance(text) + inset * 2
+    pill = QRect(right - width, centre_y - height // 2, width, height)
+    tone = QColor(TAG_TONE)
+    fill = QColor(tone)
+    fill.setAlpha(30)
+    edge = QColor(tone)
+    edge.setAlpha(140)
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setFont(font)
+    painter.setPen(QPen(edge, 1))
+    painter.setBrush(fill)
+    painter.drawRoundedRect(pill, 8, 8)
+    painter.setPen(tone)
+    painter.drawText(pill, Qt.AlignCenter, text)
+    painter.restore()
+
 
 class SelectorMenu(QMenu):
     """A selector popup that can mark one of its entries as the best fit.
@@ -58,6 +97,8 @@ class SelectorMenu(QMenu):
         super().__init__(parent)
         self._badges: dict = {}
         self._muted: set = set()
+        self._tags: dict = {}
+        self._details: dict = {}
         # QMenu hides action tooltips unless asked. Without this the BEST FIT
         # reason and the "costs money" text on cloud entries never showed (D7).
         self.setToolTipsVisible(True)
@@ -72,6 +113,30 @@ class SelectorMenu(QMenu):
         if action not in self._badges:
             self._badges[action] = NEW_MODEL_BADGE
             self._muted.add(action)
+
+    def markTag(self, action, text: str) -> None:  # noqa: N802
+        """Give an action a warning pill (ABLITERATED / UNCENSORED).
+
+        A tag is a fact about the model, not advice, so it sits beside any
+        BEST FIT or NEW pill instead of competing with it.
+        """
+        self._tags[action] = text
+
+    def markDetail(self, action, text: str) -> None:  # noqa: N802
+        """Muted right-aligned detail text on a row (state · size · rating · €0)."""
+        self._details[action] = text
+
+    def detailTexts(self) -> dict:  # noqa: N802
+        """{QAction: detail text}. For tests."""
+        return dict(self._details)
+
+    def sectionTitles(self) -> list:  # noqa: N802
+        """Section headings in order. For tests."""
+        return [a.text() for a in self.actions() if a.data() == "section"]
+
+    def tagBadges(self) -> dict:  # noqa: N802
+        """{QAction: tag text}. For tests."""
+        return dict(self._tags)
 
     def bestFitBadges(self) -> dict:  # noqa: N802
         """{QAction: badge text} for the best-fit pills only. For tests."""
@@ -98,9 +163,15 @@ class SelectorMenu(QMenu):
         widest entry, so taking the width out of that one row's label is what
         would push the elision somewhere unpredictable.
         """
-        if not self._badges:
+        if not self._badges and not self._tags and not self._details:
             return
-        extra = max(self._badge_width(text) for text in self._badges.values())
+        extra = max([self._badge_width(t) for t in self._badges.values()] or [0])
+        if self._details:
+            metrics = QFontMetrics(self.font())
+            extra += max(metrics.horizontalAdvance(t)
+                         for t in self._details.values()) + 16
+        if self._tags:
+            extra += max(self._badge_width(t) for t in self._tags.values()) + 6
         self.setMinimumWidth(max(
             self.minimumWidth(),
             self.sizeHint().width() + extra + self.BADGE_MARGIN,
@@ -108,7 +179,7 @@ class SelectorMenu(QMenu):
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().paintEvent(event)
-        if not self._badges:
+        if not self._badges and not self._tags and not self._details:
             return
 
         painter = QPainter(self)
@@ -132,6 +203,30 @@ class SelectorMenu(QMenu):
             painter.drawRoundedRect(pill, 8, 8)
             painter.setPen(tone)
             painter.drawText(pill, Qt.AlignCenter, text)
+        for action, text in self._tags.items():
+            row = self.actionGeometry(action)
+            if row.isEmpty():
+                continue
+            right = row.right() - self.BADGE_MARGIN
+            if action in self._badges:
+                right -= self._badge_width(self._badges[action]) + 6
+            _paint_tag(painter, self._badge_font(), text, right,
+                       row.center().y(), self.BADGE_HEIGHT, self.BADGE_INSET)
+        for action, text in self._details.items():
+            row = self.actionGeometry(action)
+            if row.isEmpty():
+                continue
+            right = row.right() - self.BADGE_MARGIN
+            if action in self._badges:
+                right -= self._badge_width(self._badges[action]) + 6
+            if action in self._tags:
+                right -= self._badge_width(self._tags[action]) + 6
+            painter.setFont(self.font())
+            painter.setPen(QColor(theme.MUTED) if hasattr(theme, "MUTED")
+                           else QColor("#7d8983"))
+            painter.drawText(QRect(row.left(), row.top(), right - row.left(),
+                                   row.height()),
+                             Qt.AlignRight | Qt.AlignVCenter, text)
         painter.end()
 
 
@@ -156,6 +251,23 @@ class MenuComboBox(QComboBox):
         self._active_menu: QMenu | None = None
         self.setProperty("sentinelMenuCombo", True)
 
+    def currentTag(self) -> str | None:  # noqa: N802
+        """The uncensored/abliterated tag of the selected entry, if any."""
+        return uncensored_tag(self.currentText())
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().paintEvent(event)
+        tag = self.currentTag()
+        if not tag:
+            return
+        font = QFont(self.font())
+        font.setPointSizeF(max(8.0, font.pointSizeF() - 2.0))
+        font.setWeight(QFont.DemiBold)
+        painter = QPainter(self)
+        _paint_tag(painter, font, tag.upper(), self.width() - 28,
+                   self.height() // 2, 18, 8)
+        painter.end()
+
     def setMenuMode(self, mode: str) -> None:
         if mode not in {self.FLAT, self.PROVIDER, self.MODEL}:
             raise ValueError(f"Unsupported menu mode: {mode}")
@@ -165,7 +277,8 @@ class MenuComboBox(QComboBox):
         return self._menu_mode
 
     def _add_choice(self, menu: SelectorMenu, index: int) -> None:
-        action = menu.addAction(self.itemText(index))
+        label = self.itemData(index, LABEL_ROLE)
+        action = menu.addAction(str(label) if label else self.itemText(index))
         action.setEnabled(bool(self.model().flags(self.model().index(index, 0)) & Qt.ItemIsEnabled))
 
         # A dot answers "where am I?" — the current choice, and a muted warning
@@ -198,6 +311,13 @@ class MenuComboBox(QComboBox):
         elif self.itemData(index, NEW_MODEL_ROLE):
             menu.markNew(action)
 
+        tag = uncensored_tag(self.itemText(index))
+        if tag:
+            menu.markTag(action, tag.upper())
+        detail = self.itemData(index, DETAIL_ROLE)
+        if detail:
+            menu.markDetail(action, str(detail))
+
         item_font = self.itemData(index, Qt.FontRole)
         if isinstance(item_font, QFont):
             action.setFont(item_font)
@@ -214,6 +334,8 @@ class MenuComboBox(QComboBox):
         ) if note]
         if self.itemData(index, self.COST_ROLE):
             notes.append("Cloud route — this one costs money.")
+        if tag:
+            notes.append(TAG_NOTES[tag])
         if notes:
             tip = "\n".join(notes)
             action.setToolTip(tip)
@@ -246,7 +368,7 @@ class MenuComboBox(QComboBox):
             local.setMinimumWidth(menu.minimumWidth())
             cloud.setMinimumWidth(menu.minimumWidth())
             for index in range(self.count()):
-                target = local if self.itemText(index).strip().lower() == "ollama" else cloud
+                target = local if is_local_provider(self.itemText(index)) else cloud
                 self._add_choice(target, index)
             if not local.actions():
                 local.menuAction().setVisible(False)
@@ -259,7 +381,18 @@ class MenuComboBox(QComboBox):
             # user needs. A redundant "Available models" submenu only added a
             # second click, so model choices are listed directly.
             menu.setMinimumWidth(max(280, menu.minimumWidth()))
+            section = None
             for index in range(self.count()):
+                heading = self.itemData(index, SECTION_ROLE)
+                if heading and heading != section:
+                    head = menu.addAction(str(heading).upper())
+                    head.setEnabled(False)
+                    head.setData("section")
+                    head_font = QFont(self.font())
+                    head_font.setPointSizeF(max(8.0, head_font.pointSizeF() - 2.0))
+                    head_font.setWeight(QFont.DemiBold)
+                    head.setFont(head_font)
+                    section = heading
                 self._add_choice(menu, index)
         else:
             for index in range(self.count()):

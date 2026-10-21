@@ -2,6 +2,7 @@ import json  # used for saving history as JSON
 from pathlib import Path  # makes folder paths easier
 from datetime import datetime  # used to generate timestamped filenames
 from uuid import uuid4
+from services.portable_reset import require_writes_allowed
 from services.runtime_paths import user_data_base
 
 
@@ -28,7 +29,9 @@ class HistoryStore:
             payload["project"] = project
 
         # Exclusive creation prevents an accidental overwrite even if clocks
-        # are frozen or UUID generation is replaced in a test.
+        # are frozen or UUID generation is replaced in a test. Nothing is
+        # written into a data folder an Emergency Reset is erasing.
+        require_writes_allowed()
         with open(filepath, "x", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)  # save nicely formatted JSON
 
@@ -62,6 +65,7 @@ class HistoryStore:
             else:
                 payload.pop("project", None)
         tmp = path.with_suffix(".json.tmp")
+        require_writes_allowed()
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         tmp.replace(path)

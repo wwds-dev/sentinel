@@ -7,8 +7,10 @@ arguments and touch no application state, which is why they move first.
 import re
 import subprocess
 import time
+import warnings
 
-from PySide6.QtCore import QThread, Signal
+import shiboken6
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from services.local_file_search import FileSearchFilters, FileSearchReport, search_files
 from services.remote_file_search import search_remote_files
@@ -19,8 +21,14 @@ from services.vpn_diagnostics import collect_vpn_diagnostics
 # thread is still inside a call that must not be cut short: a request in
 # flight, or a privileged command behind the administrator dialog. They are
 # parked here so the QThread is not garbage-collected while running, and each
-# removes itself when its thread ends.
+# is released when its thread ends. Never terminate() one instead: a thread
+# killed while it holds the GIL leaves every other Python thread blocked for
+# good (docs/adr/0001-park-workers-and-leave-with-os-exit.md).
 _DETACHED_WORKERS: list = []
+
+# Objects that must outlive a parked thread with it (HealthMonitor's worker,
+# moved into the thread), keyed by id() of the parked thread.
+_PARKED_COMPANIONS: dict = {}
 
 _RESULT_SIGNALS = ("finished_signal", "error_signal", "result_signal")
 
@@ -30,6 +38,66 @@ def _discard_detached_worker(worker) -> None:
         _DETACHED_WORKERS.remove(worker)
     except ValueError:
         pass
+    _PARKED_COMPANIONS.pop(id(worker), None)
+
+
+def _release_parked(thread) -> None:
+    """Let go of a parked thread whose run() has returned.
+
+    Runs on the UI thread (see _Parking). wait() returns at once because
+    `finished` has fired; deleteLater() then hands the C++ objects to Qt's
+    event loop, and only after that is the last Python reference dropped, so
+    nothing ever deletes a running QThread.
+    """
+    if thread not in _DETACHED_WORKERS:
+        return                                   # released already
+    if not shiboken6.isValid(thread):
+        _discard_detached_worker(thread)
+        return
+    if thread.isRunning():
+        return                                   # never release a running thread
+    thread.wait()
+    for obj in (thread, *_PARKED_COMPANIONS.get(id(thread), ())):
+        if isinstance(obj, QObject) and shiboken6.isValid(obj):
+            obj.deleteLater()
+    _discard_detached_worker(thread)
+
+
+class _Parking(QObject):
+    """Receives `finished` from parked threads on the UI thread.
+
+    Created at import, in the main thread. A slot on a QObject that lives
+    there is reached through a queued connection when `finished` is emitted
+    by the worker thread, so the release runs on the UI thread after the
+    thread has returned. Qt guarantees that for a slot; for a bare lambda it
+    is PySide's choice (it happens to queue it in 6.11, see
+    tests/test_thread_parking.py), so the release does not rely on one.
+    """
+
+    @Slot()
+    def on_finished(self) -> None:
+        thread = self.sender()
+        if thread is not None:
+            _release_parked(thread)
+
+
+_PARKING = _Parking()
+
+
+def park(thread, *companions) -> None:
+    """Keep a thread (and companions) referenced until it finishes, then release.
+
+    The thread is never terminated and never dropped while it runs.
+    """
+    if thread not in _DETACHED_WORKERS:
+        _DETACHED_WORKERS.append(thread)
+        thread.finished.connect(_PARKING.on_finished)
+    if companions:
+        kept = _PARKED_COMPANIONS.setdefault(id(thread), ())
+        _PARKED_COMPANIONS[id(thread)] = kept + tuple(c for c in companions if c not in kept)
+    if thread.isFinished():
+        # It ended before the connection existed; release from the event loop.
+        QTimer.singleShot(0, _PARKING, lambda t=thread: _release_parked(t))
 
 
 def detach_worker(worker) -> None:
@@ -39,20 +107,86 @@ def detach_worker(worker) -> None:
     request that leaves it in an undefined state; for a privileged command it
     can end between "the password was accepted" and "the result was recorded".
     The result slots are dropped first so a late finish cannot call into
-    widgets that are being destroyed, then the worker is kept alive until its
+    widgets that are being destroyed, then the worker is parked until its
     thread ends.
     """
+    drop_result_slots(worker)
+    park(worker)
+
+
+def drop_result_slots(worker) -> None:
+    """Disconnect every receiver of a worker's result signals.
+
+    A result emitted afterwards reaches nobody. One already queued is still
+    delivered (with sender() None, spec no-thread-terminate R7), which is why
+    the data writes themselves check portable_reset.writes_allowed().
+    """
+    if worker is None:
+        return
     for name in _RESULT_SIGNALS:
         signal = getattr(worker, name, None)
         if signal is None:
             continue
+        with warnings.catch_warnings():
+            # PySide warns when a signal had no receivers left; that is fine.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+
+
+def remaining_ms(deadline: float) -> int:
+    """Milliseconds left until a time.monotonic() deadline, never negative."""
+    return max(0, int((deadline - time.monotonic()) * 1000))
+
+
+def shutdown_deadline(timeout_ms: int, deadline: float | None) -> float:
+    """The shared quit deadline when one is given, else `timeout_ms` from now."""
+    return deadline if deadline is not None else time.monotonic() + timeout_ms / 1000
+
+
+def join_or_park(workers, deadline: float) -> list:
+    """Cancel every worker, join each against one shared monotonic deadline,
+    and park (detach_worker) whatever is still running when it passes.
+
+    Returns the workers that were parked.
+    """
+    live = []
+    for worker in workers:
+        if worker is None:
+            continue
         try:
-            signal.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-    if worker not in _DETACHED_WORKERS:
-        _DETACHED_WORKERS.append(worker)
-    worker.finished.connect(lambda w=worker: _discard_detached_worker(w))
+            running = worker.isRunning()
+        except RuntimeError:                     # its C++ object is gone
+            continue
+        if running:
+            live.append(worker)
+    for worker in live:
+        cancel = getattr(worker, "cancel", None)
+        if callable(cancel):
+            cancel()
+    parked = []
+    for worker in live:
+        if not hasattr(worker, "wait"):
+            continue
+        if not worker.wait(remaining_ms(deadline)):
+            detach_worker(worker)
+            parked.append(worker)
+    return parked
+
+
+def fence_parked() -> None:
+    """Mark every parked object so a late result from it writes nothing.
+
+    Emergency Reset calls this before it erases the data folder.
+    """
+    for thread in list(_DETACHED_WORKERS):
+        for obj in (thread, *_PARKED_COMPANIONS.get(id(thread), ())):
+            try:
+                obj._sentinel_fenced = True
+            except (AttributeError, RuntimeError):
+                pass
 
 
 class DomainLookupWorker(QThread):
@@ -223,6 +357,11 @@ class ChatWorker(QThread):
     finished_signal = Signal(str)
     error_signal = Signal(str)
     usage_signal = Signal(dict)
+    # A request stopped after the provider had already answered (or while it
+    # streamed): {"usage": provider counts or None, "response_text": what was
+    # received}. At most once. Separate from usage_signal, which panels connect
+    # to their own billing, so only Chat records a stopped request's cost.
+    stopped_usage_signal = Signal(dict)
 
     def __init__(self, run_backend_func, backend: str, model: str, messages: list, prompt: str):
         super().__init__()
@@ -235,6 +374,12 @@ class ChatWorker(QThread):
 
     def cancel(self):
         self._cancel_requested = True
+
+    def _report_stopped(self, usage, response_text) -> None:
+        if getattr(self, "_stopped_reported", False):
+            return
+        self._stopped_reported = True
+        self.stopped_usage_signal.emit({"usage": usage, "response_text": str(response_text or "")})
 
     def _emit_as_tokens(self, text: str):
         for part in re.split(r"(\s+)", text):
@@ -263,6 +408,7 @@ class ChatWorker(QThread):
                 stream_usage = None
                 for token in result:
                     if self._cancel_requested:
+                        self._report_stopped(stream_usage, "".join(response_parts))
                         self.error_signal.emit("Request cancelled by user.")
                         return
 
@@ -277,6 +423,12 @@ class ChatWorker(QThread):
                     self.token_signal.emit(token)
 
                 response = "".join(response_parts)
+                if self._cancel_requested:
+                    # Stopped after the last element: the provider has billed
+                    # the whole reply, so it is reported like any other stop.
+                    self._report_stopped(stream_usage, response)
+                    self.error_signal.emit("Request cancelled by user.")
+                    return
 
                 # Prefer the provider's real usage; fall back to the honest
                 # char/4 estimate only when no counts were reported.
@@ -287,6 +439,7 @@ class ChatWorker(QThread):
                 response, usage = result
                 self._emit_as_tokens(response)
                 if self._cancel_requested:
+                    self._report_stopped(usage, response)
                     return
 
             # ===== NORMAL STRING RESPONSE =====
@@ -294,6 +447,7 @@ class ChatWorker(QThread):
                 response = result
                 self._emit_as_tokens(response)
                 if self._cancel_requested:
+                    self._report_stopped(None, response)
                     return
 
             if usage:
@@ -756,6 +910,7 @@ class ModelScanWorker(QThread):
         if self._ratings_cache is not None:
             from services import benchmarks
 
+            # benchmarks.WRITE_GUARD is set once at startup in main.py.
             if benchmarks.is_stale(self._ratings_cache):
                 try:
                     ratings = benchmarks.refresh(self._ratings_cache)
@@ -763,3 +918,52 @@ class ModelScanWorker(QThread):
                     benchmarks.note_attempt(self._ratings_cache)
                     ratings = str(e)
         self.finished_signal.emit(listings, ratings)
+
+
+class LocalDiscoveryWorker(QThread):
+    """Read LM Studio, Ollama and free memory off the UI thread.
+
+    Only the I/O runs here; the result is cached by the caller back on the UI
+    thread. Never raises: a broken runtime comes back as a Snapshot error.
+    """
+    finished_signal = Signal(object)
+
+    def __init__(self, lmstudio, ollama, inventory):
+        super().__init__()
+        self._lmstudio, self._ollama, self._inventory = lmstudio, ollama, inventory
+
+    def run(self):
+        self.finished_signal.emit(
+            self._inventory.refresh(self._lmstudio, self._ollama))
+
+
+class LocalMeasureWorker(QThread):
+    """Measure one local model against the best cloud model (Phase 3).
+
+    The whole run — local answers, reference answers, judge calls — happens
+    here, never on the UI thread. Every cloud call is reported through
+    `usage_signal` so the app bills it on the UI thread; progress goes
+    through `progress_signal`. `cancel()` stops it between prompts.
+    """
+    progress_signal = Signal(int, int)
+    usage_signal = Signal(str, str, str, str)
+    finished_signal = Signal(object)
+
+    def __init__(self, model, plan, prompts, ask, store, cost, budget_eur):
+        super().__init__()
+        self.model, self.plan, self.prompts = model, plan, prompts
+        self._ask, self._store, self._cost = ask, store, cost
+        self.budget_eur = budget_eur
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        from services import local_ratings
+        result = local_ratings.measure(
+            self.model, self.plan, self.prompts, self._ask, store=self._store,
+            on_progress=self.progress_signal.emit,
+            on_usage=self.usage_signal.emit, cost=self._cost,
+            budget_eur=self.budget_eur, cancelled=lambda: self._cancelled)
+        self.finished_signal.emit(result)

@@ -69,7 +69,7 @@ Tunnel keeps no log. The Advisor is covered too: its questions and answers are n
 - Known limitation: the label next to the buttons reports what you did in this session ("Kill switch not armed." at start), not a live read, and long results are clipped; the full message appears in the confirmation dialog only.
 
 ### Closing Sentinel during a connection
-Normal app close and Portable Emergency Reset both cancel every Tunnel worker, wait about two seconds for each, then end any that is still running. Cancelling does not interrupt the macOS prompt or a command already handed to macOS: Sentinel drops the result, so it may not be shown, and a change that already happened is not undone. Re-run Connection Check after reopening.
+Normal app close and Portable Emergency Reset both cancel every Tunnel worker. A Connect in flight gets about two seconds of its own; the checks share the quit's 2.5-second allowance and are left to finish on their own if they take longer. Nothing is force-stopped. Cancelling does not interrupt the macOS prompt or a command already handed to macOS: Sentinel drops the result, so it may not be shown, and a change that already happened is not undone. Re-run Connection Check after reopening.
 
 ### Where Tunnel keeps things
 | What | Where |
@@ -181,7 +181,8 @@ Tabs: **Diagnostics** (structured connection and profile-comparison cards), **Ad
 - `vpn_execution.redact_secrets()` scrubs tool output, errors, refusal reasons and kill-switch detail.
 - `vpn_connection.arm_killswitch(profile)` derives the transport to leave open from the profile and calls the library's `killswitch.arm`. All privileged commands go through `privileged.run_as_root(..., allow_cached_sudo=False)`, which uses the macOS dialog.
 - `ui/workers.py: VpnConnectionWorker` runs Connect, Disconnect, Arm and Disarm off the interface thread. Its `cancel()` discards the result rather than interrupting a privileged call.
-- `VpnPanel.shutdown()` cancels every active Tunnel worker (connection, check, IP, DNS, Advisor) and waits up to two seconds for each, then ends one that is still running. Normal app close and Portable Emergency Reset both use this path.
+- `VpnPanel.shutdown()` stops the health monitor and cancels every active Tunnel worker (connection, check, IP, DNS, Advisor). The non-privileged ones are joined against the window's shared quit deadline (`QUIT_JOIN_BUDGET_S`, 2.5 s) and parked if they outlast it; the connection worker keeps its own two-second join and is then detached. No worker is terminated. Normal app close and Portable Emergency Reset both use this path.
+- `agents/vpn_agent/services/health_monitor.py: HealthMonitor` runs local tunnel and DNS checks every 30 s while the panel is visible (`showEvent` starts it, `hideEvent` stops it). Each check's thread and worker are held as a pair until the thread finishes; before that fix the worker was garbage-collected at once and no check ever delivered a result.
 - Packaged builds include the non-secret starter profile catalog. If no live profile file exists, Tunnel can still open with the same safe baseline instead of depending on source-tree files.
 
 ## Under the hood — files & functions

@@ -3,6 +3,8 @@ import platform
 
 import requests
 
+from services import providers
+
 # Meta's Muse Glimmer — 30B open-weights agentic model (Apache 2.0), released
 # 2026-08-10 and tuned for tool use, long-running tasks and failure recovery.
 # Ollama is one of its launch runtimes, so it needs no provider client of its
@@ -52,8 +54,9 @@ class OllamaClient:
         "deepseek-r1:1.5b",
     ]
 
-    def __init__(self, base_url: str = "http://127.0.0.1:11434"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str | None = None):
+        # OLLAMA_HOST is honoured the way the `ollama` tool honours it.
+        self.base_url = (base_url or providers.ollama_host()).rstrip("/")
 
     def list_models(self) -> list[str]:
         try:

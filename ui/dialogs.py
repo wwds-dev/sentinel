@@ -7,6 +7,7 @@ bodies are moved verbatim; only the receiver was renamed from `self` to `app`.
 """
 
 import html
+import inspect
 from datetime import datetime
 import json
 import os
@@ -51,23 +52,34 @@ def esc(value) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
-def shutdown_panels(app) -> None:
+def shutdown_panels(app, deadline: float | None = None) -> None:
     """Stop panel work and join workers that provide a shutdown contract.
 
-    One panel's failure must not leave the others running: the exception is
-    noted and the loop goes on.
+    `deadline` (time.monotonic()) is the window's shared quit budget; it is
+    passed to every shutdown that accepts one. One panel's failure must not
+    leave the others running: the exception is noted and the loop goes on.
     """
     for key, panel in getattr(app, "panels", {}).items():
         try:
             shutdown = getattr(panel, "shutdown", None)
             if callable(shutdown):
-                shutdown()
+                if deadline is not None and _accepts_deadline(shutdown):
+                    shutdown(deadline=deadline)
+                else:
+                    shutdown()
             elif panel.is_running():
                 panel.stop()
         except Exception as exc:  # noqa: BLE001
             note = getattr(app, "_note_failure", None)
             if callable(note):
                 note(f"shutdown: {key}", exc)
+
+
+def _accepts_deadline(func) -> bool:
+    try:
+        return "deadline" in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def privileged_work_running(app) -> bool:
@@ -446,6 +458,13 @@ def _show_check(button: QPushButton, tool_id: str, stored, current_key: str) -> 
     button.setStyleSheet("")
     button.setToolTip("Ask the service whether this key works. Nothing about any "
                       f"target is sent.{cost}")
+
+
+def BUILTIN_AGENTS_LABELS(app) -> dict:
+    """{agent key: label} for every agent that owns a provider/model pair."""
+    from main import BUILTIN_AGENTS
+    keys = ["chat"] + [k for k in BUILTIN_AGENTS if k != "chat"]
+    return {k: BUILTIN_AGENTS.get(k, {}).get("label", k) for k in keys}
 
 
 def show_settings(app):
@@ -1249,6 +1268,41 @@ def show_settings(app):
     ll.addStretch()
     tabs.addTab(_scrolling(llm_tab), "API Keys")
 
+    # ── Local models (mockup D) ───────────────────────────────────
+    from ui.local_models_page import LocalModelsPage
+
+    def used_by() -> dict:
+        out: dict = {}
+        for key, meta in BUILTIN_AGENTS_LABELS(app).items():
+            provider_box, model_box = app.setup_widgets_for(key)
+            if provider_box is not None and model_box is not None:
+                out.setdefault((provider_box.currentText(), model_box.currentText()),
+                               []).append(meta)
+        return out
+
+    local_page = LocalModelsPage(
+        on_refresh=app.start_local_discovery,
+        on_start=lambda: app.start_lmstudio_server(), parent=dialog,
+        on_measure=lambda model: app.start_local_measure(model, automatic=False),
+        ratings=getattr(app, "local_ratings", None))
+    local_page.set_snapshot(app.local_inventory.snapshot(), used_by())
+    app._local_models_listener = lambda snap: local_page.set_snapshot(snap, used_by())
+    dialog.finished.connect(lambda _r: setattr(app, "_local_models_listener", None))
+    tabs.addTab(_scrolling(local_page), "Local models")
+
+    # ── Models: routing mode, per-agent overrides, remembered rules ───
+    from ui.routing_page import RoutingModesPage
+    models_page = RoutingModesPage(
+        app.settings, BUILTIN_AGENTS_LABELS(app), app.routing_rules,
+        getattr(app, "savings_tally", None), on_change=app.apply_routing_settings,
+        privacy_note=("Privacy first (Chat → Options → Routing priority) keeps every "
+                      "job on this Mac whatever the mode: no cloud suggestion and "
+                      "no cloud fallback."),
+        parent=dialog)
+    tabs.addTab(_scrolling(models_page), "Models")
+    if app.local_inventory.stale():
+        app.start_local_discovery()
+
     def emergency_reset():
         phrase, accepted = QInputDialog.getText(
             dialog,
@@ -1283,15 +1337,22 @@ def show_settings(app):
             stopper = getattr(app, "stop_background_work", None)
             if callable(stopper):
                 # Chat, model scan and pull, panels and open run-log rows: all
-                # quiet before the folder they write to is erased.
-                stopper()
+                # quiet before the folder they write to is erased. fence marks
+                # every parked worker so a late result writes nothing.
+                stopper(fence=True)
             else:
                 shutdown_panels(app)
             from services.portable_reset import erase_portable_user_data
             erase_portable_user_data()
         except Exception as exc:  # noqa: BLE001 - a failed reset must never
             # look like a successful one; any error here means data may remain.
-            QMessageBox.critical(dialog, "Reset refused", str(exc))
+            message = str(exc)
+            from services.portable_reset import PartialEraseError
+            if isinstance(exc, PartialEraseError):
+                message += ("\n\nSome of Sentinel's data may already have been erased; "
+                            "what remains is still on the drive. Quit Sentinel and "
+                            "check the Sentinel Data folder before using it again.")
+            QMessageBox.critical(dialog, "Reset refused", message)
             return
         app._portable_reset_committed = True
         QMessageBox.information(

@@ -10,7 +10,7 @@
 | Model | The specific model used by the selected provider. Availability depends on installation, key and provider account. |
 | Auto-route | Picks a provider and model for the current input and selects them; review the result before running. Only Ollama and the providers ticked under Options → Paid provider access are candidates, and in Local only mode only Ollama is. It never changes the agent or the Tool. |
 | Main action | Send, Investigate, Analyse, Ask Advisor or another agent-specific operation. |
-| Stop | Requests cancellation of the active worker. Partial results may remain. In Chat it appears beside Run only while a request is running, and Esc does the same. |
+| Stop | Requests cancellation of the active worker. Partial results may remain. In Chat it appears beside Run only while a request is running, and Esc does the same; Chat's Stop returns at once, though the model may still finish (and a cloud provider may still bill) in the background. See [Chat](chat.md). |
 | Best fit | A **BEST FIT** badge on one entry per dropdown is Sentinel's recommendation for this agent: the cheapest model rated good enough for this agent's kind of work (see [API keys and new models](api_keys.md)). Hover for the reason, including the ratings and prices compared. It is advice; the entry you pick is the one that runs, and the badge moving never changes your selection. |
 | NEW | A grey **NEW** badge marks a model a provider released since Sentinel last looked. It disappears once you update or dismiss it in **Model Updates**. |
 | Paid marker | The control turns amber while a route that may charge through a cloud API is selected, and cloud entries say so on hover. It is a warning, not a price quote. |
@@ -115,8 +115,11 @@ Sentinel did; they may contain sensitive task labels, so handle exports safely.
 When Sentinel is running from a supported portable build, the General tab also
 shows **Emergency Reset**. It is intentionally absent from development and
 ordinary installed mode. The reset requires typing `ERASE SENTINEL DATA`, then
-accepting a separate final warning. It stops running Sentinel tasks, deletes the
-complete `Sentinel Data` contents—including `.env` API keys—and quits.
+accepting a separate final warning. It stops running Sentinel tasks and fences
+off any that are still finishing, so they write nothing; then it deletes the
+complete `Sentinel Data` contents—including `.env` API keys—and quits. If the
+erase fails part-way, it says **Reset refused**, warns that some data may already
+be erased, and does not quit.
 
 It does not format the USB drive, delete neighboring files or remove exports
 saved elsewhere. It also cannot remove records held by macOS, networks or model

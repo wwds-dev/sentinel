@@ -27,8 +27,17 @@ retain the current conversation context. Scroll upward to review earlier turns;
 Sentinel does not force you back to the bottom while you are reading.
 
 While a request is running, **Run** is replaced by **Stop** (the **Esc** key does
-the same). The text received so far stays in the conversation. A stopped or
-failed message also stays, and is sent again as context with your next one.
+the same). Stop gives you control back at once. The text received so far stays in
+the conversation. A stopped or failed message also stays, and is sent again as
+context with your next one.
+
+Stop cannot interrupt the model itself, so the model may still finish in the
+background. Sentinel never shows that reply; the notice says so. A cloud provider
+may still bill for it. If the late reply arrives while Sentinel is open, its cost
+appears in **Cost history** as a cancelled run: `cancelled-exact` when the
+provider reported its token counts, `cancelled-estimated` when it did not (for
+example, you stopped part-way through a reply). A local Ollama model may stay
+busy until it finishes, so your next local request can wait behind it.
 
 The whole conversation is sent again with every message, so on a cloud provider
 a long conversation costs more than the estimate beside **Run** suggests: that

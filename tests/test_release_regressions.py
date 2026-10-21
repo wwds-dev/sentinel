@@ -425,7 +425,7 @@ def test_ollama_is_streamed_when_the_client_can():
             calls.append(("stream", model)); yield "tok"
         def chat(self, model, messages):
             calls.append(("chat", model)); return "whole"
-    stub = SimpleNamespace(ollama=Ollama(), assess_local_model=lambda m: None)
+    stub = SimpleNamespace(ollama=Ollama(), assess_local_model=lambda m, provider="ollama": None)
     result = GodAI.run_backend(stub, "ollama", "llama3", [{"role": "user", "content": "x"}], "x")
     assert list(result) == ["tok"]
     assert calls == [("stream", "llama3")]

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import _isolation
+
 
 _TEST_ROOT: Path | None = None
 
@@ -40,33 +42,8 @@ def _offline_model_lists():
     `list_models` would need to undo this. Whether the recommended models
     still exist on the real APIs is `scripts/check_live_models.py`'s job.
     """
-    from services.anthropic_client import AnthropicClientWrapper
-    from services.deepseek_client import DeepSeekClientWrapper
-    from services.gemini_client import GeminiClientWrapper
-    from services.kimi_client import KimiClientWrapper
-    from services.ollama_client import OllamaClient
-    from services.openai_client import OpenAIClientWrapper
-    from services.qwen_client import QwenClientWrapper
-
-    known = lambda self: list(self.KNOWN_MODELS)  # noqa: E731
     with pytest.MonkeyPatch.context() as patch:
-        for client in (
-            AnthropicClientWrapper, DeepSeekClientWrapper, GeminiClientWrapper,
-            KimiClientWrapper, OllamaClient, OpenAIClientWrapper,
-            QwenClientWrapper,
-        ):
-            patch.setattr(client, "list_models", known)
-        patch.setattr(OllamaClient, "model_details", lambda self: {})
-        # A test with a live event loop can let the startup scan fire; it must
-        # not reach Hugging Face for ratings.
-        from services import benchmarks
-
-        def _no_network(url):
-            raise RuntimeError("no network in tests")
-
-        patch.setattr(benchmarks, "_get_json", _no_network)
-        patch.setattr(benchmarks, "is_stale", lambda *a, **k: False)
-        patch.setattr(OllamaClient, "loaded_models", lambda self: [])
+        _isolation.offline_model_lists(patch)
         yield
 
 
@@ -100,6 +77,10 @@ def _isolated_settings_file():
         # The model watch too: a real data folder's adopted models would move
         # recommendations the tests assert on, and a scan would write to it.
         patch.setattr(main, "MODEL_WATCH_FILE", _TEST_ROOT / "data" / "model_watch.json")
+        # Hybrid routing's rules and savings tally (services/routing_advisor.py):
+        # every local Chat run a test finishes is tallied.
+        patch.setattr(main, "ROUTING_RULES_FILE", _TEST_ROOT / "data" / "routing_rules.json")
+        patch.setattr(main, "ROUTING_SAVINGS_FILE", _TEST_ROOT / "data" / "routing_savings.json")
         # No ratings unless a test loads them: which picks they produce
         # depends on which keys the real .env holds.
         patch.setattr(main, "RATINGS_CACHE_FILE", _TEST_ROOT / "data" / "lmarena_ratings.json")
@@ -143,20 +124,7 @@ def _real_chats_and_logs_are_never_written():
     assert not changed, f"the test run modified the real data folder: {changed}"
 
 
-class ForbiddenInTests(AssertionError):
-    """A test reached the real network or started a real program."""
-
-
-_LOOPBACK = {"localhost", "127.0.0.1", "::1", "", "0.0.0.0"}
-
-
-def _is_local_address(address) -> bool:
-    if isinstance(address, (str, bytes, os.PathLike)):      # AF_UNIX path
-        return True
-    host = address[0] if address else ""
-    if isinstance(host, bytes):
-        host = host.decode("ascii", "replace")
-    return host in _LOOPBACK or host.startswith("127.") or host.startswith("::ffff:127.")
+ForbiddenInTests = _isolation.ForbiddenInTests     # tests import it from here
 
 
 @pytest.fixture(autouse=True)
@@ -172,45 +140,10 @@ def _deny_network_and_processes(request, monkeypatch):
     Qt's own network stack (QNetworkAccessManager) does not go through Python
     sockets and is not covered here.
     """
-    import socket
-    import subprocess
-
     if request.node.get_closest_marker("allow_network") is None:
-        real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
-        real_getaddrinfo = socket.getaddrinfo
-
-        def connect(self, address):
-            if not _is_local_address(address):
-                raise ForbiddenInTests(f"test tried to connect to {address!r}")
-            return real_connect(self, address)
-
-        def connect_ex(self, address):
-            if not _is_local_address(address):
-                raise ForbiddenInTests(f"test tried to connect to {address!r}")
-            return real_connect_ex(self, address)
-
-        def getaddrinfo(host, *args, **kwargs):
-            if isinstance(host, bytes):
-                host = host.decode("ascii", "replace")
-            if host not in _LOOPBACK and not str(host).startswith("127."):
-                raise ForbiddenInTests(f"test tried to look up {host!r}")
-            return real_getaddrinfo(host, *args, **kwargs)
-
-        monkeypatch.setattr(socket.socket, "connect", connect)
-        monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
-        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
-
+        _isolation.deny_network(monkeypatch)
     if request.node.get_closest_marker("allow_process") is None:
-        real_popen_init = subprocess.Popen.__init__
-
-        def popen_init(self, args, *a, **kw):
-            raise ForbiddenInTests(f"test tried to start a program: {args!r}")
-
-        def forbidden_system(command):
-            raise ForbiddenInTests(f"test tried to run a shell command: {command!r}")
-
-        monkeypatch.setattr(subprocess.Popen, "__init__", popen_init)
-        monkeypatch.setattr(os, "system", forbidden_system)
+        _isolation.deny_processes(monkeypatch)
 
 
 # Every key a lookup source switches on. The app loads the real .env, so with
@@ -384,3 +317,13 @@ def _dispose_windows_a_module_leaked():
     from PySide6.QtCore import QEvent
     app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
+
+
+@pytest.fixture(autouse=True)
+def _no_reset_latch_leaks_between_tests():
+    """A real Emergency Reset erase (tests/test_portable_reset.py) sets a
+    process-wide latch that refuses data writes for the rest of the process.
+    In the app the process then quits; here the next test must start clean."""
+    yield
+    from services import portable_reset
+    portable_reset._ERASING.clear()

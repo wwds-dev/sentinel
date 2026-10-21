@@ -586,7 +586,7 @@ class TestBestFitIsPresentedAsABadge:
         win.refresh_recommendation_marks("chat")
         marked = next(i for i in range(win.model_box.count())
                       if win.model_box.itemData(i, RECOMMENDED_ROLE))
-        monkeypatch.setattr(win, "assess_local_model", lambda name: {
+        monkeypatch.setattr(win, "assess_local_model", lambda name, provider="ollama": {
             "level": "too_big", "message": "needs 64 GB of RAM"})
 
         win.mark_oversized_models(win.model_box)
@@ -830,7 +830,7 @@ class TestWorkspaceLayoutRegressions:
         }
         assert set(provider_groups) == {"Local providers", "Cloud providers"}
         assert [a.text() for a in provider_groups["Local providers"].actions()] == [
-            "ollama"
+            "ollama", "lmstudio"
         ]
         assert "openai" in {
             a.text() for a in provider_groups["Cloud providers"].actions()
@@ -840,7 +840,7 @@ class TestWorkspaceLayoutRegressions:
         assert not [
             action for action in model_menu.actions() if action.menu() is not None
         ]
-        assert [a.text() for a in model_menu.actions()] == [
+        assert [a.text() for a in model_menu.actions() if a.data() != "section"] == [
             model.itemText(index) for index in range(model.count())
         ]
 

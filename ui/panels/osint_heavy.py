@@ -29,7 +29,10 @@ from services.local_file_search import FileSearchFilters, FileSearchReport, norm
 from services.remote_file_search import validate_ssh_target
 from services.runtime_paths import user_data_base
 from ui.panels.base import AgentPanel
-from ui.workers import LiveCollectionWorker, LocalFileSearchWorker, RemoteFileSearchWorker
+from ui.workers import (
+    LiveCollectionWorker, LocalFileSearchWorker, RemoteFileSearchWorker, join_or_park,
+    shutdown_deadline,
+)
 from ui.widgets import MenuComboBox, SectionView
 
 
@@ -708,8 +711,11 @@ class OsintHeavyPanel(AgentPanel):
         self.status_label.setText("Stopped.")
         self.set_busy(self.investigate_btn, self.stop_btn, False)
 
-    def shutdown(self, timeout_ms: int = 2000) -> None:
-        """Cancel and join every worker before the widgets are destroyed."""
+    def shutdown(self, timeout_ms: int = 2000, *, deadline: float | None = None) -> None:
+        """Cancel every worker and join it against `deadline` (the window's
+        shared quit budget) before the widgets are destroyed. One that is still
+        inside a metadata read or an SFTP listing is parked, never terminated."""
+        deadline = shutdown_deadline(timeout_ms, deadline)
         workers = [self.worker, self._file_search_worker]
         for worker in workers:
             if worker is not None and worker.isRunning():
@@ -717,14 +723,7 @@ class OsintHeavyPanel(AgentPanel):
         if self._collecting:
             self._collecting = False
             self.abandon("cancelled")
-        for worker in workers:
-            if worker is None or not worker.isRunning() or not hasattr(worker, "wait"):
-                continue
-            if not worker.wait(timeout_ms) and hasattr(worker, "terminate"):
-                # Metadata reads and SFTP listings are bounded; destroying a
-                # live QThread at exit is the one thing worse than this.
-                worker.terminate()
-                worker.wait(timeout_ms)
+        join_or_park(workers, deadline)
 
     # ── Local file discovery ───────────────────────────────────────────
     @staticmethod
