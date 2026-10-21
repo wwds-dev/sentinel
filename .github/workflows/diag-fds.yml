@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [cov, nocov]
+        mode: [m1, m2, m3, m4]
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -30,8 +30,14 @@ jobs:
       - name: Test
         run: |
           set +e
-          if [ "${{ matrix.mode }}" = cov ]; then COV="--cov --cov-report="; else COV=""; fi
-          PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -q --tb=short tests/test_contract_tunnel_chat.py $COV > out.txt 2>&1
+          T=tests/test_contract_tunnel_chat.py
+          case "${{ matrix.mode }}" in
+            m1) FILES="tests/test_audit_must_fix.py tests/test_benchmarks.py $T";;
+            m2) FILES="tests/test_contract_beacon_sentry.py tests/test_contract_bloodhound.py tests/test_contract_spray_forge.py tests/test_contract_trace.py $T";;
+            m3) FILES="tests/test_agent_factory_atomicity.py tests/test_agent_factory_validation.py tests/test_agent_roster.py tests/test_agents_scenarios.py tests/test_alias_mint.py tests/test_app_identity.py tests/test_appkit_guard.py tests/test_bug_spray_feed.py tests/test_capability_router.py tests/test_chat_late_cost.py tests/test_chat_lifecycle.py tests/test_chat_stop.py $T";;
+            m4) FILES="$(ls tests/test_*.py | awk '$0 <= "tests/test_contract_tunnel_chat.py"' | tr '\n' ' ')";;
+          esac
+          PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -v --tb=line --cov --cov-report= $FILES > out.txt 2>&1
           code=$?
-          { echo "mode=${{ matrix.mode }} exit=$code"; tail -n 3 out.txt | cut -c1-170; echo ----; grep -n -m 1 -A 28 "^____" out.txt | cut -c1-170; } | head -c 3700 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
+          { echo "mode=${{ matrix.mode }} exit=$code"; grep -m 2 "FAILED\|ERROR\|Fatal Python" out.txt | cut -c1-170; tail -n 2 out.txt | cut -c1-170; } | head -c 3000 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
           exit $code
