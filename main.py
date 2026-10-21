@@ -341,6 +341,7 @@ class GodAI(QWidget):
         # below is the one place that talks to LM Studio, Ollama and the disk.
         self.local_inventory = local_models.LocalInventory()
         self.local_discovery_worker = None
+        self._background_stopped = False     # set by stop_background_work (quit, reset)
         # Ratings for local models: inherited from a base model or measured
         # here. Read from caches only; a measurement runs on its own worker.
         self.local_rating_store = local_ratings.RatingStore(LOCAL_RATINGS_FILE)
@@ -1332,7 +1333,7 @@ class GodAI(QWidget):
     def start_local_discovery(self) -> None:
         """Refresh the local inventory in the background (startup, Settings, Start server)."""
         worker = self.local_discovery_worker
-        if worker is not None and worker.isRunning():
+        if (worker is not None and worker.isRunning()) or self._background_stopped:
             return
         worker = LocalDiscoveryWorker(self.lmstudio, self.ollama, self.local_inventory)
         worker.finished_signal.connect(self._on_local_discovery)
@@ -1341,6 +1342,8 @@ class GodAI(QWidget):
 
     def _on_local_discovery(self, snap) -> None:
         """Runs on the UI thread: rows, router candidates and BEST FIT follow the snapshot."""
+        if self._background_stopped:
+            return                  # quitting or resetting: no rebuild of every model list
         register_local_models(local_models.router_candidates(snap))
         self.maybe_measure_local_models()
         try:
@@ -1365,7 +1368,7 @@ class GodAI(QWidget):
 
     def maybe_measure_local_models(self) -> None:
         """Start the automatic measurement of the next never-measured model."""
-        if not local_ratings.AUTOMATIC:
+        if not local_ratings.AUTOMATIC or self._background_stopped:
             return
         worker = self.local_measure_worker
         if worker is not None and worker.isRunning():
@@ -5824,6 +5827,9 @@ class GodAI(QWidget):
         """
         if deadline is None:
             deadline = time.monotonic() + QUIT_JOIN_BUDGET_S
+        # A local-model result queued before this still arrives; it must not
+        # rebuild every model list or start a new measurement on the way out.
+        self._background_stopped = True
         worker = self.chat_worker
         if worker is not None and worker.isRunning():
             # Cancel, stop listening and park first; then a join out of the
@@ -5907,6 +5913,11 @@ class GodAI(QWidget):
             self.stop_background_work()
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
+        # The tooltip filter sees every event in the app, and each one needs
+        # the GIL; while a request thread holds it, the teardown's events
+        # alone cost about a second of the 5 s quit limit (Q4).
+        if isinstance(self, QWidget):    # tests call closeEvent on a stand-in
+            QApplication.instance().removeEventFilter(self)
         event.accept()
 
 def _stop_notice(backend: str) -> str:

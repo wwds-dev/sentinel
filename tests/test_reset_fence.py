@@ -249,6 +249,21 @@ def test_the_fence_disconnects_the_local_model_runs(win):
     assert got == []
 
 
+def test_a_late_local_discovery_after_the_quit_rebuilds_nothing(win, monkeypatch):
+    """Merge of routing phases 0-4: a discovery result queued before the quit
+    rebuilt every model list on the way out (about 1.7 s, past the 5 s quit
+    limit), and could start a new measurement thread."""
+    rebuilt, started = [], []
+    monkeypatch.setattr(win, "_reload_all_model_lists", lambda: rebuilt.append(1))
+    monkeypatch.setattr(win, "maybe_measure_local_models", lambda: started.append(1))
+    monkeypatch.setattr(workers.LocalDiscoveryWorker, "start", lambda self: started.append(1))
+    monkeypatch.setattr(win, "_background_stopped", False)
+    win.stop_background_work()
+    win._on_local_discovery(win.local_inventory.snapshot())
+    win.start_local_discovery()
+    assert rebuilt == [] and started == []
+
+
 @pytest.mark.parametrize("write", ["history_save", "history_update", "settings", "model_watch"])
 def test_no_data_write_once_erasing_has_started(tmp_path, latch, write):
     from services import history_store, model_watch, settings_store
