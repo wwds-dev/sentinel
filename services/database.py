@@ -109,8 +109,27 @@ CREATE INDEX IF NOT EXISTS idx_runs_run_id     ON runs(run_id);
 """
 
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+class _ClosingConnection(sqlite3.Connection):
+    """A connection whose `with` block commits or rolls back and then closes it.
+
+    sqlite3's own context manager leaves the connection open until it is
+    garbage collected, so every `with get_connection() as conn:` held a file
+    handle for a while. Under a long session, or a test run, those pile up
+    until the process hits its open-file limit (macOS: a low default).
+    """
+
+    def __exit__(self, *exc_info):
+        try:
+            return super().__exit__(*exc_info)
+        finally:
+            self.close()
+
+
+def get_connection(*, close_on_exit: bool = True) -> sqlite3.Connection:
+    """Open the app database. `with` closes it unless close_on_exit is False."""
+    conn = sqlite3.connect(
+        str(DB_PATH), check_same_thread=False,
+        factory=_ClosingConnection if close_on_exit else sqlite3.Connection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -141,7 +160,7 @@ def init_db() -> None:
     """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     is_new = not DB_PATH.exists()
-    conn = get_connection()
+    conn = get_connection(close_on_exit=False)  # reused across several `with conn:` blocks
     integrity = conn.execute("PRAGMA quick_check").fetchone()[0]
     if integrity != "ok":
         conn.close()
