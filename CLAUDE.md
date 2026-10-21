@@ -17,6 +17,25 @@
 - Edit only the parts that need changing; do not regenerate whole files.
 - Never print or copy values from `.env`.
 
+## VPN Agent (Tunnel) rules
+Applies to Tor, the proxy chain, the MAC changer, the kill switch and server provisioning. These run on the owner's own Mac and provision only servers the owner owns or rents. What Sentinel is: `docs/company/app-context.md`.
+- Fail closed: if a tunnel, Tor circuit or proxy hop drops, traffic is blocked. No clear-net fallback.
+- No DNS, IPv6 or WebRTC leaks; all DNS goes through the tunnel. The kill switch must work and be covered by a test.
+- MAC changer: record the original address, restore it on exit and on crash, validate the address, use locally administered unicast addresses, touch only the interface the user selected.
+- Tor control port: localhost only, authenticated.
+- Subprocess calls use argument lists. No `shell=True`, no string-built commands. Validate and allow-list interface names and user input.
+- Least privilege: root-level actions stay in a small separate path with the macOS confirmation dialog.
+- Secrets (SSH keys, API tokens) live in the OS keychain. Never log, commit or print them.
+- Provisioning: dry-run mode, confirmation before creating or destroying paid resources, idempotent, with teardown.
+- No traffic or IP logging beyond local diagnostics, and redact those.
+- Every feature ships with tests, including failure cases (hop down, DNS failure, crash mid-change). Never claim a feature works without a passing test.
+
+## Local-model work
+- One module or function per task, using the spec and only the files it needs (small context).
+- Commit trailers: `drafted-by: <model>` and `verified-by: <checks that passed>`. No verified-by line means unverified.
+- Never run live MAC, kill-switch, tunnel or leak actions on this machine. Tests use mocks; real checks happen in a VM or on a throwaway network.
+- Done means tests pass, TODO.md is updated, and for Tier C items an Opus audit is finished. Tiers and checks: Local-model plan in TODO.md.
+
 ## Current goal
 Prepare Sentinel for a formal testing phase: professional level, with functionality at 100% of what its agents promise before testing starts.
 
