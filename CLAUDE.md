@@ -6,7 +6,7 @@
 
 ## Task lists
 - `TODO.md` and `SUGGESTIONS.md` in this folder feed the Lab Projects Monitor. Keep their existing format exactly.
-- TODO items look like: - [ ] `P1` `bug` `@me` Task text. Priority P0-P3, category from the legend at the top of TODO.md, owner `@me` (needs the user) or `@ai` (Claude can do it). Longer reasoning goes under the **Detail** section, not in the checklist line. Mark finished items - [x].
+- TODO items look like: - [ ] `P1` `bug` `@me` Task text. Priority P0-P3, category from the legend at the top of TODO.md, owner `@me` (needs the user), `@ai` (Claude can do it) or `@local` (a local model drafts it; the tiers and required checks are in the Local-model plan under Detail in TODO.md). Longer reasoning goes under the **Detail** section, not in the checklist line. Mark finished items - [x].
 - SUGGESTIONS use the status tags IDEA, CONSIDERING, PLANNED, DONE, REJECTED.
 - When the user mentions a new open item, offer to add it to TODO.md instead of keeping a separate list.
 

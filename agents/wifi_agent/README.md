@@ -34,7 +34,7 @@ capabilities, signal and security.
 ## How it works
 - `detect_usb_adapters()` parses `system_profiler SPUSBDataType -json` against `KNOWN_ADAPTERS` (VID/PID → chipset, monitor/inject support, Kali iface, driver notes).
 - `network_interface_status()` and `build_connection_preflight()` identify the routed internet/control interface and dedicated monitor adapter. They are read-only.
-- `build_kali_commands(operation, adapter, bssid, channel, essid)` returns a numbered, commented command block; refuses injection ops on adapters that can't inject.
+- `build_kali_commands(operation, adapter, bssid, channel, essid)` returns a numbered, commented command block. **Handshake Capture** and **Deauth Attack** require packet injection: on an adapter that can't inject they return only a refusal naming an injection-capable adapter (TL-WN722N / AWUS036ACH). **WPS Audit** and **PMKID Attack** don't need injection.
 - Live modes run via `SubprocessWorker` (QThread). AI Analysis routes raw output through `ChatWorker` + `WiFiAgent.build_messages()`.
 
 ## Under the hood — files & functions

@@ -4,7 +4,8 @@ Sentinel is a local-first PySide6 desktop command centre for security, investiga
 
 **Current release: v2.002.** The canonical value lives in [`VERSION`](VERSION)
 and is shown beside **SENTINEL** in the app. See the
-[versioning policy](docs/versioning.md) for numbering and release steps.
+[versioning policy](docs/versioning.md) for numbering and release steps, and
+[`CHANGELOG.md`](CHANGELOG.md) for the release-by-release, user-facing history.
 
 Sentinel's built-in roster is intentionally limited to eight agents:
 

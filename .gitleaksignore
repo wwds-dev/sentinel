@@ -20,3 +20,5 @@
 fd83e782298b85bf6c23434492c762038ba12a2d:services/database.py:generic-api-key:442
 fd83e782298b85bf6c23434492c762038ba12a2d:tests/test_price_resolution.py:generic-api-key:158
 bb3bee5b4c79e45dfaaf70a1b7f47add790bf0cd:tests/test_contract_tunnel_chat.py:generic-api-key:41
+22505900678da0c56be0bcd2f48bded0be3956e0:tests/test_vpn_review_gate.py:generic-api-key:19
+a0c90a35f3709b03aaae58ed5da8df4dca6dc8a7:tests/test_vpn_review_gate.py:generic-api-key:19
