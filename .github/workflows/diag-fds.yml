@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [one]
+        mode: [cov, nocov]
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -30,7 +30,8 @@ jobs:
       - name: Test
         run: |
           set +e
-          PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -v --cov --cov-report= > out.txt 2>&1
+          if [ "${{ matrix.mode }}" = cov ]; then COV="--cov --cov-report="; else COV=""; fi
+          PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -q --tb=short tests/test_contract_tunnel_chat.py $COV > out.txt 2>&1
           code=$?
-          { echo "exit=$code"; grep -n -m 1 -B 4 -A 2 "FAILED\|ERROR" out.txt | cut -c1-170; echo ----; grep -n -B 6 -m 1 "Fatal Python" out.txt | cut -c1-170; } | head -c 3600 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
+          { echo "mode=${{ matrix.mode }} exit=$code"; tail -n 3 out.txt | cut -c1-170; echo ----; grep -n -m 1 -A 28 "^____" out.txt | cut -c1-170; } | head -c 3700 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
           exit $code
