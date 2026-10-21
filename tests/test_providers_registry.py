@@ -440,3 +440,43 @@ def test_running_port_reads_lms_server_status(monkeypatch):
     assert lc.running_port() is None
     monkeypatch.setattr(lc, "lms_binary", lambda: None)
     assert lc.running_port() is None
+
+
+# ── MLX models (2026-10-22) ─────────────────────────────────────────────────
+
+def _mlx_folder(root, publisher, repo, bits=4, config=True):
+    folder = root / publisher / repo
+    folder.mkdir(parents=True)
+    (folder / "model-00001-of-00002.safetensors").write_bytes(b"x" * 100)
+    (folder / "model-00002-of-00002.safetensors").write_bytes(b"x" * 50)
+    if config:
+        (folder / "config.json").write_text(json.dumps({"quantization": {"bits": bits}}))
+    return folder
+
+
+def test_disk_scan_lists_mlx_models_with_size_and_bits(tmp_path):
+    from services.lmstudio_client import scan_disk
+    _mlx_folder(tmp_path, "lmstudio-community", "Qwen3-Coder-30B-MLX-4bit", bits=4)
+    (found,) = scan_disk(tmp_path)
+    assert found["id"] == "lmstudio-community/Qwen3-Coder-30B-MLX-4bit"
+    assert found["name"] == "Qwen3-Coder-30B (MLX)" and found["quant"] == "4BIT"
+    assert found["size_bytes"] == 150 and found["arch"] == "mlx"
+
+
+def test_mlx_bits_fall_back_to_the_folder_name_and_non_models_are_ignored(tmp_path):
+    from services.lmstudio_client import scan_disk
+    folder = _mlx_folder(tmp_path, "pub", "Thing-MLX-8bit")
+    (folder / "config.json").write_text("{not json")
+    (tmp_path / "pub" / "no-weights").mkdir()
+    (tmp_path / "pub" / "no-weights" / "config.json").write_text("{}")
+    _mlx_folder(tmp_path, "pub", "no-config", config=False)
+    assert [(m["id"], m["quant"]) for m in scan_disk(tmp_path)] == [("pub/Thing-MLX-8bit", "8BIT")]
+
+
+def test_server_ids_find_their_size_even_under_another_publisher(monkeypatch, tmp_path):
+    from services import lmstudio_client as lc
+    _mlx_folder(tmp_path, "lmstudio-community", "Qwen3.8-27B-MLX-4bit")
+    monkeypatch.setenv("LMSTUDIO_MODELS_DIR", str(tmp_path))
+    models = [{"id": "qwen/qwen3.8-27b", "size_bytes": None}]
+    lc.LMStudioClient()._attach_sizes(models)
+    assert models[0]["size_bytes"] == 150

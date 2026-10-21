@@ -86,6 +86,47 @@ def scan_disk(root: Path | None = None) -> list[dict]:
             "max_context": None,
             "path": str(path),
         })
+    found.extend(_scan_mlx(base))
+    return found
+
+
+def _scan_mlx(base: Path) -> list[dict]:
+    """MLX models: a folder `publisher/repo/` of config.json and .safetensors.
+
+    They have no .gguf, so the scan above cannot see them. The size is the sum
+    of the weight shards and the quantisation comes from config.json
+    (`quantization.bits`), else from the folder name ("MLX-4bit").
+    """
+    found = []
+    for folder in sorted(p for p in base.glob("*/*") if p.is_dir()):
+        shards = list(folder.glob("*.safetensors"))
+        if not shards or not (folder / "config.json").is_file():
+            continue
+        try:
+            size = sum(p.stat().st_size for p in shards)
+        except OSError:
+            continue
+        bits = None
+        try:
+            bits = (json.loads((folder / "config.json").read_text(encoding="utf-8"))
+                    .get("quantization") or {}).get("bits")
+        except (OSError, ValueError, AttributeError):
+            pass
+        if not bits:
+            named = re.search(r"(\d+)[-_ ]?bit", folder.name, re.I)
+            bits = named.group(1) if named else None
+        found.append({
+            "id": f"{folder.parent.name}/{folder.name}",
+            "name": re.sub(r"[-_.]?MLX(?:[-_.]?\d+bit)?$", "", folder.name, flags=re.I)
+            + " (MLX)",
+            "publisher": folder.parent.name,
+            "quant": f"{bits}BIT" if bits else "",
+            "size_bytes": size,
+            "state": STATE_DISK,
+            "arch": "mlx",
+            "max_context": None,
+            "path": str(folder),
+        })
     return found
 
 
@@ -184,13 +225,17 @@ class LMStudioClient:
     def _attach_sizes(self, models: list[dict]) -> None:
         """The server does not report file size; the disk scan does."""
         disk = scan_disk()
+        squash = lambda text: re.sub(r"[^a-z0-9]", "", text.casefold())  # noqa: E731
         for model in models:
-            key = re.sub(r"[^a-z0-9]", "", model["id"].casefold())
-            for item in disk:
-                if key and key in re.sub(r"[^a-z0-9]", "",
-                                         item["id"].casefold()):
-                    model["size_bytes"] = item["size_bytes"]
-                    model["path"] = item["path"]
+            # The server's id may carry a different publisher than the folder
+            # ("qwen/qwen3.8-27b" is stored under lmstudio-community), so the
+            # bare repo name is tried when the full id finds nothing.
+            keys = [squash(model["id"]), squash(model["id"].rsplit("/", 1)[-1])]
+            for key in dict.fromkeys(k for k in keys if k):
+                hit = next((i for i in disk if key in squash(i["id"])), None)
+                if hit:
+                    model["size_bytes"] = hit["size_bytes"]
+                    model["path"] = hit["path"]
                     break
 
     def list_models(self) -> list[str]:
