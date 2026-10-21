@@ -26,21 +26,23 @@ class Settings:
 def test_quit_anyway_syncs_the_settings_before_exiting(monkeypatch):
     log = []
     monkeypatch.setattr(main.os, "_exit", lambda code: log.append(f"exit{code}"))
-    main._finish_quit_anyway(SimpleNamespace(_quit_anyway=True), Settings(log))
+    main._leave(SimpleNamespace(_quit_anyway=True), Settings(log))
     assert log == ["sync", "exit0"]
 
 
-def test_a_normal_quit_neither_syncs_nor_exits(monkeypatch):
+def test_a_normal_quit_also_syncs_and_exits(monkeypatch):
+    """ADR 0001 (owner decision D1): every quit leaves through os._exit, not
+    only Quit anyway, so Qt's teardown never meets a parked thread."""
     log = []
-    monkeypatch.setattr(main.os, "_exit", lambda code: log.append("exit"))
-    main._finish_quit_anyway(SimpleNamespace(), Settings(log))
-    assert log == []
+    monkeypatch.setattr(main.os, "_exit", lambda code: log.append(f"exit{code}"))
+    main._leave(SimpleNamespace(), Settings(log))
+    assert log == ["sync", "exit0"]
 
 
 def test_after_a_committed_reset_nothing_is_written_back(monkeypatch):
     log = []
     monkeypatch.setattr(main.os, "_exit", lambda code: log.append("exit"))
-    main._finish_quit_anyway(SimpleNamespace(_quit_anyway=True, _portable_reset_committed=True),
+    main._leave(SimpleNamespace(_quit_anyway=True, _portable_reset_committed=True),
                              Settings(log))
     assert log == ["exit"]                 # no sync into the folder that was just erased
 

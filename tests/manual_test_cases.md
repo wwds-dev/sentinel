@@ -18,12 +18,12 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 2. Use a local model and ask: `Explain the difference between hashing and encryption in plain language.`
 
 - [ ] A relevant response streams into the output area.
-- [ ] Stop cancels an in-progress response without freezing the app (try it during a local streamed reply and a cloud one); the text received so far stays and a "stopped by user" notice follows.
+- [ ] Stop cancels an in-progress response without freezing the app (try it during a local streamed reply and a cloud one); Stop returns at once, the text received so far stays and a "Chat request stopped." notice follows (for a cloud provider it also says the provider may bill for it).
 - [ ] The completed request appears in run history and saved chats.
 - [ ] Usage and cost indicators update appropriately for the selected provider.
 - [ ] After two messages in one conversation, History shows one entry (not two). Rename it, send a third message, and the name and entry count are unchanged.
 - [ ] Choose Writing, send a message, then choose Coding and send another: the SYSTEM block at the top of the transcript now shows the Coding prompt and the second answer follows it.
-- [ ] Press Stop during a reply, then send another message: the "stopped by user" notice stays in the transcript, and the next reply still follows the Tool's instructions.
+- [ ] Press Stop during a reply, then send another message: the "Chat request stopped." notice stays in the transcript, and the next reply still follows the Tool's instructions.
 - [ ] While a reply is streaming, press New chat: the request stops and the transcript clears.
 - [ ] In Local only mode, pick a cloud provider and press Run: the request runs on Ollama, the cost beside Run ends with "local only", and the Run log shows provider ollama.
 - [ ] In Hybrid allowed with that provider unticked: typing raises no error and the cost reads "blocked · see route"; Run shows "Request blocked" naming the checkbox.

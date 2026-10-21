@@ -110,8 +110,9 @@ buttons says whether it is running, installed but not loaded, or off.
 
 Two details. After a **Reset baseline**, whichever pass runs first — background or
 manual — records the new baseline, so run one yourself on a network you trust. And
-the background watch is meant for Sentinel run from a source checkout; it has not
-been tried from a self-contained app, and in portable mode the launch agent lives on
+the background watch is only available when you run Sentinel from a source
+checkout: in the packaged app the Install button refuses and tells you to run
+from the checkout (developer mode). In portable mode the launch agent lives on
 the host Mac rather than on the USB volume, so remove it when you no longer want it.
 
 ## Worked example
