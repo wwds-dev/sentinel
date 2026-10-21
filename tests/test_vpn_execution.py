@@ -351,7 +351,18 @@ def test_a_plain_config_has_no_hooks(tmp_path):
     assert vpn_execution.config_root_hooks(tmp_path / "missing.conf", "WireGuard") == []
 
 
-def test_review_surfaces_hooks_in_sections_confirmation_and_warnings(tmp_path):
+def test_review_surfaces_hooks_in_sections_confirmation_and_warnings(tmp_path, monkeypatch):
+    # Model a root-owned /opt: the real /opt differs between a Mac, a laptop and the
+    # GitHub runner, and this test is about a hook that is acceptable, not about /opt.
+    import stat as _stat_mod
+    import types
+    root_dir = _stat_mod.S_IFDIR | 0o755
+
+    def fake_stat(candidate):
+        if str(candidate) in ("/opt", "/"):
+            return types.SimpleNamespace(st_uid=0, st_mode=root_dir)
+        raise FileNotFoundError(candidate)
+    monkeypatch.setattr(vpn_execution, "_stat", fake_stat)
     path = tmp_path / "wgh.conf"
     path.write_text(
         "[Interface]\n"

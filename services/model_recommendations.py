@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence
 
+from services.providers import is_local as is_local_provider
 from services.provider_catalog import provider_metadata
 
 
@@ -91,7 +92,7 @@ class RouteDecision:
 
     @property
     def mode(self) -> str:
-        return "Local only" if self.provider == "ollama" else "Cloud only"
+        return "Local only" if is_local_provider(self.provider) else "Cloud only"
 
     @property
     def pricing(self) -> PricingMetadata:
@@ -167,6 +168,33 @@ def catalog() -> tuple[ModelProfile, ...]:
 def register_profile(profile: ModelProfile) -> None:
     """Let the router rank and price an adopted model from now on."""
     _ADOPTED_PROFILES[(profile.provider, profile.model)] = profile
+
+
+_LOCAL_PROFILES: set[tuple[str, str]] = set()
+
+
+def register_local_models(models) -> None:
+    """Make every discovered local model a router candidate, from any selection.
+
+    `models` are services.local_models.LocalModel rows. A rated one (inherited
+    from its base model, or measured: services/local_ratings.py) enters the
+    rating band at a known price of zero; an unrated one stays out of a rated
+    pick, because nothing shows it is good enough. Privacy first and Local only
+    prefer them either way. Models that disappeared
+    since the last call are withdrawn.
+    """
+    seen = set()
+    for m in models:
+        key = (m.provider, m.id)
+        seen.add(key)
+        register_profile(ModelProfile(
+            m.provider, m.id,
+            _caps(reasoning=2, coding=1, context_window=int(m.max_context or 8_000),
+                  cost=1, latency=2, local=True, privacy=3), 2))
+    for key in _LOCAL_PROFILES - seen:
+        unregister_profile(*key)
+    _LOCAL_PROFILES.clear()
+    _LOCAL_PROFILES.update(seen)
 
 
 def unregister_profile(provider: str, model: str) -> None:
@@ -304,11 +332,33 @@ def _score(model: ModelProfile, request: RequestProfile, prefs: RoutingPreferenc
     return score
 
 
+_DATED_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
+
+
+def same_model(wanted: str, listed: str) -> bool:
+    """True when `listed` names the model `wanted` and not merely a sibling of it.
+
+    Exact, ignoring case, or one known alias form: a dated snapshot of the same
+    model ("claude-sonnet-5-5-20261001"), "-latest", or Ollama's ":latest" tag.
+    A bare prefix is not enough: "gpt-4o" is not "gpt-4o-mini".
+    """
+    a, b = wanted.strip().lower(), listed.strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    for short, long in ((a, b), (b, a)):
+        if long.startswith(short) and (
+                long[len(short):] in ("-latest", ":latest")
+                or _DATED_SUFFIX.fullmatch(long[len(short):])):
+            return True
+    return False
+
+
 def _available(model: ModelProfile, available: Mapping[str, Sequence[str]] | None) -> bool:
     if available is None:
         return True
-    models = available.get(model.provider, ())
-    return model.model in models or any(item.startswith(model.model) or model.model.startswith(item) for item in models)
+    return any(same_model(model.model, item) for item in available.get(model.provider, ()))
 
 
 # ── Value: never pay more for the same fit ──────────────────────────────────
@@ -430,6 +480,20 @@ def set_rating_lookup(lookup: RatingLookup | None) -> None:
     _RATING_LOOKUP = lookup
 
 
+def rating_for(provider: str, model: str, task: str):
+    """The installed rating for one model and kind of work, or None.
+
+    What the router itself would read; the routing advisor
+    (services/routing_advisor.py) compares the selected model with the best
+    one through this."""
+    if _RATING_LOOKUP is None:
+        return None
+    try:
+        return _RATING_LOOKUP(provider, model, task)
+    except Exception:
+        return None
+
+
 def _rate(lookup: RatingLookup, profile: ModelProfile, task: str):
     try:
         return lookup(profile.provider, profile.model, task)
@@ -453,18 +517,18 @@ def _route_by_rating(request: RequestProfile, prefs: RoutingPreferences,
                   key=lambda m: (-rated[key(m)].score, _price_key(m, prices), m.provider, m.model))
     rating = rated[key(chosen)]
     price = _describe_price(chosen, prices)
-    source = "LMArena"
+    source = _rating_source(rating)
     if chosen is top:
         reason = (f"Detected {request.task}; {chosen.model} rates highest for "
-                  f"{rating.label} on {source} ({rating.score:.0f})"
+                  f"{rating.label} {source} ({rating.score:.0f})"
                   + (f" and is the cheapest of the {len(fit)} within {margin} points"
                      if len(fit) > 1 else "")
                   + f" ({price}).")
     else:
         top_rating = rated[key(top)]
         reason = (f"Detected {request.task}; {chosen.model} rates {rating.score:.0f} for "
-                  f"{rating.label} on {source}, within {margin} points of the best "
-                  f"({top.model}, {top_rating.score:.0f}, "
+                  f"{rating.label} {source}, within {margin} points of the best "
+                  f"({top.model}, {top_rating.score:.0f} {_rating_source(top_rating)}, "
                   f"{_describe_price(top, prices)}), and is the "
                   f"cheapest of the {len(fit)} that are ({price}).")
     unrated = len(eligible) - len(pool)
@@ -475,6 +539,14 @@ def _route_by_rating(request: RequestProfile, prefs: RoutingPreferences,
                      for m in rest)[:3]
     return RouteDecision(request.task, chosen.provider, chosen.model, reason, fallback,
                          basis="rating")
+
+
+def _rating_source(rating) -> str:
+    """Where a rating comes from, as the reason says it: LMArena for a cloud
+    model; for a local one, measured on this Mac or its base model's rating
+    (services/local_ratings.py)."""
+    source = getattr(rating, "source", None)
+    return f"({source})" if source else "on LMArena"
 
 
 def _price_key(profile: ModelProfile, prices: PriceLookup | None) -> tuple[bool, float]:
@@ -497,11 +569,16 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
                   preferences: RoutingPreferences | None = None,
                   available_models: Mapping[str, Sequence[str]] | None = None,
                   enabled_providers: Iterable[str] | None = None,
+                  allowed_providers: Iterable[str] | None = None,
                   manual_provider: str | None = None, manual_model: str | None = None,
                   candidates: Sequence[ModelProfile] | None = None,
                   prices: PriceLookup | None = None,
                   ratings: RatingLookup | None = None) -> RouteDecision:
     """Pick a provider/model for one request.
+
+    `allowed_providers` is the agent/tool allow-list from the registry; it
+    narrows `enabled_providers`, so the router never picks what the Validator
+    would refuse afterwards. None means no restriction.
 
     `candidates` replaces the catalog for this call only; model_watch uses it
     to ask "where would this route if that model were adopted?" without
@@ -511,6 +588,8 @@ def route_request(prompt: str, *, agent: str = "chat", tool: str = "", context_t
     prefs = preferences or RoutingPreferences()
     profiles = tuple(candidates) if candidates is not None else catalog()
     enabled = set(enabled_providers) if enabled_providers is not None else {m.provider for m in profiles}
+    if allowed_providers is not None:
+        enabled &= set(allowed_providers)
     if manual_provider and manual_model:
         match = next((m for m in profiles if m.provider == manual_provider and m.model == manual_model), None)
         if manual_provider in enabled and match and _compatible(match, request, prefs) and _available(match, available_models):
@@ -644,7 +723,7 @@ TASK_RECOMMENDATIONS = {
 
 def as_dict(rec: Recommendation, *, mode: str | None = None) -> dict:
     pricing = pricing_metadata(rec.provider, rec.model)
-    return {"mode": mode or ("Local only" if rec.provider == "ollama" else "Hybrid allowed"), "provider": rec.provider, "model": rec.model, "reason": rec.reason, "pricing": pricing, "cost_label": pricing.compact}
+    return {"mode": mode or ("Local only" if is_local_provider(rec.provider) else "Hybrid allowed"), "provider": rec.provider, "model": rec.model, "reason": rec.reason, "pricing": pricing, "cost_label": pricing.compact}
 
 
 def find_model(names: Sequence[str], wanted: str) -> int:
@@ -670,11 +749,24 @@ def find_model(names: Sequence[str], wanted: str) -> int:
     return -1
 
 
-def resolve_available_model(wanted: str, available: list[str]) -> str:
-    if not available: return wanted
-    if wanted in available: return wanted
-    target = wanted.lower()
+@dataclass(frozen=True)
+class ResolvedModel:
+    model: str
+    substituted: bool = False
+    note: str = ""
+
+
+def resolve_model(wanted: str, available: Sequence[str]) -> ResolvedModel:
+    """The listed id for `wanted`, saying so when a different model stands in."""
+    if not available:
+        return ResolvedModel(wanted)
     for model in available:
-        candidate = model.lower()
-        if candidate.startswith(target) or target.startswith(candidate): return model
-    return available[0]
+        if same_model(wanted, model):
+            return ResolvedModel(model)
+    return ResolvedModel(
+        available[0], True,
+        f"{wanted} is not available from this provider; using {available[0]} instead.")
+
+
+def resolve_available_model(wanted: str, available: list[str]) -> str:
+    return resolve_model(wanted, available).model

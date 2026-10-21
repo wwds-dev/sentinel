@@ -113,7 +113,7 @@ def win(monkeypatch):
         monkeypatch.setattr(QMessageBox, name, staticmethod(lambda *a, **k: None))
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     window = main.GodAI()
-    window.assess_local_model = lambda model: None
+    window.assess_local_model = lambda model, provider="ollama": None
     window.provider_key_available = lambda provider: True
     window.agent_box.setCurrentText("chat")
     window.execution_mode_box.setCurrentText("Hybrid allowed")

@@ -13,7 +13,7 @@ Schema (all fields required except `reasoning`):
   "name": "snake_case_name",
   "label": "Display Name (title case)",
   "description": "One sentence describing what this agent does.",
-  "allowed_providers": ["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"],
+  "allowed_providers": ["ollama", "lmstudio", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"],
   "allowed_tools": ["General Chat"],
   "budget_limit_eur": null,
   "requires_approval": false,
@@ -23,7 +23,7 @@ Schema (all fields required except `reasoning`):
 
 Rules:
 - name must be lowercase with underscores, no spaces (e.g. "cyber_security").
-- allowed_providers: only include providers the agent genuinely needs. Local-only = ["ollama"].
+- allowed_providers: only include providers the agent genuinely needs. Local-only = ["ollama"] or ["lmstudio"].
 - allowed_tools: only use tool names already available in Sentinel.
 - budget_limit_eur: null means no cap. For paid agents set a reasonable EUR limit (e.g. 5.0).
 - system_prompt: write a detailed, useful system prompt the agent will use every run.

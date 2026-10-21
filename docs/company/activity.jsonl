@@ -18,3 +18,5 @@
 {"ts": "2026-10-14T07:01:11", "phase": "document", "state": "start", "spec": "no-thread-terminate"}
 {"ts": "2026-10-14T07:06:43", "phase": "document", "state": "done", "spec": "no-thread-terminate"}
 {"ts": "2026-10-14T07:07:03", "phase": "release", "state": "blocked", "spec": "no-thread-terminate"}
+{"ts": "2026-10-19T20:06:18", "phase": "build", "state": "start", "spec": "local-model-routing"}
+{"ts": "2026-10-19T20:29:29", "phase": "build", "state": "done", "spec": "local-model-routing"}

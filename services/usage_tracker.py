@@ -1,4 +1,5 @@
 from datetime import datetime
+from services.providers import is_local as is_local_provider
 from services.database import get_connection
 from services.price_resolution import resolve_price_row
 from services.provider_catalog import CLOUD_PROVIDERS
@@ -118,7 +119,7 @@ class UsageTracker:
         *,
         cached_input_tokens: int = 0,
     ) -> float:
-        if backend == "ollama":
+        if is_local_provider(backend):
             return 0.0
 
         with get_connection() as conn:

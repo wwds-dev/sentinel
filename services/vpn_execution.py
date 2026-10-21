@@ -326,6 +326,24 @@ def _path_word(word: str) -> str | None:
     return word if word.startswith(("/", "~")) else None
 
 
+# The PATH the privileged shell runs a hook with: the authorisation dialog's
+# default, with wg-quick's own directory put first (vpn_connection.wg_quick_command).
+_PRIVILEGED_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
+
+def _which_privileged(name: str) -> str | None:
+    """Where a bare command word resolves for the privileged shell, or None
+    (a shell builtin, or not installed). Looks in the same directories, in the
+    same order, that ``wg_quick_command`` gives root."""
+    exe = shutil.which("wg-quick")
+    dirs = ((os.path.dirname(exe),) if exe else ()) + _PRIVILEGED_PATH
+    for directory in dirs:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _unsafe_executable_reason(path: Path) -> str | None:
     """Why a root-run program could be replaced by a normal user, or None.
     Root must own the file and every directory above it, none of them group- or
@@ -361,6 +379,16 @@ def _program_findings(raw: str, value: str, words: list[str],
         command = segment[index] if index < len(segment) else ""
         base = command.strip("'\"").rsplit("/", 1)[-1]
         runs_code = bool(_INTERPRETER.fullmatch(base))
+        bare = command.strip("'\"")
+        if protocol == "WireGuard" and re.fullmatch(r"[A-Za-z0-9_.+-]+", bare):
+            # A bare command word is found through PATH, which includes wg-quick's
+            # (often user-writable) Homebrew bin directory: judge what it resolves to.
+            resolved = _which_privileged(bare)
+            reason = _unsafe_executable_reason(Path(resolved)) if resolved else None
+            if reason:
+                unsafe.append(f"The {raw} hook runs '{bare}' as administrator, which "
+                              f"resolves to {resolved}, and {reason}, so a normal user "
+                              "could replace it.")
         for position, word in enumerate(segment[index:]):
             path = _path_word(word)
             if path is None:
@@ -663,6 +691,13 @@ def review_execution(action: str, profile: dict | None, *,
             # the review finds the same file and hashes and scans that.
             source = next((Path(d) / f"{interface}.conf" for d in WG_CONFIG_DIRS
                            if (Path(d) / f"{interface}.conf").is_file()), None)
+            if source is not None:
+                # Run exactly the file that is hashed and scanned here. A bare name
+                # lets wg-quick search its own directory list (which differs between
+                # builds), so it could load a different <interface>.conf as root.
+                target = str(source)
+                command = vpn_connection.wg_quick_command(
+                    "up" if action == "connect" else "down", target)
         if source is not None:
             # Both actions read the file: wg-quick down re-reads it and runs
             # PreDown/PostDown, so a disconnect is reviewed like a connect.
@@ -942,7 +977,13 @@ def execute(action: str, profile: dict, *,
                                    success=False, error=message)
     else:
         runner = vpn_connection.connect if review.action == "connect" else vpn_connection.disconnect
-        result = runner(profile, **kwargs)
+        run_profile = profile
+        if (review.protocol == "WireGuard" and review.target
+                and not vpn_connection.resolve_config_path(profile)
+                and os.path.isabs(review.target)):
+            # An interface-only profile: run the reviewed file, not a bare name.
+            run_profile = {**profile, "config_path": review.target}
+        result = runner(run_profile, **kwargs)
         outcome = ExecutionOutcome(
             review, ran=True, success=bool(result.get("success")),
             output=redact_secrets(str(result.get("output") or ""))[:OUTPUT_LIMIT],

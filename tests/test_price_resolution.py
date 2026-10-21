@@ -341,3 +341,23 @@ def test_the_correction_is_idempotent_and_repairs_a_zero_gemini_database(fresh_d
         assert [tuple(r) for r in again.execute(
             "SELECT backend, model, input_per_1m_usd, cached_input_per_1m_usd, output_per_1m_usd "
             "FROM pricing ORDER BY backend, model")] == once
+
+
+def test_pricing_json_holds_every_static_seeded_row(fresh_db):
+    """One source of truth: the seed lists a row, pricing.json carries it unchanged.
+
+    Run scripts/sync_pricing_json.py to repair. Date-dependent rows stay in the seed.
+    """
+    import json
+    from pathlib import Path
+
+    shipped = json.loads((Path(__file__).resolve().parents[1] / "config" / "pricing.json").read_text())
+    for backend, model, inp, out in database._seeded_prices():
+        if (backend, model) in database.DATE_DEPENDENT_PRICES:
+            continue
+        rates = shipped.get(backend, {}).get(model)
+        assert rates is not None, f"pricing.json lacks {backend}/{model}; run scripts/sync_pricing_json.py"
+        assert (rates["input_per_1m_usd"], rates["output_per_1m_usd"]) == (inp, out), (backend, model)
+    for backend, model in ("anthropic", "claude-opus-5-5"), ("anthropic", "claude-sonnet-5-5"), \
+            ("gemini", "gemini-3.1-pro-preview"):
+        assert model in shipped[backend]

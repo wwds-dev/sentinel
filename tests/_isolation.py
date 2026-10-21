@@ -59,6 +59,51 @@ def offline_model_lists(patch) -> None:
     patch.setattr(benchmarks, "is_stale", lambda *a, **k: False)
     patch.setattr(OllamaClient, "loaded_models", lambda self: [])
 
+    # What is "on this Mac" must not depend on this Mac. The inventory
+    # starts pre-seeded from the stubbed Ollama (its KNOWN_MODELS, no
+    # sizes) with LM Studio off and nothing on disk, so no test reaches a
+    # socket or ~/.lmstudio, and nothing runs discovery on the UI thread.
+    from types import SimpleNamespace
+    from services import local_models
+
+    lm_off = SimpleNamespace(server_up=lambda: False, model_details=lambda: [])
+    real_init = local_models.LocalInventory.__init__
+    real_discover = local_models.discover
+
+    def stubbed(*a, **k):
+        return real_discover(lm_off, OllamaClient(),
+                             memory=lambda: (16e9, 24e9), lms_binary=lambda: None)
+
+    def seeded(self, *a, **k):
+        real_init(self, *a, **k)
+        self.store(stubbed())
+
+    # A live event loop lets the startup discovery fire; it must not read
+    # this Mac either.
+    patch.setattr(local_models, "discover", stubbed)
+
+    patch.setattr(local_models.LocalInventory, "__init__", seeded)
+    patch.setattr(local_models.LocalInventory, "stale", lambda self, now=None: False)
+
+    # Building a window must never start a measurement run (the tests that
+    # check the automatic trigger switch it back on), and the window's
+    # rating store must not read this Mac's measured ratings: a store
+    # outside the temp folder (tmp_path) is kept in memory only.
+    import tempfile
+    from pathlib import Path
+    from services import local_ratings
+
+    patch.setattr(local_ratings, "AUTOMATIC", False)
+    real_store_init = local_ratings.RatingStore.__init__
+    temp_root = str(Path(tempfile.gettempdir()).resolve())
+
+    def memory_store(self, path):
+        if path is not None and not str(Path(path).resolve()).startswith(temp_root):
+            path = None
+        real_store_init(self, path)
+
+    patch.setattr(local_ratings.RatingStore, "__init__", memory_store)
+
 
 def deny_network(patch) -> None:
     """Sockets may connect to loopback only; names other than localhost are not looked up."""

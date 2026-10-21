@@ -225,3 +225,20 @@ def test_a_lan_rule_may_only_name_the_known_private_ranges():
     for net in ("0.0.0.0/8", "10.0.0.0/9", "11.0.0.0/8"):
         with pytest.raises(ValueError):
             ks.loadable_rules(good_rules() + f"pass quick inet from {net} to {net}\n")
+
+
+def test_an_endpoint_whose_every_answer_is_filtered_counts_as_unresolved(monkeypatch):
+    """getaddrinfo succeeds but only returns a scoped IPv6 address, which cannot go
+    in a pf rule: that must refuse to arm like any unresolved name, not arm with no
+    endpoint exemption."""
+    scoped = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1%en0", 0, 0, 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port: scoped)
+    addresses, unresolved = ks.resolve_endpoints(["vpn.example.org"])
+    assert addresses == [] and unresolved == ["vpn.example.org"]
+
+
+def test_a_name_with_one_usable_answer_still_resolves(monkeypatch):
+    mixed = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1%en0", 0, 0, 0)),
+             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.9", 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port: mixed)
+    assert ks.resolve_endpoints(["vpn.example.org"]) == (["203.0.113.9"], [])

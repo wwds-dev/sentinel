@@ -77,6 +77,10 @@ def _isolated_settings_file():
         # The model watch too: a real data folder's adopted models would move
         # recommendations the tests assert on, and a scan would write to it.
         patch.setattr(main, "MODEL_WATCH_FILE", _TEST_ROOT / "data" / "model_watch.json")
+        # Hybrid routing's rules and savings tally (services/routing_advisor.py):
+        # every local Chat run a test finishes is tallied.
+        patch.setattr(main, "ROUTING_RULES_FILE", _TEST_ROOT / "data" / "routing_rules.json")
+        patch.setattr(main, "ROUTING_SAVINGS_FILE", _TEST_ROOT / "data" / "routing_savings.json")
         # No ratings unless a test loads them: which picks they produce
         # depends on which keys the real .env holds.
         patch.setattr(main, "RATINGS_CACHE_FILE", _TEST_ROOT / "data" / "lmarena_ratings.json")

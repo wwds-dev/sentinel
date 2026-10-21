@@ -27,6 +27,7 @@ def parse_money(raw: str, *, field: str, minimum: float = 0.0,
     if value < minimum:
         raise ValueError(f"{field}: must be at least {minimum:g}.")
     return value
+from services.providers import is_local as is_local_provider
 from services.registry import Registry
 
 
@@ -92,7 +93,7 @@ class Validator:
             )
 
         # 6. API checkbox permission (free pass for ollama)
-        if provider != "ollama":
+        if not is_local_provider(provider):
             perm_key = f"allow_{provider}"
             if not api_permissions.get(perm_key, False):
                 return ValidationResult(
@@ -144,7 +145,7 @@ class Validator:
         """
         # 7. Per-agent budget (daily)
         agent_budget = self.registry.get_agent_budget(agent_name)
-        if agent_budget is not None and provider != "ollama":
+        if agent_budget is not None and not is_local_provider(provider):
             if estimated_cost > agent_budget:
                 return ValidationResult(
                     False,
@@ -154,7 +155,7 @@ class Validator:
 
         # 8. Per-tool budget. Local requests remain free and bypass cost caps.
         tool_budget = self.registry.get_tool_budget(tool_name) if tool_name else None
-        if tool_budget is not None and provider != "ollama":
+        if tool_budget is not None and not is_local_provider(provider):
             if estimated_cost > tool_budget:
                 return ValidationResult(
                     False,
@@ -163,7 +164,7 @@ class Validator:
                 )
 
         # 9. Session budget
-        if provider != "ollama":
+        if not is_local_provider(provider):
             session_remaining = self._money(session_budget) - self._money(session_cost)
             if self._money(estimated_cost) > session_remaining:
                 return ValidationResult(
@@ -173,7 +174,7 @@ class Validator:
                 )
 
         # 10. Daily budget
-        if provider != "ollama":
+        if not is_local_provider(provider):
             daily_remaining = self._money(daily_budget) - self._money(daily_cost)
             if self._money(estimated_cost) > daily_remaining:
                 return ValidationResult(

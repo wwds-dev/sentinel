@@ -586,7 +586,7 @@ class TestBestFitIsPresentedAsABadge:
         win.refresh_recommendation_marks("chat")
         marked = next(i for i in range(win.model_box.count())
                       if win.model_box.itemData(i, RECOMMENDED_ROLE))
-        monkeypatch.setattr(win, "assess_local_model", lambda name: {
+        monkeypatch.setattr(win, "assess_local_model", lambda name, provider="ollama": {
             "level": "too_big", "message": "needs 64 GB of RAM"})
 
         win.mark_oversized_models(win.model_box)
@@ -830,7 +830,7 @@ class TestWorkspaceLayoutRegressions:
         }
         assert set(provider_groups) == {"Local providers", "Cloud providers"}
         assert [a.text() for a in provider_groups["Local providers"].actions()] == [
-            "ollama"
+            "ollama", "lmstudio"
         ]
         assert "openai" in {
             a.text() for a in provider_groups["Cloud providers"].actions()
@@ -840,7 +840,7 @@ class TestWorkspaceLayoutRegressions:
         assert not [
             action for action in model_menu.actions() if action.menu() is not None
         ]
-        assert [a.text() for a in model_menu.actions()] == [
+        assert [a.text() for a in model_menu.actions() if a.data() != "section"] == [
             model.itemText(index) for index in range(model.count())
         ]
 
@@ -3435,6 +3435,9 @@ class TestTunnelPanel:
 
     def test_verify_button_starts_a_verify_worker_without_a_confirmation(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        # pf exists only on macOS; without this Linux CI opens the modal "needs pf" box and hangs.
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
         monkeypatch.setattr(QMessageBox, "question",
                             staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked"))))
         FakeVpnConnectionWorker.instances.clear()
@@ -3444,7 +3447,9 @@ class TestTunnelPanel:
         assert worker.action == "verify" and worker.started
         assert tunnel.verify_ks_btn.isEnabled() is False and tunnel.arm_ks_btn.isEnabled() is False
 
-    def test_verify_result_sets_the_label_and_reenables_the_buttons(self, tunnel):
+    def test_verify_result_sets_the_label_and_reenables_the_buttons(self, tunnel, monkeypatch):
+        from services import vpn_connection
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
         tunnel.verify_ks_btn.click()
         tunnel._on_killswitch_finished({"success": True, "output": "Verified armed (10:00): x",
                                         "verify_state": "verified_armed"})
@@ -3533,7 +3538,9 @@ class TestTunnelPanel:
         tunnel.connect_vpn()
         confirmed = FakeVpnConnectionWorker.instances[0].confirmed
         assert isinstance(confirmed, ExecutionReview)
-        assert confirmed.action == "connect" and confirmed.target == "wg0"
+        # An interface-only profile now runs the reviewed file, named by absolute path.
+        assert confirmed.action == "connect" and confirmed.interface == "wg0"
+        assert os.path.isabs(confirmed.target) and confirmed.target.endswith("wg0.conf")
 
     def test_a_long_hook_is_shown_whole_in_the_dialog_detail(self, tunnel, monkeypatch, tmp_path):
         from PySide6.QtWidgets import QMessageBox
@@ -3571,7 +3578,7 @@ class TestTunnelPanel:
         tunnel.connect_vpn()
         assert FakeVpnConnectionWorker.instances == []
         (title, text, default), = asked
-        assert "Target: wg0" in text and "wg-quick" in text and "To undo" in text
+        assert "wg0.conf" in text and "Target: " in text and "wg-quick" in text and "To undo" in text
         assert default == QMessageBox.No
         assert tunnel.tabs.currentWidget() is tunnel.execution_view
 
