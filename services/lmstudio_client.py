@@ -65,6 +65,8 @@ def scan_disk(root: Path | None = None) -> list[dict]:
     if not base.is_dir():
         return found
     for path in sorted(base.glob("*/*/*.gguf")):
+        if path.name.lower().startswith("mmproj"):
+            continue          # a vision projector rides along with a model; it is not one
         shard = re.search(r"-(\d+)-of-\d+\.gguf$", path.name)
         if shard and int(shard.group(1)) > 1:
             continue
@@ -96,21 +98,57 @@ def lms_binary() -> str | None:
     return str(candidate) if candidate.is_file() else None
 
 
+def running_port(timeout: float = 5.0) -> int | None:
+    """The port LM Studio's server is really on, from `lms server status`.
+
+    1234 is only LM Studio's default: the server can be set to another port
+    (here it came up on 1235), and then asking 1234 reads as "server off".
+    None when `lms` is missing, the server is off or the output is unreadable.
+    """
+    lms = lms_binary()
+    if lms is None:
+        return None
+    try:
+        done = subprocess.run([lms, "server", "status"], capture_output=True,
+                              text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = re.search(r"running on port (\d+)", (done.stdout or "") + (done.stderr or ""))
+    return int(found.group(1)) if found else None
+
+
 class LMStudioClient:
     def __init__(self, base_url: str | None = None):
         # base_url is the /v1 root; the management API sits beside it.
         self.base_url = (base_url or providers.lmstudio_url()).rstrip("/")
+        # An address set by the caller or LMSTUDIO_URL is the user's word; only
+        # the default may be corrected from what the server reports.
+        self._pinned = bool(base_url or os.environ.get("LMSTUDIO_URL", "").strip())
         self.root = self.base_url[:-3] if self.base_url.endswith("/v1") \
             else self.base_url
 
     # ── discovery ───────────────────────────────────────────────────────────
-    def server_up(self) -> bool:
+    def _answers(self) -> bool:
         try:
             requests.get(f"{self.base_url}/models",
                          timeout=CONNECT_TIMEOUT).raise_for_status()
             return True
         except requests.RequestException:
             return False
+
+    def server_up(self) -> bool:
+        """Is the server answering? Follows it to its real port when the
+        default one is silent (see `running_port`). Blocking: not for the UI thread."""
+        if self._answers():
+            return True
+        if self._pinned:
+            return False
+        port = running_port()
+        if port is None:
+            return False
+        self.base_url = f"http://localhost:{port}/v1"
+        self.root = self.base_url[:-3]
+        return self._answers()
 
     def model_details(self) -> list[dict]:
         """Chat-capable models, from the server when it is up, else the disk.

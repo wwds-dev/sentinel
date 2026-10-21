@@ -383,3 +383,60 @@ def test_the_client_only_talks_to_the_configured_local_url():
 def test_the_registry_copy_has_no_network_or_qt_imports():
     source = Path(providers.__file__).read_text(encoding="utf-8")
     assert "requests" not in source and "PySide6" not in source
+
+
+# ── findings from the first live run against LM Studio (2026-10-21) ─────────
+
+def test_disk_scan_skips_vision_projector_files(tmp_path):
+    from services.lmstudio_client import scan_disk
+    repo = tmp_path / "pub" / "Model-GGUF"
+    repo.mkdir(parents=True)
+    (repo / "Model-Q4_K_M.gguf").write_bytes(b"x" * 10)
+    (repo / "mmproj-Model-Q8_0.gguf").write_bytes(b"x" * 5)
+    assert [m["id"] for m in scan_disk(tmp_path)] == ["pub/Model-GGUF/Model-Q4_K_M.gguf"]
+
+
+def test_server_up_follows_the_server_to_the_port_it_is_really_on(monkeypatch):
+    import requests
+    from services import lmstudio_client as lc
+    monkeypatch.delenv("LMSTUDIO_URL", raising=False)
+    seen = []
+
+    def get(url, timeout=None):
+        seen.append(url)
+        if ":1235" not in url:
+            raise requests.ConnectionError("refused")
+        return type("R", (), {"raise_for_status": lambda self: None})()
+
+    monkeypatch.setattr(lc.requests, "get", get)
+    monkeypatch.setattr(lc, "running_port", lambda timeout=5.0: 1235)
+    client = lc.LMStudioClient()
+    assert client.server_up()
+    assert client.base_url == "http://localhost:1235/v1" and client.root.endswith(":1235")
+
+
+def test_a_pinned_address_is_never_rewritten(monkeypatch):
+    import requests
+    from services import lmstudio_client as lc
+
+    def refuse(url, timeout=None):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr(lc.requests, "get", refuse)
+    monkeypatch.setattr(lc, "running_port", lambda timeout=5.0: 1235)
+    client = lc.LMStudioClient("http://localhost:4000/v1")
+    assert not client.server_up() and client.base_url.endswith(":4000/v1")
+
+
+def test_running_port_reads_lms_server_status(monkeypatch):
+    from types import SimpleNamespace
+    from services import lmstudio_client as lc
+    monkeypatch.setattr(lc, "lms_binary", lambda: "/x/lms")
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        stdout="The server is running on port 1235.\n", stderr=""))
+    assert lc.running_port() == 1235
+    monkeypatch.setattr(lc.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        stdout="The server is not running.\n", stderr=""))
+    assert lc.running_port() is None
+    monkeypatch.setattr(lc, "lms_binary", lambda: None)
+    assert lc.running_port() is None
