@@ -149,6 +149,7 @@ class AgentPanel(QWidget):
         self.model_box: QComboBox | None = None
         self.worker = None
         self._request_id: str | None = None
+        self._advice_cleared = False     # the user answered the advisor: do not ask again
 
     # ── Construction helpers ────────────────────────────────────────────
     def flow_row(self, spacing: int = 6, min_height: int = 44) -> tuple[QWidget, FlowLayout]:
@@ -368,8 +369,14 @@ class AgentPanel(QWidget):
     # thirteen agents came to spend outside the budget caps (TODO #1).
 
     def authorize(self, prompt: str, *, tool: str | None = None,
-                  label: str | None = None) -> bool:
-        """False means the request was blocked and must not be sent."""
+                  label: str | None = None, resume=None) -> bool:
+        """False means the request was blocked and must not be sent.
+
+        `resume` is what re-runs the panel's action once the user answers the
+        routing advisor's banner, which holds the job when the selected local
+        model falls short (ui/panel_routing.py). Without it a held job can be
+        answered but not restarted.
+        """
         prepare_route = getattr(self.host, "prepare_agent_route", None)
         if prepare_route is not None:
             route_result = prepare_route(
@@ -377,6 +384,10 @@ class AgentPanel(QWidget):
                 tool=tool or label or "",
             )
             if route_result is False:
+                return False
+        advise = getattr(self.host, "advise_panel_job", None)
+        if advise is not None and not self._advice_cleared:
+            if advise(self, prompt, tool=tool or label or "", resume=resume) is False:
                 return False
         request_id = uuid4().hex
         allowed = self.host.authorize_request(
@@ -409,6 +420,9 @@ class AgentPanel(QWidget):
             self.agent_key, response, messages, request_id=request_id,
         )
         self._request_id = None
+        tally = getattr(self.host, "tally_panel_job", None)
+        if tally is not None:
+            tally(self.agent_key)
 
     def abandon(self, reason: str = "error", error: str | None = None) -> None:
         request_id = self._request_id
@@ -423,6 +437,9 @@ class AgentPanel(QWidget):
             self.agent_key, reason, request_id=request_id,
         )
         self._request_id = None
+        failover = getattr(self.host, "offer_panel_failover", None)
+        if failover is not None and reason == "error":
+            failover(self, error)
 
     def note_usage(self, usage: dict) -> None:
         self.host.note_request_usage(

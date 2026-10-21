@@ -441,7 +441,7 @@ class VpnPanel(AgentPanel):
         prompt = self.context_prefix() + question
         messages = self.agent().build_messages(prompt)
 
-        if not self.authorize(prompt, label=self.mode_box.currentText()):
+        if not self.authorize(prompt, label=self.mode_box.currentText(), resume=self.run):
             return
 
         self._last_response = ""

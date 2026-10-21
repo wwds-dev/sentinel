@@ -547,7 +547,7 @@ class OsintHeavyPanel(AgentPanel):
         # The permission check comes first: live collection sends the target
         # to public sources, and that must not happen for a request the guard
         # is about to refuse.
-        if not self.authorize(target):
+        if not self.authorize(target, resume=self.investigate):
             # Investigate was disabled above; put it back or a refused request
             # leaves the panel dead.
             self.status_label.setText("Blocked before sending.")

@@ -525,7 +525,7 @@ class BugBountyPanel(AgentPanel):
         # Authorise against the text that is really sent: findings and scan
         # output are usually kilobytes, the target a few dozen characters.
         full_text = "\n".join(str(m.get("content", "")) for m in messages)
-        if not self.authorize(full_text, label=prompt):
+        if not self.authorize(full_text, label=prompt, resume=self.analyse):
             # The controls were already disabled above; a blocked request has to
             # put them back or the panel is stuck with a dead Analyse button.
             self.status_label.setText("Blocked before sending.")

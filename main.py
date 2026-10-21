@@ -14,6 +14,7 @@ from services import providers
 from services import local_models
 from services import local_ratings
 from services import routing_advisor
+from ui.panel_routing import PanelRouting
 from services.providers import is_local as is_local_provider
 from services.lmstudio_client import LMStudioClient
 from services.runtime_paths import (
@@ -351,6 +352,7 @@ class GodAI(QWidget):
         self.local_measure_worker = None
         # Hybrid routing: one advice per new job, rules, savings (phase 4).
         self.routing_rules = routing_advisor.RoutingRules(ROUTING_RULES_FILE)
+        self.panel_routing = PanelRouting(self)
         self.savings_tally = routing_advisor.SavingsTally(ROUTING_SAVINGS_FILE)
         self._held_job = None       # a job the advice banner is holding
         self._job = None            # the Chat job in flight, for failover/tally
@@ -3871,11 +3873,14 @@ class GodAI(QWidget):
         except Exception:
             return None
 
-    def _advisor_context(self, agent, tool, full_prompt, backend, model):
-        """Everything the advisor needs for one job, from caches only."""
+    def _advisor_context(self, agent, tool, full_prompt, backend, model, request_text=None):
+        """Everything the advisor needs for one job, from caches only.
+        `request_text` is what the job really sends when the caller knows it
+        (a specialist panel's prompt); Chat assembles its own."""
         from types import SimpleNamespace
 
-        request_text = self._request_text(agent, tool, full_prompt)
+        if request_text is None:
+            request_text = self._request_text(agent, tool, full_prompt)
         tokens = estimate_prompt_tokens(request_text)
         request = classify_request(full_prompt, agent=agent, tool=tool, context_tokens=tokens)
         snap = self.local_inventory.snapshot()
@@ -3944,6 +3949,16 @@ class GodAI(QWidget):
         if advice.action == routing_advisor.REFUSE:
             self._held_job = None
         return False
+
+    # The specialist panels (AgentPanel.authorize / record / abandon call these).
+    def advise_panel_job(self, panel, prompt, *, tool="", resume=None) -> bool:
+        return self.panel_routing.advise(panel, prompt, tool=tool, resume=resume)
+
+    def offer_panel_failover(self, panel, error) -> None:
+        self.panel_routing.offer_failover(panel, error)
+
+    def tally_panel_job(self, agent) -> None:
+        self.panel_routing.finished(agent, getattr(self, "last_request_cost", None))
 
     def _resume_held(self, provider=None, model=None, *, accepted=False) -> None:
         held, self._held_job = self._held_job, None

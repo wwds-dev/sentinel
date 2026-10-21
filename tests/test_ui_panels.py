@@ -2438,6 +2438,9 @@ class TestWindowStopButton:
         from ui.panels.osint import OsintPanel
         monkeypatch.setattr(OsintPanel, "worker_class", FakeWorker)
         monkeypatch.setattr(win, "authorize_request", lambda *a, **k: True)
+        # This test is about Stop; the routing advisor (it would hold a Trace
+        # job a local model cannot do) has its own tests in test_routing_panels.
+        monkeypatch.setattr(win, "advise_panel_job", lambda *a, **k: True)
         panel = win.panels["osint"]
         permission = getattr(win, f"allow_{panel.provider}_checkbox", None)
         if permission is not None:

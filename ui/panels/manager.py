@@ -145,7 +145,7 @@ class ManagerPanel(AgentPanel):
         self.reject_btn.setEnabled(False)
         self.pending_spec = None
 
-        if not self.authorize(idea):
+        if not self.authorize(idea, resume=self.analyze_idea):
             # Analyze was disabled above; a blocked request has to put it back
             # or the panel is stuck with a dead button and "Analyzing..." on
             # screen for a request that was never sent.

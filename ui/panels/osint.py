@@ -214,7 +214,7 @@ class OsintPanel(AgentPanel):
         effective_type = validation.query_type
         messages = self.agent().build_messages(target, effective_type)
 
-        if not self.authorize(target, label=effective_type):
+        if not self.authorize(target, label=effective_type, resume=self.analyse):
             return
 
         self._clear_output()

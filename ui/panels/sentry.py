@@ -301,7 +301,7 @@ class SentryPanel(AgentPanel):
     # ── AI read (shared request guard) ───────────────────────────────────
     def _start_ai_pass(self, prompt: str) -> bool:
         messages = self.agent().build_messages(prompt)
-        if not self.authorize(prompt):
+        if not self.authorize(prompt, resume=lambda: self._start_ai_pass(prompt)):
             self.set_busy(self.run_btn, self.stop_btn, False)
             return False
         self._last_response = ""
