@@ -41,8 +41,11 @@ jobs:
                   f.write("%s rss=%dMB avail=%dMB threads=%d fds=%d\n" % (tag, p.memory_info().rss // 2**20, vm.available // 2**20, p.num_threads(), p.num_fds()))
           def pytest_runtest_setup(item):
               _n[0] += 1
-              if _n[0] % 25 == 0:
-                  _line("%d %s" % (_n[0], item.nodeid.split("::")[0][6:30]))
+              if _n[0] in (240, 300):
+                  import subprocess
+                  out = subprocess.run("lsof -p %d | awk 'NR>1{print $5, $9, $10}' | cut -c1-90 | sort | uniq -c | sort -rn | head -12" % os.getpid(), shell=True, capture_output=True, text=True).stdout
+                  with open("/tmp/mem.log", "a") as f:
+                      f.write("== at %d (%s)\n%s" % (_n[0], item.nodeid.split("::")[0][6:40], out))
           PY
           T=tests/test_contract_tunnel_chat.py
           FILES="tests/test_agent_factory_atomicity.py tests/test_agent_factory_validation.py tests/test_agent_roster.py tests/test_agents_scenarios.py tests/test_alias_mint.py tests/test_app_identity.py tests/test_appkit_guard.py tests/test_bug_spray_feed.py tests/test_capability_router.py tests/test_chat_late_cost.py tests/test_chat_lifecycle.py tests/test_chat_stop.py $T"
