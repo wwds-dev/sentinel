@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [a, b, c, d]
+        mode: [m3]
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -30,14 +30,23 @@ jobs:
       - name: Test
         run: |
           set +e
+          mkdir -p /tmp/plug
+          cat > /tmp/plug/memlog.py <<'PY'
+          import psutil, os, threading
+          _n = [0]
+          def _line(tag):
+              p = psutil.Process()
+              vm = psutil.virtual_memory()
+              with open("/tmp/mem.log", "a") as f:
+                  f.write("%s rss=%dMB avail=%dMB threads=%d fds=%d\n" % (tag, p.memory_info().rss // 2**20, vm.available // 2**20, p.num_threads(), p.num_fds()))
+          def pytest_runtest_setup(item):
+              _n[0] += 1
+              if _n[0] % 25 == 0:
+                  _line("%d %s" % (_n[0], item.nodeid.split("::")[0][6:30]))
+          PY
           T=tests/test_contract_tunnel_chat.py
-          case "${{ matrix.mode }}" in
-            a) FILES="tests/test_agent_factory_atomicity.py tests/test_agent_factory_validation.py tests/test_agent_roster.py tests/test_agents_scenarios.py tests/test_alias_mint.py tests/test_app_identity.py $T";;
-            b) FILES="tests/test_appkit_guard.py tests/test_bug_spray_feed.py tests/test_capability_router.py tests/test_chat_late_cost.py $T";;
-            c) FILES="tests/test_chat_lifecycle.py $T";;
-            d) FILES="tests/test_chat_stop.py $T";;
-          esac
-          PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -v --tb=line --cov --cov-report= $FILES > out.txt 2>&1
+          FILES="tests/test_agent_factory_atomicity.py tests/test_agent_factory_validation.py tests/test_agent_roster.py tests/test_agents_scenarios.py tests/test_alias_mint.py tests/test_app_identity.py tests/test_appkit_guard.py tests/test_bug_spray_feed.py tests/test_capability_router.py tests/test_chat_late_cost.py tests/test_chat_lifecycle.py tests/test_chat_stop.py $T"
+          PYTHONPATH=/tmp/plug PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p memlog -p no:cacheprovider -v --tb=line --cov --cov-report= $FILES > out.txt 2>&1
           code=$?
-          { echo "mode=${{ matrix.mode }} exit=$code"; grep -m 2 "FAILED\|ERROR\|Fatal Python" out.txt | cut -c1-170; tail -n 2 out.txt | cut -c1-170; } | head -c 3000 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
+          { echo "exit=$code"; grep -m 1 "FAILED\|ERROR" out.txt | cut -c1-150; tail -n 22 /tmp/mem.log; } | head -c 3400 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
           exit $code
