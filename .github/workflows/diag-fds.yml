@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [raised, logged]
+        mode: [one]
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -30,24 +30,7 @@ jobs:
       - name: Test
         run: |
           set +e
-          echo "default ulimit -n: $(ulimit -n)"
-          mkdir -p /tmp/plug
-          cat > /tmp/plug/fdlog.py <<'PY'
-          import sys, psutil, resource
-          _last = [None]
-          def pytest_runtest_setup(item):
-              m = item.nodeid.split("::")[0]
-              if m != _last[0]:
-                  _last[0] = m
-                  sys.__stderr__.write("FDS %d/%d %s\n" % (psutil.Process().num_fds(), resource.getrlimit(resource.RLIMIT_NOFILE)[0], m))
-                  sys.__stderr__.flush()
-          PY
-          if [ "${{ matrix.mode }}" = raised ]; then
-            ulimit -n 10240
-            PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -q --cov --cov-report=term-missing:skip-covered > out.txt 2>&1
-          else
-            PYTHONPATH=/tmp/plug PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p fdlog -p no:cacheprovider -q --cov --cov-report= > out.txt 2>&1
-          fi
+          PYTHONUNBUFFERED=1 python -X faulthandler -m pytest -p no:cacheprovider -v --cov --cov-report= > out.txt 2>&1
           code=$?
-          { echo "mode=${{ matrix.mode }} exit=$code default-ulimit=$(ulimit -n)"; grep FDS out.txt | tail -n 25; tail -n 4 out.txt | cut -c1-160; } | head -c 3500 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
+          { echo "exit=$code"; grep -n -m 1 -B 4 -A 2 "FAILED\|ERROR" out.txt | cut -c1-170; echo ----; grep -n -B 6 -m 1 "Fatal Python" out.txt | cut -c1-170; } | head -c 3600 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
           exit $code
