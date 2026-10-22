@@ -1,0 +1,32 @@
+name: diag-fails
+on:
+  push:
+    branches: [diag/macos-fails]
+jobs:
+  pytest:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt pytest-cov
+      - name: Test
+        run: |
+          set +e
+          PYTHONUNBUFFERED=1 python -m pytest -p no:cacheprovider -q --tb=line -rfE --cov --cov-report= > out.txt 2>&1
+          code=$?
+          { echo "exit=$code"; tail -n 1 out.txt | cut -c1-120; grep -E "^(FAILED|ERROR)" out.txt | cut -c1-230 | head -30; } | head -c 3800 | python3 -c "import sys; t=sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'); print('::error title=result::'+t)"
+          exit $code
