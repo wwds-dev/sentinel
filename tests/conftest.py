@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
@@ -327,3 +328,13 @@ def _no_reset_latch_leaks_between_tests():
     yield
     from services import portable_reset
     portable_reset._ERASING.clear()
+
+
+@pytest.fixture(autouse=True)
+def _restore_switch_interval():
+    """closeEvent lowers Python's GIL switch interval for the quit and never
+    puts it back, because in the app the process then ends. A test that calls
+    closeEvent in-process must not leave that setting on later tests."""
+    before = sys.getswitchinterval()
+    yield
+    sys.setswitchinterval(before)

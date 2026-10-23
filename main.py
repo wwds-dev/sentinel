@@ -5847,7 +5847,7 @@ class GodAI(QWidget):
             worker.cancel()
             self._detach_chat_worker(worker)
             self.chat_worker = None
-            worker.wait(remaining_ms(deadline))
+            worker.wait(min(remaining_ms(deadline), QUIT_CHAT_JOIN_MS))
         # The run log must not keep a request "running" after the app is
         # gone: close it as cancelled, as the Stop button would.
         run_id = getattr(self, "active_run_id", None)
@@ -5919,6 +5919,10 @@ class GodAI(QWidget):
             if timer is not None:
                 timer.stop()            # an earlier "Wait" must not fire mid-close
                 self._quit_wait_timer = None
+        # A worker stuck in a pure-Python loop keeps the GIL, and every step of
+        # the quit then waits a whole switch interval for it. Ask for it back
+        # far more often; the process is about to end, so this is not undone.
+        sys.setswitchinterval(QUIT_SWITCH_INTERVAL_S)
         try:
             self.stop_background_work()
         except Exception as exc:
@@ -5938,6 +5942,12 @@ def _stop_notice(backend: str) -> str:
 # all of it together, before what is still running is parked. The owner's
 # limit for a whole quit is 5 s (spec no-thread-terminate, Q4).
 QUIT_JOIN_BUDGET_S = 2.5
+# The longest the chat worker alone is joined: a streamed reply ends within a
+# token of the cancel, and a call blocked in the provider never will, so waiting
+# out the whole budget for it only delays the quit. Longer than this: parked.
+QUIT_CHAT_JOIN_MS = 1000
+# Python's GIL switch interval while quitting (default 5 ms); see closeEvent.
+QUIT_SWITCH_INTERVAL_S = 0.0005
 
 SINGLE_INSTANCE_KEY = "sentinel.single-instance.v2"
 WINDOW_SETTINGS_KEY = "mainWindow/geometry"
