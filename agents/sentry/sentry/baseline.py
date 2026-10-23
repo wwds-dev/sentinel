@@ -30,16 +30,26 @@ from .models import Finding, Snapshot
 MAX_FINDINGS = 500
 
 
+class BaselineBusy(RuntimeError):
+    """Another process holds the baseline lock (a watch pass is running)."""
+
+
 @contextmanager
-def _file_lock(path: Path):
+def _file_lock(path: Path, *, blocking: bool = True):
     """Serialise writers across processes (the in-app worker and the launchd
-    watcher share these files). A no-op where fcntl is unavailable."""
+    watcher share these files). A no-op where fcntl is unavailable.
+
+    With ``blocking=False`` a lock someone else holds raises BaselineBusy at
+    once instead of waiting (the panel must not freeze the UI on it)."""
     if fcntl is None:
         yield
         return
     lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError as exc:
+            raise BaselineBusy("A watch pass is running; try again when it ends.") from exc
         yield
     finally:
         try:
@@ -108,6 +118,19 @@ class BaselineStore:
         self.baseline_path = self.state_dir / "baseline.json"
         self.findings_path = self.state_dir / "findings.json"
         self.watch_lock_path = self.state_dir / "watch.lock"
+
+    def reset(self) -> None:
+        """Forget the baseline and the findings log together.
+
+        Runs under the same lock as a watch pass, so it never interleaves with
+        one, and refuses at once if a pass holds it. The findings log goes
+        first: if removing the baseline then fails, the baseline is still
+        there, and a fresh baseline is never left beside stale findings.
+        """
+        with _file_lock(self.watch_lock_path, blocking=False):
+            self.clear_findings()
+            if self.baseline_path.is_file():
+                self.baseline_path.unlink()
 
     @contextmanager
     def transaction(self):
