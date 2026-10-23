@@ -101,37 +101,38 @@ def test_stop_signals_our_tor(state, monkeypatch):
 class _Iface:
     def __init__(self, wifi):
         self.is_wifi = wifi
+        self.current = self.hardware = "aa:bb:cc:dd:ee:ff"
 
 
-def test_set_mac_uses_dialog_and_quotes(monkeypatch):
+def test_set_mac_uses_dialog_and_quotes(state, monkeypatch):
     seen = {}
     monkeypatch.setattr(macaddr, "get_interface", lambda d: _Iface(True))
     monkeypatch.setattr(macaddr, "current_mac", lambda d: "02:11:22:33:44:55")
 
-    def fake(script, prompt, *a, **kw):
-        seen.update(script=script, kw=kw)
+    def fake(argv, prompt, *a, **kw):
+        seen.update(argv=argv, kw=kw)
         return True, ""
-    monkeypatch.setattr(macaddr, "run_as_root", fake)
+    monkeypatch.setattr(macaddr, "run_argv_as_root", fake)
     ok, msg = macaddr.set_mac("en0", "02:11:22:33:44:55")
     assert ok and "rejoin" in msg
     assert seen["kw"] == {"allow_cached_sudo": False}
-    assert seen["script"].startswith("/usr/sbin/networksetup -setairportpower en0 off")
-    assert "/sbin/ifconfig en0 ether 02:11:22:33:44:55" in seen["script"]
+    assert seen["argv"][-3:] == ["en0", "02:11:22:33:44:55", "1"]
+    # Order (off, change, on last) is run for real in tests/test_macaddr.py.
 
 
 def test_set_mac_rejects_hostile_device_and_bad_address(monkeypatch):
     called = []
-    monkeypatch.setattr(macaddr, "run_as_root", lambda *a, **k: called.append(a) or (True, ""))
+    monkeypatch.setattr(macaddr, "run_argv_as_root", lambda *a, **k: called.append(a) or (True, ""))
     assert not macaddr.set_mac("en0", "zz")[0]
     monkeypatch.setattr(macaddr, "get_interface", lambda d: None)
     assert not macaddr.set_mac("en0; rm -rf /", "02:11:22:33:44:55")[0]
     assert called == []
 
 
-def test_set_mac_detects_silent_ignore(monkeypatch):
+def test_set_mac_detects_silent_ignore(state, monkeypatch):
     monkeypatch.setattr(macaddr, "get_interface", lambda d: _Iface(False))
     monkeypatch.setattr(macaddr, "current_mac", lambda d: "aa:bb:cc:dd:ee:ff")
-    monkeypatch.setattr(macaddr, "run_as_root", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(macaddr, "run_argv_as_root", lambda *a, **k: (True, ""))
     ok, msg = macaddr.set_mac("en5", "02:11:22:33:44:55")
     assert not ok and "silently ignore" in msg
 

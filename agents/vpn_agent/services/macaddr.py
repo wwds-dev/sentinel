@@ -25,15 +25,49 @@ privacy measure in common use:
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import secrets
-import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
-from agents.vpn_agent.services.privileged import run, run_as_root
+from agents.vpn_agent.server import paths
+from agents.vpn_agent.services.privileged import run, run_argv_as_root
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9A-Fa-f]{2}$")
+# BSD interface names: a short lowercase driver name and a unit number. \Z,
+# not $, so a trailing newline is not let through.
+DEVICE_RE = re.compile(r"^[a-z]{2,8}[0-9]{1,3}\Z")
+
+# The whole root side of a change. A constant: the interface, the address and
+# whether it is Wi-Fi arrive as $1-$3, so nothing a caller passes is ever
+# parsed as shell. Wi-Fi power-on is the EXIT trap, so it runs last whether
+# the change worked, failed or the shell was told to stop; the exit status is
+# the first failure (ifconfig's error is no longer hidden behind power-on), and
+# a power-on failure fails a change that otherwise worked.
+ROOT_SCRIPT = """\
+dev=$1; addr=$2; wifi=$3
+power_on() {
+  rc=$?
+  if [ "$wifi" = 1 ]; then
+    /usr/sbin/networksetup -setairportpower "$dev" on || {
+      echo "Wi-Fi could not be switched back on." >&2
+      [ "$rc" -eq 0 ] && rc=98
+    }
+  fi
+  exit "$rc"
+}
+trap power_on EXIT
+trap "exit 143" TERM INT HUP
+if [ "$wifi" = 1 ]; then
+  /usr/sbin/networksetup -setairportpower "$dev" off || exit
+  /bin/sleep 1
+fi
+/sbin/ifconfig "$dev" ether "$addr"
+"""
 
 MODE_LOCAL = "locally-administered"
 MODE_SAME_VENDOR = "same-vendor"
@@ -111,6 +145,15 @@ def current_mac(device: str) -> str:
     return ""
 
 
+def wifi_power(device: str) -> str:
+    """'On', 'Off', or '' when it cannot be read (or the device is not Wi-Fi)."""
+    ok, output = run(["networksetup", "-getairportpower", device])
+    if not ok:
+        return ""
+    word = output.strip().rsplit(":", 1)[-1].strip() if ":" in output else ""
+    return word if word in ("On", "Off") else ""
+
+
 def get_interface(device: str) -> Interface | None:
     for interface in list_interfaces():
         if interface.device == device:
@@ -146,6 +189,10 @@ def random_mac(mode: str = MODE_LOCAL, like: str = "") -> str:
     return ":".join([f"{first:02x}", *rest])
 
 
+def valid_device(device: str) -> bool:
+    return bool(DEVICE_RE.match(device or ""))
+
+
 def is_valid(address: str) -> bool:
     if not MAC_RE.match(address or ""):
         return False
@@ -154,10 +201,99 @@ def is_valid(address: str) -> bool:
     return not (first & 0x01)
 
 
+# ── The record of what Sentinel changed ──────────
+#
+# Tunnel rule: record the original address, put it back on exit and after a
+# crash. The app leaves through os._exit (ADR 0001), so nothing in memory
+# survives a quit, let alone a crash: the original is written to disk *before*
+# the root command runs, and main._leave and the next launch read it back.
+
+
+def record_path() -> Path:
+    return paths.state_dir() / "mac_original.json"
+
+
+def recorded() -> dict[str, str]:
+    """device -> the address it had before Sentinel first changed it.
+
+    Reads one file and runs nothing, so a quit with no change pending costs
+    nothing. Entries that are not a valid interface name and unicast address
+    are dropped: the file must never be a way to steer the root helper.
+    """
+    try:
+        data = json.loads(record_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {device: address.lower() for device, address in data.items()
+            if isinstance(device, str) and isinstance(address, str)
+            and valid_device(device) and is_valid(address)}
+
+
+def _save_record(entries: dict[str, str]) -> None:
+    path = record_path()
+    if not entries:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".mac_original.")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(entries, handle)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def _remember(device: str, original: str) -> None:
+    entries = recorded()
+    if device not in entries:          # the first original wins
+        entries[device] = original.lower()
+        _save_record(entries)
+
+
+def _forget(device: str) -> None:
+    entries = recorded()
+    if entries.pop(device, None) is not None:
+        _save_record(entries)
+
+
+def pending_restores() -> list[tuple[str, str, str]]:
+    """(device, original, current) for each recorded change still in place.
+
+    An interface already back on its original (a reboot resets it) is
+    forgotten. One that cannot be read now (an unplugged adapter) is kept but
+    not offered: there is nothing to restore it on.
+    """
+    pending = []
+    for device, original in recorded().items():
+        current = current_mac(device)
+        if not current:
+            continue
+        if current == original:
+            _forget(device)
+        else:
+            pending.append((device, original, current))
+    return pending
+
+
+def restore_all_recorded() -> list[tuple[str, bool, str]]:
+    """Put every recorded original back; a refused one stays recorded."""
+    results = []
+    for device, original, _ in pending_restores():
+        ok, message = set_mac(device, original,
+                              prompt=f"Put back the original hardware address of {device}")
+        results.append((device, ok, message))
+    return results
+
+
 # ── Applying it ──────────────────────────────────
 
 
-def set_mac(device: str, address: str) -> tuple[bool, str]:
+def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
     """
     Change an interface's address.
 
@@ -166,32 +302,44 @@ def set_mac(device: str, address: str) -> tuple[bool, str]:
     like it worked. Cycling power on the interface is the reliable way to force
     it on current macOS, where the old `airport -z` tool no longer exists.
     """
+    if not valid_device(device):
+        return False, f"{device!r} is not a valid interface name."
     if not is_valid(address):
         return False, f"{address!r} is not a usable unicast MAC address."
 
     interface = get_interface(device)
     if interface is None:
         return False, f"No such interface: {device}"
+    if not interface.current:
+        return False, (f"Sentinel could not read the address {device} is using now, so it "
+                       "could not record it for restoring. Nothing was changed.")
 
-    dev = shlex.quote(device)
-    steps = []
-    if interface.is_wifi:
-        steps.append(f"/usr/sbin/networksetup -setairportpower {dev} off")
-        steps.append("sleep 1")
-    steps.append(f"/sbin/ifconfig {dev} ether {shlex.quote(address)}")
-    if interface.is_wifi:
-        steps.append(f"/usr/sbin/networksetup -setairportpower {dev} on")
+    address = address.lower()
+    # Recorded before root runs: a crash after the change must still find it.
+    # Going back to the hardware address needs no record (and must not record
+    # someone else's change as ours to put back).
+    if address != interface.hardware:
+        _remember(device, interface.current)
 
     # Sentinel's gated actions always use the macOS dialog, never a cached
     # sudo ticket left by some unrelated command.
-    ok, output = run_as_root(
-        "; ".join(steps), f"Change the hardware address of {device}",
+    ok, output = run_argv_as_root(
+        ["/bin/bash", "-c", ROOT_SCRIPT, "sentinel-mac", device, address,
+         "1" if interface.is_wifi else "0"],
+        prompt or f"Change the hardware address of {device}",
         allow_cached_sudo=False,
     )
-    if not ok:
-        return False, output or "The change was refused."
-
     applied = current_mac(device)
+    if applied and applied in (interface.hardware, recorded().get(device)):
+        _forget(device)
+    if not ok:
+        # Timed out, refused or failed partway: say what the interface is
+        # doing now, since the root side may still have run.
+        state = f" {device} reports {applied or 'no address'}"
+        if interface.is_wifi:
+            state += f"; Wi-Fi is {wifi_power(device) or 'in an unknown state'}"
+        return False, f"{output or 'The change was refused.'}{state}."
+
     if applied.lower() != address.lower():
         return False, (
             f"The command was accepted but {device} still reports {applied or 'nothing'}. "
@@ -218,6 +366,9 @@ def restore(device: str) -> tuple[bool, str]:
         return False, f"No such interface: {device}"
     if not interface.hardware:
         return False, f"The permanent address of {device} is unknown."
+    if not interface.current:
+        # Empty is unknown, not "unchanged": `spoofed` is False for it.
+        return False, f"Sentinel could not read the address {device} is using now."
     if not interface.spoofed:
         return True, f"{device} is already using its hardware address."
     return set_mac(device, interface.hardware)

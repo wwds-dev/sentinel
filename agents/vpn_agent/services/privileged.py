@@ -14,6 +14,7 @@ list, which would be unacceptable for anything carrying a key.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 
 DEFAULT_TIMEOUT = 30
@@ -121,3 +122,28 @@ def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,
         # The command itself ran under sudo and failed; never re-run it.
         return False, output
     return run_with_dialog(script, prompt, timeout)
+
+
+def run_argv_as_root(argv: list[str], prompt: str, timeout: float = DEFAULT_TIMEOUT, *,
+                     allow_cached_sudo: bool = True) -> tuple[bool, str]:
+    """
+    Run one program as root with its arguments kept separate.
+
+    For a fixed root helper (a constant script plus the values it acts on):
+    the values are never part of a command string except on the dialog path,
+    where ``do shell script`` only takes one, and there every word is quoted
+    by ``shlex.join`` rather than by the caller.
+    """
+    argv = [str(part) for part in argv]
+    if os.geteuid() == 0:
+        return run(argv, timeout)
+
+    if not allow_cached_sudo:
+        return run_with_dialog(shlex.join(argv), prompt, timeout)
+
+    ok, output = run(["sudo", "-n", *argv], timeout)
+    if ok:
+        return True, output
+    if not _sudo_refused(output):
+        return False, output
+    return run_with_dialog(shlex.join(argv), prompt, timeout)
