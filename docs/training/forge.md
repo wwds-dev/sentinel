@@ -23,8 +23,15 @@ appear only if the model works them into the description or the system prompt,
 so check that each constraint you stated landed somewhere.
 
 Analyze is an ordinary model request. Pick the provider and model in the run bar
-(or press **Auto-route**); a cloud model needs its API permission and key, and
-the usual budget and cost checks apply. The idea and the model's reply are saved
+(or press **Auto-route**); a local model (Ollama or LM Studio) needs no key, a
+cloud model needs its API permission and key, and the usual budget and cost
+checks apply. Before the request goes out, the routing advisor checks your
+choice for this job. If it would suggest another model, a banner at the top of
+the panel holds the request with **Switch for this job**, **Always for … jobs**
+and **Keep local** (or **Keep** and the model's name); any answer runs Analyze
+again. **Settings → Models** sets how readily it asks. Forge has no status line,
+so when a remembered *Always* rule switches the model there is no message: the
+run bar shows which model the request went to. The idea and the model's reply are saved
 in Saved Chats even if you later reject the specification.
 
 ## Review before creation
@@ -43,7 +50,7 @@ shape, names and limits only; they do not tell you whether the specification is 
 
 Reject vague permissions, open-ended execution, unnecessary cloud access or a
 prompt that claims capabilities the code will not have. Read the Providers line
-with care: the prompt Forge gives the model lists all seven providers as an
+with care: the prompt Forge gives the model lists all eight providers as an
 example, and a model that copies it grants the agent every one of them.
 
 The specification cannot be edited in the panel. To change it, adjust the idea
@@ -85,8 +92,9 @@ portable build under `Sentinel Data/agents` on the drive; the dialog shows only
 
 ## Exercise
 
-Draft a read-only log-summary agent that runs on Ollama only. Confirm that its
-Providers line lists only `ollama`, that its Tools line names nothing that writes
+Draft a read-only log-summary agent that runs on this Mac only. Confirm that its
+Providers line lists only a local runtime (`ollama` or `lmstudio`; either one
+admits both), that its Tools line names nothing that writes
 files or reaches the network, and that its system prompt claims neither, before
 rejecting the practice draft. Rejecting writes no scaffold and no registry rows;
 the analysis itself stays in Saved Chats.

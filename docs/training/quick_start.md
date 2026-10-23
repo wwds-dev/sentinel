@@ -7,7 +7,7 @@
 1. Choose **Chat** in the left sidebar.
 2. Select **General Chat** and type a simple question.
 3. Press **Auto-route** to see the recommended provider and model.
-4. Check the route before sending. Ollama is local; an amber selection is
+4. Check the route before sending. Ollama and LM Studio are local; an amber selection is
    a cloud provider and may cost money, but while Options → Execution mode is
    Local only (the default) the request runs on Ollama anyway. The **BEST FIT** badge in the
    dropdown is what Sentinel would have chosen.

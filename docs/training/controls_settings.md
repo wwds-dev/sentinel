@@ -6,9 +6,9 @@
 
 | Control | Meaning |
 |---|---|
-| Provider | Where the model runs. Ollama is local; other choices are cloud services. |
+| Provider | Where the model runs. Ollama and LM Studio are local; other choices are cloud services. |
 | Model | The specific model used by the selected provider. Availability depends on installation, key and provider account. |
-| Auto-route | Picks a provider and model for the current input and selects them; review the result before running. Only Ollama and the providers ticked under Options → Paid provider access are candidates, and in Local only mode only Ollama is. It never changes the agent or the Tool. |
+| Auto-route | Picks a provider and model for the current input and selects them; review the result before running. Only the local runtimes (Ollama and LM Studio) and the providers ticked under Options → Paid provider access are candidates, and in Local only mode only the local ones are. It never changes the agent or the Tool. |
 | Main action | Send, Investigate, Analyse, Ask Advisor or another agent-specific operation. |
 | Stop | Requests cancellation of the active worker. Partial results may remain. In Chat it appears beside Run only while a request is running, and Esc does the same; Chat's Stop returns at once, though the model may still finish (and a cloud provider may still bill) in the background. See [Chat](chat.md). |
 | Best fit | A **BEST FIT** badge on one entry per dropdown is Sentinel's recommendation for this agent: the cheapest model rated good enough for this agent's kind of work (see [API keys and new models](api_keys.md)). Hover for the reason, including the ratings and prices compared. It is advice; the entry you pick is the one that runs, and the badge moving never changes your selection. |
@@ -42,7 +42,7 @@ provider unticked. In Local only mode a cloud provider chosen in the run bar is
 replaced by Ollama; Hybrid allowed and Cloud only require the provider to be
 ticked under Paid provider access.
 
-**Local only** means Ollama with an Ollama model. If a cloud provider is still
+**Local only** means a local runtime: Ollama, or LM Studio when you select it. If a cloud provider is still
 selected in the run bar, Chat does not contact it: the request uses your saved
 Ollama default model, the run-bar estimate reads `free · … · local only`, and
 hovering it names the substitution. In **Hybrid allowed** or **Cloud only**, a
@@ -88,6 +88,28 @@ saving an empty field removes it. The status beside each field and the
 **API KEYS** card in the left rail read **ready** once a key is stored. Save
 does not test the key with the provider. Keys for OSINT services are in the
 separate **OSINT Keys** tab. See [API keys and new models](api_keys.md).
+
+## Settings — Local models
+
+**Local models** shows whether LM Studio and Ollama are running, how much
+memory is free, and one row per model found on this Mac (model, source, size,
+state, rating, used by). **Start server** starts LM Studio's server (`lms server
+start`); if the `lms` tool is missing, start the server in LM Studio itself.
+With the server off, LM Studio's models are still listed from its models folder
+as *on disk · server off*, and a model too big for the free memory is marked
+*too big now*. **Measure** rates a local model that has no rating, after one
+confirmation of the cloud cost of the run.
+
+## Settings — Models
+
+**Models** sets the routing mode — *Local, advise per job* (the default),
+*Suggest local*, *Local first*, *Cloud only* or *Local only* — with an override
+per agent, and lists the *Always* rules you made from an advice banner, each
+with **Remove**. When the advisor thinks a job needs a different model, it
+holds the job on a banner (in Chat above the run bar, in other agents at the
+top of the panel) with **Switch for this job**, **Always for … jobs** and
+**Keep local**. Nothing is switched without your answer, and a paid choice
+still asks for confirmation and passes the budget checks.
 
 ## Settings — Pricing
 

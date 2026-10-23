@@ -13,7 +13,7 @@ A meta-agent that turns a plain-language idea into a reviewable agent scaffold: 
 | Idea box | Describe the agent: purpose, users, inputs, outputs, providers, tools, budget, approval. The spec has no fields for users, inputs or outputs, so those only land in the description or system prompt if the model puts them there. |
 | Provider / Model | The two selectors in the run bar (labelled "Agent Builder") choose the model that drafts the spec. At startup the app preselects the recommended choice (when it is in the lists) and marks it BEST FIT. There is no separate "Model override" control. |
 | Auto-route | Asks the shared router to pick a provider and model for the current idea text. Forge has no status line, so it shows no message either way. |
-| Analyze Idea | Sends the idea to the selected model through the shared request guard (provider permission, budget caps, cost confirmation). The reply streams into a text box, then becomes the review cards. |
+| Analyze Idea | First asks the routing advisor about the selected model for this job (`ui/panel_routing.py`, the same check every agent gets). When it would suggest another model, a banner at the top of the panel holds the request with **Switch for this job**, **Always for <kind> jobs** and **Keep local** (or **Keep <model>**); any answer runs Analyze again, and Switch and Always first put the suggested model in the run bar. Then the idea goes to the selected model through the shared request guard (provider permission, budget caps, cost confirmation). The reply streams into a text box, then becomes the review cards. |
 | Approve & Create Agent | Disabled until a spec has been parsed **and** passes the factory's checks (see below). Opens a Yes/No confirmation. |
 | Reject / Clear Spec | Discards the pending spec and its cards. The idea text stays. Writes nothing. Enabled as soon as the review cards are shown, valid spec or not. |
 | Clear | Empties the idea box and the review. The Creation Log is kept. Does not stop a running analysis. |
@@ -44,7 +44,7 @@ If any step fails, the database transaction is rolled back, the file is removed,
 - all eight keys: `name`, `label`, `description`, `allowed_providers`, `allowed_tools`, `budget_limit_eur`, `requires_approval`, `system_prompt`;
 - `name`: a lowercase letter first, then lowercase letters, digits and underscores, at most 64 characters; not one of the eight built-in keys or the thirteen retired keys (no other name is reserved, including `router`, `course`, `narrator` and the display names such as `forge`);
 - `label` 1-80 characters, `description` 1-500, `system_prompt` 1-20,000;
-- `allowed_providers`: a non-empty list without duplicates, each one of ollama, openai, deepseek, kimi, gemini, anthropic, qwen;
+- `allowed_providers`: a non-empty list without duplicates, each one of the eight names in the provider registry (`services/providers.py`): ollama, lmstudio, openai, deepseek, kimi, gemini, anthropic, qwen;
 - `allowed_tools`: a list without duplicates; each tool must already exist in the `tools` table (a disabled or Forge-created tool counts);
 - `budget_limit_eur`: null or a finite, non-negative number; `requires_approval`: true or false;
 - no `agents` row with the same name or label, no `tools` row whose name or label is the new label (both compared case-insensitively), and no existing `agents/<name>_agent.py`.
@@ -59,6 +59,8 @@ Spec keys beyond these eight are not written. That includes `reasoning`, which i
 | `ui/widgets.py` | `SectionView` / `SectionCard` — the review cards and the Raw response disclosure. |
 | `services/agent_factory.py` | `AgentFactory` — `validate_spec()`, `create_agent()`, `render_agent_source()` (template plus compile check), `_update_registry()`, `_update_tool_registry()`. |
 | `services/agent_catalog.py` | Forge's catalog entry, and the built-in and retired keys that `validate_spec()` reserves. |
+| `services/providers.py` | The provider registry; `validate_spec()` accepts its names (through `provider_catalog.SUPPORTED_PROVIDERS`). |
+| `ui/panel_routing.py`, `ui/panels/base.py: AgentPanel.authorize()` | The routing advisor's banner and failover offer on the panel; `analyze_idea()` passes itself as `resume`. |
 | `services/runtime_paths.py` | `user_data_base()` — where the `agents/` folder is. |
 | `main.py` | Builds `ManagerPanel` and `AgentFactory(BASE_DIR)`; `authorize_request()` / `record_request()` / `abandon_request()` are the request guard Analyze goes through. |
 | `services/database.py: _seed_default_agents()` | Where built-in agents are also seeded. It does not touch Forge-generated rows, and `_retire_moved_agents()` leaves `auto_generated = 1` rows alone. |
@@ -74,10 +76,11 @@ Spec keys beyond these eight are not written. That includes `reasoning`, which i
 - **Specs cannot be edited.** Approve as shown, or Reject and Analyze again. Running Analyze while a spec is pending discards it without asking.
 - **Wrong-typed fields break the review.** A reply that parses but has a field of the wrong type (for example `allowed_tools: null`, or a list as `system_prompt`) leaves the review area empty ("No results yet.") or showing only the first cards, with Approve and Reject disabled and no log line. Run Analyze again. Spec validation only runs after the cards are filled, so this case never reaches it.
 - **Code fences are stripped.** `parse_spec()` deletes every triple-backtick sequence in the reply (and a `json` label right after it), including inside JSON string values. A system prompt that contains a code fence is therefore altered: what you review and what is written is the stripped text, and the Raw response disclosure shows the original.
-- **The prompt's example lists all seven providers.** The rules tell the model to keep only the providers the agent needs, but a model that copies the example over-grants. Check the Providers line before approving.
+- **The prompt's example lists all eight providers.** The rules tell the model to keep only the providers the agent needs (local-only is `["ollama"]` or `["lmstudio"]`), but a model that copies the example over-grants. Check the Providers line before approving. Either local name admits both local runtimes when the rows are checked (`providers.expand_allowed`); cloud providers are never widened.
 - **Generated rows are not marked in Settings.** Settings → Agents and Tools list them alphabetically among the built-ins, with the same checkbox and no "generated" marker. Ticking one makes nothing run.
 - **Blocked requests are mostly silent.** A validator refusal shows a "Request Blocked" box. A missing API key or a declined cost confirmation leaves only "[Blocked] The request was not sent."
-- **Stop is logged twice and recorded as an error.** The log shows "[Stopped]" and "[Error] Request cancelled by user.", and the run is closed with status `error`, not `cancelled`.
+- **Stop is logged twice and recorded as an error.** The log shows "[Stopped]" and "[Error] Request cancelled by user.", and the run is closed with status `error`, not `cancelled`. Because of that, the routing advisor can put a failover offer (**Send to <provider>** or **Try <smaller local model>**) on the banner after a deliberate Stop. It never sends by itself; press Cancel.
+- **Advisor switches are silent here.** A remembered *Always* rule, or the *Local first* routing mode, can change the run bar's provider and model before Analyze is sent. Other panels say so on their status line; Forge has none, so the changed boxes are the only sign.
 - **Clear does not cancel.** A reply that arrives after Clear fills the review again and can re-enable Approve for an idea that is no longer on screen. Stop the analysis before pressing Clear.
 - **Budget caps see the idea only.** The cost estimate and budget check are made on the idea text, not on the instructions Forge adds to it.
 - **The confirmation sets no default button**, so Enter may confirm; click the button you mean. The confirmation and the Creation Log are not forced to plain text; they quote only the key, label and error messages, never the system prompt.
@@ -92,4 +95,4 @@ Spec keys beyond these eight are not written. That includes `reasoning`, which i
 - **Dynamic loading**: a future, separately designed loader could import reviewed modules and expose an appropriate UI safely.
 
 ## Requirements
-A way to run the model: Ollama (no key), or a provider key with its API permission ticked or confirmed at request time. To import the scaffold as part of the codebase, run Forge from a source checkout, where `agents/` is the repository's package folder; the packaged and portable builds write to the data folder above, outside the code. Then review and test the generated code.
+A way to run the model: Ollama or LM Studio (no key; LM Studio's server must be on, or started from **Models → Start LM Studio server**), or a provider key with its API permission ticked or confirmed at request time. To import the scaffold as part of the codebase, run Forge from a source checkout, where `agents/` is the repository's package folder; the packaged and portable builds write to the data folder above, outside the code. Then review and test the generated code.
