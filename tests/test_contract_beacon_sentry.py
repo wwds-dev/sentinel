@@ -749,6 +749,53 @@ class TestSentryBaselineCreate:
         assert sentry.run_btn.isEnabled() is True
 
 
+class TestSentryResetIsAllOrNothing:
+    """QA matrix bug (docs/qa_audit/code_followups.md #48): the two-file reset
+    must not leave a fresh baseline next to stale findings, and must not run
+    under a watch pass."""
+
+    def test_findings_go_before_the_baseline_so_a_failure_never_leaves_stale_findings(
+            self, sentry, world, monkeypatch, tmp_path):
+        from pathlib import Path
+        sentry.run_pass(persist=True)
+        world.arp = ARP_PLUS_NEW
+        sentry.run_pass(persist=True)
+        store = _store(tmp_path)
+        assert store.has_baseline() and store.load_findings()
+        real_unlink = Path.unlink
+
+        def failing_unlink(self, *a, **kw):
+            if self.name == "baseline.json":
+                raise PermissionError("read-only volume")
+            return real_unlink(self, *a, **kw)
+        monkeypatch.setattr(Path, "unlink", failing_unlink)
+        sentry.reset_baseline()
+        assert "Could not reset baseline" in sentry.status_label.text()
+        # The invariant: a baseline that is gone implies the findings are gone.
+        assert store.has_baseline()
+        assert store.load_findings() == []
+
+    def test_reset_refuses_while_a_watch_pass_holds_the_lock_and_changes_nothing(
+            self, sentry, world, tmp_path):
+        sentry.run_pass(persist=True)
+        world.arp = ARP_PLUS_NEW
+        sentry.run_pass(persist=True)
+        store = _store(tmp_path)
+        with _store(tmp_path).transaction():          # a watch pass is running
+            sentry.reset_baseline()
+        assert "Could not reset baseline" in sentry.status_label.text()
+        assert "watch pass" in sentry.status_label.text()
+        assert store.has_baseline() and store.load_findings()
+
+    def test_store_reset_removes_both_files_and_is_harmless_when_empty(self, tmp_path):
+        store = _store(tmp_path)
+        store.reset()                                   # nothing recorded
+        store.findings_path.write_text("[]", encoding="utf-8")
+        store.baseline_path.write_text("{}", encoding="utf-8")
+        store.reset()
+        assert not store.baseline_path.exists() and not store.findings_path.exists()
+
+
 class TestSentryDryRun:
 
     def test_dry_run_without_a_baseline_saves_nothing_and_creates_no_files(

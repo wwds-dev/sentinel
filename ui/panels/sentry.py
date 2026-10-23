@@ -339,10 +339,7 @@ class SentryPanel(AgentPanel):
         try:
             from agents.sentry.sentry.baseline import BaselineStore
 
-            store = BaselineStore()
-            if store.baseline_path.is_file():
-                store.baseline_path.unlink()
-            store.clear_findings()
+            BaselineStore().reset()
         except Exception as exc:  # keep UI resilient
             self.status_label.setText(f"Could not reset baseline: {exc}")
             return

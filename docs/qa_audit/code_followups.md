@@ -68,7 +68,7 @@ quoted text. Each item is numbered once; the count at the bottom is the number o
 45. `agents/sentry/sentry/engine.py:72-94` — nothing flags an IP whose MAC differs from the baseline's for that IP (poisoning a non-gateway host); add the check, test in an owned lab, then drop the "Known limitation" sentence from docs/agents/sentry.md, docs/training/sentry.md and agents/sentry/README.md.
 46. `agents/sentry/sentry/watchd.py:24, 39-44` — in a frozen build `sys.executable` is the Sentinel GUI binary and `main.py` is not shipped; disable Install with an explanation or route to a headless flag.
 47. `agents/sentry/launchd/com.sentinel.sentry.watch.plist.template` — lacks `WorkingDirectory` and `EnvironmentVariables` (`SENTRY_STATE_DIR`) that `build_plist` writes.
-48. `ui/panels/sentry.py:334-347` — Reset baseline has no confirmation and takes no lock, and now also resets the background watch.
+48. `ui/panels/sentry.py:334-347` — Reset baseline has no confirmation and takes no lock, and now also resets the background watch. **Lock and ordering fixed 2026-10-23:** `BaselineStore.reset()` takes the watch-pass lock (refuses if a pass runs) and clears findings before the baseline; the missing confirmation is by design (`docs/agents/sentry.md`).
 49. `ui/panels/sentry.py:361-400` — recorded findings are read only at start and after Install/Remove/Reset, not when the panel is shown.
 
 ## Bug Spray

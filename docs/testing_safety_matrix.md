@@ -79,7 +79,7 @@ This matrix is the boundary-coverage index the roadmap pointed at.
 | Secret handling | N/A — no API keys or credentials; findings (LAN IPs/MACs/process names) are operational data, gated by the AI-opt-in consent boundary above, not a secret-handling boundary |
 | Budget/cap | N/A two-stage recheck — `_start_ai_pass` authorizes against the full findings-based prompt already; shared caps per `tests/test_cost_and_limits.py` |
 | Cancellation | `tests/test_contract_beacon_sentry.py::TestSentryStop` (a running watch pass, before snapshot persists nothing, a cancelled dry run, an existing baseline untouched, during the AI pass, idle, a result after Stop) |
-| Write/delete | `tests/test_contract_beacon_sentry.py::TestSentryBaselineCreate::test_reset_removes_the_baseline_and_the_findings_log`, `test_reset_with_nothing_recorded_is_harmless`, `test_a_corrupt_baseline_file_reads_as_missing_not_as_a_crash`, `test_reset_failure_is_reported_and_leaves_the_panel_usable`; **N/A** for the "confirmation" half — `reset_baseline` (`ui/panels/sentry.py`) deliberately asks nothing (documented: `docs/agents/sentry.md:76`, "There is no confirmation"), so there is no declined-path to test. The two-file delete (baseline, then findings log) is not wrapped as a single transaction — a crash between the two unlinks could leave one deleted and not the other — **BUG**, `ui/panels/sentry.py::reset_baseline` / `docs/qa_audit/code_followups.md` #48, left unfixed: wrapping it needs a `BaselineStore.transaction()` the store does not have today, which is more than a small, clear fix. |
+| Write/delete | `tests/test_contract_beacon_sentry.py::TestSentryBaselineCreate::test_reset_removes_the_baseline_and_the_findings_log`, `test_reset_with_nothing_recorded_is_harmless`, `test_a_corrupt_baseline_file_reads_as_missing_not_as_a_crash`, `test_reset_failure_is_reported_and_leaves_the_panel_usable`; **N/A** for the "confirmation" half — `reset_baseline` (`ui/panels/sentry.py`) deliberately asks nothing (documented: `docs/agents/sentry.md:76`, "There is no confirmation"), so there is no declined-path to test. The two-file delete now runs as `BaselineStore.reset()` under the watch-pass lock, findings log first and baseline second, so a failure never leaves a fresh baseline beside stale findings; it refuses while a watch pass runs (`TestSentryResetIsAllOrNothing`). Fixed 2026-10-23 (`docs/qa_audit/code_followups.md` #48). |
 
 ## Bug Spray (bug_bounty)
 
@@ -129,8 +129,8 @@ This matrix is the boundary-coverage index the roadmap pointed at.
   has no canary-through test (low value: no real secret flows through it
   today).
 - **N/A** (boundary does not apply to that agent, reason given inline): 8.
-- **BUG, recorded as the cell's primary status, not fixed**: 1 — Sentry's
-  two-file baseline reset is not transactional.
+- **BUG, found and fixed 2026-10-23**: 1 — Sentry's two-file baseline reset
+  was not transactional (now `BaselineStore.reset()`, see the Write/delete cell).
 
 Four bugs were found in total while building this matrix; the other three
 are noted inline inside an otherwise-covered or N/A cell rather than as the
