@@ -18,6 +18,16 @@ def _iface(device="en5", port="USB 10/100/1000 LAN", current="aa:bb:cc:00:00:01"
     return Interface(device=device, port=port, current=current, hardware=hardware)
 
 
+BOOT = "1000"
+REAL_BOOT_ID = getattr(macaddr, "boot_id", None)    # before _same_boot replaces it
+
+
+@pytest.fixture(autouse=True)
+def _same_boot(monkeypatch):
+    """A record is tied to the boot it was made in; these tests stay in one."""
+    monkeypatch.setattr(macaddr, "boot_id", lambda: BOOT)
+
+
 @pytest.fixture
 def root(monkeypatch):
     """Record every root call macaddr makes; the address 'takes' by default."""
@@ -330,34 +340,161 @@ def test_an_unreadable_current_address_refuses_the_change(monkeypatch, state, ro
     assert root["calls"] == [] and macaddr.recorded() == {}
 
 
-def _write_record(entries):
+def _write_record(entries, *, hardware=ORIG, boot=BOOT):
+    """{device: original} written in the record's own format; a str is written raw."""
     import json
     path = macaddr.record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(entries) if not isinstance(entries, str) else entries)
+    if not isinstance(entries, str):
+        entries = json.dumps({device: {"original": original, "hardware": hardware, "boot": boot}
+                              for device, original in entries.items()})
+    path.write_text(entries)
+
+
+def _ports(monkeypatch, now, hardware=None):
+    """The interfaces list_interfaces reports: device -> current ('' = unreadable)."""
+    hardware = hardware or {}
+    monkeypatch.setattr(macaddr, "list_interfaces", lambda: [
+        _iface(device=d, current=c, hardware=hardware.get(d, ORIG)) for d, c in now.items()])
 
 
 @pytest.mark.parametrize("content", [
-    "not json", "[]", '{"en5": 3}',
-    {"en0; id": ORIG, "en5": "zz", "en6": "01:00:5e:00:00:01"},
+    "not json", "[]", '{"en5": 3}', '{"en5": "aa:bb:cc:00:00:01"}',
+    '{"en5": {"original": "aa:bb:cc:00:00:01", "hardware": "zz", "boot": "1000"}}',
+    '{"en5": {"original": "aa:bb:cc:00:00:01", "hardware": "aa:bb:cc:00:00:01", "boot": 1000}}',
 ])
-def test_a_damaged_or_hostile_record_is_ignored(state, content):
+def test_a_damaged_record_is_ignored(state, content):
     _write_record(content)
     assert macaddr.recorded() == {}
 
 
+def test_a_hostile_record_is_ignored(state):
+    _write_record({"en0; id": ORIG, "en5": "zz", "en6": "01:00:5e:00:00:01"})
+    assert macaddr.recorded() == {}
+
+
+def test_the_record_holds_the_hardware_and_the_boot(monkeypatch, state, root):
+    import json
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="06:aa:aa:aa:aa:aa"))
+    macaddr.set_mac("en5", NEW)
+    assert json.loads(macaddr.record_path().read_text()) == {
+        "en5": {"original": "06:aa:aa:aa:aa:aa", "hardware": ORIG, "boot": BOOT}}
+
+
 def test_pending_restores_after_a_crash(monkeypatch, state):
-    _write_record({"en5": ORIG, "en6": "aa:bb:cc:00:00:06", "en7": "aa:bb:cc:00:00:07"})
-    now = {"en5": NEW, "en6": "aa:bb:cc:00:00:06", "en7": ""}
-    monkeypatch.setattr(macaddr, "current_mac", lambda d: now[d])
-    # en6 is back (a reboot does that): forgotten. en7 is unplugged: kept, not offered.
+    _write_record({"en5": ORIG, "en6": ORIG, "en7": ORIG})
+    _ports(monkeypatch, {"en5": NEW, "en6": ORIG, "en7": ""})
+    # en6 is back: forgotten. en7 is unplugged: kept, not offered.
     assert macaddr.pending_restores() == [("en5", ORIG, NEW)]
-    assert macaddr.recorded() == {"en5": ORIG, "en7": "aa:bb:cc:00:00:07"}
+    assert macaddr.recorded() == {"en5": ORIG, "en7": ORIG}
+
+
+def test_an_adapter_missing_from_the_list_is_kept_not_offered(monkeypatch, state):
+    _write_record({"en7": ORIG})
+    _ports(monkeypatch, {})
+    assert macaddr.pending_restores() == [] and macaddr.recorded() == {"en7": ORIG}
+
+
+# ── Re-audit 2026-10-23 (P2-1..3): the record survives unknown outcomes and dies with the boot ──
+
+@pytest.mark.parametrize("output", [
+    "Timed out waiting for the administrator dialog or the command. "
+    "If you had already approved it, the change may still have happened.",
+    "exited 1",
+])
+def test_a_failed_change_that_was_not_cancelled_keeps_the_record(monkeypatch, state, root, output):
+    """P2-1: a timeout can land after the address was read back; only Cancelled is settled."""
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    root["result"], root["mac"] = (False, output), ORIG
+    assert not macaddr.set_mac("en5", NEW)[0]
+    assert macaddr.recorded() == {"en5": ORIG}
+
+
+def test_a_late_landing_change_is_still_offered_after_a_timeout(monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    root["result"], root["mac"] = (False, "Timed out."), ORIG
+    macaddr.set_mac("en5", NEW)
+    _ports(monkeypatch, {"en5": NEW})            # root finished after osascript was killed
+    assert macaddr.pending_restores() == [("en5", ORIG, NEW)]
+
+
+def test_quit_never_forgets_a_change_still_waiting_for_root(monkeypatch, state, root):
+    """P2-2: Quit anyway while the dialog is open must leave the record for the next launch."""
+    import threading
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked(argv, prompt, *a, **kw):
+        entered.set()
+        release.wait(5)
+        return False, "Cancelled."
+    monkeypatch.setattr(macaddr, "run_argv_as_root", blocked)
+    root["mac"] = ORIG
+    worker = threading.Thread(target=macaddr.set_mac, args=("en5", NEW))
+    worker.start()
+    try:
+        assert entered.wait(5)
+        _ports(monkeypatch, {"en5": ORIG})       # nothing changed yet
+        monkeypatch.setattr(macaddr, "set_mac", lambda *a, **k: pytest.fail("restored in flight"))
+        assert macaddr.restore_all_recorded() == []
+        assert macaddr.recorded() == {"en5": ORIG}
+    finally:
+        release.set()
+        worker.join(5)
+    assert not macaddr.in_flight()
+
+
+def test_a_record_from_an_earlier_boot_is_dropped(monkeypatch, state):
+    """P2-3: an ifconfig change never survives a reboot, so its record must not either."""
+    _write_record({"en0": "06:aa:aa:aa:aa:aa"}, boot="999")
+    assert macaddr.recorded() == {}
+    _ports(monkeypatch, {"en0": "0a:bb:bb:bb:bb:bb"})   # macOS picked a new private address
+    assert macaddr.pending_restores() == []
+    assert not macaddr.record_path().exists()
+
+
+def test_an_unknown_boot_keeps_the_record(monkeypatch, state):
+    """Not knowing the boot is not proof of a reboot."""
+    _write_record({"en5": ORIG}, boot="999")
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    assert macaddr.recorded() == {"en5": ORIG}
+
+
+def test_a_malformed_boot_is_rejected_even_when_the_boot_is_unknown(monkeypatch, state):
+    _write_record('{"en5": {"original": "aa:bb:cc:00:00:01", '
+                  '"hardware": "aa:bb:cc:00:00:01", "boot": 1000}}')
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    assert macaddr.recorded() == {}
+
+
+def test_another_adapter_under_the_same_name_is_not_given_the_address(monkeypatch, state):
+    """P3-3: the record names hardware, not just a BSD name that can be reused."""
+    _write_record({"en7": ORIG}, hardware="aa:bb:cc:00:00:07")
+    _ports(monkeypatch, {"en7": NEW}, hardware={"en7": "aa:bb:cc:00:00:99"})
+    assert macaddr.pending_restores() == []
+    assert macaddr.recorded() == {}
+
+
+@pytest.mark.parametrize("boot_output, expected", [
+    ("{ sec = 1792350752, usec = 655426 } Sun Oct 18 20:12:32 2026", "1792350752"),
+    ("garbage", ""),
+])
+def test_boot_id_parses_kern_boottime(monkeypatch, boot_output, expected):
+    seen = []
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: seen.append(argv) or (True, boot_output))
+    REAL_BOOT_ID.cache_clear()
+    try:
+        assert REAL_BOOT_ID() == expected
+        assert seen == [["sysctl", "-n", "kern.boottime"]]
+    finally:
+        REAL_BOOT_ID.cache_clear()
 
 
 def test_restore_all_recorded_puts_the_original_back(monkeypatch, state, root):
     _write_record({"en5": ORIG})
     monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=NEW))
+    _ports(monkeypatch, {"en5": NEW})
     now = {"mac": NEW}
     monkeypatch.setattr(macaddr, "current_mac", lambda d: now["mac"])
 
@@ -370,6 +507,8 @@ def test_restore_all_recorded_puts_the_original_back(monkeypatch, state, root):
     assert (device, ok) == ("en5", True)
     assert root["calls"][0]["argv"][-3:-1] == ["en5", ORIG]
     assert "original" in root["calls"][0]["prompt"]
+    # The original is often a private Wi-Fi address, not the hardware one.
+    assert "hardware" not in root["calls"][0]["prompt"]
     assert root["calls"][0]["kw"] == {"allow_cached_sudo": False}
     assert macaddr.recorded() == {}
 
@@ -377,6 +516,7 @@ def test_restore_all_recorded_puts_the_original_back(monkeypatch, state, root):
 def test_a_declined_restore_keeps_the_record_for_next_launch(monkeypatch, state, root):
     _write_record({"en5": ORIG})
     monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=NEW))
+    _ports(monkeypatch, {"en5": NEW})
     root["result"], root["mac"] = (False, "Cancelled."), NEW
     [(_, ok, _)] = macaddr.restore_all_recorded()
     assert not ok and macaddr.recorded() == {"en5": ORIG}

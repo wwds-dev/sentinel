@@ -25,12 +25,14 @@ privacy measure in common use:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
 import secrets
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -207,31 +209,74 @@ def is_valid(address: str) -> bool:
 # crash. The app leaves through os._exit (ADR 0001), so nothing in memory
 # survives a quit, let alone a crash: the original is written to disk *before*
 # the root command runs, and main._leave and the next launch read it back.
+#
+# Each entry also names the interface's hardware address and the boot it was
+# made in. An ifconfig change never survives a reboot, and on current macOS
+# the "original" is usually a private Wi-Fi address that the next boot
+# replaces, so a record from an earlier boot describes nothing still in place
+# and is dropped. A BSD name can be reused by another adapter, so an entry
+# whose hardware no longer matches is dropped too.
+
+_lock = threading.RLock()            # the record file and _in_flight
+_in_flight: set[str] = set()         # devices whose root command has not returned
 
 
 def record_path() -> Path:
     return paths.state_dir() / "mac_original.json"
 
 
-def recorded() -> dict[str, str]:
-    """device -> the address it had before Sentinel first changed it.
+@functools.cache
+def boot_id() -> str:
+    """kern.boottime's seconds, or '' when it cannot be read (then nothing is dropped)."""
+    ok, output = run(["sysctl", "-n", "kern.boottime"])
+    match = re.search(r"\bsec = (\d+)", output) if ok else None
+    return match.group(1) if match else ""
 
-    Reads one file and runs nothing, so a quit with no change pending costs
-    nothing. Entries that are not a valid interface name and unicast address
-    are dropped: the file must never be a way to steer the root helper.
+
+def _valid_entry(device, entry) -> bool:
+    return (isinstance(device, str) and valid_device(device) and isinstance(entry, dict)
+            and isinstance(entry.get("original"), str) and is_valid(entry["original"])
+            and isinstance(entry.get("hardware"), str) and bool(MAC_RE.match(entry["hardware"]))
+            and isinstance(entry.get("boot"), str))
+
+
+def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
+    """(the valid entries of this boot, whether the file holds anything else).
+
+    Entries that are not a valid interface name and addresses are dropped:
+    the file must never be a way to steer the root helper.
     """
     try:
         data = json.loads(record_path().read_text())
     except (OSError, ValueError):
-        return {}
+        return {}, record_path().exists()
     if not isinstance(data, dict):
-        return {}
-    return {device: address.lower() for device, address in data.items()
-            if isinstance(device, str) and isinstance(address, str)
-            and valid_device(device) and is_valid(address)}
+        return {}, True
+    entries = {device: {key: entry[key].lower() if key != "boot" else entry[key]
+                        for key in ("original", "hardware", "boot")}
+               for device, entry in data.items() if _valid_entry(device, entry)}
+    if entries:
+        boot = boot_id()
+        entries = {device: entry for device, entry in entries.items()
+                   if not (boot and entry["boot"] and entry["boot"] != boot)}
+    return entries, len(entries) != len(data)
 
 
-def _save_record(entries: dict[str, str]) -> None:
+def recorded() -> dict[str, str]:
+    """device -> the address it had before Sentinel first changed it, this boot.
+
+    Reads one file (and, when it holds entries, the boot time), so a quit with
+    no change pending costs nothing.
+    """
+    return {device: entry["original"] for device, entry in _read_entries()[0].items()}
+
+
+def in_flight() -> frozenset[str]:
+    with _lock:
+        return frozenset(_in_flight)
+
+
+def _save_record(entries: dict[str, dict[str, str]]) -> None:
     path = record_path()
     if not entries:
         path.unlink(missing_ok=True)
@@ -248,35 +293,50 @@ def _save_record(entries: dict[str, str]) -> None:
         raise
 
 
-def _remember(device: str, original: str) -> None:
-    entries = recorded()
-    if device not in entries:          # the first original wins
-        entries[device] = original.lower()
-        _save_record(entries)
+def _remember(device: str, original: str, hardware: str) -> None:
+    with _lock:
+        entries, _ = _read_entries()
+        if device not in entries:          # the first original wins
+            entries[device] = {"original": original.lower(), "hardware": hardware.lower(),
+                               "boot": boot_id()}
+            _save_record(entries)
 
 
 def _forget(device: str) -> None:
-    entries = recorded()
-    if entries.pop(device, None) is not None:
-        _save_record(entries)
+    with _lock:
+        entries, stale = _read_entries()
+        if entries.pop(device, None) is not None or stale:
+            _save_record(entries)
 
 
 def pending_restores() -> list[tuple[str, str, str]]:
     """(device, original, current) for each recorded change still in place.
 
-    An interface already back on its original (a reboot resets it) is
-    forgotten. One that cannot be read now (an unplugged adapter) is kept but
-    not offered: there is nothing to restore it on.
+    An interface already back on its original is forgotten, and so is one
+    whose hardware no longer matches (another adapter under the same name).
+    One that cannot be read now (an unplugged adapter) is kept but not
+    offered: there is nothing to restore it on. A device whose own change is
+    still waiting for root (a Quit anyway during the dialog) is left alone:
+    its outcome is unknown, and the next launch decides.
     """
+    with _lock:
+        entries, stale = _read_entries()
+        if stale:
+            _save_record(entries)
+        busy = set(_in_flight)
+    entries = {device: entry for device, entry in entries.items() if device not in busy}
+    if not entries:
+        return []
+    ports = {interface.device: interface for interface in list_interfaces()}
     pending = []
-    for device, original in recorded().items():
-        current = current_mac(device)
-        if not current:
+    for device, entry in entries.items():
+        port = ports.get(device)
+        if port is None or not port.current:
             continue
-        if current == original:
+        if port.hardware != entry["hardware"] or port.current == entry["original"]:
             _forget(device)
         else:
-            pending.append((device, original, current))
+            pending.append((device, entry["original"], port.current))
     return pending
 
 
@@ -284,8 +344,9 @@ def restore_all_recorded() -> list[tuple[str, bool, str]]:
     """Put every recorded original back; a refused one stays recorded."""
     results = []
     for device, original, _ in pending_restores():
+        # "original", not "hardware": it is often a private Wi-Fi address.
         ok, message = set_mac(device, original,
-                              prompt=f"Put back the original hardware address of {device}")
+                              prompt=f"Put back the original address of {device}")
         results.append((device, ok, message))
     return results
 
@@ -315,23 +376,34 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
                        "could not record it for restoring. Nothing was changed.")
 
     address = address.lower()
-    # Recorded before root runs: a crash after the change must still find it.
-    # Going back to the hardware address needs no record (and must not record
-    # someone else's change as ours to put back).
-    if address != interface.hardware:
-        _remember(device, interface.current)
+    with _lock:
+        _in_flight.add(device)
+    try:
+        # Recorded before root runs: a crash after the change must still find
+        # it. Going back to the hardware address needs no record (and must not
+        # record someone else's change as ours to put back).
+        if address != interface.hardware:
+            _remember(device, interface.current, interface.hardware)
 
-    # Sentinel's gated actions always use the macOS dialog, never a cached
-    # sudo ticket left by some unrelated command.
-    ok, output = run_argv_as_root(
-        ["/bin/bash", "-c", ROOT_SCRIPT, "sentinel-mac", device, address,
-         "1" if interface.is_wifi else "0"],
-        prompt or f"Change the hardware address of {device}",
-        allow_cached_sudo=False,
-    )
-    applied = current_mac(device)
-    if applied and applied in (interface.hardware, recorded().get(device)):
-        _forget(device)
+        # Sentinel's gated actions always use the macOS dialog, never a cached
+        # sudo ticket left by some unrelated command.
+        ok, output = run_argv_as_root(
+            ["/bin/bash", "-c", ROOT_SCRIPT, "sentinel-mac", device, address,
+             "1" if interface.is_wifi else "0"],
+            prompt or f"Change the hardware address of {device}",
+            allow_cached_sudo=False,
+        )
+        applied = current_mac(device)
+        # Only a finished command or a cancelled dialog is a known outcome. A
+        # timeout can land after this read (root keeps running once the
+        # password is in), so the record stays until pending_restores sees
+        # the original back.
+        settled = ok or output == "Cancelled."
+        if settled and applied and applied in (interface.hardware, recorded().get(device)):
+            _forget(device)
+    finally:
+        with _lock:
+            _in_flight.discard(device)
     if not ok:
         # Timed out, refused or failed partway: say what the interface is
         # doing now, since the root side may still have run.
