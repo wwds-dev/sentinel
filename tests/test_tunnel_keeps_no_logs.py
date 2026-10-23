@@ -10,6 +10,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from services import runtime_paths, vpn_execution
 from tests.test_vpn_execution import (  # noqa: F401  (the fixture is autouse there)
     Probe, Recorder, execute, profile_for, wg_quick_installed, write_conf)
@@ -79,6 +81,36 @@ def test_bug_spray_keeps_its_own_separate_nmap_record(tmp_path):
     assert written == target
     entry = json.loads(target.read_text().splitlines()[-1])
     assert entry["action"] == "nmap" and entry["outcome"] == "declined"
+
+
+_CANARY = "CANARY-9f3a71c2e6d84b05"
+_CANARY_SHAPES = {
+    "named field": f"password={_CANARY}",
+    "token field": f"token: {_CANARY}",
+    "inline key block": f"<key>\n{_CANARY}\n</key>",
+    "bare key-length token": "A" * 20 + _CANARY[-12:] + "B" * 14,   # 46 base64 characters
+}
+
+
+@pytest.mark.parametrize("shape", list(_CANARY_SHAPES))
+@pytest.mark.parametrize("field", ["target", "program", "command", "detail"])
+def test_a_secret_in_any_field_never_reaches_the_nmap_record(tmp_path, field, shape):
+    """Canary through record_nmap_attempt itself (testing safety matrix gap)."""
+    from ui.panels import bug_bounty
+
+    secret = _CANARY_SHAPES[shape]
+    canary = _CANARY if _CANARY in secret else secret
+    values = {"target": "example.com", "program": "Example program",
+              "command": "nmap -sV example.com", "detail": ""}
+    values[field] = f"{values[field]} {secret}".strip()
+    path = tmp_path / "bug_spray_audit.jsonl"
+    written = bug_bounty.record_nmap_attempt(
+        "started", values["target"], values["program"], values["command"],
+        detail=values["detail"], audit_path=path)
+    assert written == path
+    text = path.read_text(encoding="utf-8")
+    assert canary not in text and secret not in text
+    assert "redacted" in text
 
 
 # ── OpenVPN and Tor write a start-up log; it must not outlive the start ─────
