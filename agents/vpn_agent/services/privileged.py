@@ -110,6 +110,9 @@ def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,
     turn that promise into a silent privileged run.
     """
     if os.geteuid() == 0:
+        # Already root: the administrator dialog would only authorise what this
+        # process can do anyway. The consent gate is the caller's own default-No
+        # confirmation (Tunnel's tabs ask before any privileged call), not this.
         return run(["bash", "-c", script], timeout)
 
     if not allow_cached_sudo:
@@ -136,6 +139,7 @@ def run_argv_as_root(argv: list[str], prompt: str, timeout: float = DEFAULT_TIME
     """
     argv = [str(part) for part in argv]
     if os.geteuid() == 0:
+        # Already root: no dialog, same reasoning as run_as_root.
         return run(argv, timeout)
 
     if not allow_cached_sudo:

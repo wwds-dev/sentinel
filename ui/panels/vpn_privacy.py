@@ -99,13 +99,11 @@ class PrivacyTab(GatedTab):
         ml.addWidget(self.mac_current_label)
         ml.addWidget(self.mac_hardware_label)
         row = QHBoxLayout()
-        self.mac_mode_box = MenuComboBox()
-        self.mac_mode_box.addItems(list(macaddr.MODES))
         self.mac_random_btn = QPushButton("Randomise…")
         self.mac_random_btn.clicked.connect(self.randomise_mac)
         self.mac_restore_btn = QPushButton("Restore hardware address…")
         self.mac_restore_btn.clicked.connect(self.restore_mac)
-        for w in (self.mac_mode_box, self.mac_random_btn, self.mac_restore_btn):
+        for w in (self.mac_random_btn, self.mac_restore_btn):
             row.addWidget(w)
         ml.addLayout(row)
         ml.addWidget(self._info(macaddr.wifi_private_address_note()))
@@ -217,7 +215,7 @@ class PrivacyTab(GatedTab):
         current = self.mac_device_box.currentData()
         try:
             self._interfaces = macaddr.list_interfaces()
-        except Exception:
+        except OSError:
             self._interfaces = []
         self.mac_device_box.blockSignals(True)
         self.mac_device_box.clear()
@@ -249,18 +247,44 @@ class PrivacyTab(GatedTab):
             + ("  (changed)" if iface.spoofed else ""))
         self.mac_hardware_label.setText(f"Hardware: {iface.hardware or 'unknown'}")
 
+    def _fresh_interface(self):
+        """The selected interface read again now, not as listed at the last refresh.
+
+        The address can change (or the adapter go) between the list and the
+        click, and the confirmation must show what is true when it is asked.
+        """
+        selected = self._selected_interface()
+        if selected is None:
+            return None
+        try:
+            fresh = macaddr.get_interface(selected.device)
+        except OSError:
+            fresh = None
+        if fresh is None:
+            self.refresh_interfaces()
+            return None
+        self._interfaces = [fresh if i.device == fresh.device else i for i in self._interfaces]
+        self._show_mac()
+        return fresh
+
     def randomise_mac(self) -> None:
-        iface = self._selected_interface()
-        if iface is None:
+        if self._selected_interface() is None:
             self._refuse("mac-set", "", "Choose a network interface first.")
             return
-        new = macaddr.random_mac(self.mac_mode_box.currentText(), like=iface.hardware)
+        iface = self._fresh_interface()
+        if iface is None:
+            self._refuse("mac-set", "", "That interface is no longer available.")
+            return
+        new = macaddr.random_mac()
         self._set_mac(iface, new, "Randomise hardware address")
 
     def restore_mac(self) -> None:
-        iface = self._selected_interface()
-        if iface is None:
+        if self._selected_interface() is None:
             self._refuse("mac-set", "", "Choose a network interface first.")
+            return
+        iface = self._fresh_interface()
+        if iface is None:
+            self._refuse("mac-set", "", "That interface is no longer available.")
             return
         if not iface.hardware:
             self._refuse("mac-set", iface.device,
@@ -311,7 +335,9 @@ class PrivacyTab(GatedTab):
                 f"{iface.current or 'unknown'}  →  {new}{wifi}\n\n"
                 "macOS will ask for your administrator password. The change lasts "
                 "until restart or until you restore it.")
-        self._gated("mac-set", f"{iface.device} {iface.current}->{new}", title, text,
+        # The target names the device only: no address belongs in anything a
+        # gate might keep (the Tunnel rules: no logging beyond redacted diagnostics).
+        self._gated("mac-set", iface.device, title, text,
                     lambda: macaddr.set_mac(iface.device, new))
 
     # ── Tor ──

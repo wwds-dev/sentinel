@@ -30,7 +30,6 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -71,9 +70,10 @@ fi
 /sbin/ifconfig "$dev" ether "$addr"
 """
 
+# The only mode. A "same-vendor" mode (keep the real OUI) was removed on
+# 2026-10-28: it broke the rule that every address is locally administered.
 MODE_LOCAL = "locally-administered"
-MODE_SAME_VENDOR = "same-vendor"
-MODES = (MODE_LOCAL, MODE_SAME_VENDOR)
+MODES = (MODE_LOCAL,)
 
 
 @dataclass
@@ -168,23 +168,16 @@ def get_interface(device: str) -> Interface | None:
 
 def random_mac(mode: str = MODE_LOCAL, like: str = "") -> str:
     """
-    Generate an address.
+    Generate a locally administered unicast address.
 
-    MODE_LOCAL sets the locally-administered bit and clears the multicast bit,
-    which is the correct way to mint an address that cannot collide with a real
-    manufacturer's. It is also, by construction, visibly not a real vendor —
-    a network operator looking for spoofed clients can spot it.
+    Sets the locally-administered bit and clears the multicast bit, which is
+    the correct way to mint an address that cannot collide with a real
+    manufacturer's. It is also, by construction, visibly not a real vendor.
 
-    MODE_SAME_VENDOR keeps the first three octets of the existing address and
-    randomises the rest, so the interface still looks like the same make of
-    hardware. Less conspicuous, at the cost of using an OUI that is not ours to
-    use.
+    ``mode`` and ``like`` are accepted only so an old caller or saved setting
+    that still names the removed "same-vendor" mode falls back to this one:
+    neither changes the result, and a real OUI is never copied.
     """
-    if mode == MODE_SAME_VENDOR and MAC_RE.match(like or ""):
-        prefix = like.lower().split(":")[:3]
-        suffix = [f"{secrets.randbelow(256):02x}" for _ in range(3)]
-        return ":".join(prefix + suffix)
-
     # Bit 0 clear = unicast; bit 1 set = locally administered.
     first = (secrets.randbelow(256) & 0xFE) | 0x02
     rest = [f"{secrets.randbelow(256):02x}" for _ in range(5)]
@@ -199,8 +192,9 @@ def is_valid(address: str) -> bool:
     if not MAC_RE.match(address or ""):
         return False
     first = int(address.split(":")[0], 16)
-    # A multicast address as a source is invalid and some drivers reject it.
-    return not (first & 0x01)
+    if first & 0x01:        # multicast, and so broadcast: invalid as a source
+        return False
+    return int(address.replace(":", ""), 16) != 0     # all zeros is not an address
 
 
 # ── The record of what Sentinel changed ──────────
