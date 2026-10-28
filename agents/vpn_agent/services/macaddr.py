@@ -186,8 +186,10 @@ def random_mac(mode: str = MODE_LOCAL, like: str = "") -> str:
 
 
 def redact_addresses(text: str) -> str:
-    """``text`` with every hardware address replaced, for output that is kept
-    (stderr goes to a launch log file). The device name and the reason stay."""
+    """``text`` with every colon-separated, two-digit-padded hardware address
+    replaced, for output that is kept (stderr goes to a launch log file). The
+    device name and the reason stay. Other forms (dash, dotted, bare hex,
+    unpadded) are not matched: ifconfig prints the padded colon form."""
     return _ANY_MAC_RE.sub("<address>", text or "")
 
 
@@ -385,7 +387,10 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
                        "could not record it for restoring. Nothing was changed.")
 
     address = address.lower()
-    if (address != interface.hardware and device not in recorded()
+    # Only a record pending_restores would still act on opens the guard: one
+    # for this device whose hardware is this interface's (it drops the rest).
+    restorable = (_read_entries()[0].get(device) or {}).get("hardware") == interface.hardware
+    if (address != interface.hardware and not restorable
             and not is_valid(interface.current)):
         # What it uses now is the "original" a restore would put back; an
         # all-zero or multicast one cannot be recorded (the record drops it),
