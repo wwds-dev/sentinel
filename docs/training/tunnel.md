@@ -55,7 +55,8 @@ asks a Yes/No question that defaults to **No**. The gate has fixed stages:
    even when an unrelated `sudo` ticket happens to be cached, and Tunnel never
    stores it. If Sentinel itself was started as root (with `sudo`), there is no
    prompt to show, so Tunnel refuses the action and changes nothing: quit and
-   open Sentinel as your normal user. The prompt and the command share a 30-second limit; cancelling the
+   open Sentinel as your normal user. Tunnel waits up to two minutes in all (90 seconds to answer
+   the prompt, plus 30 for the command); cancelling the
    prompt is reported as a failed attempt.
 4. **Post-change check** re-reads local state after the command so the result
    reflects what actually happened, not what was requested.
