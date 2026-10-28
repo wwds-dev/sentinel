@@ -373,3 +373,31 @@ def test_a_mac_change_writes_no_log_file(env, monkeypatch, tmp_path):
     before = set(tmp_path.rglob("*"))
     env.tab.randomise_mac()
     assert [p for p in set(tmp_path.rglob("*")) - before if p.suffix in (".log", ".jsonl")] == []
+
+
+# ── Review of c807267, P3-1: the fresh read's branches ──
+
+def test_a_failing_fresh_read_is_a_refusal_not_a_crash(env, monkeypatch):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: (_ for _ in ()).throw(OSError("gone")))
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.tab.randomise_mac()
+    assert env.asked == [] and env.calls == [] and env.warnings
+
+
+def test_a_vanished_interface_is_dropped_from_the_list(env, monkeypatch):
+    env.ifaces[:] = [env.ifaces[0]]
+    env.tab.mac_device_box.setCurrentIndex(1)
+    env.tab.randomise_mac()
+    assert [i.device for i in env.tab._interfaces] == ["en0"]
+    assert env.tab.mac_device_box.count() == 1
+
+
+def test_a_declined_change_leaves_the_fresh_address_on_screen(env, monkeypatch):
+    env.tab.mac_device_box.setCurrentIndex(1)
+    env.ifaces[1] = Interface("en5", "USB 10/100 LAN", "02:00:00:00:00:77", "aa:bb:cc:00:00:05")
+    env.answers = [False]
+    env.tab.randomise_mac()
+    assert "02:00:00:00:00:77" in env.tab.mac_current_label.text()
+    assert "02:00:00:00:00:77" in env.tab.mac_device_box.itemText(1)
+    assert "02:00:00:00:00:09" not in env.tab.mac_device_box.itemText(1)

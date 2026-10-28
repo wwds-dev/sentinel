@@ -640,3 +640,20 @@ def test_a_zero_address_never_reaches_root(monkeypatch, root):
     monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
     ok, _ = macaddr.set_mac("en5", "00:00:00:00:00:00")
     assert not ok and root["calls"] == []
+
+
+# ── Review of c807267, P2-1: an unrecordable current address fails closed ──
+
+@pytest.mark.parametrize("current", ["00:00:00:00:00:00", "01:00:5e:00:00:01", "ff:ff:ff:ff:ff:ff"])
+def test_a_current_address_that_cannot_be_recorded_refuses_the_change(monkeypatch, state, root, current):
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=current))
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "could not record" in msg
+    assert root["calls"] == [] and macaddr.recorded() == {}
+
+
+def test_going_back_to_hardware_needs_no_recordable_current(monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    root["mac"] = "aa:bb:cc:00:00:01"
+    assert macaddr.set_mac("en5", "aa:bb:cc:00:00:01")[0]

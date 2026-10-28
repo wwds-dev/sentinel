@@ -111,8 +111,10 @@ def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,
     """
     if os.geteuid() == 0:
         # Already root: the administrator dialog would only authorise what this
-        # process can do anyway. The consent gate is the caller's own default-No
-        # confirmation (Tunnel's tabs ask before any privileged call), not this.
+        # process can do anyway. Consent is the caller's job: every
+        # user-initiated privileged call in Tunnel's tabs is confirmed first
+        # (default No); the quit-time restore is the mandated undo of a change
+        # the user already approved.
         return run(["bash", "-c", script], timeout)
 
     if not allow_cached_sudo:

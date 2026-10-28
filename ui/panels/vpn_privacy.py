@@ -264,6 +264,9 @@ class PrivacyTab(GatedTab):
             self.refresh_interfaces()
             return None
         self._interfaces = [fresh if i.device == fresh.device else i for i in self._interfaces]
+        index = self.mac_device_box.findData(fresh.device)
+        if index >= 0:
+            self.mac_device_box.setItemText(index, fresh.describe())
         self._show_mac()
         return fresh
 

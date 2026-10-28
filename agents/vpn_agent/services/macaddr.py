@@ -378,6 +378,12 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
                        "could not record it for restoring. Nothing was changed.")
 
     address = address.lower()
+    if address != interface.hardware and not is_valid(interface.current):
+        # What it uses now is the "original" a restore would put back; an
+        # all-zero or multicast one cannot be recorded (the record drops it),
+        # so a change would leave nothing to restore. Fail closed.
+        return False, (f"Sentinel could not record the address {device} is using now "
+                       f"({interface.current}) for restoring. Nothing was changed.")
     with _lock:
         _in_flight.add(device)
     try:
