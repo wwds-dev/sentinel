@@ -244,3 +244,60 @@ def test_tunnel_panel_hosts_the_tab_and_shutdown_joins_it(env, monkeypatch):
                                "wait": lambda s, ms: joined.append("w") or True})()
     t.shutdown()
     assert joined == ["c", "w"]
+
+
+def test_restore_refuses_when_the_current_address_cannot_be_read(env, monkeypatch):
+    """Audit Medium 2: an unreadable address is unknown, not 'already restored'."""
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.ifaces[0] = Interface("en0", "Wi-Fi", "", "aa:bb:cc:00:00:01")
+    env.tab.refresh_interfaces()
+    env.tab.restore_mac()
+    assert env.calls == [] and env.asked == []
+    assert "already" not in env.tab.status_label.text()
+    assert "could not read" in env.tab.status_label.text()
+
+
+def _leftover(monkeypatch, pending):
+    monkeypatch.setattr(macaddr, "recorded", lambda: {d: o for d, o, _ in pending})
+    monkeypatch.setattr(macaddr, "pending_restores", lambda: list(pending))
+
+
+def test_a_leftover_change_is_offered_for_restore_at_startup(env, monkeypatch):
+    """Audit High 1: a change left by a crash is offered back, through the gate."""
+    _leftover(monkeypatch, [("en5", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")])
+    monkeypatch.setattr(macaddr, "restore_all_recorded",
+                        env.net("restore", [("en5", True, "en5 is now aa:bb:cc:00:00:05.")]))
+    env.answers = [True]
+    tab = PrivacyTab()
+    tab.offer_recorded_restore()
+    assert env.calls == ["restore"]
+    title, text = env.asked[-1]
+    assert "en5" in text and "aa:bb:cc:00:00:05" in text and "02:00:00:00:00:09" in text
+
+
+def test_a_declined_leftover_restore_runs_nothing(env, monkeypatch):
+    _leftover(monkeypatch, [("en5", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")])
+    monkeypatch.setattr(macaddr, "restore_all_recorded", env.net("restore", []))
+    tab = PrivacyTab()
+    tab.offer_recorded_restore()
+    assert env.calls == [] and len(env.asked) == 1
+
+
+def test_no_leftover_means_no_offer(env, monkeypatch):
+    _leftover(monkeypatch, [])
+    PrivacyTab().offer_recorded_restore()
+    assert env.asked == []
+
+
+@pytest.mark.parametrize("pending, offered", [
+    ([("en5", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")], 1), ([], 0)])
+def test_the_offer_is_scheduled_at_startup_only_when_a_change_is_recorded(
+        env, monkeypatch, pending, offered):
+    from PySide6.QtWidgets import QApplication
+    _leftover(monkeypatch, pending)
+    hits = []
+    monkeypatch.setattr(PrivacyTab, "offer_recorded_restore", lambda self: hits.append(self))
+    tab = PrivacyTab()
+    assert hits == []                     # never during construction
+    QApplication.processEvents()
+    assert len(hits) == offered and (not hits or hits[0] is tab)
