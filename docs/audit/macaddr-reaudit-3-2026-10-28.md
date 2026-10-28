@@ -118,3 +118,15 @@ run.
 - `find ~/Library/Application Support/Sentinel* -maxdepth 3 -name mac_original.json` (count only)
 - Mutants and probes: `rsync` copy of the worktree to the scratchpad, mutants applied there with
   single-occurrence string replacement, and the three MAC test files run against each one
+
+## Follow-up: P3-A fixed (2026-10-28, same reviewer, at the owner's request)
+
+The reviewer added the test, so this test-only change is reviewed by its author only.
+
+- `tests/test_macaddr.py::test_a_record_made_this_boot_is_kept_under_its_real_boot_id`: with
+  `boot_id` returning an upper-case UUID, `_remember` then `recorded()` keeps the entry, and the
+  file stores the UUID in its original case.
+- M1 (`:263` lowercases `boot`) is now **killed** (`1 failed, 109 passed`), and so is a new M1b
+  (`_remember` writes `boot_id().lower()`). Unmutated: the three MAC test files give
+  `110 passed`. No production code changed.
+- P3-B stays a note with no change.

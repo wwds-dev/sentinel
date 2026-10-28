@@ -509,6 +509,15 @@ def test_boot_id_is_unknown_when_sysctl_fails(monkeypatch):
         REAL_BOOT_ID.cache_clear()
 
 
+def test_a_record_made_this_boot_is_kept_under_its_real_boot_id(monkeypatch, state):
+    """Re-audit 3 P3-A: the boot ID has letters, and its case must survive the record."""
+    import json
+    monkeypatch.setattr(macaddr, "boot_id", lambda: UUID)
+    macaddr._remember("en5", ORIG, ORIG)
+    assert json.loads(macaddr.record_path().read_text())["en5"]["boot"] == UUID
+    assert macaddr.recorded() == {"en5": ORIG}
+
+
 def test_restore_all_recorded_puts_the_original_back(monkeypatch, state, root):
     _write_record({"en5": ORIG})
     monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=NEW))
