@@ -213,10 +213,12 @@ class PrivacyTab(GatedTab):
     # ── hardware address ──
     def refresh_interfaces(self) -> None:
         current = self.mac_device_box.currentData()
+        error = ""
         try:
             self._interfaces = macaddr.list_interfaces()
-        except OSError:
+        except OSError as exc:
             self._interfaces = []
+            error = f"Could not list network interfaces: {exc}"
         self.mac_device_box.blockSignals(True)
         self.mac_device_box.clear()
         for iface in self._interfaces:
@@ -225,6 +227,9 @@ class PrivacyTab(GatedTab):
         self.mac_device_box.setCurrentIndex(max(index, 0))
         self.mac_device_box.blockSignals(False)
         self._show_mac()
+        if error:
+            self.mac_current_label.setText(error)
+            self._say(error)
 
     def _selected_interface(self):
         device = self.mac_device_box.currentData()

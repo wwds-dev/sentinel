@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents.vpn_agent.server import paths
-from agents.vpn_agent.services.privileged import run, run_argv_as_root
+from agents.vpn_agent.services.privileged import ROOT_REFUSAL, run, run_argv_as_root
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9A-Fa-f]{2}$")
 # BSD interface names: a short lowercase driver name and a unit number. \Z,
@@ -402,11 +402,11 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
             allow_cached_sudo=False,
         )
         applied = current_mac(device)
-        # Only a finished command or a cancelled dialog is a known outcome. A
-        # timeout can land after this read (root keeps running once the
-        # password is in), so the record stays until pending_restores sees
-        # the original back.
-        settled = ok or output == "Cancelled."
+        # Only a finished command, a cancelled dialog or a refusal to run as
+        # root is a known outcome. A timeout can land after this read (root
+        # keeps running once the password is in), so the record stays until
+        # pending_restores sees the original back.
+        settled = ok or output in ("Cancelled.", ROOT_REFUSAL)
         if settled and applied and applied in (interface.hardware, recorded().get(device)):
             _forget(device)
     finally:

@@ -53,7 +53,9 @@ asks a Yes/No question that defaults to **No**. The gate has fixed stages:
    second dialog lists them and also defaults to **No**.
 3. **Administrator prompt** — macOS asks for your password in its own dialog,
    even when an unrelated `sudo` ticket happens to be cached, and Tunnel never
-   stores it. The prompt and the command share a 30-second limit; cancelling the
+   stores it. If Sentinel itself was started as root (with `sudo`), there is no
+   prompt to show, so Tunnel refuses the action and changes nothing: quit and
+   open Sentinel as your normal user. The prompt and the command share a 30-second limit; cancelling the
    prompt is reported as a failed attempt.
 4. **Post-change check** re-reads local state after the command so the result
    reflects what actually happened, not what was requested.

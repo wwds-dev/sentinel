@@ -96,7 +96,8 @@ def test_root_and_sudo_paths_pass_argv_without_a_shell(monkeypatch):
     seen = []
     monkeypatch.setattr(privileged, "run", lambda argv, timeout=0: seen.append(argv) or (True, ""))
     monkeypatch.setattr(privileged.os, "geteuid", lambda: 0)
-    privileged.run_argv_as_root(["/sbin/ifconfig", "en5"], "p", allow_cached_sudo=False)
+    # The companion default; a gated (dialog-only) call is refused as root (Low 10).
+    privileged.run_argv_as_root(["/sbin/ifconfig", "en5"], "p")
     monkeypatch.setattr(privileged.os, "geteuid", lambda: 501)
     privileged.run_argv_as_root(["/sbin/ifconfig", "en5"], "p")
     assert seen == [["/sbin/ifconfig", "en5"], ["sudo", "-n", "/sbin/ifconfig", "en5"]]
@@ -338,6 +339,24 @@ def test_an_unreadable_current_address_refuses_the_change(monkeypatch, state, ro
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not read" in msg
     assert root["calls"] == [] and macaddr.recorded() == {}
+
+
+def test_a_current_address_that_could_not_be_put_back_refuses_the_change(monkeypatch, state, root):
+    """Low 8 knock-on: the record only ever holds an address set_mac accepts back."""
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "could not record" in msg
+    assert root["calls"] == [] and macaddr.recorded() == {}
+
+
+def test_going_back_to_the_hardware_address_needs_no_record_so_is_allowed(
+        monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    root["mac"] = ORIG
+    ok, _ = macaddr.set_mac("en5", ORIG)
+    assert ok and len(root["calls"]) == 1
 
 
 def _write_record(entries, *, hardware=ORIG, boot=BOOT):

@@ -23,6 +23,12 @@ DEFAULT_TIMEOUT = 30
 # on that, or a slow typist sees "Timed out." for a change they approved.
 PASSWORD_ENTRY_SECONDS = 90
 
+ROOT_REFUSAL = (
+    "Sentinel is running as root, so macOS cannot ask for your administrator "
+    "password, and this action only runs after you approve that dialog. Nothing "
+    "was changed. Quit Sentinel and open it again as your normal user (not with sudo)."
+)
+
 
 def run(command: list[str], timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
     """Run a command directly, returning (ok, combined output)."""
@@ -107,14 +113,13 @@ def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,
     Sentinel's gated actions pass ``False``: the README promises that a
     Connect, Disconnect or kill-switch change goes through the macOS
     authorisation dialog, and a ticket left by an unrelated ``sudo`` must not
-    turn that promise into a silent privileged run.
+    turn that promise into a silent privileged run. Nor may a Sentinel that was
+    itself started as root: there is no dialog to show then, so a gated call
+    is refused (``ROOT_REFUSAL``) rather than run unasked.
     """
     if os.geteuid() == 0:
-        # Already root: the administrator dialog would only authorise what this
-        # process can do anyway. Consent is the caller's job: every
-        # user-initiated privileged call in Tunnel's tabs is confirmed first
-        # (default No); the quit-time restore is the mandated undo of a change
-        # the user already approved.
+        if not allow_cached_sudo:
+            return False, ROOT_REFUSAL
         return run(["bash", "-c", script], timeout)
 
     if not allow_cached_sudo:
@@ -141,7 +146,8 @@ def run_argv_as_root(argv: list[str], prompt: str, timeout: float = DEFAULT_TIME
     """
     argv = [str(part) for part in argv]
     if os.geteuid() == 0:
-        # Already root: no dialog, same reasoning as run_as_root.
+        if not allow_cached_sudo:
+            return False, ROOT_REFUSAL
         return run(argv, timeout)
 
     if not allow_cached_sudo:

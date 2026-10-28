@@ -351,6 +351,9 @@ def test_refresh_survives_an_os_error_but_not_a_bug(env, monkeypatch):
     monkeypatch.setattr(macaddr, "list_interfaces", boom(OSError("no networksetup")))
     env.tab.refresh_interfaces()
     assert env.tab._interfaces == []
+    # Say why the list is empty, not "No network interfaces found".
+    for label in (env.tab.mac_current_label, env.tab.status_label):
+        assert "Could not list network interfaces: no networksetup" in label.text()
     monkeypatch.setattr(macaddr, "list_interfaces", boom(RuntimeError("bug")))
     with pytest.raises(RuntimeError):
         env.tab.refresh_interfaces()
