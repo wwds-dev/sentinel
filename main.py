@@ -6006,9 +6006,12 @@ def _restore_changed_hardware_addresses() -> None:
         from agents.vpn_agent.services import macaddr
         for device, ok, message in macaddr.restore_all_recorded():
             if not ok:
-                print(f"hardware address of {device} not restored: {message}", file=sys.stderr)
+                # stderr lands in a launch log file: no address in it.
+                print(f"hardware address of {device} not restored: "
+                      f"{macaddr.redact_addresses(message)}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - leaving matters more
-        print(f"hardware address restore skipped: {exc}", file=sys.stderr)
+        from agents.vpn_agent.services.macaddr import redact_addresses
+        print(f"hardware address restore skipped: {redact_addresses(str(exc))}", file=sys.stderr)
 
 
 def _leave(window, settings, code: int = 0) -> None:
