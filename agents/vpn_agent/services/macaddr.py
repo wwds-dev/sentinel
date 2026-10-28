@@ -30,14 +30,13 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from agents.vpn_agent.server import paths
-from agents.vpn_agent.services.privileged import run, run_argv_as_root
+from agents.vpn_agent.services.privileged import ROOT_REFUSAL, run, run_argv_as_root
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9A-Fa-f]{2}$")
 # BSD interface names: a short lowercase driver name and a unit number. \Z,
@@ -71,9 +70,10 @@ fi
 /sbin/ifconfig "$dev" ether "$addr"
 """
 
+# The only mode. A "same-vendor" mode (keep the real OUI) was removed on
+# 2026-10-28: it broke the rule that every address is locally administered.
 MODE_LOCAL = "locally-administered"
-MODE_SAME_VENDOR = "same-vendor"
-MODES = (MODE_LOCAL, MODE_SAME_VENDOR)
+MODES = (MODE_LOCAL,)
 
 
 @dataclass
@@ -168,23 +168,16 @@ def get_interface(device: str) -> Interface | None:
 
 def random_mac(mode: str = MODE_LOCAL, like: str = "") -> str:
     """
-    Generate an address.
+    Generate a locally administered unicast address.
 
-    MODE_LOCAL sets the locally-administered bit and clears the multicast bit,
-    which is the correct way to mint an address that cannot collide with a real
-    manufacturer's. It is also, by construction, visibly not a real vendor —
-    a network operator looking for spoofed clients can spot it.
+    Sets the locally-administered bit and clears the multicast bit, which is
+    the correct way to mint an address that cannot collide with a real
+    manufacturer's. It is also, by construction, visibly not a real vendor.
 
-    MODE_SAME_VENDOR keeps the first three octets of the existing address and
-    randomises the rest, so the interface still looks like the same make of
-    hardware. Less conspicuous, at the cost of using an OUI that is not ours to
-    use.
+    ``mode`` and ``like`` are accepted only so an old caller or saved setting
+    that still names the removed "same-vendor" mode falls back to this one:
+    neither changes the result, and a real OUI is never copied.
     """
-    if mode == MODE_SAME_VENDOR and MAC_RE.match(like or ""):
-        prefix = like.lower().split(":")[:3]
-        suffix = [f"{secrets.randbelow(256):02x}" for _ in range(3)]
-        return ":".join(prefix + suffix)
-
     # Bit 0 clear = unicast; bit 1 set = locally administered.
     first = (secrets.randbelow(256) & 0xFE) | 0x02
     rest = [f"{secrets.randbelow(256):02x}" for _ in range(5)]
@@ -199,8 +192,9 @@ def is_valid(address: str) -> bool:
     if not MAC_RE.match(address or ""):
         return False
     first = int(address.split(":")[0], 16)
-    # A multicast address as a source is invalid and some drivers reject it.
-    return not (first & 0x01)
+    if first & 0x01:        # multicast, and so broadcast: invalid as a source
+        return False
+    return int(address.replace(":", ""), 16) != 0     # all zeros is not an address
 
 
 # ── The record of what Sentinel changed ──────────
@@ -384,6 +378,12 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
                        "could not record it for restoring. Nothing was changed.")
 
     address = address.lower()
+    if address != interface.hardware and not is_valid(interface.current):
+        # What it uses now is the "original" a restore would put back; an
+        # all-zero or multicast one cannot be recorded (the record drops it),
+        # so a change would leave nothing to restore. Fail closed.
+        return False, (f"Sentinel could not record the address {device} is using now "
+                       f"({interface.current}) for restoring. Nothing was changed.")
     with _lock:
         _in_flight.add(device)
     try:
@@ -402,11 +402,11 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
             allow_cached_sudo=False,
         )
         applied = current_mac(device)
-        # Only a finished command or a cancelled dialog is a known outcome. A
-        # timeout can land after this read (root keeps running once the
-        # password is in), so the record stays until pending_restores sees
-        # the original back.
-        settled = ok or output == "Cancelled."
+        # Only a finished command, a cancelled dialog or a refusal to run as
+        # root is a known outcome. A timeout can land after this read (root
+        # keeps running once the password is in), so the record stays until
+        # pending_restores sees the original back.
+        settled = ok or output in ("Cancelled.", ROOT_REFUSAL)
         if settled and applied and applied in (interface.hardware, recorded().get(device)):
             _forget(device)
     finally:

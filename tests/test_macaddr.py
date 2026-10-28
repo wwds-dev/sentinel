@@ -96,7 +96,8 @@ def test_root_and_sudo_paths_pass_argv_without_a_shell(monkeypatch):
     seen = []
     monkeypatch.setattr(privileged, "run", lambda argv, timeout=0: seen.append(argv) or (True, ""))
     monkeypatch.setattr(privileged.os, "geteuid", lambda: 0)
-    privileged.run_argv_as_root(["/sbin/ifconfig", "en5"], "p", allow_cached_sudo=False)
+    # The companion default; a gated (dialog-only) call is refused as root (Low 10).
+    privileged.run_argv_as_root(["/sbin/ifconfig", "en5"], "p")
     monkeypatch.setattr(privileged.os, "geteuid", lambda: 501)
     privileged.run_argv_as_root(["/sbin/ifconfig", "en5"], "p")
     assert seen == [["/sbin/ifconfig", "en5"], ["sudo", "-n", "/sbin/ifconfig", "en5"]]
@@ -338,6 +339,24 @@ def test_an_unreadable_current_address_refuses_the_change(monkeypatch, state, ro
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not read" in msg
     assert root["calls"] == [] and macaddr.recorded() == {}
+
+
+def test_a_current_address_that_could_not_be_put_back_refuses_the_change(monkeypatch, state, root):
+    """Low 8 knock-on: the record only ever holds an address set_mac accepts back."""
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "could not record" in msg
+    assert root["calls"] == [] and macaddr.recorded() == {}
+
+
+def test_going_back_to_the_hardware_address_needs_no_record_so_is_allowed(
+        monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    root["mac"] = ORIG
+    ok, _ = macaddr.set_mac("en5", ORIG)
+    assert ok and len(root["calls"]) == 1
 
 
 def _write_record(entries, *, hardware=ORIG, boot=BOOT):
@@ -589,3 +608,71 @@ def test_an_unknown_outcome_going_to_hardware_records_nothing(monkeypatch, state
     root["result"], root["mac"] = (False, "Timed out."), ""
     macaddr.set_mac("en5", ORIG)
     assert macaddr.recorded() == {}
+
+
+# ── Medium 5: every generated address is locally administered unicast ──
+
+def test_same_vendor_mode_is_gone():
+    assert not hasattr(macaddr, "MODE_SAME_VENDOR")
+    assert macaddr.MODES == (macaddr.MODE_LOCAL,)
+
+
+@pytest.mark.parametrize("mode", [macaddr.MODE_LOCAL, "same-vendor", "", "nonsense"])
+def test_every_generated_address_is_locally_administered_unicast(mode):
+    # A saved setting naming the removed mode (or any unknown one) falls back
+    # to the random mode, and even a real vendor address passed as `like` is
+    # never copied.
+    for _ in range(300):
+        address = macaddr.random_mac(mode, like="f0:18:98:12:34:56")
+        first = int(address.split(":")[0], 16)
+        assert first & 0x02, address          # locally administered
+        assert not first & 0x01, address      # unicast
+        assert not address.startswith("f0:18:98"), address
+        assert macaddr.is_valid(address)
+
+
+def test_randomize_with_a_saved_same_vendor_mode_uses_the_random_mode(monkeypatch, root):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, hardware="f0:18:98:00:00:01",
+                                         current="f0:18:98:00:00:01"))
+    macaddr.randomize("en5", "same-vendor")
+    sent = root["calls"][0]["argv"][-2]
+    assert int(sent.split(":")[0], 16) & 0x03 == 0x02
+
+
+# ── Low 8: addresses that cannot be a source address ──
+
+@pytest.mark.parametrize("address", [
+    "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:01", "33:33:00:00:00:01",
+    "03:11:22:33:44:55", "ab:cd:ef:01:02:03", "", "02:11:22:33:44", "02:11:22:33:44:5g",
+])
+def test_unusable_addresses_are_rejected(address):
+    assert not macaddr.is_valid(address)
+
+
+@pytest.mark.parametrize("address", ["02:11:22:33:44:55", "AA:BB:CC:00:00:01", "00:00:00:00:00:02"])
+def test_ordinary_unicast_addresses_are_accepted(address):
+    assert macaddr.is_valid(address)
+
+
+def test_a_zero_address_never_reaches_root(monkeypatch, root):
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    ok, _ = macaddr.set_mac("en5", "00:00:00:00:00:00")
+    assert not ok and root["calls"] == []
+
+
+# ── Review of c807267, P2-1: an unrecordable current address fails closed ──
+
+@pytest.mark.parametrize("current", ["00:00:00:00:00:00", "01:00:5e:00:00:01", "ff:ff:ff:ff:ff:ff"])
+def test_a_current_address_that_cannot_be_recorded_refuses_the_change(monkeypatch, state, root, current):
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=current))
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "could not record" in msg
+    assert root["calls"] == [] and macaddr.recorded() == {}
+
+
+def test_going_back_to_hardware_needs_no_recordable_current(monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    root["mac"] = "aa:bb:cc:00:00:01"
+    assert macaddr.set_mac("en5", "aa:bb:cc:00:00:01")[0]

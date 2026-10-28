@@ -63,7 +63,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
     e.ifaces = [Interface("en0", "Wi-Fi", "aa:bb:cc:00:00:01", "aa:bb:cc:00:00:01"),
                 Interface("en5", "USB 10/100 LAN", "02:00:00:00:00:09", "aa:bb:cc:00:00:05")]
-    monkeypatch.setattr(macaddr, "list_interfaces", lambda: e.ifaces)
+    monkeypatch.setattr(macaddr, "list_interfaces", lambda: list(e.ifaces))
     monkeypatch.setattr(tor, "is_installed", lambda: True)
     monkeypatch.setattr(tor, "is_running", lambda: False)
     monkeypatch.setattr(tor, "bootstrap_progress", lambda: "")
@@ -301,3 +301,106 @@ def test_the_offer_is_scheduled_at_startup_only_when_a_change_is_recorded(
     assert hits == []                     # never during construction
     QApplication.processEvents()
     assert len(hits) == offered and (not hits or hits[0] is tab)
+
+
+# ── Medium 5, Lows 7, 9, 12 ──
+
+def test_there_is_no_mac_mode_choice(env):
+    assert not hasattr(env.tab, "mac_mode_box")
+
+
+def test_randomise_offers_a_locally_administered_unicast_address(env, monkeypatch):
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.answers = [True]
+    env.tab.randomise_mac()
+    shown = [w for w in env.asked[0][1].split() if w.count(":") == 5][-1]
+    assert int(shown.split(":")[0], 16) & 0x03 == 0x02
+
+
+def test_the_confirm_dialog_shows_the_address_read_just_before(env, monkeypatch):
+    env.tab.mac_device_box.setCurrentIndex(1)           # en5, listed as ...:09
+    env.ifaces[1] = Interface("en5", "USB 10/100 LAN", "02:00:00:00:00:77", "aa:bb:cc:00:00:05")
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.answers = [True]
+    env.tab.randomise_mac()
+    assert "02:00:00:00:00:77" in env.asked[0][1]
+    assert "02:00:00:00:00:09" not in env.asked[0][1]
+
+
+def test_restore_decides_on_the_address_read_just_before(env, monkeypatch):
+    env.tab.mac_device_box.setCurrentIndex(1)           # listed as changed
+    env.ifaces[1] = Interface("en5", "USB 10/100 LAN", "aa:bb:cc:00:00:05", "aa:bb:cc:00:00:05")
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.tab.restore_mac()                               # already back: nothing to ask
+    assert env.asked == [] and env.calls == []
+
+
+def test_an_interface_that_vanished_is_a_refusal(env, monkeypatch):
+    env.ifaces[:] = [env.ifaces[0]]                     # en5 unplugged since the list
+    env.tab.mac_device_box.setCurrentIndex(1)
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.tab.randomise_mac()
+    assert env.asked == [] and env.calls == [] and env.warnings
+
+
+def test_refresh_survives_an_os_error_but_not_a_bug(env, monkeypatch):
+    def boom(exc):
+        def f():
+            raise exc
+        return f
+    monkeypatch.setattr(macaddr, "list_interfaces", boom(OSError("no networksetup")))
+    env.tab.refresh_interfaces()
+    assert env.tab._interfaces == []
+    # Say why the list is empty, not "No network interfaces found".
+    for label in (env.tab.mac_current_label, env.tab.status_label):
+        assert "Could not list network interfaces: no networksetup" in label.text()
+    monkeypatch.setattr(macaddr, "list_interfaces", boom(RuntimeError("bug")))
+    with pytest.raises(RuntimeError):
+        env.tab.refresh_interfaces()
+
+
+def test_the_gate_target_for_a_mac_change_holds_no_address(env, monkeypatch, caplog):
+    seen = []
+    monkeypatch.setattr(env.tab, "_gated",
+                        lambda action, target, *a, **k: seen.append(target) or True)
+    env.tab.randomise_mac()
+    env.tab.mac_device_box.setCurrentIndex(1)
+    env.tab.restore_mac()
+    assert seen and all(":" not in t for t in seen), seen
+    assert not caplog.records
+
+
+def test_a_mac_change_writes_no_log_file(env, monkeypatch, tmp_path):
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.answers = [True]
+    before = set(tmp_path.rglob("*"))
+    env.tab.randomise_mac()
+    assert [p for p in set(tmp_path.rglob("*")) - before if p.suffix in (".log", ".jsonl")] == []
+
+
+# ── Review of c807267, P3-1: the fresh read's branches ──
+
+def test_a_failing_fresh_read_is_a_refusal_not_a_crash(env, monkeypatch):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: (_ for _ in ()).throw(OSError("gone")))
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+    env.tab.randomise_mac()
+    assert env.asked == [] and env.calls == [] and env.warnings
+
+
+def test_a_vanished_interface_is_dropped_from_the_list(env, monkeypatch):
+    env.ifaces[:] = [env.ifaces[0]]
+    env.tab.mac_device_box.setCurrentIndex(1)
+    env.tab.randomise_mac()
+    assert [i.device for i in env.tab._interfaces] == ["en0"]
+    assert env.tab.mac_device_box.count() == 1
+
+
+def test_a_declined_change_leaves_the_fresh_address_on_screen(env, monkeypatch):
+    env.tab.mac_device_box.setCurrentIndex(1)
+    env.ifaces[1] = Interface("en5", "USB 10/100 LAN", "02:00:00:00:00:77", "aa:bb:cc:00:00:05")
+    env.answers = [False]
+    env.tab.randomise_mac()
+    assert "02:00:00:00:00:77" in env.tab.mac_current_label.text()
+    assert "02:00:00:00:00:77" in env.tab.mac_device_box.itemText(1)
+    assert "02:00:00:00:00:09" not in env.tab.mac_device_box.itemText(1)
