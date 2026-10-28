@@ -8,7 +8,7 @@ nothing on it talks to an AI provider, and proxy passwords are never shown.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
@@ -52,6 +52,11 @@ class PrivacyTab(GatedTab):
         self._refresh_chain()
         self._show_mac()
         self.refresh_tor()
+        if macaddr.recorded():
+            # A change was left in place by a crash or a declined restore at
+            # quit. Reading the record runs nothing; the offer waits for the
+            # event loop so it does not block the window being built.
+            QTimer.singleShot(0, self, self.offer_recorded_restore)
 
     def showEvent(self, event) -> None:
         # Listing interfaces and probing the Tor port touch the OS; do it when
@@ -261,10 +266,43 @@ class PrivacyTab(GatedTab):
             self._refuse("mac-set", iface.device,
                          f"The permanent address of {iface.device} is unknown.")
             return
+        if not iface.current:
+            self._refuse("mac-set", iface.device,
+                         f"Sentinel could not read the address {iface.device} is using now.")
+            return
         if not iface.spoofed:
             self._say(f"{iface.device} is already using its hardware address.")
             return
         self._set_mac(iface, iface.hardware, "Restore hardware address")
+
+    def offer_recorded_restore(self) -> None:
+        """Offer back an original address Sentinel changed and did not restore."""
+        try:
+            pending = macaddr.pending_restores()
+        except OSError as exc:
+            self._say(f"Could not read the record of changed addresses: {exc}")
+            return
+        if not pending:
+            return
+        lines = "\n".join(f"{device}: {current}  →  {original}"
+                          for device, original, current in pending)
+        text = ("Sentinel changed the hardware address of these interfaces and did not "
+                "put it back (Sentinel quit without restoring it, or stopped "
+                f"unexpectedly):\n\n{lines}\n\nRestore the original address now? Wi-Fi is "
+                "switched off and on for it, and macOS will ask for your administrator "
+                "password. If you say no, Sentinel asks again when it quits.")
+        title = "Restore original hardware address"
+
+        def restore_all():
+            results = macaddr.restore_all_recorded()
+            if not results:
+                return True, "Nothing left to restore."
+            return (all(ok for _, ok, _ in results),
+                    " ".join(message for _, _, message in results))
+
+        self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text, restore_all,
+                    after=lambda ok: QMessageBox.information(
+                        self, title, self.status_label.text()))
 
     def _set_mac(self, iface, new: str, title: str) -> None:
         wifi = ("\n\nWi-Fi will be switched off and on, so you will drop off your "

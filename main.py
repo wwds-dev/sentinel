@@ -5994,6 +5994,23 @@ def _tray_status(window) -> str:
     return f"{activity}  ·  €{window.session_cost_total:.2f} this session"
 
 
+def _restore_changed_hardware_addresses() -> None:
+    """Tunnel rule: a hardware address Sentinel changed is put back on exit.
+
+    Reads one small file and runs nothing unless a change is recorded; then
+    the macOS administrator dialog asks once per interface. A declined or
+    failed restore stays recorded and is offered again at the next launch.
+    It must never stop the quit.
+    """
+    try:
+        from agents.vpn_agent.services import macaddr
+        for device, ok, message in macaddr.restore_all_recorded():
+            if not ok:
+                print(f"hardware address of {device} not restored: {message}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - leaving matters more
+        print(f"hardware address restore skipped: {exc}", file=sys.stderr)
+
+
 def _leave(window, settings, code: int = 0) -> None:
     """After app.exec(): every quit leaves here, without Qt's teardown.
 
@@ -6006,6 +6023,7 @@ def _leave(window, settings, code: int = 0) -> None:
     The window geometry (set by aboutToQuit) is sync()ed to disk, unless a
     portable reset just erased that folder.
     """
+    _restore_changed_hardware_addresses()
     if not getattr(window, "_portable_reset_committed", False):
         try:
             settings.sync()
