@@ -219,6 +219,15 @@ class PrivacyTab(GatedTab):
         except OSError as exc:
             self._interfaces = []
             error = f"Could not list network interfaces: {exc}"
+        self._fill_interfaces(current)
+        if error:
+            self.mac_current_label.setText(error)
+            self._say(error)
+
+    def _fill_interfaces(self, current=None) -> None:
+        """Rebuild the combo box from self._interfaces, keeping ``current`` selected."""
+        if current is None:
+            current = self.mac_device_box.currentData()
         self.mac_device_box.blockSignals(True)
         self.mac_device_box.clear()
         for iface in self._interfaces:
@@ -227,9 +236,6 @@ class PrivacyTab(GatedTab):
         self.mac_device_box.setCurrentIndex(max(index, 0))
         self.mac_device_box.blockSignals(False)
         self._show_mac()
-        if error:
-            self.mac_current_label.setText(error)
-            self._say(error)
 
     def _selected_interface(self):
         device = self.mac_device_box.currentData()
@@ -252,48 +258,49 @@ class PrivacyTab(GatedTab):
             + ("  (changed)" if iface.spoofed else ""))
         self.mac_hardware_label.setText(f"Hardware: {iface.hardware or 'unknown'}")
 
-    def _fresh_interface(self):
-        """The selected interface read again now, not as listed at the last refresh.
+    def _with_fresh_interface(self, then) -> None:
+        """Read the selected interface again, off the UI thread, then ``then(iface)``.
 
         The address can change (or the adapter go) between the list and the
         click, and the confirmation must show what is true when it is asked.
+        A failed listing is reported as such; only a successful listing that
+        lacks the device means it is gone.
         """
         selected = self._selected_interface()
         if selected is None:
-            return None
-        try:
-            fresh = macaddr.get_interface(selected.device)
-        except OSError:
-            fresh = None
-        if fresh is None:
-            self.refresh_interfaces()
-            return None
-        self._interfaces = [fresh if i.device == fresh.device else i for i in self._interfaces]
-        index = self.mac_device_box.findData(fresh.device)
-        if index >= 0:
-            self.mac_device_box.setItemText(index, fresh.describe())
-        self._show_mac()
-        return fresh
+            self._refuse("mac-set", "", "Choose a network interface first.")
+            return
+        device = selected.device
+
+        def got(result):
+            fresh, error = result
+            if error:
+                self._refuse("mac-set", device,
+                             f"Could not read the network interfaces: {error}")
+                return
+            if fresh is None:
+                self._interfaces = [i for i in self._interfaces if i.device != device]
+                self._fill_interfaces()
+                self._refuse("mac-set", device, "That interface is no longer available.")
+                return
+            self._interfaces = [fresh if i.device == device else i for i in self._interfaces]
+            index = self.mac_device_box.findData(device)
+            if index >= 0:
+                self.mac_device_box.setItemText(index, fresh.describe())
+            self._show_mac()
+            then(fresh)
+
+        self._read_off_thread(lambda: macaddr.read_interface(device), got)
 
     def randomise_mac(self) -> None:
-        if self._selected_interface() is None:
-            self._refuse("mac-set", "", "Choose a network interface first.")
-            return
-        iface = self._fresh_interface()
-        if iface is None:
-            self._refuse("mac-set", "", "That interface is no longer available.")
-            return
-        new = macaddr.random_mac()
-        self._set_mac(iface, new, "Randomise hardware address")
+        self._with_fresh_interface(
+            lambda iface: self._set_mac(iface, macaddr.random_mac(),
+                                        "Randomise hardware address"))
 
     def restore_mac(self) -> None:
-        if self._selected_interface() is None:
-            self._refuse("mac-set", "", "Choose a network interface first.")
-            return
-        iface = self._fresh_interface()
-        if iface is None:
-            self._refuse("mac-set", "", "That interface is no longer available.")
-            return
+        self._with_fresh_interface(self._restore_fresh)
+
+    def _restore_fresh(self, iface) -> None:
         if not iface.hardware:
             self._refuse("mac-set", iface.device,
                          f"The permanent address of {iface.device} is unknown.")

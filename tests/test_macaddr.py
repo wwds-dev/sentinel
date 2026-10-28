@@ -727,3 +727,39 @@ def test_restore_to_a_recorded_original_works_from_an_unrecordable_current(monke
     root["mac"] = orig
     ok, _ = macaddr.set_mac("en5", orig)
     assert ok and len(root["calls"]) == 1
+
+
+# ── P3-2: a failed listing is told apart from a missing interface ──
+
+LISTING = ("Hardware Port: USB LAN\nDevice: en5\nEthernet Address: aa:bb:cc:00:00:01\n")
+
+
+def _fake_run(monkeypatch, listing_ok=True, listing=LISTING):
+    def fake(argv, *a, **kw):
+        if argv[0] == "networksetup":
+            return (listing_ok, listing if listing_ok else "networksetup: timed out")
+        return True, "\tether 02:11:22:33:44:55\n"
+    monkeypatch.setattr(macaddr, "run", fake)
+
+
+def test_list_interfaces_checked_reports_a_failed_listing(monkeypatch):
+    _fake_run(monkeypatch, listing_ok=False)
+    interfaces, error = macaddr.list_interfaces_checked()
+    assert interfaces == [] and "timed out" in error
+    assert macaddr.list_interfaces() == []           # the old API is unchanged
+
+
+def test_list_interfaces_checked_succeeds(monkeypatch):
+    _fake_run(monkeypatch)
+    interfaces, error = macaddr.list_interfaces_checked()
+    assert error == "" and [i.device for i in interfaces] == ["en5"]
+
+
+def test_read_interface_found_gone_and_failed(monkeypatch):
+    _fake_run(monkeypatch)
+    iface, error = macaddr.read_interface("en5")
+    assert iface.current == "02:11:22:33:44:55" and error == ""
+    assert macaddr.read_interface("en9") == (None, "")      # gone, not an error
+    _fake_run(monkeypatch, listing_ok=False)
+    iface, error = macaddr.read_interface("en5")
+    assert iface is None and "timed out" in error
