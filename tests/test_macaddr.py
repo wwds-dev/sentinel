@@ -676,3 +676,54 @@ def test_going_back_to_hardware_needs_no_recordable_current(monkeypatch, state, 
                         lambda d: _iface(device=d, current="00:00:00:00:00:00"))
     root["mac"] = "aa:bb:cc:00:00:01"
     assert macaddr.set_mac("en5", "aa:bb:cc:00:00:01")[0]
+
+
+# ── Review 1 P2-2: no hardware address reaches stderr from the quit-time restore ──
+
+ANY_MAC = r"(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}"
+
+
+def test_redact_addresses_strips_every_form():
+    text = "ifconfig: bad en5 reports 02:AA:bb:cc:dd:ee. was 00:00:00:00:00:01"
+    out = macaddr.redact_addresses(text)
+    assert "02:" not in out and "en5" in out and "reports" in out
+    import re
+    assert not re.search(ANY_MAC, out)
+
+
+def test_a_failed_quit_restore_prints_no_address(monkeypatch, capsys):
+    import re
+
+    import main
+    monkeypatch.setattr(macaddr, "restore_all_recorded", lambda: [
+        ("en5", False, "ifconfig: ioctl (SIOCAIFADDR): Invalid argument 02:aa:bb:cc:dd:ee "
+                       "en5 reports 02:aa:bb:cc:dd:ee.")])
+    main._restore_changed_hardware_addresses()
+    err = capsys.readouterr().err
+    assert "en5" in err and "not restored" in err
+    assert not re.search(ANY_MAC, err), err
+
+
+def test_a_raising_quit_restore_prints_no_address(monkeypatch, capsys):
+    import re
+
+    import main
+
+    def boom():
+        raise RuntimeError("failed on 02:aa:bb:cc:dd:ee")
+    monkeypatch.setattr(macaddr, "restore_all_recorded", boom)
+    main._restore_changed_hardware_addresses()
+    err = capsys.readouterr().err
+    assert "skipped" in err and not re.search(ANY_MAC, err), err
+
+
+# ── Review 2 P3-A: an unrecordable current address does not block a restore to the record ──
+
+def test_restore_to_a_recorded_original_works_from_an_unrecordable_current(monkeypatch, state, root):
+    orig = "06:aa:bb:cc:dd:ee"
+    _write_record({"en5": orig})
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    root["mac"] = orig
+    ok, _ = macaddr.set_mac("en5", orig)
+    assert ok and len(root["calls"]) == 1

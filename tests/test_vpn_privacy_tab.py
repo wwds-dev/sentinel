@@ -404,3 +404,11 @@ def test_a_declined_change_leaves_the_fresh_address_on_screen(env, monkeypatch):
     assert "02:00:00:00:00:77" in env.tab.mac_current_label.text()
     assert "02:00:00:00:00:77" in env.tab.mac_device_box.itemText(1)
     assert "02:00:00:00:00:09" not in env.tab.mac_device_box.itemText(1)
+
+
+def test_a_stale_first_interface_is_refreshed_too(env, monkeypatch):
+    env.tab.mac_device_box.setCurrentIndex(0)
+    env.ifaces[0] = Interface("en0", "Wi-Fi", "02:00:00:00:00:55", "aa:bb:cc:00:00:01")
+    env.answers = [False]
+    env.tab.randomise_mac()
+    assert "02:00:00:00:00:55" in env.tab.mac_device_box.itemText(0)

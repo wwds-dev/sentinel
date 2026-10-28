@@ -39,6 +39,7 @@ from agents.vpn_agent.server import paths
 from agents.vpn_agent.services.privileged import ROOT_REFUSAL, run, run_argv_as_root
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9A-Fa-f]{2}$")
+_ANY_MAC_RE = re.compile(r"(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b")
 # BSD interface names: a short lowercase driver name and a unit number. \Z,
 # not $, so a trailing newline is not let through.
 DEVICE_RE = re.compile(r"^[a-z]{2,8}[0-9]{1,3}\Z")
@@ -182,6 +183,12 @@ def random_mac(mode: str = MODE_LOCAL, like: str = "") -> str:
     first = (secrets.randbelow(256) & 0xFE) | 0x02
     rest = [f"{secrets.randbelow(256):02x}" for _ in range(5)]
     return ":".join([f"{first:02x}", *rest])
+
+
+def redact_addresses(text: str) -> str:
+    """``text`` with every hardware address replaced, for output that is kept
+    (stderr goes to a launch log file). The device name and the reason stay."""
+    return _ANY_MAC_RE.sub("<address>", text or "")
 
 
 def valid_device(device: str) -> bool:
@@ -378,7 +385,8 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
                        "could not record it for restoring. Nothing was changed.")
 
     address = address.lower()
-    if address != interface.hardware and not is_valid(interface.current):
+    if (address != interface.hardware and device not in recorded()
+            and not is_valid(interface.current)):
         # What it uses now is the "original" a restore would put back; an
         # all-zero or multicast one cannot be recorded (the record drops it),
         # so a change would leave nothing to restore. Fail closed.
