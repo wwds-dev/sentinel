@@ -476,17 +476,35 @@ def test_another_adapter_under_the_same_name_is_not_given_the_address(monkeypatc
     assert macaddr.recorded() == {}
 
 
+UUID = "1C9E3D2A-5B7F-4E21-9A0D-3F6B8C4E2A71"
+
+
 @pytest.mark.parametrize("boot_output, expected", [
-    ("{ sec = 1792350752, usec = 655426 } Sun Oct 18 20:12:32 2026", "1792350752"),
+    (UUID, UUID),
+    (UUID.lower(), UUID),
+    # kern.boottime is wall-clock based: XNU shifts it on wake and on a clock
+    # step within one boot, so it is never accepted as the boot's identity.
+    ("{ sec = 1792350752, usec = 655426 } Sun Oct 18 20:12:32 2026", ""),
     ("garbage", ""),
+    (UUID + "\n; id", ""),
 ])
-def test_boot_id_parses_kern_boottime(monkeypatch, boot_output, expected):
+def test_boot_id_is_the_boot_session_uuid(monkeypatch, boot_output, expected):
+    """Re-audit 2 P2-A: the identity must not drift within one boot."""
     seen = []
     monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: seen.append(argv) or (True, boot_output))
     REAL_BOOT_ID.cache_clear()
     try:
         assert REAL_BOOT_ID() == expected
-        assert seen == [["sysctl", "-n", "kern.boottime"]]
+        assert seen == [["sysctl", "-n", "kern.bootsessionuuid"]]
+    finally:
+        REAL_BOOT_ID.cache_clear()
+
+
+def test_boot_id_is_unknown_when_sysctl_fails(monkeypatch):
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: (False, UUID))
+    REAL_BOOT_ID.cache_clear()
+    try:
+        assert REAL_BOOT_ID() == ""
     finally:
         REAL_BOOT_ID.cache_clear()
 

@@ -225,12 +225,20 @@ def record_path() -> Path:
     return paths.state_dir() / "mac_original.json"
 
 
+BOOT_UUID_RE = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\Z")
+
+
 @functools.cache
 def boot_id() -> str:
-    """kern.boottime's seconds, or '' when it cannot be read (then nothing is dropped)."""
-    ok, output = run(["sysctl", "-n", "kern.boottime"])
-    match = re.search(r"\bsec = (\d+)", output) if ok else None
-    return match.group(1) if match else ""
+    """kern.bootsessionuuid, or '' when it cannot be read (then nothing is dropped).
+
+    Not kern.boottime: XNU shifts that on wake and on a clock step to keep
+    boot time plus uptime equal to the wall clock, so within one boot its
+    seconds can change and a live record would be taken for a stale one.
+    """
+    ok, output = run(["sysctl", "-n", "kern.bootsessionuuid"])
+    uuid = output.strip().upper() if ok else ""
+    return uuid if BOOT_UUID_RE.match(uuid) else ""
 
 
 def _valid_entry(device, entry) -> bool:
@@ -265,7 +273,7 @@ def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
 def recorded() -> dict[str, str]:
     """device -> the address it had before Sentinel first changed it, this boot.
 
-    Reads one file (and, when it holds entries, the boot time), so a quit with
+    Reads one file (and, when it holds entries, the boot ID), so a quit with
     no change pending costs nothing.
     """
     return {device: entry["original"] for device, entry in _read_entries()[0].items()}
