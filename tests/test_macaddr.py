@@ -772,3 +772,31 @@ def test_a_failed_listing_error_is_bounded_and_holds_no_address(monkeypatch):
     import re
     assert 0 < len(error) <= 200
     assert not re.search(r"(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}", error)
+
+
+# ── Review of 5a81ab9 P3-4: a failed listing is not "No such interface" ──
+
+@pytest.mark.parametrize("call", [
+    lambda: macaddr.set_mac("en5", NEW),
+    lambda: macaddr.randomize("en5"),
+    lambda: macaddr.restore("en5"),
+])
+def test_a_failed_listing_is_reported_as_unreadable_not_missing(monkeypatch, root, call):
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: None)
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (None, "networksetup timed out"))
+    ok, msg = call()
+    assert not ok and "Could not read the network interfaces" in msg and "timed out" in msg
+    assert "No such interface" not in msg and root["calls"] == []
+    assert msg.endswith("Nothing was changed.")
+
+
+@pytest.mark.parametrize("call", [
+    lambda: macaddr.set_mac("en5", NEW),
+    lambda: macaddr.randomize("en5"),
+    lambda: macaddr.restore("en5"),
+])
+def test_a_missing_interface_is_still_reported_as_missing(monkeypatch, root, call):
+    monkeypatch.setattr(macaddr, "get_interface", lambda d: None)
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (None, ""))
+    ok, msg = call()
+    assert not ok and msg == "No such interface: en5" and root["calls"] == []

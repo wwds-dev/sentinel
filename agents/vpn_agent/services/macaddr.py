@@ -172,6 +172,14 @@ def get_interface(device: str) -> Interface | None:
     return None
 
 
+def _missing_interface(device: str) -> str:
+    """Why an interface could not be found: it is not there, or nothing could be read."""
+    _, error = read_interface(device)
+    if error:
+        return f"Could not read the network interfaces: {error}. Nothing was changed."
+    return f"No such interface: {device}"
+
+
 def read_interface(device: str) -> tuple[Interface | None, str]:
     """(the interface, error): ``(None, "")`` means it is not there, a
     non-empty error means the listing failed and nothing is known."""
@@ -399,7 +407,7 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
 
     interface = get_interface(device)
     if interface is None:
-        return False, f"No such interface: {device}"
+        return False, _missing_interface(device)
     if not interface.current:
         return False, (f"Sentinel could not read the address {device} is using now, so it "
                        "could not record it for restoring. Nothing was changed.")
@@ -463,7 +471,7 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
 def randomize(device: str, mode: str = MODE_LOCAL) -> tuple[bool, str]:
     interface = get_interface(device)
     if interface is None:
-        return False, f"No such interface: {device}"
+        return False, _missing_interface(device)
     return set_mac(device, random_mac(mode, like=interface.hardware))
 
 
@@ -471,7 +479,7 @@ def restore(device: str) -> tuple[bool, str]:
     """Put back the address the hardware shipped with."""
     interface = get_interface(device)
     if interface is None:
-        return False, f"No such interface: {device}"
+        return False, _missing_interface(device)
     if not interface.hardware:
         return False, f"The permanent address of {device} is unknown."
     if not interface.current:
