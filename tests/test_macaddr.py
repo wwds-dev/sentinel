@@ -763,3 +763,12 @@ def test_read_interface_found_gone_and_failed(monkeypatch):
     _fake_run(monkeypatch, listing_ok=False)
     iface, error = macaddr.read_interface("en5")
     assert iface is None and "timed out" in error
+
+
+def test_a_failed_listing_error_is_bounded_and_holds_no_address(monkeypatch):
+    noisy = "Ethernet Address: 02:aa:bb:cc:dd:ee " + "x" * 500
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **kw: (False, noisy))
+    _, error = macaddr.list_interfaces_checked()
+    import re
+    assert 0 < len(error) <= 200
+    assert not re.search(r"(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}", error)

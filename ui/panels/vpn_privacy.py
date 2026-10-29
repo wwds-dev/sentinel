@@ -200,12 +200,18 @@ class PrivacyTab(GatedTab):
         label.setObjectName("InfoLine")
         return label
 
+    def _controls_changed(self) -> None:
+        self._show_mac()
+        self.refresh_tor()
+        self._refresh_chain()
+
     def _after_finish(self) -> None:
         self.refresh_interfaces()
         self.refresh_tor()
 
     def _set_enabled(self, enabled: bool) -> None:
-        for w in (self.mac_random_btn, self.mac_restore_btn, self.mac_refresh_btn,
+        for w in (self.mac_device_box, self.mac_random_btn, self.mac_restore_btn,
+                  self.mac_refresh_btn,
                   self.tor_start_btn, self.tor_stop_btn, self.tor_check_btn,
                   self.tor_newnym_btn, self.chain_test_btn):
             w.setEnabled(enabled)

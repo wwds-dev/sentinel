@@ -123,7 +123,7 @@ def list_interfaces_checked() -> tuple[list[Interface], str]:
     interfaces: list[Interface] = []
     ok, output = run(["networksetup", "-listallhardwareports"])
     if not ok:
-        return interfaces, (output or "networksetup failed").strip()[:200]
+        return interfaces, redact_addresses((output or "networksetup failed").strip())[:200]
 
     port = ""
     device = ""

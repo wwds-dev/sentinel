@@ -444,8 +444,10 @@ class DeferredWorker:
     def run_now(self):
         self.finished_signal.emit(self.func())
 
+    running = False
+
     def isRunning(self):  # noqa: N802
-        return False
+        return self.running
 
     def cancel(self):
         pass
@@ -483,3 +485,63 @@ def test_a_worker_failure_during_the_read_frees_the_tab(env, monkeypatch):
     DeferredWorker.started[0].error_signal.emit("boom")
     assert not env.tab.busy and env.asked == []
     assert "boom" in env.tab.status_label.text()
+
+
+# ── Review of 5a81ab9 ──
+
+def test_buttons_that_were_off_stay_off_after_a_declined_read(env, monkeypatch):
+    # P2-1: Tor is installed but not running, the chain is empty.
+    assert not env.tab.tor_stop_btn.isEnabled() and not env.tab.chain_test_btn.isEnabled()
+    env.answers = [False]
+    env.tab.randomise_mac()
+    assert not env.tab.tor_stop_btn.isEnabled()
+    assert not env.tab.tor_newnym_btn.isEnabled()
+    assert not env.tab.chain_test_btn.isEnabled()
+    assert env.tab.tor_start_btn.isEnabled() and env.tab.mac_random_btn.isEnabled()
+
+
+def test_buttons_that_were_off_stay_off_after_a_failed_read(env, monkeypatch):
+    env.read_error = "networksetup timed out"
+    env.tab.randomise_mac()
+    assert not env.tab.tor_stop_btn.isEnabled() and not env.tab.chain_test_btn.isEnabled()
+    env.read_error = ""
+    env.tab.mac_device_box.setCurrentIndex(0)
+    env.tab.restore_mac()                              # en0 is unchanged: nothing to do
+    assert not env.tab.tor_stop_btn.isEnabled()
+
+
+def test_a_running_read_is_not_an_administrator_action(env, monkeypatch):
+    # P3-1: quitting during a read must not claim an admin dialog is open.
+    DeferredWorker.started = []
+    DeferredWorker.running = True
+    try:
+        monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+        env.tab.randomise_mac()
+        assert env.tab.busy and not env.tab.has_privileged_work()
+    finally:
+        DeferredWorker.running = False
+
+
+def test_a_running_change_still_counts_as_privileged_work(env, monkeypatch):
+    DeferredWorker.started = []
+    DeferredWorker.running = True
+    try:
+        monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+        monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "ok")))
+        env.answers = [True]
+        env.tab.randomise_mac()
+        DeferredWorker.started[0].finished_signal.emit((env.ifaces[0], ""))   # read done
+        assert len(DeferredWorker.started) == 2           # the change itself
+        assert env.tab.has_privileged_work()
+    finally:
+        DeferredWorker.running = False
+
+
+def test_the_interface_picker_is_off_while_reading(env, monkeypatch):
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    env.tab.randomise_mac()
+    assert not env.tab.mac_device_box.isEnabled()
+    env.answers = [False]
+    DeferredWorker.started[0].finished_signal.emit((env.ifaces[0], ""))
+    assert env.tab.mac_device_box.isEnabled()
