@@ -678,12 +678,33 @@ def test_going_back_to_hardware_needs_no_recordable_current(monkeypatch, state, 
     assert macaddr.set_mac("en5", "aa:bb:cc:00:00:01")[0]
 
 
+# ── Review 3 P3-1/P3-2: only a record pending_restores would act on opens the guard ──
+
+def _unrecordable(monkeypatch, root):
+    monkeypatch.setattr(macaddr, "get_interface",
+                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+
+
+def test_a_record_for_another_device_does_not_open_the_guard(monkeypatch, state, root):
+    _write_record({"en0": "06:aa:bb:cc:dd:ee"})
+    _unrecordable(monkeypatch, root)
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "could not record" in msg and root["calls"] == []
+
+
+def test_a_record_with_other_hardware_does_not_open_the_guard(monkeypatch, state, root):
+    _write_record({"en5": "06:aa:bb:cc:dd:ee"}, hardware="aa:bb:cc:99:99:99")
+    _unrecordable(monkeypatch, root)
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "could not record" in msg and root["calls"] == []
+
+
 # ── Review 1 P2-2: no hardware address reaches stderr from the quit-time restore ──
 
 ANY_MAC = r"(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}"
 
 
-def test_redact_addresses_strips_every_form():
+def test_redact_addresses_strips_the_padded_colon_form():
     text = "ifconfig: bad en5 reports 02:AA:bb:cc:dd:ee. was 00:00:00:00:00:01"
     out = macaddr.redact_addresses(text)
     assert "02:" not in out and "en5" in out and "reports" in out
