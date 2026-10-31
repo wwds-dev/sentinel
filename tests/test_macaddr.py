@@ -681,8 +681,8 @@ def test_going_back_to_hardware_needs_no_recordable_current(monkeypatch, state, 
 # ── Review 3 P3-1/P3-2: only a record pending_restores would act on opens the guard ──
 
 def _unrecordable(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="00:00:00:00:00:00"), ""))
 
 
 def test_a_record_for_another_device_does_not_open_the_guard(monkeypatch, state, root):
