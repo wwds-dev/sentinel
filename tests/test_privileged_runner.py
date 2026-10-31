@@ -157,9 +157,9 @@ def test_a_mac_change_is_refused_as_root_and_leaves_no_record(as_root, monkeypat
     from agents.vpn_agent.services.macaddr import Interface
     monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path / "st"))
     monkeypatch.setattr(macaddr, "boot_id", lambda: "1")
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: Interface(
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (Interface(
         device=d, port="USB 10/100/1000 LAN", current="aa:bb:cc:00:00:01",
-        hardware="aa:bb:cc:00:00:01"))
+        hardware="aa:bb:cc:00:00:01"), ""))
     monkeypatch.setattr(macaddr, "current_mac", lambda d: "aa:bb:cc:00:00:01")
     ok, message = macaddr.set_mac("en5", "02:11:22:33:44:55")
     assert ok is False and message.startswith(privileged.ROOT_REFUSAL)

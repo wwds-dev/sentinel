@@ -165,19 +165,14 @@ def wifi_power(device: str) -> str:
     return word if word in ("On", "Off") else ""
 
 
-def get_interface(device: str) -> Interface | None:
-    for interface in list_interfaces():
-        if interface.device == device:
-            return interface
-    return None
-
-
-def _missing_interface(device: str) -> str:
-    """Why an interface could not be found: it is not there, or nothing could be read."""
-    _, error = read_interface(device)
+def _find_interface(device: str) -> tuple[Interface | None, str]:
+    """(interface, refusal): one listing decides both, so the wording cannot disagree with it."""
+    interface, error = read_interface(device)
+    if interface is not None:
+        return interface, ""
     if error:
-        return f"Could not read the network interfaces: {error}. Nothing was changed."
-    return f"No such interface: {device}"
+        return None, f"Could not read the network interfaces: {error}. Nothing was changed."
+    return None, f"No such interface: {device}"
 
 
 def read_interface(device: str) -> tuple[Interface | None, str]:
@@ -405,9 +400,9 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
     if not is_valid(address):
         return False, f"{address!r} is not a usable unicast MAC address."
 
-    interface = get_interface(device)
+    interface, refusal = _find_interface(device)
     if interface is None:
-        return False, _missing_interface(device)
+        return False, refusal
     if not interface.current:
         return False, (f"Sentinel could not read the address {device} is using now, so it "
                        "could not record it for restoring. Nothing was changed.")
@@ -469,17 +464,17 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
 
 
 def randomize(device: str, mode: str = MODE_LOCAL) -> tuple[bool, str]:
-    interface = get_interface(device)
+    interface, refusal = _find_interface(device)
     if interface is None:
-        return False, _missing_interface(device)
+        return False, refusal
     return set_mac(device, random_mac(mode, like=interface.hardware))
 
 
 def restore(device: str) -> tuple[bool, str]:
     """Put back the address the hardware shipped with."""
-    interface = get_interface(device)
+    interface, refusal = _find_interface(device)
     if interface is None:
-        return False, _missing_interface(device)
+        return False, refusal
     if not interface.hardware:
         return False, f"The permanent address of {device} is unknown."
     if not interface.current:

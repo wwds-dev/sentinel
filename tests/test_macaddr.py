@@ -64,7 +64,7 @@ def test_valid_device_names(device):
 
 
 def test_root_argv_keeps_device_and_address_as_separate_words(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     ok, _ = macaddr.set_mac("en5", NEW)
     assert ok
     [call] = root["calls"]
@@ -77,7 +77,7 @@ def test_root_argv_keeps_device_and_address_as_separate_words(monkeypatch, root)
 
 
 def test_wifi_flag_is_passed_not_scripted(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, port="Wi-Fi"))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, port="Wi-Fi"), ""))
     macaddr.set_mac("en0", NEW)
     assert root["calls"][0]["argv"][-1] == "1"
 
@@ -204,7 +204,7 @@ def test_script_killed_mid_change_still_powers_wifi_on(tmp_path):
 
 
 def test_failed_change_reports_address_and_wifi_power(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, port="Wi-Fi"))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, port="Wi-Fi"), ""))
     monkeypatch.setattr(macaddr, "wifi_power", lambda d: "Off")
     root["result"] = (False, "Timed out waiting for the administrator dialog or the command.")
     root["mac"] = "aa:bb:cc:00:00:01"
@@ -216,7 +216,7 @@ def test_failed_change_reports_address_and_wifi_power(monkeypatch, root):
 
 
 def test_failed_wired_change_does_not_mention_wifi(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     monkeypatch.setattr(macaddr, "wifi_power", lambda d: pytest.fail("wired has no Wi-Fi power"))
     root["result"] = (False, "exited 1")
     ok, msg = macaddr.set_mac("en5", NEW)
@@ -236,26 +236,26 @@ def test_wifi_power_parses(monkeypatch, output, expected):
 # ── Medium 2: restore() never reports success it did not check ──
 
 def test_restore_fails_when_the_current_address_cannot_be_read(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=""))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=""), ""))
     ok, msg = macaddr.restore("en5")
     assert not ok and "could not read" in msg
     assert root["calls"] == []
 
 
 def test_restore_fails_when_the_hardware_address_is_unknown(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, hardware=""))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, hardware=""), ""))
     ok, msg = macaddr.restore("en5")
     assert not ok and "unknown" in msg and root["calls"] == []
 
 
 def test_restore_when_unchanged_is_a_checked_no_op(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     ok, msg = macaddr.restore("en5")
     assert ok and "already" in msg and root["calls"] == []
 
 
 def test_restore_when_changed_sets_the_hardware_address(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=NEW))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
     root["mac"] = "aa:bb:cc:00:00:01"
     ok, _ = macaddr.restore("en5")
     assert ok and root["calls"][0]["argv"][-2] == "aa:bb:cc:00:00:01"
@@ -273,7 +273,7 @@ def state(tmp_path, monkeypatch):
 
 
 def test_a_change_records_the_original_before_root_runs(monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     seen_during = []
     inner = macaddr.run_argv_as_root
 
@@ -290,16 +290,16 @@ def test_a_change_records_the_original_before_root_runs(monkeypatch, state, root
 
 
 def test_a_second_change_keeps_the_first_original(monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     macaddr.set_mac("en5", NEW)
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=NEW))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
     root["mac"] = "02:99:99:99:99:99"
     macaddr.set_mac("en5", "02:99:99:99:99:99")
     assert macaddr.recorded() == {"en5": ORIG}
 
 
 def test_a_failed_change_that_left_the_address_alone_forgets_the_record(monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     root["result"], root["mac"] = (False, "Cancelled."), ORIG
     assert not macaddr.set_mac("en5", NEW)[0]
     assert macaddr.recorded() == {}
@@ -307,7 +307,7 @@ def test_a_failed_change_that_left_the_address_alone_forgets_the_record(monkeypa
 
 
 def test_a_failed_change_with_an_unknown_outcome_keeps_the_record(monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     root["result"], root["mac"] = (False, "Timed out."), ""
     macaddr.set_mac("en5", NEW)
     assert macaddr.recorded() == {"en5": ORIG}
@@ -315,11 +315,11 @@ def test_a_failed_change_with_an_unknown_outcome_keeps_the_record(monkeypatch, s
 
 @pytest.mark.parametrize("hardware", [ORIG, "aa:bb:cc:00:00:77"])
 def test_going_back_to_the_original_or_hardware_clears_the_record(monkeypatch, state, root, hardware):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, hardware=hardware))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, hardware=hardware), ""))
     macaddr.set_mac("en5", NEW)
     assert macaddr.recorded() == {"en5": ORIG}
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current=NEW, hardware=hardware))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current=NEW, hardware=hardware), ""))
     root["mac"] = hardware
     assert macaddr.set_mac("en5", hardware)[0]
     assert macaddr.recorded() == {}
@@ -327,15 +327,15 @@ def test_going_back_to_the_original_or_hardware_clears_the_record(monkeypatch, s
 
 def test_setting_the_hardware_address_records_nothing(monkeypatch, state, root):
     """Restoring an address someone else changed must not make Sentinel 'restore' it back."""
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="02:aa:aa:aa:aa:aa"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="02:aa:aa:aa:aa:aa"), ""))
     root["mac"] = ORIG
     assert macaddr.set_mac("en5", ORIG)[0]
     assert macaddr.recorded() == {}
 
 
 def test_an_unreadable_current_address_refuses_the_change(monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=""))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=""), ""))
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not read" in msg
     assert root["calls"] == [] and macaddr.recorded() == {}
@@ -343,8 +343,8 @@ def test_an_unreadable_current_address_refuses_the_change(monkeypatch, state, ro
 
 def test_a_current_address_that_could_not_be_put_back_refuses_the_change(monkeypatch, state, root):
     """Low 8 knock-on: the record only ever holds an address set_mac accepts back."""
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="00:00:00:00:00:00"), ""))
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not record" in msg
     assert root["calls"] == [] and macaddr.recorded() == {}
@@ -352,8 +352,8 @@ def test_a_current_address_that_could_not_be_put_back_refuses_the_change(monkeyp
 
 def test_going_back_to_the_hardware_address_needs_no_record_so_is_allowed(
         monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="00:00:00:00:00:00"), ""))
     root["mac"] = ORIG
     ok, _ = macaddr.set_mac("en5", ORIG)
     assert ok and len(root["calls"]) == 1
@@ -394,8 +394,8 @@ def test_a_hostile_record_is_ignored(state):
 
 def test_the_record_holds_the_hardware_and_the_boot(monkeypatch, state, root):
     import json
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="06:aa:aa:aa:aa:aa"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="06:aa:aa:aa:aa:aa"), ""))
     macaddr.set_mac("en5", NEW)
     assert json.loads(macaddr.record_path().read_text()) == {
         "en5": {"original": "06:aa:aa:aa:aa:aa", "hardware": ORIG, "boot": BOOT}}
@@ -424,14 +424,14 @@ def test_an_adapter_missing_from_the_list_is_kept_not_offered(monkeypatch, state
 ])
 def test_a_failed_change_that_was_not_cancelled_keeps_the_record(monkeypatch, state, root, output):
     """P2-1: a timeout can land after the address was read back; only Cancelled is settled."""
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     root["result"], root["mac"] = (False, output), ORIG
     assert not macaddr.set_mac("en5", NEW)[0]
     assert macaddr.recorded() == {"en5": ORIG}
 
 
 def test_a_late_landing_change_is_still_offered_after_a_timeout(monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     root["result"], root["mac"] = (False, "Timed out."), ORIG
     macaddr.set_mac("en5", NEW)
     _ports(monkeypatch, {"en5": NEW})            # root finished after osascript was killed
@@ -441,7 +441,7 @@ def test_a_late_landing_change_is_still_offered_after_a_timeout(monkeypatch, sta
 def test_quit_never_forgets_a_change_still_waiting_for_root(monkeypatch, state, root):
     """P2-2: Quit anyway while the dialog is open must leave the record for the next launch."""
     import threading
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     entered, release = threading.Event(), threading.Event()
 
     def blocked(argv, prompt, *a, **kw):
@@ -539,7 +539,7 @@ def test_a_record_made_this_boot_is_kept_under_its_real_boot_id(monkeypatch, sta
 
 def test_restore_all_recorded_puts_the_original_back(monkeypatch, state, root):
     _write_record({"en5": ORIG})
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=NEW))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
     _ports(monkeypatch, {"en5": NEW})
     now = {"mac": NEW}
     monkeypatch.setattr(macaddr, "current_mac", lambda d: now["mac"])
@@ -561,7 +561,7 @@ def test_restore_all_recorded_puts_the_original_back(monkeypatch, state, root):
 
 def test_a_declined_restore_keeps_the_record_for_next_launch(monkeypatch, state, root):
     _write_record({"en5": ORIG})
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=NEW))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
     _ports(monkeypatch, {"en5": NEW})
     root["result"], root["mac"] = (False, "Cancelled."), NEW
     [(_, ok, _)] = macaddr.restore_all_recorded()
@@ -603,8 +603,8 @@ def test_a_restore_that_raises_never_blocks_quit(monkeypatch):
 
 def test_an_unknown_outcome_going_to_hardware_records_nothing(monkeypatch, state, root):
     """A crash mid-restore must not leave someone else's address recorded as ours."""
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="02:aa:aa:aa:aa:aa"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="02:aa:aa:aa:aa:aa"), ""))
     root["result"], root["mac"] = (False, "Timed out."), ""
     macaddr.set_mac("en5", ORIG)
     assert macaddr.recorded() == {}
@@ -632,9 +632,9 @@ def test_every_generated_address_is_locally_administered_unicast(mode):
 
 
 def test_randomize_with_a_saved_same_vendor_mode_uses_the_random_mode(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, hardware="f0:18:98:00:00:01",
-                                         current="f0:18:98:00:00:01"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, hardware="f0:18:98:00:00:01",
+                                         current="f0:18:98:00:00:01"), ""))
     macaddr.randomize("en5", "same-vendor")
     sent = root["calls"][0]["argv"][-2]
     assert int(sent.split(":")[0], 16) & 0x03 == 0x02
@@ -656,7 +656,7 @@ def test_ordinary_unicast_addresses_are_accepted(address):
 
 
 def test_a_zero_address_never_reaches_root(monkeypatch, root):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
     ok, _ = macaddr.set_mac("en5", "00:00:00:00:00:00")
     assert not ok and root["calls"] == []
 
@@ -665,15 +665,15 @@ def test_a_zero_address_never_reaches_root(monkeypatch, root):
 
 @pytest.mark.parametrize("current", ["00:00:00:00:00:00", "01:00:5e:00:00:01", "ff:ff:ff:ff:ff:ff"])
 def test_a_current_address_that_cannot_be_recorded_refuses_the_change(monkeypatch, state, root, current):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _iface(device=d, current=current))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=current), ""))
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not record" in msg
     assert root["calls"] == [] and macaddr.recorded() == {}
 
 
 def test_going_back_to_hardware_needs_no_recordable_current(monkeypatch, state, root):
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="00:00:00:00:00:00"), ""))
     root["mac"] = "aa:bb:cc:00:00:01"
     assert macaddr.set_mac("en5", "aa:bb:cc:00:00:01")[0]
 
@@ -722,8 +722,8 @@ def test_a_raising_quit_restore_prints_no_address(monkeypatch, capsys):
 def test_restore_to_a_recorded_original_works_from_an_unrecordable_current(monkeypatch, state, root):
     orig = "06:aa:bb:cc:dd:ee"
     _write_record({"en5": orig})
-    monkeypatch.setattr(macaddr, "get_interface",
-                        lambda d: _iface(device=d, current="00:00:00:00:00:00"))
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current="00:00:00:00:00:00"), ""))
     root["mac"] = orig
     ok, _ = macaddr.set_mac("en5", orig)
     assert ok and len(root["calls"]) == 1
@@ -782,7 +782,6 @@ def test_a_failed_listing_error_is_bounded_and_holds_no_address(monkeypatch):
     lambda: macaddr.restore("en5"),
 ])
 def test_a_failed_listing_is_reported_as_unreadable_not_missing(monkeypatch, root, call):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: None)
     monkeypatch.setattr(macaddr, "read_interface", lambda d: (None, "networksetup timed out"))
     ok, msg = call()
     assert not ok and "Could not read the network interfaces" in msg and "timed out" in msg
@@ -796,7 +795,28 @@ def test_a_failed_listing_is_reported_as_unreadable_not_missing(monkeypatch, roo
     lambda: macaddr.restore("en5"),
 ])
 def test_a_missing_interface_is_still_reported_as_missing(monkeypatch, root, call):
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: None)
     monkeypatch.setattr(macaddr, "read_interface", lambda d: (None, ""))
     ok, msg = call()
     assert not ok and msg == "No such interface: en5" and root["calls"] == []
+
+
+def test_a_failing_networksetup_is_reported_through_the_real_listing_path(monkeypatch, root):
+    """No stubbed seams: the failed command's text is redacted and the whole call refuses (review P3-2)."""
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **kw: (False, "timed out aa:bb:cc:dd:ee:ff"))
+    for call in (lambda: macaddr.set_mac("en5", NEW), lambda: macaddr.randomize("en5"),
+                 lambda: macaddr.restore("en5")):
+        ok, msg = call()
+        assert not ok and "Could not read the network interfaces" in msg and "timed out" in msg
+        assert "aa:bb:cc:dd:ee:ff" not in msg and "No such interface" not in msg
+    assert root["calls"] == []
+
+
+def test_each_call_lists_the_interfaces_once(monkeypatch, root):
+    """One read decides both the interface and the refusal wording (review P3-1)."""
+    reads = []
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: reads.append(d) or (None, "boom"))
+    for call in (lambda: macaddr.set_mac("en5", NEW), lambda: macaddr.randomize("en5"),
+                 lambda: macaddr.restore("en5")):
+        reads.clear()
+        ok, msg = call()
+        assert not ok and "boom" in msg and len(reads) == 1
