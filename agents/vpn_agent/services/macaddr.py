@@ -104,8 +104,16 @@ class Interface:
 
 
 def list_interfaces() -> list[Interface]:
+    """The interfaces, or [] when they cannot be listed (see list_interfaces_checked)."""
+    return list_interfaces_checked()[0]
+
+
+def list_interfaces_checked() -> tuple[list[Interface], str]:
     """
-    Enumerate hardware ports and their addresses.
+    Enumerate hardware ports and their addresses: (interfaces, error).
+
+    ``error`` is empty on success and says why when the listing itself failed,
+    so "could not look" is not mistaken for "nothing there".
 
     `networksetup -listallhardwareports` reports the *permanent* address burned
     into the hardware, while `ifconfig` reports what is in use right now. Both
@@ -115,7 +123,7 @@ def list_interfaces() -> list[Interface]:
     interfaces: list[Interface] = []
     ok, output = run(["networksetup", "-listallhardwareports"])
     if not ok:
-        return interfaces
+        return interfaces, redact_addresses((output or "networksetup failed").strip())[:200]
 
     port = ""
     device = ""
@@ -134,7 +142,7 @@ def list_interfaces() -> list[Interface]:
                               current=current_mac(device))
                 )
             device = ""
-    return interfaces
+    return interfaces, ""
 
 
 def current_mac(device: str) -> str:
@@ -162,6 +170,18 @@ def get_interface(device: str) -> Interface | None:
         if interface.device == device:
             return interface
     return None
+
+
+def read_interface(device: str) -> tuple[Interface | None, str]:
+    """(the interface, error): ``(None, "")`` means it is not there, a
+    non-empty error means the listing failed and nothing is known."""
+    interfaces, error = list_interfaces_checked()
+    if error:
+        return None, error
+    for interface in interfaces:
+        if interface.device == device:
+            return interface, ""
+    return None, ""
 
 
 # ── Generating an address ────────────────────────

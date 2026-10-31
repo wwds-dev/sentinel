@@ -19,6 +19,7 @@ class GatedTab(QWidget):
         super().__init__(parent)
         self._worker = None
         self._active = False
+        self._read_only = False         # the running worker only reads (no admin dialog)
 
     @property
     def busy(self) -> bool:
@@ -49,6 +50,7 @@ class GatedTab(QWidget):
         self._set_enabled(False)
         worker = CallWorker(func)
         self._worker = worker
+        self._read_only = False
         self._active = True
 
         def done(result):
@@ -65,6 +67,39 @@ class GatedTab(QWidget):
         worker.start()
         return True
 
+    def _read_off_thread(self, func, then) -> bool:
+        """Run a read-only ``func`` off the UI thread, then ``then(result)`` here.
+
+        Holds the tab busy meanwhile, so a second click is refused and the
+        action buttons stay off; no confirmation, nothing privileged.
+        """
+        if self.busy:
+            QMessageBox.information(self, "Busy", "A Tunnel action is already running.")
+            return False
+        self._set_enabled(False)
+        worker = CallWorker(func)
+        self._worker = worker
+        self._read_only = True
+        self._active = True
+
+        def release():
+            self._active = False
+            self._set_enabled(True)
+            self._controls_changed()
+
+        def done(result):
+            release()
+            then(result)
+
+        def failed(error):
+            release()
+            self._say("Failed: " + vpn_execution.redact_secrets(str(error)))
+
+        worker.finished_signal.connect(done)
+        worker.error_signal.connect(failed)
+        worker.start()
+        return True
+
     def _finish(self, message: str) -> None:
         self._active = False
         self._say(vpn_execution.redact_secrets(message))
@@ -74,14 +109,19 @@ class GatedTab(QWidget):
     def _set_enabled(self, enabled: bool) -> None:
         """Subclasses disable their action buttons while a worker runs."""
 
+    def _controls_changed(self) -> None:
+        """Subclasses recompute which buttons should be on after ``_set_enabled(True)``
+        switched them all on (a read that changed nothing must not enable what
+        was off)."""
+
     def _after_finish(self) -> None:
         """Subclasses refresh what the action may have changed."""
 
     def has_privileged_work(self) -> bool:
         """True while an action is running. Whether a given tab's call is
-        privileged (Tor, MAC) is not known here, so any running one counts."""
+        privileged (Tor, MAC) is not known here, so any running one counts, except a read-only one."""
         worker = self._worker
-        return worker is not None and worker.isRunning()
+        return worker is not None and worker.isRunning() and not self._read_only
 
     def shutdown(self, timeout_ms: int = 2000) -> None:
         worker = self._worker
