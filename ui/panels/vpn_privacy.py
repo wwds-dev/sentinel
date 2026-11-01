@@ -208,6 +208,7 @@ class PrivacyTab(GatedTab):
     def _after_finish(self) -> None:
         self.refresh_interfaces()
         self.refresh_tor()
+        self._refresh_chain()
 
     def _set_enabled(self, enabled: bool) -> None:
         for w in (self.mac_device_box, self.mac_random_btn, self.mac_restore_btn,

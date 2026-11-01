@@ -793,3 +793,12 @@ def test_a_failed_listing_error_is_bounded_and_holds_no_address(monkeypatch):
     import re
     assert 0 < len(error) <= 200
     assert not re.search(r"(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}", error)
+
+
+def test_a_listing_error_is_redacted_before_it_is_cut(monkeypatch):
+    # An address straddling the 200-character cut: cutting first leaves "02:aa:bb"
+    # behind, which the six-octet pattern no longer recognises.
+    noisy = "x" * 189 + " 02:aa:bb:cc:dd:ee " + "y" * 50
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **kw: (False, noisy))
+    _, error = macaddr.list_interfaces_checked()
+    assert len(error) <= 200 and "02:aa:bb" not in error
