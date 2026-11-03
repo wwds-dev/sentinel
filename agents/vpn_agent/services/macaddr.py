@@ -171,7 +171,7 @@ def _find_interface(device: str) -> tuple[Interface | None, str]:
     if interface is not None:
         return interface, ""
     if error:
-        return None, f"Could not read the network interfaces: {error}. Nothing was changed."
+        return None, f"Could not read the network interfaces: {error.rstrip('.')}. Nothing was changed."
     return None, f"No such interface: {device}"
 
 
@@ -397,12 +397,19 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
     like it worked. Cycling power on the interface is the reliable way to force
     it on current macOS, where the old `airport -z` tool no longer exists.
     """
+    return _change(device, address, prompt, None)
+
+
+def _change(device: str, address: str, prompt: str,
+            found: tuple[Interface | None, str] | None) -> tuple[bool, str]:
+    """set_mac's body. ``found`` is a listing the caller already took (restore),
+    so one call reads the interfaces once; None means list them here."""
     if not valid_device(device):
         return False, f"{device!r} is not a valid interface name."
     if not is_valid(address):
         return False, f"{address!r} is not a usable unicast MAC address."
 
-    interface, refusal = _find_interface(device)
+    interface, refusal = found if found is not None else _find_interface(device)
     if interface is None:
         return False, refusal
     if not interface.current:
@@ -469,10 +476,8 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
 
 
 def randomize(device: str, mode: str = MODE_LOCAL) -> tuple[bool, str]:
-    interface, refusal = _find_interface(device)
-    if interface is None:
-        return False, refusal
-    return set_mac(device, random_mac(mode, like=interface.hardware))
+    # random_mac ignores `like`, so set_mac's own listing is the only one needed.
+    return set_mac(device, random_mac(mode))
 
 
 def restore(device: str) -> tuple[bool, str]:
@@ -487,7 +492,7 @@ def restore(device: str) -> tuple[bool, str]:
         return False, f"Sentinel could not read the address {device} is using now."
     if not interface.spoofed:
         return True, f"{device} is already using its hardware address."
-    return set_mac(device, interface.hardware)
+    return _change(device, interface.hardware, "", (interface, ""))
 
 
 def wifi_private_address_note() -> str:
