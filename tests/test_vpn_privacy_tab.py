@@ -346,20 +346,53 @@ def test_an_interface_that_vanished_is_a_refusal(env, monkeypatch):
     assert env.asked == [] and env.calls == [] and env.warnings
 
 
-def test_refresh_survives_an_os_error_but_not_a_bug(env, monkeypatch):
-    def boom(exc):
-        def f():
-            raise exc
-        return f
-    monkeypatch.setattr(macaddr, "list_interfaces", boom(OSError("no networksetup")))
+def test_refresh_reports_a_failed_listing_and_a_crash(env, monkeypatch):
+    env.read_error = "no networksetup"
     env.tab.refresh_interfaces()
     assert env.tab._interfaces == []
     # Say why the list is empty, not "No network interfaces found".
     for label in (env.tab.mac_current_label, env.tab.status_label):
         assert "Could not list network interfaces: no networksetup" in label.text()
-    monkeypatch.setattr(macaddr, "list_interfaces", boom(RuntimeError("bug")))
-    with pytest.raises(RuntimeError):
-        env.tab.refresh_interfaces()
+
+    def bug():
+        raise RuntimeError("bug")
+    env.read_error = ""
+    env.tab.refresh_interfaces()
+    monkeypatch.setattr(macaddr, "list_interfaces_checked", bug)
+    env.tab.refresh_interfaces()       # off the UI thread a crash is reported, not raised
+    assert "Failed: bug" in env.tab.status_label.text()
+    assert [i.device for i in env.tab._interfaces] == ["en0", "en5"]   # the last good list stays
+    assert not env.tab.busy and env.tab.mac_refresh_btn.isEnabled()
+
+
+def test_refresh_lists_the_interfaces_off_the_ui_thread(env, monkeypatch):
+    """Review P3-4b: networksetup runs in a worker; the tab is busy until it answers."""
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    env.ifaces.pop()
+    env.tab.refresh_interfaces()
+    assert len(DeferredWorker.started) == 1
+    assert env.tab.busy and not env.tab.mac_refresh_btn.isEnabled()
+    assert env.tab.mac_device_box.count() == 2      # nothing changes before the answer
+    popups = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: popups.append(a)))
+    env.tab.refresh_interfaces()                    # a second refresh while busy is dropped quietly
+    assert len(DeferredWorker.started) == 1 and popups == []
+    DeferredWorker.started[0].run_now()
+    assert env.tab.mac_device_box.count() == 1
+    assert not env.tab.has_privileged_work()
+
+
+def test_refresh_keeps_the_selected_interface_and_drops_a_failed_list(env, monkeypatch):
+    env.tab.mac_device_box.setCurrentIndex(1)
+    env.tab.refresh_interfaces()
+    assert env.tab.mac_device_box.currentData() == "en5"
+    # A failed listing shows nothing, even if the command left partial rows behind.
+    monkeypatch.setattr(macaddr, "list_interfaces_checked", lambda: (list(env.ifaces), "timed out"))
+    env.tab.refresh_interfaces()
+    assert env.tab._interfaces == [] and env.tab.mac_device_box.count() == 0
+    assert not env.tab.busy and env.tab.mac_refresh_btn.isEnabled()
+    assert not env.tab.has_privileged_work()
 
 
 def test_the_gate_target_for_a_mac_change_holds_no_address(env, monkeypatch, caplog):

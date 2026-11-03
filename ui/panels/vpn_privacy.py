@@ -218,15 +218,17 @@ class PrivacyTab(GatedTab):
 
     # ── hardware address ──
     def refresh_interfaces(self) -> None:
-        current = self.mac_device_box.currentData()
-        error = ""
-        try:
-            self._interfaces = macaddr.list_interfaces()
-        except OSError as exc:
-            self._interfaces = []
-            error = f"Could not list network interfaces: {exc}"
-        self._fill_interfaces(current)
+        """List the interfaces off the UI thread; networksetup can take seconds."""
+        if self.busy:
+            return      # Refresh is off while busy; a finishing action refreshes after
+        self._read_off_thread(macaddr.list_interfaces_checked, self._interfaces_listed)
+
+    def _interfaces_listed(self, result) -> None:
+        interfaces, error = result
+        self._interfaces = [] if error else list(interfaces)
+        self._fill_interfaces()     # keeps whatever is selected when the answer lands
         if error:
+            error = f"Could not list network interfaces: {error}"
             self.mac_current_label.setText(error)
             self._say(error)
 
