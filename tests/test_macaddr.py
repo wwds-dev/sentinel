@@ -473,7 +473,7 @@ def test_quit_never_forgets_a_change_still_waiting_for_root(monkeypatch, state, 
         assert entered.wait(5)
         _ports(monkeypatch, {"en5": ORIG})       # nothing changed yet
         monkeypatch.setattr(macaddr, "set_mac", lambda *a, **k: pytest.fail("restored in flight"))
-        assert macaddr.restore_all_recorded() == []
+        assert macaddr.restore_all_recorded() == [("en5", False, macaddr.HELD_BUSY)]
         assert macaddr.recorded() == {"en5": ORIG}
     finally:
         release.set()
@@ -1310,3 +1310,79 @@ def test_a_record_locked_after_the_check_still_refuses_the_change(monkeypatch, s
     ok, message = macaddr.set_mac("en5", "02:00:00:00:00:77")
     assert not ok and root["calls"] == []
     assert "could not read mac_original.json" in message and message.endswith("Nothing was changed.")
+
+
+# ── The four open MAC P3s (docs/audit/macaddr-open-p3s-review-2026-11-05.md) ──
+
+def test_a_quit_names_a_device_held_back_because_its_change_is_waiting(monkeypatch, state, root):
+    """Review P3-4: a busy device is not restored, and the result says so instead of nothing."""
+    _write_record({"en5": ORIG, "en6": ORIG})
+    _ports(monkeypatch, {"en5": NEW, "en6": NEW})
+    monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: {"en5"})
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
+    root["mac"] = ORIG
+    results = macaddr.restore_all_recorded()
+    assert [(device, ok) for device, ok, _ in results] == [("en5", False), ("en6", True)]
+    assert results[0][2] == macaddr.HELD_BUSY
+    assert [call["argv"][4] for call in root["calls"]] == ["en6"]
+    assert macaddr.recorded() == {"en5": ORIG}
+
+
+def test_the_quit_prints_the_held_device_without_an_address(monkeypatch, state, root, capsys):
+    import main
+    _write_record({"en5": ORIG})
+    _ports(monkeypatch, {"en5": NEW})
+    monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: {"en5"})
+    main._restore_changed_hardware_addresses()
+    err = capsys.readouterr().err
+    assert "hardware address of en5 not restored" in err and "waiting for an answer" in err
+    assert ORIG not in err and NEW not in err and root["calls"] == []
+
+
+def test_an_unknown_boot_offers_no_record_and_keeps_it(monkeypatch, state, root):
+    """Review 2 P3-3: an entry kept only because the boot is unknown may be an earlier boot's."""
+    _write_record({"en5": PRIVATE, "en6": ORIG})
+    _ports(monkeypatch, {"en5": NEW, "en6": ORIG})
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    assert macaddr.pending_restores() == []
+    results = macaddr.restore_all_recorded()
+    assert results == [("en5", False, macaddr.HELD_NO_BOOT)] and root["calls"] == []
+    # en6 is already on its original: forgotten as before. en5 is kept for a known boot.
+    assert macaddr.recorded() == {"en5": PRIVATE}
+    monkeypatch.setattr(macaddr, "boot_id", lambda: BOOT)
+    assert macaddr.pending_restores() == [("en5", PRIVATE, NEW)]
+
+
+@pytest.mark.parametrize("form", [
+    "02:aa:bb:cc:dd:ee", "02:AA:BB:CC:DD:EE", "2:a:b:c:d:e", "02-aa-bb-cc-dd-ee",
+    "02aa.bbcc.ddee", "02aabbccddee", "ether02:aa:bb:cc:dd:ee", "x02aabbccddeey",
+])
+def test_redact_addresses_strips_every_address_form(form):
+    """Review 4 P3-B: dash, dotted, bare, unpadded and glued forms are hidden too."""
+    out = macaddr.redact_addresses(f"en5 reports {form}, was busy")
+    assert out.startswith("en5 reports ") and out.endswith(", was busy")
+    assert "<address>" in out
+    for group in ("aa", "AA", "bb", "BB", "dd", "DD", ":d:", "-dd", ".dd"):
+        assert group not in out.replace("<address>", ""), out
+
+
+def test_redact_addresses_leaves_no_tail_of_a_longer_run():
+    out = macaddr.redact_addresses("02:aa:bb:cc:dd:ee:ff then 02-aa-bb-cc-dd-ee-ff-11")
+    assert out == "<address> then <address>"
+
+
+@pytest.mark.parametrize("text", [
+    "[Errno 13] Permission denied: '/Users/x/st/mac_original.json'",
+    "en5 failed at 12:30:45 on 2026-11-05", "exited 1", "bridge100",
+])
+def test_redact_addresses_keeps_ordinary_text(text):
+    assert macaddr.redact_addresses(text) == text
+
+
+def test_an_earlier_boots_entry_kept_by_a_failed_read_is_not_offered(monkeypatch, state):
+    """Review of the open P3s, P3-2: the boot read can fail for the record and work after it."""
+    _write_record({"en5": PRIVATE}, boot="OLD-BOOT")
+    _ports(monkeypatch, {"en5": NEW})
+    answers = iter(["", BOOT])
+    monkeypatch.setattr(macaddr, "boot_id", lambda: next(answers, BOOT))
+    assert macaddr.pending_restores() == []

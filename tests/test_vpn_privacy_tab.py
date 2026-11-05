@@ -1123,3 +1123,44 @@ def test_a_folder_unlocked_during_the_load_still_blocks_saves(env, monkeypatch):
     monkeypatch.setattr(proxychain, "save_chain", lambda chain: pytest.fail("saved over an unread chain"))
     tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
     assert tab.status_label.text().startswith("Not saved")
+
+
+# ── Review P3-2 (UI half): the tab is held while a confirmation is open ──
+
+@pytest.mark.parametrize("answer", [False, True])
+def test_the_offer_does_not_start_inside_a_confirmation(env, monkeypatch, answer):
+    """A timer firing in the dialog's nested event loop must find the tab busy."""
+    reads, seen = [], []
+    monkeypatch.setattr(macaddr, "pending_restores", lambda: reads.append(1) or [])
+    monkeypatch.setattr(macaddr, "set_mac", env.net("set_mac", (True, "changed")))
+
+    def question(parent, title, text, *a, **k):
+        seen.append(env.tab.busy)
+        env.tab.offer_recorded_restore()          # what the retry timer would do here
+        return QMessageBox.Yes if answer else QMessageBox.No
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    env.tab.randomise_mac()
+    assert seen == [True] and reads == []
+    assert env.calls.count("set_mac") == int(answer)
+    assert not env.tab.busy                      # released on No, and after the action on Yes
+
+
+def test_a_confirmation_that_raises_does_not_leave_the_tab_busy(env, monkeypatch):
+    """Review of the open P3s, P3-3: the reservation is released however the dialog ends."""
+    def question(*a, **k):
+        raise RuntimeError("dialog failed")
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    with pytest.raises(RuntimeError):
+        env.tab._gated("mac-set", "en0", "Randomise", "Sure?", env.net("set_mac", (True, "")))
+    assert not env.tab.busy and "set_mac" not in env.calls
+
+
+def test_an_accepted_offer_names_a_held_device(env, monkeypatch):
+    """Review of the open P3s, P3-1: a held row is not an offered device's failure."""
+    _leftover(monkeypatch, [("en6", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")])
+    monkeypatch.setattr(macaddr, "restore_all_recorded", lambda: [
+        ("en5", False, macaddr.HELD_BUSY), ("en6", True, "en6 is back on its original.")])
+    env.answers = [True]
+    env.tab.offer_recorded_restore()
+    status = env.tab.status_label.text()
+    assert status.startswith("en5: a change to it was still waiting") and "launch. en6 is back" in status

@@ -423,8 +423,12 @@ class PrivacyTab(GatedTab):
             results = macaddr.restore_all_recorded()
             if not results:
                 return True, "Nothing left to restore."
+            # A held device (its change still waiting) may not be one offered,
+            # and its message does not name it.
+            held = (macaddr.HELD_BUSY, macaddr.HELD_NO_BOOT)
             return (all(ok for _, ok, _ in results),
-                    " ".join(message for _, _, message in results))
+                    " ".join(f"{device}: {message}." if message in held else message
+                             for device, _, message in results))
 
         return self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text,
                            restore_all, after=lambda ok: QMessageBox.information(
