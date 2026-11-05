@@ -19,11 +19,14 @@
 6. **Rollback guidance** travels with every review and every outcome.
 
 The review is re-run inside ``execute`` so a file changed between the dialog and
-the worker is still caught. That check, and the SHA-256 shown in the dialog, are
-made when the privileged prompt opens, not when root reads the file: wg-quick and
-openvpn still read the user's file afterwards, and that gap stays open until the
-root-owned verified copy (audit step S7). The contents of a hook script are not
-covered by the config hash either; only programs that root owns are accepted.
+the worker is still caught. For WireGuard, root then copies the file into a
+root-owned directory and runs the copy only if its SHA-256 is the one shown in the
+dialog (audit step S7, ``services/vpn_rootscript.py``, ADR 0004): root never runs
+the user's file. For OpenVPN the check is made when the privileged prompt opens,
+not when root reads the file: openvpn still reads the user's .ovpn and the files
+it names afterwards, a gap that stays open until step S8 (deferred). The contents
+of a hook script are not covered by the config hash either; only programs that
+root owns are accepted.
 
 wg-quick runs a WireGuard hook through bash's ``eval``, so the review only
 accepts plain commands with full paths (or plain names of programs in /usr/bin,
@@ -964,6 +967,9 @@ class ExecutionReview:
         return "\n".join(lines)
 
     def _hash_line(self) -> str:
+        if self.protocol == "WireGuard":
+            return (f"Config SHA-256: {self.config_sha256} (checked again by root on its "
+                    "own copy, which is what runs)")
         return (f"Config SHA-256: {self.config_sha256} (verified when the password prompt "
                 "opened, not when it ran)")
 
@@ -1080,7 +1086,7 @@ def review_execution(action: str, profile: dict | None, *,
 
     if protocol == "WireGuard":
         target, interface = _wg_interface_for(profile)
-        command = (vpn_connection.wg_quick_command("up" if action == "connect" else "down", target)
+        command = (vpn_connection.wg_root_summary("up" if action == "connect" else "down", target)
                    if target else "")
         if not vpn_connection.wireguard_manager.is_wg_quick_available():
             blockers.append("wg-quick not found — install wireguard-tools "
@@ -1104,7 +1110,7 @@ def review_execution(action: str, profile: dict | None, *,
                 # lets wg-quick search its own directory list (which differs between
                 # builds), so it could load a different <interface>.conf as root.
                 target = str(source)
-                command = vpn_connection.wg_quick_command(
+                command = vpn_connection.wg_root_summary(
                     "up" if action == "connect" else "down", target)
         if source is not None:
             # Both actions read the file: wg-quick down re-reads it and runs
@@ -1387,9 +1393,11 @@ def execute(action: str, profile: dict, *,
     fresh review's fingerprint differs, nothing runs and no administrator
     prompt appears (fail closed).
 
-    The hash is checked as the privileged prompt opens, not when root reads the
-    config; that later read is closed only by the root-owned verified copy
-    (audit step S7)."""
+    For WireGuard, root copies the config into a root-owned directory and runs
+    the copy only if its hash is the confirmed one (audit step S7, ADR 0004).
+    For OpenVPN the hash is checked as the privileged prompt opens, and
+    not when root reads the config: openvpn still reads the user's .ovpn and its
+    files afterwards (step S8, deferred)."""
     probe = probe or _default_probe()
     review = review_execution(action, profile, probe=probe, killswitch_armed=killswitch_armed)
     kwargs = {"run_as_root": run_as_root} if run_as_root is not None else {}
@@ -1408,7 +1416,7 @@ def execute(action: str, profile: dict, *,
                 and os.path.isabs(review.target)):
             # An interface-only profile: run the reviewed file, not a bare name.
             run_profile = {**profile, "config_path": review.target}
-        result = runner(run_profile, **kwargs)
+        result = runner(run_profile, config_sha256=review.config_sha256, **kwargs)
         outcome = ExecutionOutcome(
             review, ran=True, success=bool(result.get("success")),
             output=redact_secrets(str(result.get("output") or ""))[:OUTPUT_LIMIT],

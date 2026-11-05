@@ -250,3 +250,28 @@ Corrected owner checklist, additions
 - S4: also quit with the administrator dialog open during Disarm: reopen Sentinel and read "Disarming, unconfirmed" (not "recorded as armed"); `sudo pfctl -a vpn-agent-killswitch -s rules` shows whether the flush happened; Verify and Disarm both work from that state. After Quit anyway the window geometry is the one you left (settings were saved).
 - S5: Verify with the anchor unregistered (remove the `# >>> vpn-agent-killswitch >>>` block from `/etc/pf.conf` by hand, keep rules loaded in the anchor): "Not enforcing: ... not registered" and the Disarm offer (not the clear-record offer). Verify with a partial anchor (load only `block drop all` by hand): "a blocking rule is present in the anchor". Paste the real `sudo pfctl -s rules` output (main ruleset) as well as the other two.
 - S6: arm with a hostile-looking profile endpoint (edit a profile's endpoint to contain a space, a tab, or `fe80::1%en0`): arming is refused with the reason, no password prompt, and `killswitch.pf` holds no extra rule. Arm normally and check `sudo pfctl -a vpn-agent-killswitch -s rules` again; if you can make `pfctl -f -` fail, confirm no `/private/var/run/sentinel-pf.*` file is left.
+
+## 14. Step S7 built (2026-11-05, branch `fix/s7-wireguard-root-copy`)
+
+Owner decisions applied: D8 (ADR `docs/adr/0004-root-runs-verified-copies.md`, accepted 2026-11-05); S8 deferred, with the OpenVPN claims reworded (`docs/agents/vpn.md`, `docs/training/tunnel.md`, `services/vpn_execution.py` docstrings).
+
+### What was built
+- `services/vpn_rootscript.py`: a constant `ROOT_SCRIPT` with the verb, source, hash, interface, wg-quick path, base and owner as `$1`-`$7` (the `macaddr.ROOT_SCRIPT` shape); `wireguard_argv` validates every value and `wireguard_command` quotes them with `shlex.join`.
+- `vpn_connection.connect/disconnect` take `config_sha256` and run that script for WireGuard; `execute()` passes the confirmed review's hash. The review's command line now describes the copy (`wg_root_summary`), and the hash line says root re-checks it on its copy.
+
+### Deviations from the design
+- Base is `/private/var/run/sentinel-vpn`, not `/var/run/...`: `/var` is a symlink on macOS and the script refuses symlinks in what it owns.
+- `mkdir -m` + ownership check + `chown`, not `install -d -o root -g wheel`: the same result, and the ownership check runs on what exists either way.
+- The "is there a stored copy" decision is made by root inside the script (the `wg` folder is 0700, so Sentinel cannot see into it).
+- Root copies at most 256 KiB + 1 byte (`head -c`), so a bigger file can never hash equal.
+- The section 1.2 note that a root-run Sentinel "works unchanged" is superseded: gated actions are refused as root (`e4caccd`).
+- `SaveConfig = true` was already a blocker, so no new warning was needed.
+
+### Tests
+`tests/test_vpn_rootscript.py` (41: argv validation, interface rule, and the script under real `/bin/bash` with a fake wg-quick: copy-only run, swap refused with 98, oversized file, failed up removes the copy, Disconnect on the kept copy, fallback verify, refusal 96 with nothing verifiable, failed down keeps the copy, symlinked base and `wg` folder, foreign owner, path-shaped interface). Existing tests updated to the new command shape. 18/18 hand mutants killed. Full suite: 3275 passed, 14 skipped, 2 failures that also fail on `main` without this change (`test_learning_center` screenshot references after `001e6bf`; `test_providers_registry` starting the installed LM Studio CLI).
+
+### Limits that remain
+- A FIFO swapped in for the config makes root's `head` block until the dialog's timeout; nothing runs, but the attempt hangs (same class as TODO's `head -c` test item).
+- Real ownership, `/private/var/run` behaviour across a reboot, and wg-quick on the copy: owner checklist S7.
+- OpenVPN: S8, deferred.
+

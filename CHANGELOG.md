@@ -34,6 +34,16 @@ and the git log, and is not back-filled here.
   it erases, so a request or check that finishes late writes nothing into the
   folder being erased.
 
+### Security
+- **WireGuard: administrator rights run a checked copy, never your file.**
+  Connect and Disconnect used to check your `.conf` when the password prompt
+  opened and then let `wg-quick` read the file itself as root, so anything that
+  changed the file in between chose what ran as administrator. Now Sentinel
+  copies the file into a root-only folder, checks the copy against the hash you
+  confirmed, and runs only the copy; a changed file is refused and nothing runs.
+  While the tunnel is up, Disconnect uses the copy you connected with. OpenVPN
+  still reads your `.ovpn` after the check; that part is planned, not built.
+
 ### Fixed
 - **A WireGuard hook must now be plain commands with full paths.** wg-quick runs
   each hook through the shell as administrator, and the shell expands what the

@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import socket
 import subprocess
 import uuid
@@ -35,8 +36,12 @@ import pytest
 from PySide6.QtCore import QEvent, QObject, Signal
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLabel, QMessageBox
 
-from services import runtime_paths, vpn_connection, vpn_execution
+from services import runtime_paths, vpn_connection, vpn_execution, vpn_rootscript
 from services.database import get_connection
+
+# An absolute wg-quick, so the root command is the same on every machine (S7:
+# root never runs a bare name).
+FAKE_WG_QUICK = "/opt/test/bin/wg-quick"
 
 PRIVATE_KEY = "cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWsxMjM0NTY3OA=="
 
@@ -233,9 +238,13 @@ class Gate:
     def runner(self, script, prompt, timeout=30):
         ok, output = self.run(script, prompt, timeout)
         if ok and self.bring_up:
-            if " up " in script:
+            # S7: the WireGuard command is the constant root script; its verb is
+            # the first value after the script's $0 ("sentinel-wg").
+            words = shlex.split(script)
+            verb = words[4] if words[:2] == ["/bin/bash", "-c"] else ""
+            if verb == "up":
                 self.probe.up.add(self.bring_up)
-            elif " down " in script:
+            elif verb == "down":
                 self.probe.up.discard(self.bring_up)
         return ok, output
 
@@ -260,7 +269,7 @@ def gate(tmp_path, monkeypatch, state_dir):
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: None if name == "wg-quick" else real_which(name, *a, **k))
+                        lambda name, *a, **k: FAKE_WG_QUICK if name == "wg-quick" else real_which(name, *a, **k))
     monkeypatch.setattr(vpn_execution, "_killswitch_armed", lambda: g.armed)
     monkeypatch.setattr(vpn_execution, "_default_probe", lambda: g.probe)
     # Any privileged call that bypasses the injected runner is a test failure.
@@ -583,7 +592,10 @@ class TestConnectDisconnect:
         (title, text, default), = dialogs.questions
         assert title == "Connect VPN" and default == QMessageBox.No
         assert PRIVATE_KEY not in text
-        assert len(gate.run.scripts) == 1 and gate.run.scripts[0].endswith(f"up '{conf}'")
+        assert len(gate.run.scripts) == 1
+        words = shlex.split(gate.run.scripts[0])
+        assert words[3:7] == ["sentinel-wg", "up", str(conf), words[6]]
+        assert vpn_rootscript.SHA256_RE.fullmatch(words[6])     # the confirmed hash
         assert "verified locally" in tunnel.connection_status_label.text()
         assert tunnel.connect_btn.isEnabled() and tunnel.disconnect_btn.isEnabled()
         assert gate.entries() == []
@@ -594,7 +606,8 @@ class TestConnectDisconnect:
         gate.probe.up.add("wgnl")
         pick(tunnel, wg_profile(conf, "NL"))
         tunnel.disconnect_vpn()
-        assert len(gate.run.scripts) == 1 and " down " in gate.run.scripts[0]
+        assert len(gate.run.scripts) == 1
+        assert shlex.split(gate.run.scripts[0])[3:5] == ["sentinel-wg", "down"]
         assert "wgnl" not in gate.probe.up
         assert gate.entries() == []
 

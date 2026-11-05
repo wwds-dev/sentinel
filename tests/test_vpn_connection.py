@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from services import openvpn_manager, vpn_connection
+from services import openvpn_manager, vpn_connection, vpn_rootscript
+
+FAKE_WG_QUICK = "/opt/test/bin/wg-quick"
+SHA = "a" * 64
 
 
 class Recorder:
@@ -32,10 +35,10 @@ BARE = "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sb
 @pytest.fixture(autouse=True)
 def bare_wg_quick_command(monkeypatch):
     """Pin the command shape: without this the expected strings depend on
-    whether this Mac has wireguard-tools installed (see wg_quick_command)."""
+    whether (and where) this Mac has wireguard-tools installed."""
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: None if name == "wg-quick" else real_which(name, *a, **k))
+                        lambda name, *a, **k: FAKE_WG_QUICK if name == "wg-quick" else real_which(name, *a, **k))
 
 
 # ── Placeholder honesty (the owner's core fear applied to the new feature) ──
@@ -67,32 +70,51 @@ def test_example_country_profiles_are_all_non_connectable():
 
 # ── WireGuard ───────────────────────────────────────────────────────────────
 
-def test_wireguard_connect_runs_wg_quick_up(monkeypatch):
+def test_wireguard_connect_runs_the_root_script_on_a_verified_copy(monkeypatch):
+    """S7: root gets the constant script, the user's file and the confirmed hash;
+    it never runs ``wg-quick up <user file>``."""
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     run = Recorder(ok=True, output="[#] wg-quick up wg0")
-    profile = {"name": "VPS", "protocol": "WireGuard",
-               "endpoint": "203.0.113.7", "port": 51820, "interface": "wg0"}
-    result = vpn_connection.connect(profile, run_as_root=run)
-    assert result["success"] is True
-    assert result["protocol"] == "WireGuard"
-    assert run.scripts == [BARE + " up 'wg0'"]
-
-
-def test_wireguard_connect_prefers_a_config_path(monkeypatch):
-    monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
-    run = Recorder()
     profile = {"name": "Imported", "protocol": "WireGuard", "endpoint": "203.0.113.7",
                "interface": "wg0", "config_path": "/Users/me/nl.conf"}
-    vpn_connection.connect(profile, run_as_root=run)
-    assert run.scripts == [BARE + " up '/Users/me/nl.conf'"]
+    result = vpn_connection.connect(profile, run_as_root=run, config_sha256=SHA)
+    assert result["success"] is True
+    assert result["protocol"] == "WireGuard"
+    assert run.scripts == [vpn_rootscript.wireguard_command(
+        "up", "/Users/me/nl.conf", SHA, "nl", FAKE_WG_QUICK)]
+
+
+@pytest.mark.parametrize("profile, sha", [
+    ({"interface": "wg0"}, SHA),                                  # bare name: no file to copy
+    ({"interface": "wg0", "config_path": "/Users/me/nl.conf"}, ""),  # no confirmed hash
+    ({"config_path": "/Users/me/not-a-valid-interface-name.conf"}, SHA),
+])
+def test_wireguard_connect_without_a_verifiable_file_runs_nothing(monkeypatch, profile, sha):
+    monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
+    run = Recorder()
+    result = vpn_connection.connect({"protocol": "WireGuard", "endpoint": "203.0.113.7",
+                                     **profile}, run_as_root=run, config_sha256=sha)
+    assert result["success"] is False
+    assert result["error"].startswith("Nothing was run")
+    assert run.scripts == []
+
+
+def test_wireguard_connect_refuses_without_an_absolute_wg_quick(monkeypatch):
+    monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: None)
+    run = Recorder()
+    result = vpn_connection.connect(
+        {"protocol": "WireGuard", "endpoint": "203.0.113.7", "config_path": "/Users/me/nl.conf"},
+        run_as_root=run, config_sha256=SHA)
+    assert result["success"] is False and run.scripts == []
 
 
 def test_wireguard_connect_reports_tool_failure(monkeypatch):
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     run = Recorder(ok=False, output="wg-quick: `wg0' already exists")
     result = vpn_connection.connect(
-        {"protocol": "WireGuard", "endpoint": "203.0.113.7", "interface": "wg0"},
-        run_as_root=run)
+        {"protocol": "WireGuard", "endpoint": "203.0.113.7", "config_path": "/Users/me/wg0.conf"},
+        run_as_root=run, config_sha256=SHA)
     assert result["success"] is False
     assert "already exists" in result["error"]
 
@@ -108,13 +130,20 @@ def test_wireguard_missing_tool_is_reported(monkeypatch):
     assert run.scripts == []
 
 
-def test_wireguard_disconnect_runs_wg_quick_down(monkeypatch):
+@pytest.mark.parametrize("profile, sha, source, sent_sha", [
+    # The confirmed file and hash travel with it, for the no-stored-copy case.
+    ({"interface": "wg0", "config_path": "/Users/me/wg0.conf"}, SHA, "/Users/me/wg0.conf", SHA),
+    # Nothing verifiable: root may only use the copy kept since Connect.
+    ({"interface": "wg0"}, "", "", ""),
+    ({"interface": "wg0", "config_path": "/Users/me/wg0.conf"}, "", "", ""),
+])
+def test_wireguard_disconnect_runs_the_root_script(monkeypatch, profile, sha, source, sent_sha):
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     run = Recorder()
-    vpn_connection.disconnect(
-        {"protocol": "WireGuard", "endpoint": "203.0.113.7", "interface": "wg0"},
-        run_as_root=run)
-    assert run.scripts == [BARE + " down 'wg0'"]
+    vpn_connection.disconnect({"protocol": "WireGuard", "endpoint": "203.0.113.7", **profile},
+                              run_as_root=run, config_sha256=sha)
+    assert run.scripts == [vpn_rootscript.wireguard_command(
+        "down", source, sent_sha, "wg0", FAKE_WG_QUICK)]
 
 
 # ── OpenVPN ─────────────────────────────────────────────────────────────────

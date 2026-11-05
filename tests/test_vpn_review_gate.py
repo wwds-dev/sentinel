@@ -18,6 +18,10 @@ import pytest
 
 from services import vpn_connection, vpn_execution
 
+# An absolute wg-quick, so the root command is the same on every machine (S7:
+# root never runs a bare name).
+FAKE_WG_QUICK = "/opt/test/bin/wg-quick"
+
 PRIVATE_KEY = "cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWsxMjM0NTY3OA=="
 
 
@@ -46,7 +50,7 @@ def tools_installed(monkeypatch):
     monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: None if name == "wg-quick" else real_which(name, *a, **k))
+                        lambda name, *a, **k: FAKE_WG_QUICK if name == "wg-quick" else real_which(name, *a, **k))
 
 
 def wg_conf(tmp_path, name="wgnl", interface_extra="", mode=0o600):
@@ -587,15 +591,22 @@ def test_disconnect_still_fails_closed_on_a_fingerprint_mismatch(tmp_path):
 # ── honest hash wording and the dead unguarded wg-quick path ────────────────
 
 def test_the_hash_line_says_when_it_was_checked(tmp_path):
+    # WireGuard (S7): root re-checks the hash on its own copy, which is what runs.
     r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = echo hi\n")))
-    wording = "verified when the password prompt opened, not when it ran"
+    wording = "checked again by root on its own copy, which is what runs"
     assert wording in r.confirmation_detail()
     assert any(wording in body for _, body, _ in r.sections())
+    # OpenVPN (S8 deferred): only at the prompt, and the line says so.
+    ovpn = vpn_execution.ExecutionReview("connect", "OpenVPN", "x", "/c.ovpn", "", "cmd",
+                                         config_sha256="a" * 64)
+    assert "verified when the password prompt opened, not when it ran" in ovpn._hash_line()
 
 
 def test_the_module_and_execute_docstrings_do_not_overclaim():
     for doc in (vpn_execution.__doc__, vpn_execution.execute.__doc__):
-        assert "not when root reads" in doc
+        assert "not when root reads" in doc       # still true for OpenVPN
+        assert "S8" in doc and "OpenVPN" in doc
+        assert "S7" in doc and "copy" in doc
 
 
 def test_the_unguarded_wireguard_manager_wg_quick_helpers_refuse():

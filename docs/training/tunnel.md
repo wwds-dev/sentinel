@@ -122,6 +122,16 @@ servers; a name such as `corp.example` is listed as a search domain (and marked
 as not applied when there is no server), and a DNS entry with a wildcard such
 as `10.64.0.*` stops a Connect.
 
+### What actually runs (WireGuard)
+
+Administrator rights never run your own WireGuard file. Sentinel copies it into a
+folder only root can read, checks that the copy is exactly what the review
+showed, and runs the copy. If you edit the file after answering Yes, nothing runs
+and Tunnel says the config changed. While the tunnel is up, Disconnect uses the
+copy you connected with, so edits made in the meantime do not change what
+Disconnect runs. OpenVPN does not have this protection yet: `openvpn` still reads
+your `.ovpn` and its files after the review.
+
 ### Reading the result
 
 When the command completes, Tunnel re-reads local state and the status line says

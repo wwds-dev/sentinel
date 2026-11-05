@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from services import openvpn_manager, vpn_connection, vpn_execution
+from services import openvpn_manager, vpn_connection, vpn_execution, vpn_rootscript
+
+# An absolute wg-quick, so the root command is the same on every machine (S7:
+# root never runs a bare name).
+FAKE_WG_QUICK = "/opt/test/bin/wg-quick"
 
 PRIVATE_KEY = "cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWsxMjM0NTY3OA=="
 
@@ -46,7 +50,7 @@ def wg_quick_installed(monkeypatch):
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: None if name == "wg-quick" else real_which(name, *a, **k))
+                        lambda name, *a, **k: FAKE_WG_QUICK if name == "wg-quick" else real_which(name, *a, **k))
 
 
 def write_conf(tmp_path, name="wgnl", allowed="0.0.0.0/0, ::/0", dns="10.8.0.1", mode=0o600):
@@ -93,7 +97,10 @@ def test_review_names_target_command_intent_and_rollback(tmp_path):
     assert r.allowed
     assert r.target == str(path)
     assert r.interface == "wgnl"
-    assert r.command.endswith(f"up '{path}'")
+    # S7: root runs a verified copy, and the review says so in words.
+    copy = "/private/var/run/sentinel-vpn/wg/wgnl/wgnl.conf"
+    assert r.command == (f"copy '{path}' to {copy}, check that the copy's SHA-256 is "
+                         f"the one below, then wg-quick up {copy}")
     assert r.route_mode == "Full tunnel"
     assert any("203.0.113.7:51820" in line for line in r.config_lines)
     assert any("10.8.0.1" in line for line in r.config_lines)
@@ -337,7 +344,6 @@ def test_rollback_is_a_command_a_person_can_type(tmp_path, monkeypatch):
                         lambda name, *a, **k: "/opt/homebrew/bin/wg-quick")
     path = write_conf(tmp_path)
     r = review("connect", profile_for(path))
-    assert r.command.startswith("cd / && /usr/bin/env -i ")
     assert r.rollback[0].endswith(f"sudo wg-quick down '{path}'")
 
 
@@ -367,7 +373,8 @@ def test_verified_full_tunnel_connect(tmp_path):
 
     outcome = execute("connect", profile_for(path), run_as_root=runner,
                                     probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
-    assert run.scripts == [vpn_connection.wg_quick_command("up", str(path))]
+    assert run.scripts == [vpn_rootscript.wireguard_command(
+        "up", str(path), outcome.review.config_sha256, "wgnl", FAKE_WG_QUICK)]
     assert outcome.success and outcome.verified is True
     assert "utun7" in outcome.verification
     assert "not verified" in outcome.verification  # handshake/DNS honesty

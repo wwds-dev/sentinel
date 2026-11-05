@@ -23,7 +23,7 @@ from typing import Callable
 
 from agents.vpn_agent.server import paths as vpn_paths
 from agents.vpn_agent.services import wireguard_manager
-from services import openvpn_manager, vpn_apps
+from services import openvpn_manager, vpn_apps, vpn_rootscript
 from services.vpn_diagnostics import PROFILE_SEED, _profile_protocol
 
 
@@ -122,6 +122,44 @@ the kernel to resolve through any link.
             f"{_quote(program)} {verb} {_quote(target)}")
 
 
+def wg_root_summary(verb: str, target: str) -> str:
+    """What root does for a WireGuard Connect or Disconnect, in words the review
+    shows (``vpn_rootscript`` builds the script itself): it runs a verified
+    root-owned copy, never the user's file (ADR 0004)."""
+    interface = vpn_rootscript.interface_for(target) or "<interface>"
+    copy = f"{vpn_rootscript.BASE_DIR}/wg/{interface}/{interface}.conf"
+    if verb == "up":
+        return (f"copy {_quote(target)} to {copy}, check that the copy's SHA-256 is the "
+                f"one below, then wg-quick up {copy}")
+    return (f"wg-quick down {copy} (the copy kept since Connect; without one, copy "
+            f"{_quote(target)} and check its SHA-256 first)")
+
+
+def _wg_root_run(verb: str, profile: dict, config_sha256: str,
+                 run_as_root: RunAsRoot, prompt: str) -> dict:
+    """Run wg-quick as root on a verified copy of the profile's config."""
+    protocol = "WireGuard"
+    config_path = resolve_config_path(profile)
+    interface = str(profile.get("interface") or "").strip()
+    target = config_path if config_path else interface
+    if not target:
+        return {"success": False, "protocol": protocol, "output": "",
+                "error": "This WireGuard profile has no interface or config file."}
+    source = str(Path(config_path).expanduser()) if config_path else ""
+    name = vpn_rootscript.interface_for(source or target)
+    exe = shutil.which("wg-quick")
+    try:
+        command = vpn_rootscript.wireguard_command(
+            verb, source if config_sha256 else "", config_sha256 if source else "",
+            name or "", exe or "")
+    except ValueError as exc:
+        return {"success": False, "protocol": protocol, "output": "",
+                "error": f"Nothing was run: {exc}. Review the profile again."}
+    ok, output = run_as_root(command, prompt)
+    return {"success": ok, "protocol": protocol, "output": output,
+            "error": None if ok else (output or f"wg-quick {verb} failed.")}
+
+
 def _placeholder_result(action: str, profile: dict) -> dict:
     return {
         "success": False,
@@ -136,8 +174,12 @@ def _placeholder_result(action: str, profile: dict) -> dict:
     }
 
 
-def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
-    """Bring the profile's tunnel up. Reports what the tool actually returned."""
+def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root,
+            config_sha256: str = "") -> dict:
+    """Bring the profile's tunnel up. Reports what the tool actually returned.
+
+    For WireGuard, ``config_sha256`` is the hash of the config the user
+    confirmed; root runs only a copy with that hash, and nothing runs without it."""
     protocol = resolve_protocol(profile)
     if is_placeholder(profile):
         return _placeholder_result("connect", profile)
@@ -160,21 +202,15 @@ def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) -> 
         return {"success": False, "protocol": protocol, "output": "",
                 "error": "wg-quick not found — install wireguard-tools "
                          "(`brew install wireguard-tools`)."}
-    config_path = resolve_config_path(profile)
-    interface = str(profile.get("interface") or "").strip()
-    target = config_path if config_path else interface
-    if not target:
-        return {"success": False, "protocol": protocol, "output": "",
-                "error": "This WireGuard profile has no interface or config file."}
-    ok, output = run_as_root(
-        wg_quick_command("up", target),
-        "Sentinel needs administrator access to start the VPN.")
-    return {"success": ok, "protocol": protocol, "output": output,
-            "error": None if ok else (output or "wg-quick up failed.")}
+    return _wg_root_run("up", profile, config_sha256, run_as_root,
+                        "Sentinel needs administrator access to start the VPN.")
 
 
-def disconnect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
-    """Bring the profile's tunnel down."""
+def disconnect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root,
+               config_sha256: str = "") -> dict:
+    """Bring the profile's tunnel down. WireGuard uses the copy kept since
+    Connect, else a verified copy of the config (``config_sha256``), else
+    refuses: root never runs the user's file."""
     protocol = resolve_protocol(profile)
     if protocol == "OpenVPN":
         return {**openvpn_manager.disconnect(run_as_root=run_as_root),
@@ -182,17 +218,8 @@ def disconnect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) 
     if protocol != "WireGuard":
         return {"success": False, "protocol": protocol, "output": "",
                 "error": f"Unsupported protocol '{profile.get('protocol')}'."}
-    config_path = resolve_config_path(profile)
-    interface = str(profile.get("interface") or "").strip()
-    target = config_path if config_path else interface
-    if not target:
-        return {"success": False, "protocol": protocol, "output": "",
-                "error": "This WireGuard profile has no interface or config file."}
-    ok, output = run_as_root(
-        wg_quick_command("down", target),
-        "Sentinel needs administrator access to stop the VPN.")
-    return {"success": ok, "protocol": protocol, "output": output,
-            "error": None if ok else (output or "wg-quick down failed.")}
+    return _wg_root_run("down", profile, config_sha256, run_as_root,
+                        "Sentinel needs administrator access to stop the VPN.")
 
 
 def connection_status() -> dict:
