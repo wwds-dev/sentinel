@@ -845,3 +845,15 @@ def test_the_first_launch_after_a_bad_chain_still_says_why(env):
     summary = PrivacyTab().chain_summary_label.text()
     assert "Could not read the saved proxy chain" in summary and "not valid JSON" in summary
     assert "earlier saved proxy chain" not in summary
+
+
+def test_a_new_bad_chain_beside_an_earlier_copy_still_says_why(env):
+    # Review of 80dda42, P3-1: an older copy must not hide this launch's reason.
+    _save_raw(b"{broken")
+    PrivacyTab()                                                  # moved to .unreadable
+    _save_raw(b"{broken again")
+    summary = PrivacyTab().chain_summary_label.text()             # moved to -2
+    assert "not valid JSON" in summary and "proxychain.json.unreadable-2" in summary
+    assert "earlier saved proxy chain" not in summary
+    later = PrivacyTab().chain_summary_label.text()
+    assert "earlier saved proxy chain" in later and "proxychain.json.unreadable-2 in" in later
