@@ -1313,11 +1313,23 @@ def show_settings(app):
         )
         if not accepted or phrase != "ERASE SENTINEL DATA":
             return
+        # The reset erases the record of a hardware address Sentinel changed,
+        # so the quit-time restore finds nothing; say so rather than ask for
+        # an administrator password in the middle of an emergency.
+        try:
+            from agents.vpn_agent.services import macaddr
+            changed = sorted(macaddr.recorded())
+        except Exception:  # noqa: BLE001 - a note must never block the reset
+            changed = []
+        mac_note = (f"\n\nThis also erases Sentinel's record of the hardware address it "
+                    f"changed on {', '.join(changed)}, so it is not put back at quit: if it "
+                    "is still changed, it stays changed until this Mac restarts."
+                    if changed else "")
         answer = QMessageBox.question(
             dialog,
             "Final confirmation",
             "Erase the complete Sentinel Data folder contents and quit now?\n\n"
-            "This cannot be undone.",
+            f"This cannot be undone.{mac_note}",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

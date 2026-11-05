@@ -33,7 +33,10 @@ ROOT_REFUSAL = (
 def run(command: list[str], timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
     """Run a command directly, returning (ok, combined output)."""
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        # errors="replace": output can carry bytes that are not UTF-8 (ps prints
+        # other processes' raw arguments); that must not raise out of a caller.
+        proc = subprocess.run(command, capture_output=True, text=True, errors="replace",
+                              timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, "Timed out."
     except OSError as exc:

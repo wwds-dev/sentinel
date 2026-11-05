@@ -25,7 +25,7 @@ privacy measure in common use:
 
 from __future__ import annotations
 
-import functools
+import contextlib
 import json
 import os
 import re
@@ -244,7 +244,12 @@ def is_valid(address: str) -> bool:
 # whose hardware no longer matches is dropped too.
 
 _lock = threading.RLock()            # the record file and _in_flight
-_in_flight: set[str] = set()         # devices whose root command has not returned
+_in_flight: dict[str, int] = {}      # device -> changes listing or waiting for root
+# The root helper's whole argument tail ($0, device, address, Wi-Fi flag) in
+# any process (the dialog's osascript carries it); a change from a process
+# that has since quit. The full shape, so a grep that mentions it is not one.
+_ELSEWHERE_RE = re.compile(
+    r"\bsentinel-mac ([a-z]{2,8}[0-9]{1,3}) [0-9a-f]{2}(?::[0-9a-f]{2}){5} [01]\b")
 
 
 def record_path() -> Path:
@@ -254,17 +259,28 @@ def record_path() -> Path:
 BOOT_UUID_RE = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\Z")
 
 
-@functools.cache
+_boot: list[str] = []                # the boot ID once read; a failed read is not kept
+
+
 def boot_id() -> str:
     """kern.bootsessionuuid, or '' when it cannot be read (then nothing is dropped).
 
     Not kern.boottime: XNU shifts that on wake and on a clock step to keep
     boot time plus uptime equal to the wall clock, so within one boot its
     seconds can change and a live record would be taken for a stale one.
+    Only a good read is cached: a cached failure would make every later
+    record boot-less, and a boot-less entry survives reboots.
     """
-    ok, output = run(["sysctl", "-n", "kern.bootsessionuuid"])
-    uuid = output.strip().upper() if ok else ""
-    return uuid if BOOT_UUID_RE.match(uuid) else ""
+    if not _boot:
+        ok, output = run(["sysctl", "-n", "kern.bootsessionuuid"])
+        uuid = output.strip().upper() if ok else ""
+        if not BOOT_UUID_RE.match(uuid):
+            return ""
+        _boot.append(uuid)
+    return _boot[0]
+
+
+boot_id.cache_clear = _boot.clear    # type: ignore[attr-defined]
 
 
 def _valid_entry(device, entry) -> bool:
@@ -282,7 +298,7 @@ def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
     """
     try:
         data = json.loads(record_path().read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):     # deep nesting: damaged
         return {}, record_path().exists()
     if not isinstance(data, dict):
         return {}, True
@@ -290,9 +306,11 @@ def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
                         for key in ("original", "hardware", "boot")}
                for device, entry in data.items() if _valid_entry(device, entry)}
     if entries:
+        # A known boot drops every entry not made in it, a boot-less one too
+        # (older versions wrote those); an unknown boot is no proof of a reboot.
         boot = boot_id()
         entries = {device: entry for device, entry in entries.items()
-                   if not (boot and entry["boot"] and entry["boot"] != boot)}
+                   if not (boot and entry["boot"] != boot)}
     return entries, len(entries) != len(data)
 
 
@@ -308,6 +326,37 @@ def recorded() -> dict[str, str]:
 def in_flight() -> frozenset[str]:
     with _lock:
         return frozenset(_in_flight)
+
+
+@contextlib.contextmanager
+def _busy(device: str):
+    """Mark ``device`` in flight, from its listing until root has answered.
+
+    A count, not a set: the first of two overlapping changes to finish must
+    not clear the mark of the other.
+    """
+    with _lock:
+        _in_flight[device] = _in_flight.get(device, 0) + 1
+    try:
+        yield
+    finally:
+        with _lock:
+            _in_flight[device] -= 1
+            if not _in_flight[device]:
+                del _in_flight[device]
+
+
+def _changes_elsewhere() -> set[str] | None:
+    """Devices with a change waiting in any process, None when ps fails.
+
+    The admin dialog outlives os._exit: a Quit anyway leaves it open, and the
+    next launch's _in_flight knows nothing of it.
+    """
+    try:
+        ok, output = run(["ps", "-axww", "-o", "command="])
+    except ValueError:              # undecodable output: as unreadable as a failure
+        return None
+    return set(_ELSEWHERE_RE.findall(output)) if ok else None
 
 
 def _save_record(entries: dict[str, dict[str, str]]) -> None:
@@ -330,7 +379,10 @@ def _save_record(entries: dict[str, dict[str, str]]) -> None:
 def _remember(device: str, original: str, hardware: str) -> None:
     with _lock:
         entries, _ = _read_entries()
-        if device not in entries:          # the first original wins
+        # The first original wins, unless the entry is another adapter's
+        # under a reused name: pending_restores would drop it, leaving this
+        # change unrecorded.
+        if (entries.get(device) or {}).get("hardware") != hardware.lower():
             entries[device] = {"original": original.lower(), "hardware": hardware.lower(),
                                "boot": boot_id()}
             _save_record(entries)
@@ -349,15 +401,22 @@ def pending_restores() -> list[tuple[str, str, str]]:
     An interface already back on its original is forgotten, and so is one
     whose hardware no longer matches (another adapter under the same name).
     One that cannot be read now (an unplugged adapter) is kept but not
-    offered: there is nothing to restore it on. A device whose own change is
-    still waiting for root (a Quit anyway during the dialog) is left alone:
-    its outcome is unknown, and the next launch decides.
+    offered: there is nothing to restore it on. A device whose change is
+    still listing or waiting for root, in this process or in one that quit
+    with its dialog open, is left alone: its outcome is unknown, and the next
+    launch decides.
     """
     with _lock:
         entries, stale = _read_entries()
         if stale:
             _save_record(entries)
         busy = set(_in_flight)
+    if not entries:
+        return []
+    # Unknown (None): an orphaned dialog may still land, so nothing back on
+    # its original is forgotten; a changed one is still offered.
+    elsewhere = _changes_elsewhere()
+    busy |= elsewhere or set()
     entries = {device: entry for device, entry in entries.items() if device not in busy}
     if not entries:
         return []
@@ -367,8 +426,14 @@ def pending_restores() -> list[tuple[str, str, str]]:
         port = ports.get(device)
         if port is None or not port.current:
             continue
-        if port.hardware != entry["hardware"] or port.current == entry["original"]:
+        if port.hardware != entry["hardware"]:
             _forget(device)
+        elif port.current == entry["original"]:
+            with _lock:
+                # Again, just before forgetting: a change may have begun here
+                # since the snapshot, and its record is the one about to go.
+                if elsewhere is not None and device not in _in_flight:
+                    _forget(device)
         else:
             pending.append((device, entry["original"], port.current))
     return pending
@@ -409,27 +474,35 @@ def _change(device: str, address: str, prompt: str,
     if not is_valid(address):
         return False, f"{address!r} is not a usable unicast MAC address."
 
-    interface, refusal = found if found is not None else _find_interface(device)
-    if interface is None:
-        return False, refusal
-    if not interface.current:
-        return False, (f"Sentinel could not read the address {device} is using now, so it "
-                       "could not record it for restoring. Nothing was changed.")
+    with _busy(device):
+        interface, refusal = found if found is not None else _find_interface(device)
+        if interface is None:
+            return False, refusal
+        if not interface.current:
+            return False, (f"Sentinel could not read the address {device} is using now, so it "
+                           "could not record it for restoring. Nothing was changed.")
 
-    address = address.lower()
-    # Only a record pending_restores would still act on opens the guard: one
-    # for this device whose hardware is this interface's (it drops the rest).
-    restorable = (_read_entries()[0].get(device) or {}).get("hardware") == interface.hardware
-    if (address != interface.hardware and not restorable
-            and not is_valid(interface.current)):
-        # What it uses now is the "original" a restore would put back; an
-        # all-zero or multicast one cannot be recorded (the record drops it),
-        # so a change would leave nothing to restore. Fail closed.
-        return False, (f"Sentinel could not record the address {device} is using now "
-                       f"({interface.current}) for restoring. Nothing was changed.")
-    with _lock:
-        _in_flight.add(device)
-    try:
+        address = address.lower()
+        # Only a record pending_restores would still act on opens the guard: one
+        # for this device whose hardware is this interface's (it drops the rest).
+        entry = _read_entries()[0].get(device) or {}
+        restorable = entry.get("hardware") == interface.hardware
+        if (address != interface.hardware and not restorable
+                and not is_valid(interface.current)):
+            # What it uses now is the "original" a restore would put back; an
+            # all-zero or multicast one cannot be recorded (the record drops it),
+            # so a change would leave nothing to restore. Fail closed.
+            return False, (f"Sentinel could not record the address {device} is using now "
+                           f"({interface.current}) for restoring. Nothing was changed.")
+        if (address != interface.hardware and not boot_id()
+                and not (restorable and address == entry["original"])):
+            # A record must name its boot, or it would outlive the change; and
+            # an entry kept only because the boot is unknown may be an earlier
+            # boot's, so it cannot stand in for this change's. Only a way back.
+            return False, (f"Sentinel could not read this Mac's boot ID, so it could not "
+                           f"record the address {device} is using now for restoring. "
+                           "Nothing was changed.")
+
         # Recorded before root runs: a crash after the change must still find
         # it. Going back to the hardware address needs no record (and must not
         # record someone else's change as ours to put back).
@@ -452,9 +525,6 @@ def _change(device: str, address: str, prompt: str,
         settled = ok or output in ("Cancelled.", ROOT_REFUSAL)
         if settled and applied and applied in (interface.hardware, recorded().get(device)):
             _forget(device)
-    finally:
-        with _lock:
-            _in_flight.discard(device)
     if not ok:
         # Timed out, refused or failed partway: say what the interface is
         # doing now, since the root side may still have run.
@@ -482,17 +552,20 @@ def randomize(device: str, mode: str = MODE_LOCAL) -> tuple[bool, str]:
 
 def restore(device: str) -> tuple[bool, str]:
     """Put back the address the hardware shipped with."""
-    interface, refusal = _find_interface(device)
-    if interface is None:
-        return False, refusal
-    if not interface.hardware:
-        return False, f"The permanent address of {device} is unknown."
-    if not interface.current:
-        # Empty is unknown, not "unchanged": `spoofed` is False for it.
-        return False, f"Sentinel could not read the address {device} is using now."
-    if not interface.spoofed:
-        return True, f"{device} is already using its hardware address."
-    return _change(device, interface.hardware, "", (interface, ""))
+    if not valid_device(device):       # before the listing, as set_mac does
+        return False, f"{device!r} is not a valid interface name."
+    with _busy(device):
+        interface, refusal = _find_interface(device)
+        if interface is None:
+            return False, refusal
+        if not interface.hardware:
+            return False, f"The permanent address of {device} is unknown."
+        if not interface.current:
+            # Empty is unknown, not "unchanged": `spoofed` is False for it.
+            return False, f"Sentinel could not read the address {device} is using now."
+        if not interface.spoofed:
+            return True, f"{device} is already using its hardware address."
+        return _change(device, interface.hardware, "", (interface, ""))
 
 
 def wifi_private_address_note() -> str:

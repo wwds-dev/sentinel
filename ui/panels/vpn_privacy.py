@@ -78,7 +78,7 @@ class PrivacyTab(GatedTab):
         if macaddr.recorded():
             # A change was left in place by a crash or a declined restore at
             # quit. Reading the record runs nothing; the offer waits for the
-            # event loop so it does not block the window being built.
+            # event loop and lists the interfaces off the UI thread.
             QTimer.singleShot(0, self, self.offer_recorded_restore)
 
     def showEvent(self, event) -> None:
@@ -350,15 +350,37 @@ class PrivacyTab(GatedTab):
             return
         self._set_mac(iface, iface.hardware, "Restore hardware address")
 
+    OFFER_RETRY_MS = 500
+
     def offer_recorded_restore(self) -> None:
-        """Offer back an original address Sentinel changed and did not restore."""
-        try:
-            pending = macaddr.pending_restores()
-        except OSError as exc:
-            self._say(f"Could not read the record of changed addresses: {exc}")
+        """Offer back an original address Sentinel changed and did not restore.
+
+        The check lists the interfaces (an ifconfig per port), so it runs off
+        the UI thread; while another action holds the tab, it waits its turn
+        rather than showing "Busy" to someone who clicked nothing.
+        """
+        if self.busy:
+            QTimer.singleShot(self.OFFER_RETRY_MS, self, self.offer_recorded_restore)
             return
-        if not pending:
-            return
+
+        def read():
+            try:
+                return macaddr.pending_restores(), ""
+            except OSError as exc:
+                return [], f"Could not read the record of changed addresses: {exc}"
+        self._read_off_thread(read, self._offer_pending)
+
+    def _offer_pending(self, result) -> None:
+        pending, error = result
+        if error:
+            self._say(error)
+        if error or not pending or not self._offer(pending):
+            if self._loaded:
+                # A first show during the read skipped its listing (busy); a
+                # restore that ran refreshes in _after_finish instead.
+                self.refresh_interfaces()
+
+    def _offer(self, pending) -> bool:
         lines = "\n".join(f"{device}: {current}  →  {original}"
                           for device, original, current in pending)
         text = ("Sentinel changed the hardware address of these interfaces and did not "
@@ -375,9 +397,9 @@ class PrivacyTab(GatedTab):
             return (all(ok for _, ok, _ in results),
                     " ".join(message for _, _, message in results))
 
-        self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text, restore_all,
-                    after=lambda ok: QMessageBox.information(
-                        self, title, self.status_label.text()))
+        return self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text,
+                           restore_all, after=lambda ok: QMessageBox.information(
+                               self, title, self.status_label.text()))
 
     def _set_mac(self, iface, new: str, title: str) -> None:
         wifi = ("\n\nWi-Fi will be switched off and on, so you will drop off your "

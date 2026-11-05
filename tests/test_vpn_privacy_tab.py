@@ -885,3 +885,75 @@ def test_an_empty_chain_file_is_not_said_to_hold_hops(env):
     _save_raw(b"")
     summary = PrivacyTab().chain_summary_label.text()
     assert "hops" not in summary and "still in proxychain.json.unreadable." in summary
+
+
+# ── Re-audit 1 P3-4: the startup offer lists interfaces off the UI thread ──
+
+def test_the_startup_offer_reads_off_the_ui_thread(env, monkeypatch):
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    reads = []
+    pending = [("en5", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")]
+    monkeypatch.setattr(macaddr, "pending_restores", lambda: reads.append(1) or list(pending))
+    monkeypatch.setattr(macaddr, "restore_all_recorded", env.net("restore", []))
+    env.answers = [False]
+    env.tab.offer_recorded_restore()
+    assert reads == [] and env.asked == [] and env.tab.busy
+    DeferredWorker.started[0].run_now()
+    assert reads == [1] and len(env.asked) == 1 and not env.tab.busy
+    assert "en5" in env.asked[0][1]
+
+
+def test_an_unreadable_record_at_startup_says_so(env, monkeypatch):
+    def boom():
+        raise OSError("disk gone")
+    monkeypatch.setattr(macaddr, "pending_restores", boom)
+    env.tab.offer_recorded_restore()
+    assert env.asked == [] and not env.tab.busy
+    assert "Could not read the record of changed addresses: disk gone" in env.tab.status_label.text()
+
+
+def test_the_startup_offer_waits_for_a_busy_tab(env, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    monkeypatch.setattr(PrivacyTab, "OFFER_RETRY_MS", 0)
+    _leftover(monkeypatch, [("en5", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")])
+    boxes = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: boxes.append(a)))
+    env.tab.randomise_mac()                       # busy reading
+    env.tab.offer_recorded_restore()
+    assert len(DeferredWorker.started) == 1 and boxes == []    # no "Busy" box, no second read
+    env.answers = [False]
+    DeferredWorker.started[0].run_now()           # the randomise read ends (declined)
+    QApplication.processEvents()
+    assert len(DeferredWorker.started) == 2       # the offer's read starts now
+
+
+def test_a_tab_shown_during_the_offer_read_still_lists_its_interfaces(env, monkeypatch):
+    """Review P3-1: showEvent's refresh is skipped while the offer reads; it must come after."""
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    monkeypatch.setattr(macaddr, "pending_restores", lambda: [])
+    tab = PrivacyTab()
+    tab.offer_recorded_restore()
+    tab.show()                                   # refresh_interfaces returns: busy
+    assert len(DeferredWorker.started) == 1
+    DeferredWorker.started[0].run_now()          # nothing pending
+    assert len(DeferredWorker.started) == 2      # the listing runs now
+    DeferredWorker.started[1].run_now()
+    assert tab.mac_device_box.count() == 2
+    tab.close()
+
+
+def test_a_declined_offer_on_a_shown_tab_lists_the_interfaces(env, monkeypatch):
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    _leftover(monkeypatch, [("en5", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")])
+    tab = PrivacyTab()
+    tab.offer_recorded_restore()
+    tab.show()
+    env.answers = [False]
+    DeferredWorker.started[0].run_now()
+    assert len(env.asked) == 1 and len(DeferredWorker.started) == 2
+    tab.close()

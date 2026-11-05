@@ -6010,8 +6010,13 @@ def _restore_changed_hardware_addresses() -> None:
                 print(f"hardware address of {device} not restored: "
                       f"{macaddr.redact_addresses(message)}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - leaving matters more
-        from agents.vpn_agent.services.macaddr import redact_addresses
-        print(f"hardware address restore skipped: {redact_addresses(str(exc))}", file=sys.stderr)
+        try:
+            # Not a bare re-import: the failure may be that import itself.
+            from agents.vpn_agent.services.macaddr import redact_addresses
+            detail = redact_addresses(str(exc))
+        except Exception:  # noqa: BLE001
+            detail = type(exc).__name__          # no text: it may hold an address
+        print(f"hardware address restore skipped: {detail}", file=sys.stderr)
 
 
 def _leave(window, settings, code: int = 0) -> None:
