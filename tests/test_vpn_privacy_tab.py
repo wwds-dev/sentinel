@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QMessageBox
@@ -830,7 +831,8 @@ def test_the_unreadable_chain_notice_survives_a_restart(env):
     tab = PrivacyTab()                                            # the next launch
     folder = str(proxychain.chain_path().parent)
     expected = ("An earlier saved proxy chain could not be read and was moved to "
-                f"proxychain.json.unreadable in {folder}. The chain starts empty until you edit it.")
+                f"proxychain.json.unreadable in {folder}. The chain is empty; whatever the old file "
+                "held, including any proxy passwords, is still in proxychain.json.unreadable.")
     # Review of 924d1f5, P3-3: this launch read nothing, so it must not say it could not read.
     assert expected in tab.chain_summary_label.text() and expected in tab.status_label.text()
     assert "Could not read" not in tab.chain_summary_label.text()
@@ -845,6 +847,8 @@ def test_the_first_launch_after_a_bad_chain_still_says_why(env):
     summary = PrivacyTab().chain_summary_label.text()
     assert "Could not read the saved proxy chain" in summary and "not valid JSON" in summary
     assert "earlier saved proxy chain" not in summary
+    assert summary.endswith("The chain is empty; whatever the old file held, including any "
+                            "proxy passwords, is still in proxychain.json.unreadable.")
 
 
 def test_a_new_bad_chain_beside_an_earlier_copy_still_says_why(env):
@@ -857,3 +861,27 @@ def test_a_new_bad_chain_beside_an_earlier_copy_still_says_why(env):
     assert "earlier saved proxy chain" not in summary
     later = PrivacyTab().chain_summary_label.text()
     assert "earlier saved proxy chain" in later and "proxychain.json.unreadable-2 in" in later
+
+
+@pytest.mark.parametrize("why", ["move-fails", "too-many-copies"])
+def test_a_chain_left_in_place_is_not_called_kept(env, monkeypatch, why):
+    # Review of 80dda42, P3-2: only a moved copy holds the old file; one left in
+    # place is replaced by the next edit, so the notice must not point at it,
+    # nor at an older copy beside it.
+    _save_raw(b"{broken")
+    proxychain.chain_path().with_name("proxychain.json.unreadable").write_text("{older")
+    if why == "move-fails":
+        monkeypatch.setattr(Path, "replace",
+                            lambda self, target: (_ for _ in ()).throw(OSError(30, "Read-only")))
+    else:
+        monkeypatch.setattr(proxychain, "MAX_UNREADABLE_COPIES", 1)
+    summary = PrivacyTab().chain_summary_label.text()
+    assert "will be replaced when you edit the chain" in summary
+    assert summary.endswith("The chain is empty.") and "still in" not in summary
+
+
+def test_an_empty_chain_file_is_not_said_to_hold_hops(env):
+    # Review of 4bf546d, P3-1: a zero-byte file holds no hops; name the copy instead.
+    _save_raw(b"")
+    summary = PrivacyTab().chain_summary_label.text()
+    assert "hops" not in summary and "still in proxychain.json.unreadable." in summary
