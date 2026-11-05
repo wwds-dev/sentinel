@@ -138,18 +138,49 @@ def load_chain() -> Chain:
         return Chain()
 
 
+# Copies are numbered upwards and never reused, so the highest is the newest.
+MAX_UNREADABLE_COPIES = 1000
+
+
+def _unreadable_copies(path: Path) -> dict[int, Path]:
+    """Earlier moved-aside copies of ``path`` by number (``.unreadable`` is 1)."""
+    base = path.name + ".unreadable"
+    try:
+        names = os.listdir(path.parent)
+    except OSError:
+        return {}
+    copies = {}
+    for name in names:
+        if name == base:
+            copies[1] = path.with_name(name)
+        elif name.startswith(base + "-"):
+            suffix = name[len(base) + 1:]
+            if not (suffix.isascii() and suffix.isdigit()):   # "²" is a digit int() refuses
+                continue
+            number = int(suffix)
+            if number >= 2:
+                copies[number] = path.with_name(name)
+    return copies
+
+
 def load_chain_checked() -> tuple[Chain, str]:
     """
     Load the saved chain, or say why it could not be read.
 
     An unreadable file may still hold proxy passwords, so it is moved aside
-    before an edit can save over it, and made owner-only (a hand edit may have
-    left it readable by others). A file that cannot be opened is moved too: a
-    rename needs the folder, not the file. The reason names what is wrong,
-    never what the file contains.
+    before an edit can save over it, and made owner-only where possible (a
+    hand edit may have left it readable by others). A file that cannot be
+    opened is moved too: a rename needs the folder, not the file. The reason
+    names what is wrong, never what the file contains.
+
+    The move happens when Sentinel starts, so until the next save a missing
+    chain with a copy beside it names the newest copy again.
     """
     path = chain_path()
     if not path.is_file():
+        copies = _unreadable_copies(path)
+        if copies:
+            return Chain(), f"it was moved to {copies[max(copies)].name} earlier"
         return Chain(), ""
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8"))), ""
@@ -163,20 +194,31 @@ def load_chain_checked() -> tuple[Chain, str]:
         why = "it is nested too deeply"
     except (TypeError, ValueError) as exc:
         why = str(exc) if isinstance(exc, TypeError) else "it holds a value that cannot be read"
-    aside = path.with_name(path.name + ".unreadable")
-    number = 2
-    while aside.exists():
-        aside = path.with_name(f"{path.name}.unreadable-{number}")
-        number += 1
+    number = max(_unreadable_copies(path), default=0) + 1
+    if number > MAX_UNREADABLE_COPIES:
+        return Chain(), (f"{why}, and there are too many earlier unreadable copies, "
+                         "so it will be replaced when you edit the chain")
+    aside = path.with_name(path.name + ".unreadable" + (f"-{number}" if number > 1 else ""))
     try:
+        paths.ensure_private_dir(path.parent)           # as save_chain does
+    except OSError:
+        pass                                            # the copy's own mode still applies
+    try:
+        if os.path.lexists(aside):                      # never replace an earlier copy
+            raise FileExistsError(aside)
         path.replace(aside)
     except OSError:
         return Chain(), f"{why}, and it could not be moved aside, so it will be replaced when you edit the chain"
     try:
-        if stat.S_ISREG(os.lstat(aside).st_mode):      # never chmod through a link
-            os.chmod(aside, 0o600)
+        st = os.lstat(aside)
+        # Never through a symlink, and never a file with another name elsewhere.
+        if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+            if os.chmod in os.supports_follow_symlinks:
+                os.chmod(aside, 0o600, follow_symlinks=False)
+            else:
+                os.chmod(aside, 0o600)                  # no lchmod (Linux): lstat ruled out a link
     except OSError:
-        pass                                            # moved; the folder is owner-only
+        pass                                            # best-effort: moved, mode unchanged
     return Chain(), f"{why}; it was moved to {aside.name}"
 
 

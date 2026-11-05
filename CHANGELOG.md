@@ -50,9 +50,10 @@ and the git log, and is not back-filled here.
 - A saved proxy chain that Sentinel cannot read no longer stops the Tunnel panel
   from opening, and is no longer overwritten by your next edit. It is moved to
   `proxychain.json.unreadable` (then `-2`, `-3`, …) in the Tunnel data folder,
-  made readable only by you, and the Privacy tab says so under the chain until
-  you edit it. A file that cannot even be moved is left in place, and the tab
-  warns that your next edit replaces it.
+  made readable only by you where possible, and the Privacy tab says so under
+  the chain until you edit it, on later launches too. A file that cannot even
+  be moved, or one past the 1,000th copy, is left in place, and the tab warns
+  that your next edit replaces it.
 - Changing the chain mode no longer clears the selected hop, and Test chain is
   no longer switched on, or left on, against an empty or invalid chain.
 

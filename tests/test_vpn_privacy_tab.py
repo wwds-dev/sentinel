@@ -819,3 +819,19 @@ def test_a_failed_save_keeps_the_unreadable_chain_notice(env, monkeypatch):
     tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
     assert "Could not read the saved proxy chain" in tab.chain_summary_label.text()
     assert "Could not save the chain" in tab.status_label.text()
+
+
+# ── Review of e573ca5 ──
+
+def test_the_unreadable_chain_notice_survives_a_restart(env):
+    # P3-1: the move happens at start-up, so the next launch must still say where it went.
+    _save_raw(b"{broken")
+    PrivacyTab()                                                  # first launch moves it
+    tab = PrivacyTab()                                            # the next launch
+    summary = tab.chain_summary_label.text()
+    assert "Could not read the saved proxy chain" in summary
+    assert "moved to proxychain.json.unreadable earlier" in summary
+    assert "moved to proxychain.json.unreadable earlier" in tab.status_label.text()
+    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)         # the first save ends it
+    assert "Could not read" not in tab.chain_summary_label.text()
+    assert "Could not read" not in PrivacyTab().chain_summary_label.text()
