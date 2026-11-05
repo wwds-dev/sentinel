@@ -62,6 +62,16 @@ and the git log, and is not back-filled here.
   address box and refuses to change an address until the record can be read,
   since that record may still hold an original address to put back; Restore
   hardware address still works. Emergency Reset's warning says the same.
+- **Hardware addresses at quit and at launch.** When Sentinel quits while a
+  change to an address is still waiting for your administrator password, it now
+  says which interface it left alone, instead of skipping it silently; the change
+  stays recorded and is offered again at the next launch. If Sentinel cannot
+  read this Mac's boot ID, it no longer offers to put back a recorded address,
+  which might date from before a restart; the record is kept for later.
+- A Tunnel confirmation dialog now holds the Privacy tab while it is open, so
+  nothing else in the tab can start behind it.
+- Hardware addresses are now hidden from the launch log in every common form
+  (dashes, dots, bare digits, unpadded), not only the colon form.
 
 ## v2.002 - 2026-09-29
 
