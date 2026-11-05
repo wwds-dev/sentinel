@@ -77,13 +77,13 @@ def test_complete_testing_roadmap_is_an_in_app_learning_topic():
     assert "## Release gate" in text
 
 
-def test_every_training_screenshot_reference_exists():
+def test_every_training_image_reference_exists():
+    # Screenshots were removed on purpose (001e6bf), so no minimum count; any image link that remains must resolve.
     root = Path(__file__).resolve().parents[1]
     training = root / "docs" / "training"
     references = []
     for source in training.glob("*.md"):
         references.extend(re.findall(r"!\[[^]]*]\(([^)]+)\)", source.read_text()))
-    assert len(references) >= 8
     for reference in references:
         assert (root / reference).is_file(), reference
 
