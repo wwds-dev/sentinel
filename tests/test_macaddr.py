@@ -945,3 +945,117 @@ def test_a_record_from_an_earlier_boot_does_not_open_the_guard(monkeypatch, stat
     _unrecordable(monkeypatch)
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not record" in msg and root["calls"] == []
+
+
+# ── Re-audit 2 P3-3 to P3-6: the record file ──
+
+PRIVATE = "06:aa:aa:aa:aa:aa"
+
+
+def test_a_failed_boot_read_is_not_cached(monkeypatch):
+    """P3-4: one failed sysctl must not make every later record boot-less."""
+    answers = [(False, ""), (True, UUID), (True, "changed")]
+    seen = []
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: seen.append(argv) or answers.pop(0))
+    REAL_BOOT_ID.cache_clear()
+    try:
+        assert REAL_BOOT_ID() == ""
+        assert REAL_BOOT_ID() == UUID
+        assert REAL_BOOT_ID() == UUID           # a known boot is read once
+        assert len(seen) == 2
+    finally:
+        REAL_BOOT_ID.cache_clear()
+
+
+def test_a_change_that_needs_a_record_is_refused_when_the_boot_is_unknown(monkeypatch, state, root):
+    """P3-4: a boot-less entry would survive reboots, so none is written: fail closed."""
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "boot" in msg and "Nothing was changed" in msg
+    assert root["calls"] == [] and not macaddr.record_path().exists()
+
+
+def test_going_back_needs_no_boot(monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    # To the hardware address: no record is written.
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
+    root["mac"] = ORIG
+    assert macaddr.set_mac("en5", ORIG)[0]
+    # To a recorded original: the entry already exists.
+    _write_record({"en5": PRIVATE})
+    root["mac"] = PRIVATE
+    assert macaddr.set_mac("en5", PRIVATE)[0]
+    assert len(root["calls"]) == 2
+
+
+def test_a_boot_less_entry_is_dropped_once_the_boot_is_known(monkeypatch, state):
+    _write_record({"en5": ORIG}, boot="")
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    assert macaddr.recorded() == {"en5": ORIG}      # unknown now: not proof of a reboot
+    monkeypatch.setattr(macaddr, "boot_id", lambda: BOOT)
+    assert macaddr.recorded() == {}
+
+
+def test_a_new_adapter_under_a_reused_name_is_recorded(monkeypatch, state, root):
+    """P3-3: a kept entry for another adapter must not block this one's record."""
+    import json
+    _write_record({"en7": ORIG}, hardware="aa:bb:cc:00:00:07")
+    other = "aa:bb:cc:00:00:99"
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current=other, hardware=other), ""))
+    assert macaddr.set_mac("en7", NEW)[0]
+    assert json.loads(macaddr.record_path().read_text())["en7"] == {
+        "original": other, "hardware": other, "boot": BOOT}
+
+
+def test_a_deeply_nested_record_is_treated_as_damaged(state):
+    """P3-5: json raises RecursionError, which PrivacyTab() would not survive."""
+    _write_record("[" * 100_000)
+    assert macaddr.recorded() == {}
+    assert macaddr.pending_restores() == []
+
+
+def test_forget_prunes_stale_entries(state):
+    """P3-6: _forget writes the file back when it holds anything stale."""
+    _write_record({"en6": ORIG}, boot="999")
+    macaddr._forget("en9")
+    assert not macaddr.record_path().exists()
+
+
+def test_concurrent_records_are_not_lost(monkeypatch, state):
+    """P3-6: the lock serialises read-modify-write of the record."""
+    import threading
+    import time
+    inner = macaddr._read_entries
+
+    def slow():
+        entries = inner()
+        time.sleep(0.1)          # a second writer would read the same old file here
+        return entries
+    monkeypatch.setattr(macaddr, "_read_entries", slow)
+    workers = [threading.Thread(target=macaddr._remember, args=(d, ORIG, ORIG))
+               for d in ("en5", "en6")]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(5)
+    monkeypatch.setattr(macaddr, "_read_entries", inner)
+    assert macaddr.recorded() == {"en5": ORIG, "en6": ORIG}
+
+
+def test_a_cancelled_first_change_from_a_private_address_forgets_the_record(monkeypatch, state, root):
+    """P3-6: original != hardware (a private Wi-Fi address) is settled too."""
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current=PRIVATE), ""))
+    root["result"], root["mac"] = (False, "Cancelled."), PRIVATE
+    assert not macaddr.set_mac("en5", NEW)[0]
+    assert macaddr.recorded() == {}
+
+
+def test_a_restore_to_a_private_original_forgets_the_record(monkeypatch, state, root):
+    _write_record({"en5": PRIVATE})
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
+    root["mac"] = PRIVATE
+    assert macaddr.set_mac("en5", PRIVATE)[0]
+    assert macaddr.recorded() == {}

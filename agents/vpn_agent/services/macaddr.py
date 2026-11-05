@@ -25,7 +25,6 @@ privacy measure in common use:
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import re
@@ -254,17 +253,28 @@ def record_path() -> Path:
 BOOT_UUID_RE = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\Z")
 
 
-@functools.cache
+_boot: list[str] = []                # the boot ID once read; a failed read is not kept
+
+
 def boot_id() -> str:
     """kern.bootsessionuuid, or '' when it cannot be read (then nothing is dropped).
 
     Not kern.boottime: XNU shifts that on wake and on a clock step to keep
     boot time plus uptime equal to the wall clock, so within one boot its
     seconds can change and a live record would be taken for a stale one.
+    Only a good read is cached: a cached failure would make every later
+    record boot-less, and a boot-less entry survives reboots.
     """
-    ok, output = run(["sysctl", "-n", "kern.bootsessionuuid"])
-    uuid = output.strip().upper() if ok else ""
-    return uuid if BOOT_UUID_RE.match(uuid) else ""
+    if not _boot:
+        ok, output = run(["sysctl", "-n", "kern.bootsessionuuid"])
+        uuid = output.strip().upper() if ok else ""
+        if not BOOT_UUID_RE.match(uuid):
+            return ""
+        _boot.append(uuid)
+    return _boot[0]
+
+
+boot_id.cache_clear = _boot.clear    # type: ignore[attr-defined]
 
 
 def _valid_entry(device, entry) -> bool:
@@ -282,7 +292,7 @@ def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
     """
     try:
         data = json.loads(record_path().read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):     # deep nesting: damaged
         return {}, record_path().exists()
     if not isinstance(data, dict):
         return {}, True
@@ -290,9 +300,11 @@ def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
                         for key in ("original", "hardware", "boot")}
                for device, entry in data.items() if _valid_entry(device, entry)}
     if entries:
+        # A known boot drops every entry not made in it, a boot-less one too
+        # (older versions wrote those); an unknown boot is no proof of a reboot.
         boot = boot_id()
         entries = {device: entry for device, entry in entries.items()
-                   if not (boot and entry["boot"] and entry["boot"] != boot)}
+                   if not (boot and entry["boot"] != boot)}
     return entries, len(entries) != len(data)
 
 
@@ -330,7 +342,10 @@ def _save_record(entries: dict[str, dict[str, str]]) -> None:
 def _remember(device: str, original: str, hardware: str) -> None:
     with _lock:
         entries, _ = _read_entries()
-        if device not in entries:          # the first original wins
+        # The first original wins, unless the entry is another adapter's
+        # under a reused name: pending_restores would drop it, leaving this
+        # change unrecorded.
+        if (entries.get(device) or {}).get("hardware") != hardware.lower():
             entries[device] = {"original": original.lower(), "hardware": hardware.lower(),
                                "boot": boot_id()}
             _save_record(entries)
@@ -427,6 +442,11 @@ def _change(device: str, address: str, prompt: str,
         # so a change would leave nothing to restore. Fail closed.
         return False, (f"Sentinel could not record the address {device} is using now "
                        f"({interface.current}) for restoring. Nothing was changed.")
+    if address != interface.hardware and not restorable and not boot_id():
+        # A record must name its boot, or it would outlive the change.
+        return False, (f"Sentinel could not read this Mac's boot ID, so it could not "
+                       f"record the address {device} is using now for restoring. "
+                       "Nothing was changed.")
     with _lock:
         _in_flight.add(device)
     try:
