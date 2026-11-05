@@ -91,10 +91,14 @@ wrote them or trust their source; if you do not recognise a line, read the file
 itself first.
 
 **Also checked:** Disconnect shows the same review for a WireGuard profile (its
-`PreDown` and `PostDown` lines run then); an OpenVPN Disconnect only shows a
-note. A hook that starts with an absolute path is refused unless root owns the
-program and its folders, and a profile with `SaveConfig = true` is refused. If the
-file changes after you confirm, nothing runs.
+`PreDown` and `PostDown` lines run then). There, a long hook, an unsafe program
+path or `SaveConfig = true` is shown as a risk and you can still go ahead after an
+extra confirmation; an OpenVPN Disconnect only shows a note. On Connect, a hook
+that starts with an absolute path is refused unless root owns the program and
+every folder above it and none of them can be written by a group or by everyone,
+and a profile with `SaveConfig = true` is refused. If the file changes after you
+confirm and before the password prompt, nothing runs; a change after that is not
+caught yet (audit step S7).
 
 ### Reading the result
 
