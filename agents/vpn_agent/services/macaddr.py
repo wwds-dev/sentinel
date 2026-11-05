@@ -39,7 +39,13 @@ from agents.vpn_agent.server import paths
 from agents.vpn_agent.services.privileged import ROOT_REFUSAL, run, run_argv_as_root
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9A-Fa-f]{2}$")
-_ANY_MAC_RE = re.compile(r"(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b")
+# Anything address-shaped, failing toward hiding: six or more colon or dash
+# groups of one or two hex digits (padded or not, glued to a word or not),
+# Cisco's dotted form, or twelve bare hex digits.
+_ANY_MAC_RE = re.compile(
+    r"(?i)[0-9a-f]{1,2}(?:[:-][0-9a-f]{1,2}){5,}"
+    r"|(?<![0-9a-f])[0-9a-f]{4}(?:\.[0-9a-f]{4}){2}(?![0-9a-f])"
+    r"|(?<![0-9a-f])[0-9a-f]{12}(?![0-9a-f])")
 # BSD interface names: a short lowercase driver name and a unit number. \Z,
 # not $, so a trailing newline is not let through.
 DEVICE_RE = re.compile(r"^[a-z]{2,8}[0-9]{1,3}\Z")
@@ -209,10 +215,11 @@ def random_mac(mode: str = MODE_LOCAL, like: str = "") -> str:
 
 
 def redact_addresses(text: str) -> str:
-    """``text`` with every colon-separated, two-digit-padded hardware address
-    replaced, for output that is kept (stderr goes to a launch log file). The
-    device name and the reason stay. Other forms (dash, dotted, bare hex,
-    unpadded) are not matched: ifconfig prints the padded colon form."""
+    """``text`` with every hardware address replaced, for output that is kept
+    (stderr goes to a launch log file). The device name and the reason stay.
+    Matches the colon and dash forms (padded or not, any run of six or more
+    groups), the dotted form and twelve bare hex digits; something else that
+    looks like one (part of an IPv6 address, the tail of a UUID) is hidden too."""
     return _ANY_MAC_RE.sub("<address>", text or "")
 
 
@@ -416,6 +423,13 @@ def _forget(device: str) -> None:
             _save_record(entries)
 
 
+HELD_BUSY = ("a change to it was still waiting for an answer, so it was left as it is; "
+             "it stays recorded and is offered again at the next launch")
+HELD_NO_BOOT = ("Sentinel could not read this Mac's boot ID, so it cannot tell whether the "
+                "record is from before a restart; it stays recorded and is offered again "
+                "once the boot ID can be read")
+
+
 def pending_restores() -> list[tuple[str, str, str]]:
     """(device, original, current) for each recorded change still in place.
 
@@ -425,22 +439,32 @@ def pending_restores() -> list[tuple[str, str, str]]:
     offered: there is nothing to restore it on. A device whose change is
     still listing or waiting for root, in this process or in one that quit
     with its dialog open, is left alone: its outcome is unknown, and the next
-    launch decides. Raises RecordUnreadable, and then forgets nothing.
+    launch decides. While the boot ID cannot be read, nothing is offered: an
+    entry kept then may be an earlier boot's, and putting its address back
+    would replace one Sentinel never changed. Raises RecordUnreadable, and
+    then forgets nothing.
     """
+    return _pending()[0]
+
+
+def _pending() -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
+    """pending_restores, plus (device, why) for each changed device it held back."""
     with _lock:
         entries, stale = _read_entries()
         if stale:
             _save_record(entries)
         busy = set(_in_flight)
     if not entries:
-        return []
+        return [], []
     # Unknown (None): an orphaned dialog may still land, so nothing back on
     # its original is forgotten; a changed one is still offered.
     elsewhere = _changes_elsewhere()
     busy |= elsewhere or set()
+    held = [(device, HELD_BUSY) for device in sorted(entries) if device in busy]
     entries = {device: entry for device, entry in entries.items() if device not in busy}
     if not entries:
-        return []
+        return [], held
+    boot = boot_id()            # read again: the record's read may have found none
     ports = {interface.device: interface for interface in list_interfaces()}
     pending = []
     for device, entry in entries.items():
@@ -455,18 +479,25 @@ def pending_restores() -> list[tuple[str, str, str]]:
                 # since the snapshot, and its record is the one about to go.
                 if elsewhere is not None and device not in _in_flight:
                     _forget(device)
+        elif not boot:
+            held.append((device, HELD_NO_BOOT))
+        elif entry["boot"] != boot:
+            continue            # kept while the boot was unknown: an earlier boot's
         else:
             pending.append((device, entry["original"], port.current))
-    return pending
+    return pending, held
 
 
 def restore_all_recorded() -> list[tuple[str, bool, str]]:
     """Put every recorded original back; a refused one stays recorded.
 
+    A changed device held back (its change still waiting, or the boot ID
+    unreadable) is reported as not restored, with why, so a quit names it.
     Raises RecordUnreadable: an unread record is never taken for an empty one.
     """
-    results = []
-    for device, original, _ in pending_restores():
+    pending, held = _pending()
+    results = [(device, False, why) for device, why in held]
+    for device, original, _ in pending:
         # "original", not "hardware": it is often a private Wi-Fi address.
         ok, message = set_mac(device, original,
                               prompt=f"Put back the original address of {device}")
