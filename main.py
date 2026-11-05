@@ -4891,15 +4891,50 @@ class GodAI(QWidget):
         run = getattr(sender, "_sentinel_run", None) if sender is not None else None
         if not run or getattr(sender, "_sentinel_fenced", False):
             return
-        if run.get("backend") not in CLOUD_PROVIDERS:
-            return
         if getattr(sender, "_sentinel_cost_recorded", False):
             return
         sender._sentinel_cost_recorded = True
+        self.record_stopped_request(run, payload)
+
+    def stopped_request_context(self, agent, request_id=None):
+        """What a panel needs to bill its request if it is stopped and still answered.
+
+        Taken when the worker starts: by the time the late report arrives the
+        pending request is gone (Stop abandons it), so nothing can be looked up
+        then. None for a request that was never authorised.
+        """
+        key = self._pending_request_key(agent, request_id)
+        pending = self._pending_requests.get(key) if key is not None else None
+        if pending is None:
+            return None
+        return {
+            "run_id": pending.get("run_id"), "agent": pending["agent"],
+            "tool": pending.get("tool", ""), "backend": pending["provider"],
+            "model": pending["model"], "prompt": pending["prompt"], "project": None,
+            "request_id": key,
+        }
+
+    def record_stopped_request(self, run, payload) -> None:
+        """Bill a cloud request stopped after the provider had answered.
+
+        The one place a stopped request's cost is written, for Chat and for the
+        agent panels alike: a `cancelled-*` usage row at the provider's real
+        counts (an estimate when it sent none), the cancelled run row keeps the
+        cost, the session total rises once. Local requests cost nothing and
+        record nothing; nothing is written while an Emergency Reset erases the
+        data folder. The callers make it at-most-once per worker.
+        """
+        if run.get("backend") not in CLOUD_PROVIDERS:
+            return
+        if not portable_reset.writes_allowed():
+            return
         payload = payload or {}
         counts = payload.get("usage")
         usage = dict(counts) if counts else {}
         usage["cost_type_override"] = "cancelled-exact" if counts else "cancelled-estimated"
+        if run.get("request_id"):
+            # A panel's Stop may not have closed the run yet; it is a cancel either way.
+            self.abandon_request(run.get("agent", ""), "cancelled", request_id=run["request_id"])
         entry = self.usage_tracker.log_request(
             agent=run.get("agent", ""), backend=run["backend"], model=run.get("model", ""),
             prompt_text=run.get("prompt", ""), response_text=payload.get("response_text", ""),
