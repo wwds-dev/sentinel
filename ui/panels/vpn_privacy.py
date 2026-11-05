@@ -367,9 +367,13 @@ class PrivacyTab(GatedTab):
         pending, error = result
         if error:
             self._say(error)
-            return
-        if not pending:
-            return
+        if error or not pending or not self._offer(pending):
+            if self._loaded:
+                # A first show during the read skipped its listing (busy); a
+                # restore that ran refreshes in _after_finish instead.
+                self.refresh_interfaces()
+
+    def _offer(self, pending) -> bool:
         lines = "\n".join(f"{device}: {current}  →  {original}"
                           for device, original, current in pending)
         text = ("Sentinel changed the hardware address of these interfaces and did not "
@@ -386,9 +390,9 @@ class PrivacyTab(GatedTab):
             return (all(ok for _, ok, _ in results),
                     " ".join(message for _, _, message in results))
 
-        self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text, restore_all,
-                    after=lambda ok: QMessageBox.information(
-                        self, title, self.status_label.text()))
+        return self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text,
+                           restore_all, after=lambda ok: QMessageBox.information(
+                               self, title, self.status_label.text()))
 
     def _set_mac(self, iface, new: str, title: str) -> None:
         wifi = ("\n\nWi-Fi will be switched off and on, so you will drop off your "

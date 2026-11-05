@@ -1150,3 +1150,61 @@ def test_the_quit_restore_survives_its_own_module_failing_to_import(monkeypatch,
     main._restore_changed_hardware_addresses()          # must not raise
     err = capsys.readouterr().err
     assert "hardware address restore skipped" in err
+
+
+# ── Review of the P3 fixes (docs/audit/macaddr-p3s-review-2026-11-05.md) ──
+
+@pytest.mark.allow_process
+def test_run_survives_output_that_is_not_utf8():
+    """P2-1: ps passes a process's raw argv bytes through; one bad byte must not raise."""
+    ok, output = privileged.run(["/usr/bin/printf", "a\\377b"])
+    assert ok and output.startswith("a") and output.endswith("b")
+
+
+def test_an_undecodable_process_list_counts_as_unreadable(monkeypatch):
+    def bad(argv, *a, **k):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    monkeypatch.setattr(macaddr, "run", bad)
+    assert REAL_ELSEWHERE() is None
+
+
+def test_only_the_helpers_own_shape_counts_as_a_change_elsewhere(monkeypatch):
+    """P3-4: a grep or a shell that merely mentions the helper is not a pending change."""
+    real_form = ("/usr/bin/osascript -e do shell script \"/bin/bash -c 'dev=$1\\\\012"
+                 "/sbin/ifconfig' sentinel-mac en6 02:aa:bb:cc:dd:ee 0\" with prompt \"p\"\n")
+    noise = ("grep -r sentinel-mac en5 .\n/bin/zsh -c echo sentinel-mac en7 later\n"
+             "/bin/echo sentinel-mac en8 02:aa:bb:cc:dd:ee 2\n")
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: (True, PS + real_form + noise))
+    assert REAL_ELSEWHERE() == {"en5", "en6"}
+
+
+def test_a_change_that_starts_during_the_check_is_not_forgotten(monkeypatch, state):
+    """P3-2 (defence in depth): in flight is read again just before a forget."""
+    _write_record({"en5": ORIG})
+
+    def listing():
+        macaddr._in_flight["en5"] = 1          # a change began after the snapshot
+        return [_iface(device="en5", current=ORIG)]
+    monkeypatch.setattr(macaddr, "list_interfaces", listing)
+    try:
+        assert macaddr.pending_restores() == []
+        assert macaddr.recorded() == {"en5": ORIG}
+    finally:
+        macaddr._in_flight.clear()
+
+
+def test_an_unknown_boot_allows_only_a_way_back(monkeypatch, state, root):
+    """P3-3: an entry kept only because the boot is unknown must not stand in for a new change."""
+    _write_record({"en5": PRIVATE})
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
+    ok, msg = macaddr.set_mac("en5", "02:99:99:99:99:99")
+    assert not ok and "boot" in msg and root["calls"] == []
+
+
+def test_an_unknown_boot_does_not_take_another_adapters_original_as_a_way_back(monkeypatch, state, root):
+    _write_record({"en5": PRIVATE}, hardware="aa:bb:cc:00:00:99")     # a different adapter
+    monkeypatch.setattr(macaddr, "boot_id", lambda: "")
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
+    ok, msg = macaddr.set_mac("en5", PRIVATE)
+    assert not ok and "boot" in msg and root["calls"] == []

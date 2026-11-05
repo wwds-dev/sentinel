@@ -900,3 +900,32 @@ def test_the_startup_offer_waits_for_a_busy_tab(env, monkeypatch):
     DeferredWorker.started[0].run_now()           # the randomise read ends (declined)
     QApplication.processEvents()
     assert len(DeferredWorker.started) == 2       # the offer's read starts now
+
+
+def test_a_tab_shown_during_the_offer_read_still_lists_its_interfaces(env, monkeypatch):
+    """Review P3-1: showEvent's refresh is skipped while the offer reads; it must come after."""
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    monkeypatch.setattr(macaddr, "pending_restores", lambda: [])
+    tab = PrivacyTab()
+    tab.offer_recorded_restore()
+    tab.show()                                   # refresh_interfaces returns: busy
+    assert len(DeferredWorker.started) == 1
+    DeferredWorker.started[0].run_now()          # nothing pending
+    assert len(DeferredWorker.started) == 2      # the listing runs now
+    DeferredWorker.started[1].run_now()
+    assert tab.mac_device_box.count() == 2
+    tab.close()
+
+
+def test_a_declined_offer_on_a_shown_tab_lists_the_interfaces(env, monkeypatch):
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    _leftover(monkeypatch, [("en5", "aa:bb:cc:00:00:05", "02:00:00:00:00:09")])
+    tab = PrivacyTab()
+    tab.offer_recorded_restore()
+    tab.show()
+    env.answers = [False]
+    DeferredWorker.started[0].run_now()
+    assert len(env.asked) == 1 and len(DeferredWorker.started) == 2
+    tab.close()

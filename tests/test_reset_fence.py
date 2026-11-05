@@ -321,3 +321,26 @@ def test_the_final_confirmation_says_a_changed_address_stays_changed(win, monkey
     [text] = asked
     assert ("until this Mac restarts" in text) is warned and ("en5" in text) is warned
     assert "aa:bb:cc" not in text
+
+
+def test_the_final_confirmation_survives_an_unreadable_record(win, monkeypatch):
+    """Review P3-5: reading the record must never block the reset."""
+    from PySide6.QtWidgets import QDialog, QInputDialog, QPushButton
+
+    from agents.vpn_agent.services import macaddr
+
+    def boom():
+        raise OSError("disk gone")
+    monkeypatch.setattr(macaddr, "recorded", boom)
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda p, t, text, *a, **k: asked.append(text) or QMessageBox.No))
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("ERASE SENTINEL DATA", True)))
+    opened = []
+    monkeypatch.setattr(QDialog, "exec", lambda self: opened.append(self) or 0)
+    dialogs.show_settings(win)
+    next(b for b in opened[0].findChildren(QPushButton)
+         if b.objectName() == "EmergencyPortableReset").click()
+    opened[0].reject()
+    assert len(asked) == 1 and "until this Mac restarts" not in asked[0]

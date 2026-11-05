@@ -1321,8 +1321,9 @@ def show_settings(app):
             changed = sorted(macaddr.recorded())
         except Exception:  # noqa: BLE001 - a note must never block the reset
             changed = []
-        mac_note = (f"\n\nThe hardware address Sentinel changed on {', '.join(changed)} "
-                    "is not put back: it stays changed until this Mac restarts."
+        mac_note = (f"\n\nThis also erases Sentinel's record of the hardware address it "
+                    f"changed on {', '.join(changed)}, so it is not put back at quit: if it "
+                    "is still changed, it stays changed until this Mac restarts."
                     if changed else "")
         answer = QMessageBox.question(
             dialog,

@@ -245,9 +245,11 @@ def is_valid(address: str) -> bool:
 
 _lock = threading.RLock()            # the record file and _in_flight
 _in_flight: dict[str, int] = {}      # device -> changes listing or waiting for root
-# The root helper's $0 and the device after it, in any process (the dialog's
-# osascript carries both); a change from a process that has since quit.
-_ELSEWHERE_RE = re.compile(r"\bsentinel-mac ([a-z]{2,8}[0-9]{1,3}) ")
+# The root helper's whole argument tail ($0, device, address, Wi-Fi flag) in
+# any process (the dialog's osascript carries it); a change from a process
+# that has since quit. The full shape, so a grep that mentions it is not one.
+_ELSEWHERE_RE = re.compile(
+    r"\bsentinel-mac ([a-z]{2,8}[0-9]{1,3}) [0-9a-f]{2}(?::[0-9a-f]{2}){5} [01]\b")
 
 
 def record_path() -> Path:
@@ -350,7 +352,10 @@ def _changes_elsewhere() -> set[str] | None:
     The admin dialog outlives os._exit: a Quit anyway leaves it open, and the
     next launch's _in_flight knows nothing of it.
     """
-    ok, output = run(["ps", "-axww", "-o", "command="])
+    try:
+        ok, output = run(["ps", "-axww", "-o", "command="])
+    except ValueError:              # undecodable output: as unreadable as a failure
+        return None
     return set(_ELSEWHERE_RE.findall(output)) if ok else None
 
 
@@ -424,8 +429,11 @@ def pending_restores() -> list[tuple[str, str, str]]:
         if port.hardware != entry["hardware"]:
             _forget(device)
         elif port.current == entry["original"]:
-            if elsewhere is not None:
-                _forget(device)
+            with _lock:
+                # Again, just before forgetting: a change may have begun here
+                # since the snapshot, and its record is the one about to go.
+                if elsewhere is not None and device not in _in_flight:
+                    _forget(device)
         else:
             pending.append((device, entry["original"], port.current))
     return pending
@@ -477,7 +485,8 @@ def _change(device: str, address: str, prompt: str,
         address = address.lower()
         # Only a record pending_restores would still act on opens the guard: one
         # for this device whose hardware is this interface's (it drops the rest).
-        restorable = (_read_entries()[0].get(device) or {}).get("hardware") == interface.hardware
+        entry = _read_entries()[0].get(device) or {}
+        restorable = entry.get("hardware") == interface.hardware
         if (address != interface.hardware and not restorable
                 and not is_valid(interface.current)):
             # What it uses now is the "original" a restore would put back; an
@@ -485,8 +494,11 @@ def _change(device: str, address: str, prompt: str,
             # so a change would leave nothing to restore. Fail closed.
             return False, (f"Sentinel could not record the address {device} is using now "
                            f"({interface.current}) for restoring. Nothing was changed.")
-        if address != interface.hardware and not restorable and not boot_id():
-            # A record must name its boot, or it would outlive the change.
+        if (address != interface.hardware and not boot_id()
+                and not (restorable and address == entry["original"])):
+            # A record must name its boot, or it would outlive the change; and
+            # an entry kept only because the boot is unknown may be an earlier
+            # boot's, so it cannot stand in for this change's. Only a way back.
             return False, (f"Sentinel could not read this Mac's boot ID, so it could not "
                            f"record the address {device} is using now for restoring. "
                            "Nothing was changed.")
