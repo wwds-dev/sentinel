@@ -62,12 +62,11 @@ future screenshot of the scenario matches the prose without editing. A worked
 example teaches one realistic task; broader capability still belongs in the
 surrounding sections.
 
-The nine-screen screenshot set is reproducible with
-`scripts/capture_training_screenshots.py`. Re-capture it after a material UI
-change instead of keeping misleading historical images.
-Pass one or more screen keys (for example,
-`scripts/capture_training_screenshots.py vpn`) to refresh only the affected
-lesson and avoid unrelated image churn.
+Screenshots are no longer kept in the repo (removed 2026-11-05, `001e6bf`):
+the lessons describe the interface in words. `scripts/capture_training_screenshots.py`
+can still render the screens from sample data for a local visual check (pass
+screen keys, for example `vpn`, for one lesson). It writes to
+`docs/training/images/`, which is git-ignored, so its output is never committed.
 
 The focused Tunnel capture writes both `tunnel.png` and the deterministic
 `tunnel-action-preview.png`; it uses the sample profile catalog, never live VPN

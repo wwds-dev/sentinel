@@ -65,3 +65,5 @@ data/settings.local.json
 # audit-sensitive company docs: kept local, never published (see foundry/audits)
 docs/company/app-context.md
 docs/company/tooling-baseline.md
+# Training screenshots are rendered locally, never committed (001e6bf).
+docs/training/images/
