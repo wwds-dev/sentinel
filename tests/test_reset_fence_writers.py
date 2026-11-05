@@ -52,6 +52,8 @@ def test_sentry_writes_nothing_while_erasing(latch, tmp_path):
     assert not store.baseline_path.exists()
     assert not store.findings_path.exists()
     assert not list(tmp_path.glob(".tmp-*"))
+    # not even the lock files the writers take: they would recreate a folder being erased
+    assert not list(tmp_path.glob("*.lock"))
 
 
 def test_sentry_writes_normally_when_no_reset_is_running(latch, tmp_path):

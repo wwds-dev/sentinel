@@ -4903,6 +4903,8 @@ class GodAI(QWidget):
         pending request is gone (Stop abandons it), so nothing can be looked up
         then. None for a request that was never authorised.
         """
+        if request_id is None:      # no id would resolve to the agent's newest request
+            return None
         key = self._pending_request_key(agent, request_id)
         pending = self._pending_requests.get(key) if key is not None else None
         if pending is None:

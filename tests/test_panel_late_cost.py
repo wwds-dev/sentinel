@@ -283,3 +283,19 @@ def test_the_worker_carries_the_context_of_its_own_request(win):
     worker.wait(5000)
     win.abandon_request("osint", "cancelled", request_id=first_id)
     win.abandon_request("osint", "cancelled", request_id=second_id)
+
+
+def test_a_request_with_no_id_is_not_bound_to_another_pending_run(win):
+    """_pending_request_key falls back to the newest request of the agent when
+    given no id; the context must not, or a late cost closes and bills someone
+    else's run."""
+    win.execution_mode_box.setCurrentText("Hybrid allowed")
+    win.allow_openai_checkbox.setChecked(True)
+    win.prepare_agent_route = lambda *a, **k: True
+    panel = win.panels["osint"]
+    panel._advice_cleared = True
+    panel.provider_box.setCurrentIndex(panel.provider_box.findText("openai"))
+    assert panel.authorize("other", label="Test")
+    other_id = panel._request_id
+    assert win.stopped_request_context("osint", None) is None
+    win.abandon_request("osint", "cancelled", request_id=other_id)

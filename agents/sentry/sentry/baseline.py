@@ -166,6 +166,8 @@ class BaselineStore:
             return None
 
     def save_baseline(self, snapshot: Snapshot) -> None:
+        if not _writes_allowed():       # before the lock: taking it creates a .lock file
+            return
         with _file_lock(self.baseline_path):
             if not _writes_allowed():
                 return
@@ -187,6 +189,8 @@ class BaselineStore:
 
     def append_findings(self, findings: list[Finding]) -> list[dict]:
         if not findings:
+            return self.load_findings()
+        if not _writes_allowed():       # before the lock: taking it creates a .lock file
             return self.load_findings()
         stamp = datetime.now(UTC).isoformat(timespec="seconds")
         # Hold the lock across the whole read-modify-write so a concurrent pass
