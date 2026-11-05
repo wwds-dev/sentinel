@@ -83,15 +83,22 @@ Disconnect.
 A WireGuard config can contain `PreUp`, `PostUp`, `PreDown` and `PostDown` lines,
 and an OpenVPN config can contain script or plugin directives such as `up`,
 `down`, `route-up`, `plugin` and `script-security`. The tunnel tool runs these as
-administrator. The Connect review lists each one (cut at 100 characters) in its
-own section and repeats them in the confirmation, and a second dialog asks
-again, defaulting to **No**. Continue only if you wrote them or trust their
-source; if a line is cut off or you do not recognise it, read the file itself
-first.
+administrator. The review lists each one in its own section and repeats them in
+the confirmation, and a second dialog asks again, defaulting to **No**. A long
+hook is shown cut after 300 characters with a note of how many more; **Show
+Details…** lists every hook in full with the file's SHA-256. Continue only if you
+wrote them or trust their source; if you do not recognise a line, read the file
+itself first.
 
-**Known limitation:** the list appears on Connect only — not on Disconnect and not
-in **Inspect config…** — and other `wg-quick` directives such as `SaveConfig` are
-not flagged.
+**Also checked:** Disconnect shows the same review for a WireGuard profile (its
+`PreDown` and `PostDown` lines run then). There, a long hook, an unsafe program
+path or `SaveConfig = true` is shown as a risk and you can still go ahead after an
+extra confirmation; an OpenVPN Disconnect only shows a note. On Connect, a hook
+that starts with an absolute path is refused unless root owns the program and
+every folder above it and none of them can be written by a group or by everyone,
+and a profile with `SaveConfig = true` is refused. If the file changes after you
+confirm and before the password prompt, nothing runs; a change after that is not
+caught yet (audit step S7).
 
 ### Reading the result
 
