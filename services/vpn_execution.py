@@ -344,18 +344,53 @@ def _which_privileged(name: str) -> str | None:
     return None
 
 
+def _paths_touched(path: Path) -> list[Path]:
+    """``path``, its folders, and for every link met while resolving it the link's
+    own folders and its target's, followed to the end (bounded: 40 links)."""
+    seen: list[Path] = []
+
+    def add(item: Path) -> None:
+        for each in (item, *item.parents):
+            if each not in seen:
+                seen.append(each)
+
+    add(path)
+    pending, links = [path], 0
+    while pending and links < 40:
+        current = pending.pop()
+        walked = Path(current.anchor)
+        for part in current.parts[len(walked.parts):]:
+            walked = walked / part
+            try:
+                is_link = os.path.islink(walked)
+            except OSError:
+                is_link = False
+            if is_link:
+                links += 1
+                try:
+                    target = Path(os.readlink(walked))
+                except OSError:
+                    break
+                target = target if target.is_absolute() else walked.parent / target
+                add(target)
+                rest = current.parts[len(walked.parts):]
+                pending.append(Path(os.path.normpath(target.joinpath(*rest))))
+                break
+    real = Path(os.path.realpath(path))
+    add(real)
+    return seen
+
+
 def _unsafe_executable_reason(path: Path) -> str | None:
     """Why a root-run program could be replaced by a normal user, or None.
     Root must own the file and every directory above it, none of them group- or
     world-writable, for the path as written and for where a link leads. A path starting with ~ is a user's home: never acceptable."""
     if str(path).startswith("~"):
         return f"{path} is in a user's home directory"
-    # The path as written, then the file it really is: a link in a root-only folder
-    # can point into a folder a user can write, and root would run what is there.
-    real = Path(os.path.realpath(path))
-    chain = [path, *path.parents]
-    if real != path:
-        chain += [real, *real.parents]
+    # Every path that resolving it touches: each component as written, each link on
+    # the way and the folders it sits in, and where it finally leads. A link in a
+    # root-only folder can point into a folder a user can write.
+    chain = _paths_touched(path)
     for candidate in chain:
         try:
             info = _stat(candidate)

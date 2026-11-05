@@ -35,6 +35,10 @@ and the git log, and is not back-filled here.
   folder being erased.
 
 ### Fixed
+- **Hook review sees through two more tricks.** A WireGuard `SaveConfig = true`
+  followed by a `# comment` is now refused like a plain one, and a hook program
+  reached through a link (or a chain of links) is judged by where it really
+  lives, not only by the folder the link sits in.
 - Stop and Quit could, rarely, freeze the whole app (a blank window that ignored
   Close) or make it crash on exit. Sentinel no longer force-stops its background
   threads; it lets them finish on their own and stops listening to them.

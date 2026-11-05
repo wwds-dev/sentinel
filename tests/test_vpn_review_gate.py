@@ -685,10 +685,27 @@ def test_a_link_into_a_user_writable_folder_is_unsafe(tmp_path, monkeypatch):
     link.symlink_to(target)
 
     def stat_(path, *a, **k):
-        loose_part = str(path) == str(loose) or str(path).startswith(str(loose) + "/")
-        mode = (stat.S_IFDIR | 0o777) if loose_part else ROOT_DIR
+        mode = (stat.S_IFDIR | 0o777) if str(path) == str(loose) else ROOT_DIR
         return types.SimpleNamespace(st_uid=0, st_mode=mode)
     monkeypatch.setattr(vpn_execution, "_stat", stat_)
     reason = vpn_execution._unsafe_executable_reason(link)
     assert reason is not None and str(loose) in reason
     assert vpn_execution._unsafe_executable_reason(safe / "missing") is None
+
+
+def test_a_link_chain_through_a_user_writable_folder_is_unsafe(tmp_path, monkeypatch):
+    """safe/tool -> loose/hop -> safe2/tool: the middle link sits in a folder a user
+    can write, so it could be redirected after review."""
+    safe, loose, safe2 = tmp_path / "safe", tmp_path / "loose", tmp_path / "safe2"
+    for d in (safe, loose, safe2):
+        d.mkdir()
+    (safe2 / "tool").write_text("#!/bin/sh\n")
+    (loose / "hop").symlink_to(safe2 / "tool")
+    (safe / "tool").symlink_to(loose / "hop")
+
+    def stat_(path, *a, **k):
+        mode = (stat.S_IFDIR | 0o777) if str(path) == str(loose) else ROOT_DIR
+        return types.SimpleNamespace(st_uid=0, st_mode=mode)
+    monkeypatch.setattr(vpn_execution, "_stat", stat_)
+    reason = vpn_execution._unsafe_executable_reason(safe / "tool")
+    assert reason is not None and str(loose) in reason
