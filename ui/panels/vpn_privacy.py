@@ -547,8 +547,13 @@ class PrivacyTab(GatedTab):
             self._say("Not added: " + "; ".join(problems))
             return
         self._chain.hops.append(hop)
-        self.hop_pass_input.clear()
         saved = self._save_chain()
+        if saved:
+            self.hop_pass_input.clear()
+        else:
+            # Not saved, so not added: the table, Write conf and Test chain use
+            # only saved hops, and the password stays typed for another try.
+            self._chain.hops.pop()
         self._refresh_chain()
         if saved:                        # otherwise keep the reason it was not saved
             self._say(f"Added {hop.describe()}.")
@@ -556,6 +561,8 @@ class PrivacyTab(GatedTab):
     def add_tor_hop(self) -> None:
         self._chain.hops.append(tor.hop())
         saved = self._save_chain()
+        if not saved:
+            self._chain.hops.pop()       # not saved, so not added (as add_hop)
         self._refresh_chain()
         if saved:
             self._say("Added Tor as a hop.")

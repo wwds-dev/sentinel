@@ -1063,6 +1063,39 @@ def test_a_failed_save_is_not_followed_by_added(env, monkeypatch):
     assert tab.status_label.text().startswith("Could not save the chain")
 
 
+@pytest.mark.parametrize("cause", ["oserror", "unread"])
+@pytest.mark.parametrize("edit", ["add", "add-tor"])
+def test_a_hop_that_was_not_saved_is_not_added(env, monkeypatch, cause, edit):
+    # Addendum 5 P3-5: a refused or failed save kept the hop in memory (the table
+    # showed it; Write conf and Test chain used it) and cleared the password.
+    tab = PrivacyTab()
+    tab._chain.hops.append(proxychain.ProxyHop(host="10.0.0.1", port=1080))
+    tab._refresh_chain()
+    if cause == "unread":
+        tab._chain_unread = True
+    else:
+        monkeypatch.setattr(proxychain, "save_chain",
+                            lambda chain: (_ for _ in ()).throw(OSError(28, "No space left")))
+    if edit == "add":
+        _add_hop(tab, host="10.0.0.9", user="bob", pw=CANARY)
+        assert tab.hop_pass_input.text() == CANARY
+    else:
+        tab.add_tor_hop()
+    assert [hop.host for hop in tab._chain.hops] == ["10.0.0.1"]
+    assert tab.chain_table.rowCount() == 1
+    assert not tab.status_label.text().startswith("Added")
+    reason = "Not saved" if cause == "unread" else "Could not save the chain"
+    assert tab.status_label.text().startswith(reason)
+
+
+def test_a_saved_hop_is_added_and_its_password_cleared(env):
+    tab = PrivacyTab()
+    _add_hop(tab, host="10.0.0.9", user="bob", pw=CANARY)
+    assert [hop.host for hop in tab._chain.hops] == ["10.0.0.9"] and tab.chain_table.rowCount() == 1
+    assert tab.hop_pass_input.text() == "" and tab.status_label.text().startswith("Added")
+    assert [hop.host for hop in proxychain.load_chain().hops] == ["10.0.0.9"]
+
+
 @needs_permissions
 def test_a_locked_folder_wins_over_an_earlier_copy(env, monkeypatch, tmp_path):
     # Re-review of 73870c4, P3-2: a folder that lists but cannot be searched (0600)
