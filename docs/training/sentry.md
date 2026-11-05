@@ -66,7 +66,9 @@ compares without saving, so you can look without folding what you see into the
 baseline. **Stop** cancels a pass in progress; a pass stopped in time saves nothing.
 Use **Reset baseline** when you move to a new network, so its normal devices do not
 all read as new; it deletes the baseline **and** the recorded findings, and asks for
-no confirmation.
+no confirmation. If a watch pass is running at that moment (in the app or in the
+background), it deletes nothing and says "A watch pass is running; try again when
+it ends." Press it again once the pass has finished.
 
 ## Reading the findings
 

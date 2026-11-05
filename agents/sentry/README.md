@@ -78,6 +78,16 @@ and short-lived `.tmp-*.json` files used for atomic writes):
   finishes there)
 - `watch.log` — stdout/stderr from each launchd background pass; never rotated
 
+**Reset baseline** in the panel calls `BaselineStore.reset()`, which deletes
+`findings.json` and then `baseline.json` (`watch.log` is kept). It takes the same
+`watch.lock` a watch pass holds, without waiting: if a pass (in the app or the
+background watch) holds it, `reset()` raises `BaselineBusy` ("A watch pass is
+running; try again when it ends."), deletes nothing, and the panel shows the
+message. Clearing the findings first means a failure part-way leaves the old
+baseline in place, never a fresh baseline beside stale findings. The background
+watch shares the directory, so it is reset too; whichever pass runs next records
+the new baseline.
+
 The directory is resolved in this order (`default_state_dir()` in `sentry/baseline.py`):
 
 1. `SENTRY_STATE_DIR`, if set. The background launch agent is given the panel's
