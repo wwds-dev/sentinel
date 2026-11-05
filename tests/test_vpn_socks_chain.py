@@ -487,3 +487,48 @@ def test_earlier_copy_is_only_reported_while_no_chain_is_saved(tmp_path, monkeyp
     assert proxychain.earlier_copy() == tmp_path / "proxychain.json.unreadable-3"
     proxychain.save_chain(proxychain.Chain(hops=[ProxyHop(host="10.0.0.1")]))
     assert proxychain.earlier_copy() is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="mode 000 does not stop root")
+def test_an_unsearchable_folder_is_reported_not_raised(tmp_path, monkeypatch):
+    # Review of 4bf546d, P3-3: Path.is_file() raises PermissionError there on 3.11.
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(state))
+    proxychain.chain_path().write_text('{"hops": [{"host": "10.0.0.1", "password": "s3cret"}]}')
+    state.chmod(0o000)
+    try:
+        assert proxychain.load_chain().hops == []
+        assert proxychain.earlier_copy() is None
+        chain, error = proxychain.load_chain_checked()
+    finally:
+        state.chmod(0o700)
+    assert chain.hops == [] and error == "its folder could not be opened (Permission denied)"
+    assert proxychain.chain_path().read_text().startswith('{"hops"')     # never moved
+
+
+@pytest.mark.parametrize("found", [False, True])
+def test_the_folder_check_does_not_depend_on_is_file_raising(tmp_path, monkeypatch, found):
+    # Review of 19efce1, P3-1: from Python 3.14 Path.is_file() answers False in a
+    # folder that cannot be searched; the loader must still say why.
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    real_stat = os.stat
+
+    def locked(path, *a, **k):
+        if Path(path) == proxychain.chain_path():
+            raise PermissionError(13, "Permission denied")
+        return real_stat(path, *a, **k)
+    monkeypatch.setattr(os, "stat", locked)
+    monkeypatch.setattr(Path, "is_file", lambda self: found)     # either answer
+    chain, error = proxychain.load_chain_checked()
+    assert chain.hops == [] and error == "its folder could not be opened (Permission denied)"
+    assert isinstance(proxychain.chain_folder_error(), PermissionError)
+
+
+def test_a_chain_path_under_a_file_counts_as_absent(tmp_path, monkeypatch):
+    # Re-review of 73870c4, P3-3: ENOTDIR means nothing is there, not a locked folder.
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("x")
+    monkeypatch.setattr(proxychain, "chain_path", lambda: blocker / "proxychain.json")
+    assert proxychain.chain_folder_error() is None
+    assert proxychain.load_chain_checked() == (proxychain.Chain(), "")

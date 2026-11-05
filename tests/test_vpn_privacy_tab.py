@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -957,3 +959,96 @@ def test_a_declined_offer_on_a_shown_tab_lists_the_interfaces(env, monkeypatch):
     DeferredWorker.started[0].run_now()
     assert len(env.asked) == 1 and len(DeferredWorker.started) == 2
     tab.close()
+
+
+needs_permissions = pytest.mark.skipif(os.geteuid() == 0, reason="mode 000 does not stop root")
+
+
+@needs_permissions
+@pytest.mark.parametrize("edit", ["mode", "add", "add-tor", "remove", "move", "write-conf"])
+def test_an_unsearchable_chain_folder_builds_the_tab_and_never_replaces_the_chain(
+        env, monkeypatch, tmp_path, edit):
+    # Review of 4bf546d, P3-3: the tab must build and say why, never raise.
+    # Review of 19efce1, P2-1: that chain was never read, so no edit may replace it.
+    # Only the chain's folder is locked; the MAC state beside it is a separate item.
+    folder = tmp_path / "chain"
+    folder.mkdir()
+    saved = '{"hops": [{"host": "10.0.0.1", "username": "u", "password": "s3cret"}]}'
+    (folder / "proxychain.json").write_text(saved)
+    monkeypatch.setattr(proxychain, "chain_path", lambda: folder / "proxychain.json")
+    folder.chmod(0o000)
+    try:
+        tab = PrivacyTab()
+        summary = tab.chain_summary_label.text()
+        if edit == "mode":
+            tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
+        elif edit == "add":
+            tab.hop_host_input.setText("10.0.0.9")
+            tab.hop_port_input.setValue(1080)
+            tab.add_hop()
+        elif edit == "add-tor":
+            tab.add_tor_hop()
+        elif edit == "write-conf":
+            tab.write_conf()
+        elif edit == "move":
+            tab._chain.hops += [proxychain.ProxyHop(host="10.0.0.8"), proxychain.ProxyHop(host="10.0.0.9")]
+            tab._refresh_chain()
+            tab.chain_table.setCurrentCell(0, 0)
+            tab.move_hop(1)
+        else:
+            tab._chain.hops.append(proxychain.ProxyHop(host="10.0.0.9"))
+            tab._refresh_chain()
+            tab.chain_table.selectRow(0)
+            tab.remove_hop()
+        mode_after = stat.S_IMODE(folder.stat().st_mode)
+    finally:
+        folder.chmod(0o700)
+    assert "its folder could not be opened (Permission denied)" in summary
+    assert "edits are not saved" in summary and "still in" not in summary
+    assert mode_after == 0 and (folder / "proxychain.json").read_text() == saved
+    assert sorted(p.name for p in folder.iterdir()) == ["proxychain.json"]   # no conf written
+    refused = "Not written" if edit == "write-conf" else "Not saved"
+    assert tab.status_label.text().startswith(f"{refused}: the saved proxy chain could not be read")
+    assert "its folder could not be opened" in tab.chain_summary_label.text()   # notice kept
+
+
+def test_a_failed_save_is_not_followed_by_added(env, monkeypatch):
+    # Found with review of 19efce1, P2-1: "Added ..." used to overwrite the reason.
+    tab = PrivacyTab()
+    monkeypatch.setattr(proxychain, "save_chain",
+                        lambda chain: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+    tab.hop_host_input.setText("10.0.0.9")
+    tab.hop_port_input.setValue(1080)
+    tab.add_hop()
+    assert tab.status_label.text().startswith("Could not save the chain")
+    tab.add_tor_hop()
+    assert tab.status_label.text().startswith("Could not save the chain")
+
+
+@needs_permissions
+def test_a_locked_folder_wins_over_an_earlier_copy(env, monkeypatch, tmp_path):
+    # Re-review of 73870c4, P3-2: a folder that lists but cannot be searched (0600)
+    # with an older copy must still say edits are not saved.
+    folder = tmp_path / "chain"
+    folder.mkdir()
+    (folder / "proxychain.json").write_text('{"hops": []}')
+    (folder / "proxychain.json.unreadable").write_text("{old")
+    monkeypatch.setattr(proxychain, "chain_path", lambda: folder / "proxychain.json")
+    folder.chmod(0o600)
+    try:
+        summary = PrivacyTab().chain_summary_label.text()
+    finally:
+        folder.chmod(0o700)
+    assert "its folder could not be opened" in summary and "edits are not saved" in summary
+
+
+def test_a_folder_unlocked_during_the_load_still_blocks_saves(env, monkeypatch):
+    # Re-review of 73870c4, P3-4: the load saw a locked folder, the later probe did not.
+    answers = iter([PermissionError(13, "Permission denied"), None])
+    monkeypatch.setattr(proxychain, "chain_folder_error", lambda: next(answers))
+    monkeypatch.setattr(proxychain, "load_chain_checked",
+                        lambda: (proxychain.Chain(), "its folder could not be opened (Permission denied)"))
+    tab = PrivacyTab()
+    monkeypatch.setattr(proxychain, "save_chain", lambda chain: pytest.fail("saved over an unread chain"))
+    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
+    assert tab.status_label.text().startswith("Not saved")

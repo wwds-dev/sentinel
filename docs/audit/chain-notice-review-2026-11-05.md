@@ -247,3 +247,66 @@ Unguarded at `ui/panels/vpn_privacy.py:50`, so the tab would not build. Not veri
 Writing a few bytes into the FIFO from `writer_held` would make a broken guard fail fast (wrong exit code or hash mismatch). The leak fix is sufficient without it. **Open, optional** in TODO.md.
 
 Accuracy: 25a902a's message ("1 head each, 3 in all") understates the `:261` case, where the parent test leaves the whole script blocked (2 `bash` + 1 `head`).
+
+---
+
+# Addendum 4: independent review of 19efce1 (+24ebacf) and 3216834 + c348487
+
+Reviewer: Sonnet 5.5, read-only (`code-reviewer`), 2026-11-05; a different agent from the author. Saved by the author's session from the reviewer's report. Mutants ran in a scratch copy for worktree 1 and in place (restored) for worktree 2.
+
+**Verdicts:** 19efce1 (chain folder `is_file` guard): **accept with one P2 follow-up**, no P0/P1. 3216834 + c348487 on `claude/rootscript-fifo-writer` (test-only): **accept, no P0-P2**; the rebase onto `ee1e1e7` is clean (only `tests/test_vpn_rootscript.py`, 58+/6-).
+
+| Check | Result |
+|---|---|
+| Chain tests (scratch copy) | 121 passed |
+| `tests/test_vpn_rootscript.py` (worktree 2) | 178 passed |
+| Passing FIFO tests vs the 10 s limit | 0.15-0.16 s each, ~60x headroom; cannot flake |
+| `Path.is_file()` in a mode-000 folder | raises on 3.11, 3.12, 3.13; returns False on 3.14.7 and 3.15.0 |
+| Mutants, worktree 1 | 7/8 killed; survivor (`_is_file` True on error) equivalent |
+| Mutants, worktree 2 | each `[ -f ]` guard broken: fails in ~12.3 s, 0 `head` left; `unread` → True / False, no marker, EAGAIN → True: all killed; `timeout` ignored and read size `len(UNREAD)`: survive, only observable with a broken guard / extra bytes |
+| `git merge-tree HEAD main` | local `main` moved to `323ac31` (MAC-changer work, unpushed): content conflict in `tests/test_vpn_privacy_tab.py` to resolve at merge |
+
+### P2-1 (addendum 4): a locked folder followed by an edit destroyed the saved chain, with no copy
+`proxychain.py:199-203` with `ui/panels/vpn_privacy.py:439-445`. With the chain's folder at mode 000 (owner's), the tab now built and said "The chain is empty"; the first edit's `save_chain` hardened the folder to 0700 and replaced `proxychain.json`, losing hops and passwords that were never unreadable, only hidden. Unreachable before 19efce1 (the tab did not build). **Fixed** in `73870c4`: the tab refuses every save while the load failed for that reason, says so in the notice and the status line, and leaves the folder's mode alone; `_save_chain` now returns whether it saved, so "Added …" no longer overwrites the reason a save failed. 9/10 author's mutants killed (survivor equivalent). Not yet re-reviewed.
+
+### P3-1 (addendum 4): behaviour depended on the Python version
+From 3.14 `Path.is_file()` answers False, so the reason would vanish. **Fixed** in `73870c4`: the loader probes with `os.stat` (ENOENT/ENOTDIR absent, any other `OSError` not opened), with a test that passes whichever way `is_file` answers.
+
+### P3-2 (addendum 4): the new macaddr TODO item named the wrong line
+The raise comes from `record_path().exists()` inside `_read_entries`'s `except` handler (`macaddr.py:286`; `:302` on local `main` `323ac31`), not from reading `mac_original.json`; and the item overlaps the MAC-changer work on local `main`. **Fixed** in TODO.md.
+
+### P3-3 (addendum 4): mode-000 tests fail as root
+**Fixed** in `73870c4` (`skipif(os.geteuid() == 0)`).
+
+### P3-4 (addendum 4): a broken FIFO guard fails as a bare `TimeoutExpired`; `unread()` is single-use
+**Fixed** in `764dc89` on `claude/rootscript-fifo-writer`: `refused_without_reading()` fails with "the script blocked reading the FIFO: a [ -f ] guard is broken"; the docstring says the check is single-use and that the timeout fires first.
+
+### P3-5 (addendum 4): `unread()` logic
+Correct as written (EAGAIN from the O_RDWR fd means read; a partial read reports read). No change.
+
+---
+
+# Addendum 5: independent re-review of 73870c4 and 764dc89
+
+Reviewer: Sonnet 5.5, read-only (`code-reviewer`), 2026-11-05; a different agent from the author. Saved by the author's session from the reviewer's report.
+
+**Verdicts:** 73870c4: **accept, no P0/P1**; `proxychain.json` was never overwritten on any path run. 764dc89: **accept, no findings.**
+
+| Check | Result |
+|---|---|
+| Chain tests (scratch copy) / `tests/test_vpn_rootscript.py` | 127 passed / 178 passed |
+| Callers of `save_chain` / `write_proxychains_conf` | only `_save_chain` (mode, add, add Tor, remove, move) / only `write_conf`; Test chain does not save |
+| Locked folder + `write_conf` | `proxychain.json` unchanged, but the folder went 000 → 0700 and an existing `proxychains.conf` was replaced with the empty chain (P3-1) |
+| Missing file, dangling link, `ENOTDIR` | not "unread" (correct) |
+| Symlinked chain into a mode-000 folder; symlink loop | "unread", saves refused, link and target intact |
+| Folder 0600 (listable, not searchable) + an earlier copy | "unread", but the notice was the "earlier copy" text without "edits are not saved" (P3-2) |
+| Mutants | 10 killed; 2 survived: `ENOTDIR` not treated as absent, `move_hop` bypassing the guard (P3-3) |
+
+### Findings and what was done
+- **P3-1** `write_conf` was the one writer not guarded while the chain is unread. **Fixed**: it refuses ("Not written: …") and the folder is left alone; tested with the locked folder (no `proxychains.conf` appears, folder stays 000).
+- **P3-2** with a locked folder and an earlier copy, the notice omitted "edits are not saved". **Fixed**: the unread branch comes first; tested with a 0600 folder and an older copy.
+- **P3-3** `move_hop` and `ENOTDIR` were untested. **Fixed**: `move` and `write-conf` join the locked-folder parametrization; `test_a_chain_path_under_a_file_counts_as_absent`.
+- **P3-4** the unread flag came from a second probe after the load, so a folder unlocked in between would allow a save over a never-read chain. **Fixed**: probed before and after the load; tested with a fake that is locked only before.
+- **P3-5** (optional) a refused `add_hop` keeps the hop in memory and clears the password field (also true for an `OSError` before). **Open** in TODO.md.
+
+Author's mutants for these fixes: 5/5 killed (`write_conf` unguarded, earlier before unread, pre-load probe ignored, `ENOTDIR` as blocked, `move_hop` bypassing the guard). Not re-reviewed.
