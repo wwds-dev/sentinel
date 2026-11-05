@@ -6,7 +6,7 @@ distro==1.9.0
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
-idna==3.15
+idna==3.18
 jiter==0.14.0
 Markdown==3.10.2
 openai==2.31.0
@@ -23,12 +23,14 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.8.0
 anthropic
+httpx2==2.16.0           # pinned: transitive of anthropic, 2.3.0 has advisories
+httpcore2==2.16.0
 python-whois       # WHOIS lookups for domain_lookup provider
 dnspython          # DNS record resolution for domain_lookup provider
 PySide6             # desktop GUI
 google-genai         # Gemini provider
 psutil               # resource monitor
-paramiko>=3.4,<4      # authenticated read-only SFTP search for Bloodhound
+paramiko>=5.1,<6      # authenticated read-only SFTP search for Bloodhound
 keyring               # Bug Spray companion: Keychain-only secrets (agents/bug_spray)
 segno>=1.6,<2        # QR codes for exporting a peer config to a phone
 cryptography>=43     # encrypted site backups (AES-GCM + scrypt)
