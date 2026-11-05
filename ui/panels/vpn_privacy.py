@@ -203,12 +203,12 @@ class PrivacyTab(GatedTab):
     def _controls_changed(self) -> None:
         self._show_mac()
         self.refresh_tor()
-        self._refresh_chain()
+        self._show_chain_test()
 
     def _after_finish(self) -> None:
         self.refresh_interfaces()
         self.refresh_tor()
-        self._refresh_chain()
+        self._show_chain_test()
 
     def _set_enabled(self, enabled: bool) -> None:
         for w in (self.mac_device_box, self.mac_random_btn, self.mac_restore_btn,
@@ -426,11 +426,19 @@ class PrivacyTab(GatedTab):
             for col, value in enumerate(
                     [str(number), hop.kind, hop.host, str(hop.port), hop.username, hop.label]):
                 self.chain_table.setItem(row, col, QTableWidgetItem(value))
-        problems = [p for p in self._chain.problems() if "DNS" not in p]
+        problems = self._chain_problems()
         self.chain_summary_label.setText(
             f"Chain: {self._chain.describe()}"
             + (("\nProblems: " + "; ".join(problems)) if problems else ""))
-        self.chain_test_btn.setEnabled(bool(self._chain.hops) and not problems and not self.busy)
+        self._show_chain_test()
+
+    def _chain_problems(self) -> list[str]:
+        return [p for p in self._chain.problems() if "DNS" not in p]
+
+    def _show_chain_test(self) -> None:
+        # Button state only: rebuilding the table would drop the selected hop.
+        self.chain_test_btn.setEnabled(
+            bool(self._chain.hops) and not self._chain_problems() and not self.busy)
 
     def add_hop(self) -> None:
         hop = ProxyHop(kind=self.hop_kind_box.currentText(),
