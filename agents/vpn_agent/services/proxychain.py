@@ -128,9 +128,35 @@ def chain_path() -> Path:
     return paths.state_dir() / "proxychain.json"
 
 
+def _probe(path: Path) -> tuple[bool, OSError | None]:
+    """
+    Whether ``path`` is a regular file, and the error if its folder cannot be opened.
+
+    ``Path.is_file()`` is not used: on Python 3.11-3.13 it raises when the folder
+    cannot be searched, and from 3.14 it answers False, which would hide a chain
+    that exists but was never read.
+    """
+    try:
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False, None
+    except OSError as exc:
+        return False, exc
+    return stat.S_ISREG(st.st_mode), None
+
+
+def _is_file(path: Path) -> bool:
+    return _probe(path)[0]
+
+
+def chain_folder_error() -> OSError | None:
+    """Why the chain's folder cannot be opened, or None when it can."""
+    return _probe(chain_path())[1]
+
+
 def load_chain() -> Chain:
     path = chain_path()
-    if not path.is_file():
+    if not _is_file(path):
         return Chain()
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8")))
@@ -166,7 +192,7 @@ def _unreadable_copies(path: Path) -> dict[int, Path]:
 def earlier_copy() -> Path | None:
     """The newest moved-aside copy, while no chain has been saved since."""
     path = chain_path()
-    if path.is_file():
+    if _is_file(path):
         return None
     copies = _unreadable_copies(path)
     return copies[max(copies)] if copies else None
@@ -186,7 +212,10 @@ def load_chain_checked() -> tuple[Chain, str]:
     chain with a copy beside it names the newest copy again.
     """
     path = chain_path()
-    if not path.is_file():
+    present, blocked = _probe(path)
+    if blocked is not None:                             # never read, so never moved
+        return Chain(), f"its folder could not be opened ({blocked.strerror or 'read error'})"
+    if not present:
         earlier = earlier_copy()
         return Chain(), (f"it was moved to {earlier.name} earlier" if earlier else "")
     try:
