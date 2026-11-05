@@ -378,9 +378,11 @@ def test_refresh_lists_the_interfaces_off_the_ui_thread(env, monkeypatch):
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: popups.append(a)))
     env.tab.refresh_interfaces()                    # a second refresh while busy is dropped quietly
     assert len(DeferredWorker.started) == 1 and popups == []
+    DeferredWorker.started[0].running = True        # a listing in flight is not privileged work
+    assert not env.tab.has_privileged_work()
+    DeferredWorker.started[0].running = False
     DeferredWorker.started[0].run_now()
     assert env.tab.mac_device_box.count() == 1
-    assert not env.tab.has_privileged_work()
 
 
 def test_refresh_keeps_the_selected_interface_and_drops_a_failed_list(env, monkeypatch):
@@ -392,7 +394,37 @@ def test_refresh_keeps_the_selected_interface_and_drops_a_failed_list(env, monke
     env.tab.refresh_interfaces()
     assert env.tab._interfaces == [] and env.tab.mac_device_box.count() == 0
     assert not env.tab.busy and env.tab.mac_refresh_btn.isEnabled()
-    assert not env.tab.has_privileged_work()
+
+
+def test_a_finished_mac_change_refreshes_the_picker(env, monkeypatch):
+    """After a gated action the listing is read again (review of 98814c5 P3)."""
+    def change(*a, **k):
+        env.ifaces[0] = Interface("en0", "Wi-Fi", "02:00:00:00:00:42", "aa:bb:cc:00:00:01")
+        return True, "en0 is now 02:00:00:00:00:42"
+    monkeypatch.setattr(macaddr, "set_mac", change)
+    env.answers = [True]
+    env.tab.randomise_mac()
+    assert "02:00:00:00:00:42" in env.tab.mac_device_box.itemText(0)
+
+
+def test_a_worker_still_running_is_parked_not_dropped(env, monkeypatch):
+    """Review of 98814c5 P2: a result slot that starts the next worker must not
+    drop the last reference to a thread still returning from run()."""
+    parked = []
+    monkeypatch.setattr(vpn_gate, "park", lambda t, *c: parked.append(t))
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    monkeypatch.setattr(macaddr, "set_mac", lambda *a, **k: (True, "ok"))
+    env.answers = [True]
+    env.tab.randomise_mac()                       # the fresh read
+    read = DeferredWorker.started[0]
+    read.running = True                           # still returning from run() when it emits
+    read.run_now()                                # -> confirm -> gated set_mac worker
+    gated = DeferredWorker.started[1]
+    gated.running = True
+    gated.run_now()                               # -> _finish -> refresh starts a listing
+    assert parked == [read, gated] and len(DeferredWorker.started) == 3
+    assert env.tab._worker is DeferredWorker.started[2]
 
 
 def test_the_gate_target_for_a_mac_change_holds_no_address(env, monkeypatch, caplog):
@@ -467,9 +499,11 @@ class DeferredWorker:
         class S(QObject):
             fin = Signal(object)
             err = Signal(str)
+            ended = Signal()
         self._s = S()
         self.finished_signal = self._s.fin
         self.error_signal = self._s.err
+        self.finished = self._s.ended       # what ui.workers.park connects to
 
     def start(self):
         DeferredWorker.started.append(self)
@@ -481,6 +515,9 @@ class DeferredWorker:
 
     def isRunning(self):  # noqa: N802
         return self.running
+
+    def isFinished(self):  # noqa: N802
+        return not self.running
 
     def cancel(self):
         pass

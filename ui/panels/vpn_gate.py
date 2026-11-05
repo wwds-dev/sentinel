@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from services import vpn_execution
-from ui.workers import CallWorker, detach_worker
+from ui.workers import CallWorker, detach_worker, park
 
 
 class GatedTab(QWidget):
@@ -49,7 +49,7 @@ class GatedTab(QWidget):
         self._say(f"{title}…")
         self._set_enabled(False)
         worker = CallWorker(func)
-        self._worker = worker
+        self._take_worker(worker)
         self._read_only = False
         self._active = True
 
@@ -67,6 +67,15 @@ class GatedTab(QWidget):
         worker.start()
         return True
 
+    def _take_worker(self, worker) -> None:
+        """Make ``worker`` current. A finishing worker can still be returning
+        from run() when its result slot starts the next one; dropping the last
+        reference to a running QThread aborts the app, so park it instead."""
+        old = self._worker
+        if old is not None and old.isRunning():
+            park(old)
+        self._worker = worker
+
     def _read_off_thread(self, func, then) -> bool:
         """Run a read-only ``func`` off the UI thread, then ``then(result)`` here.
 
@@ -78,7 +87,7 @@ class GatedTab(QWidget):
             return False
         self._set_enabled(False)
         worker = CallWorker(func)
-        self._worker = worker
+        self._take_worker(worker)
         self._read_only = True
         self._active = True
 
