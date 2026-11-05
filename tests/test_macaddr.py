@@ -5,6 +5,9 @@ logic is run through bash with its two tools swapped for recording fakes.
 """
 from __future__ import annotations
 
+import contextlib
+import os
+
 import pytest
 
 from agents.vpn_agent.services import macaddr, privileged
@@ -1211,3 +1214,99 @@ def test_an_unknown_boot_does_not_take_another_adapters_original_as_a_way_back(m
     monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
     ok, msg = macaddr.set_mac("en5", PRIVATE)
     assert not ok and "boot" in msg and root["calls"] == []
+
+
+# ── An unsearchable Tunnel state folder (found 2026-11-05 on claude/chain-is-file-guard) ──
+
+needs_permissions = pytest.mark.skipif(os.geteuid() == 0, reason="mode 000 does not stop root")
+
+
+@contextlib.contextmanager
+def _locked(what):
+    """The record's folder, or the record itself, made unreadable for the block."""
+    path = macaddr.record_path() if what == "file" else macaddr.record_path().parent
+    path.chmod(0o000)
+    try:
+        yield
+    finally:
+        path.chmod(0o700 if what == "folder" else 0o600)
+
+
+@needs_permissions
+@pytest.mark.parametrize("what", ["folder", "file"])
+def test_an_unreadable_record_is_never_read_as_nothing_recorded(monkeypatch, state, root, what):
+    # exists() in the except handler raised PermissionError (3.11-3.13), or
+    # answered False (3.14) and so read as nothing recorded.
+    _write_record({"en5": ORIG})
+    before = macaddr.record_path().read_text()
+    _ports(monkeypatch, {"en5": NEW})
+    with _locked(what):
+        for read in (macaddr.recorded, macaddr.pending_restores, macaddr.restore_all_recorded):
+            with pytest.raises(macaddr.RecordUnreadable, match="could not read mac_original.json"):
+                read()
+        macaddr._forget("en5")
+    assert root["calls"] == []
+    assert macaddr.record_path().read_text() == before and macaddr.recorded() == {"en5": ORIG}
+
+
+@needs_permissions
+@pytest.mark.parametrize("what", ["folder", "file"])
+def test_an_unreadable_record_refuses_a_change_and_keeps_the_record(monkeypatch, state, root, what):
+    # A second change would record the changed address as the "original", over the first.
+    _write_record({"en5": ORIG})
+    before = macaddr.record_path().read_text()
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current=NEW), ""))
+    with _locked(what):
+        ok, message = macaddr.set_mac("en5", "02:00:00:00:00:77")
+    assert not ok and root["calls"] == []
+    assert "could not read mac_original.json" in message and message.endswith("Nothing was changed.")
+    assert "02:00:00:00:00:77" not in message
+    assert macaddr.record_path().read_text() == before
+
+
+@needs_permissions
+@pytest.mark.parametrize("what", ["folder", "file"])
+def test_going_back_to_the_hardware_address_works_with_an_unreadable_record(
+        monkeypatch, state, root, what):
+    _write_record({"en5": ORIG})
+    before = macaddr.record_path().read_text()
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current=NEW), ""))
+    root["mac"] = ORIG
+    with _locked(what):
+        ok, _ = macaddr.restore("en5")
+    assert ok and len(root["calls"]) == 1
+    assert macaddr.record_path().read_text() == before       # unread, so never saved over
+
+
+def test_a_state_folder_that_is_a_file_holds_no_record(monkeypatch, state):
+    # ENOTDIR is absent, as in proxychain._probe: there is no record to put back.
+    macaddr.record_path().parent.parent.mkdir(parents=True, exist_ok=True)
+    macaddr.record_path().parent.write_text("not a folder")
+    assert macaddr.recorded() == {} and macaddr.pending_restores() == []
+
+
+@needs_permissions
+def test_the_reset_note_says_an_unreadable_record_may_name_a_change(state):
+    from ui import dialogs
+    _write_record({"en5": ORIG})
+    assert "changed on en5" in dialogs.reset_mac_note()
+    with _locked("folder"):
+        note = dialogs.reset_mac_note()
+    assert "could not read its record of changed hardware addresses" in note
+    macaddr.record_path().unlink()
+    assert dialogs.reset_mac_note() == ""
+
+
+def test_a_record_locked_after_the_check_still_refuses_the_change(monkeypatch, state, root):
+    # Review of 0ece5cf, P3-2: _remember raised out of set_mac instead of refusing.
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current=NEW), ""))
+
+    def locked(*a):
+        raise macaddr.RecordUnreadable(13, "could not read mac_original.json in st: Permission denied")
+    monkeypatch.setattr(macaddr, "_remember", locked)
+    ok, message = macaddr.set_mac("en5", "02:00:00:00:00:77")
+    assert not ok and root["calls"] == []
+    assert "could not read mac_original.json" in message and message.endswith("Nothing was changed.")

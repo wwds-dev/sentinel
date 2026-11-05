@@ -1012,6 +1012,44 @@ def test_an_unsearchable_chain_folder_builds_the_tab_and_never_replaces_the_chai
     assert "its folder could not be opened" in tab.chain_summary_label.text()   # notice kept
 
 
+@needs_permissions
+def test_an_unsearchable_mac_record_folder_builds_the_tab_and_changes_nothing(
+        env, monkeypatch, tmp_path):
+    # TODO "unsearchable Tunnel state folder": recorded() raised in PrivacyTab().
+    # The chain lives elsewhere here, so only the MAC record is locked.
+    monkeypatch.setattr(proxychain, "chain_path", lambda: tmp_path / "chain" / "proxychain.json")
+    record = macaddr.record_path()
+    record.parent.mkdir(parents=True, exist_ok=True)
+    saved = json.dumps({"en0": {"original": "02:00:00:00:00:31",
+                                "hardware": "aa:bb:cc:00:00:01", "boot": "1000"}})
+    record.write_text(saved)
+    offered = []
+    monkeypatch.setattr(PrivacyTab, "offer_recorded_restore", lambda self: offered.append(1))
+    as_root = []
+    monkeypatch.setattr(macaddr, "run_argv_as_root", lambda *a, **k: as_root.append(a) or (True, ""))
+    record.parent.chmod(0o000)
+    try:
+        tab = PrivacyTab()
+        notice = tab.mac_notice_label.text()
+        status = tab.status_label.text()
+        tab.refresh_interfaces()
+        env.answers = [True]
+        tab.randomise_mac()
+        refused = tab.status_label.text()
+    finally:
+        record.parent.chmod(0o700)
+    assert "could not read mac_original.json" in notice and "Permission denied" in notice
+    assert "cannot tell whether it left a hardware address changed" in notice
+    assert not tab.mac_notice_label.isHidden() and status == notice
+    assert offered == [] and as_root == []
+    assert "Nothing was changed." in refused
+    assert record.read_text() == saved
+
+
+def test_a_readable_mac_record_shows_no_notice(env):
+    assert env.tab.mac_notice_label.isHidden() and env.tab.mac_notice_label.text() == ""
+
+
 def test_a_failed_save_is_not_followed_by_added(env, monkeypatch):
     # Found with review of 19efce1, P2-1: "Added ..." used to overwrite the reason.
     tab = PrivacyTab()
@@ -1023,6 +1061,39 @@ def test_a_failed_save_is_not_followed_by_added(env, monkeypatch):
     assert tab.status_label.text().startswith("Could not save the chain")
     tab.add_tor_hop()
     assert tab.status_label.text().startswith("Could not save the chain")
+
+
+@pytest.mark.parametrize("cause", ["oserror", "unread"])
+@pytest.mark.parametrize("edit", ["add", "add-tor"])
+def test_a_hop_that_was_not_saved_is_not_added(env, monkeypatch, cause, edit):
+    # Addendum 5 P3-5: a refused or failed save kept the hop in memory (the table
+    # showed it; Write conf and Test chain used it) and cleared the password.
+    tab = PrivacyTab()
+    tab._chain.hops.append(proxychain.ProxyHop(host="10.0.0.1", port=1080))
+    tab._refresh_chain()
+    if cause == "unread":
+        tab._chain_unread = True
+    else:
+        monkeypatch.setattr(proxychain, "save_chain",
+                            lambda chain: (_ for _ in ()).throw(OSError(28, "No space left")))
+    if edit == "add":
+        _add_hop(tab, host="10.0.0.9", user="bob", pw=CANARY)
+        assert tab.hop_pass_input.text() == CANARY
+    else:
+        tab.add_tor_hop()
+    assert [hop.host for hop in tab._chain.hops] == ["10.0.0.1"]
+    assert tab.chain_table.rowCount() == 1
+    assert not tab.status_label.text().startswith("Added")
+    reason = "Not saved" if cause == "unread" else "Could not save the chain"
+    assert tab.status_label.text().startswith(reason)
+
+
+def test_a_saved_hop_is_added_and_its_password_cleared(env):
+    tab = PrivacyTab()
+    _add_hop(tab, host="10.0.0.9", user="bob", pw=CANARY)
+    assert [hop.host for hop in tab._chain.hops] == ["10.0.0.9"] and tab.chain_table.rowCount() == 1
+    assert tab.hop_pass_input.text() == "" and tab.status_label.text().startswith("Added")
+    assert [hop.host for hop in proxychain.load_chain().hops] == ["10.0.0.9"]
 
 
 @needs_permissions

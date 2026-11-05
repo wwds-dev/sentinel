@@ -80,13 +80,27 @@ class PrivacyTab(GatedTab):
                 f"{chain_error}. {kept(moved) if moved else 'The chain is empty.'}")
         else:
             self._chain_notice = ""
+        try:
+            changed = macaddr.recorded()
+            self._mac_notice = ""
+        except macaddr.RecordUnreadable as exc:
+            # Never "nothing recorded": an original may still be waiting in it.
+            changed = {}
+            self._mac_notice = (
+                f"Sentinel {exc.strerror}, so it cannot tell whether it left a hardware "
+                "address changed. Changing an address is refused until it can; Restore "
+                "hardware address still works, but if Sentinel later offers to put back "
+                "an earlier address, you can say no. Fix the folder's permissions and "
+                "restart Sentinel.")
         self._build()
         self._refresh_chain()
         if self._chain_notice:
             self._say(self._chain_notice)
+        if self._mac_notice:
+            self._say(self._mac_notice)
         self._show_mac()
         self.refresh_tor()
-        if macaddr.recorded():
+        if changed:
             # A change was left in place by a crash or a declined restore at
             # quit. Reading the record runs nothing; the offer waits for the
             # event loop and lists the interfaces off the UI thread.
@@ -132,6 +146,10 @@ class PrivacyTab(GatedTab):
         self.mac_hardware_label = QLabel("")
         ml.addWidget(self.mac_current_label)
         ml.addWidget(self.mac_hardware_label)
+        # Kept in the box: the shared status line is overwritten by the next action.
+        self.mac_notice_label = self._info(self._mac_notice)
+        self.mac_notice_label.setVisible(bool(self._mac_notice))
+        ml.addWidget(self.mac_notice_label)
         row = QHBoxLayout()
         self.mac_random_btn = QPushButton("Randomise…")
         self.mac_random_btn.clicked.connect(self.randomise_mac)
@@ -530,8 +548,13 @@ class PrivacyTab(GatedTab):
             self._say("Not added: " + "; ".join(problems))
             return
         self._chain.hops.append(hop)
-        self.hop_pass_input.clear()
         saved = self._save_chain()
+        if saved:
+            self.hop_pass_input.clear()
+        else:
+            # Not saved, so not added: the table, Write conf and Test chain use
+            # only saved hops, and the password stays typed for another try.
+            self._chain.hops.pop()
         self._refresh_chain()
         if saved:                        # otherwise keep the reason it was not saved
             self._say(f"Added {hop.describe()}.")
@@ -539,6 +562,8 @@ class PrivacyTab(GatedTab):
     def add_tor_hop(self) -> None:
         self._chain.hops.append(tor.hop())
         saved = self._save_chain()
+        if not saved:
+            self._chain.hops.pop()       # not saved, so not added (as add_hop)
         self._refresh_chain()
         if saved:
             self._say("Added Tor as a hop.")

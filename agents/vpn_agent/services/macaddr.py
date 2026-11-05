@@ -256,6 +256,14 @@ def record_path() -> Path:
     return paths.state_dir() / "mac_original.json"
 
 
+class RecordUnreadable(OSError):
+    """The record (or its folder) is there but cannot be read.
+
+    Never "nothing recorded": it may hold an original still to be put back,
+    so nothing reads past it and nothing saves over it.
+    """
+
+
 BOOT_UUID_RE = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\Z")
 
 
@@ -294,12 +302,22 @@ def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
     """(the valid entries of this boot, whether the file holds anything else).
 
     Entries that are not a valid interface name and addresses are dropped:
-    the file must never be a way to steer the root helper.
+    the file must never be a way to steer the root helper. Raises
+    RecordUnreadable when the file or its folder cannot be read; asking
+    ``exists()`` instead raised for a folder that cannot be searched (3.11-3.13)
+    or answered False (3.14), which read as nothing recorded.
     """
+    path = record_path()
     try:
-        data = json.loads(record_path().read_text())
-    except (OSError, ValueError, RecursionError):     # deep nesting: damaged
-        return {}, record_path().exists()
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, NotADirectoryError):
+        return {}, False
+    except OSError as exc:
+        raise RecordUnreadable(
+            exc.errno, f"could not read {path.name} in {path.parent}: "
+            f"{exc.strerror or type(exc).__name__}") from exc
+    except (ValueError, RecursionError):              # deep nesting: damaged
+        return {}, True
     if not isinstance(data, dict):
         return {}, True
     entries = {device: {key: entry[key].lower() if key != "boot" else entry[key]
@@ -318,7 +336,7 @@ def recorded() -> dict[str, str]:
     """device -> the address it had before Sentinel first changed it, this boot.
 
     Reads one file (and, when it holds entries, the boot ID), so a quit with
-    no change pending costs nothing.
+    no change pending costs nothing. Raises RecordUnreadable.
     """
     return {device: entry["original"] for device, entry in _read_entries()[0].items()}
 
@@ -390,7 +408,10 @@ def _remember(device: str, original: str, hardware: str) -> None:
 
 def _forget(device: str) -> None:
     with _lock:
-        entries, stale = _read_entries()
+        try:
+            entries, stale = _read_entries()
+        except RecordUnreadable:
+            return              # left as it is: saving would replace the unread record
         if entries.pop(device, None) is not None or stale:
             _save_record(entries)
 
@@ -404,7 +425,7 @@ def pending_restores() -> list[tuple[str, str, str]]:
     offered: there is nothing to restore it on. A device whose change is
     still listing or waiting for root, in this process or in one that quit
     with its dialog open, is left alone: its outcome is unknown, and the next
-    launch decides.
+    launch decides. Raises RecordUnreadable, and then forgets nothing.
     """
     with _lock:
         entries, stale = _read_entries()
@@ -440,7 +461,10 @@ def pending_restores() -> list[tuple[str, str, str]]:
 
 
 def restore_all_recorded() -> list[tuple[str, bool, str]]:
-    """Put every recorded original back; a refused one stays recorded."""
+    """Put every recorded original back; a refused one stays recorded.
+
+    Raises RecordUnreadable: an unread record is never taken for an empty one.
+    """
     results = []
     for device, original, _ in pending_restores():
         # "original", not "hardware": it is often a private Wi-Fi address.
@@ -451,6 +475,12 @@ def restore_all_recorded() -> list[tuple[str, bool, str]]:
 
 
 # ── Applying it ──────────────────────────────────
+
+
+def _unread_refusal(exc: RecordUnreadable, device: str) -> str:
+    return (f"Sentinel {exc.strerror}, so it cannot tell whether {device} still has an "
+            "address to put back, and could not record the one it uses now. "
+            "Nothing was changed.")
 
 
 def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
@@ -485,7 +515,15 @@ def _change(device: str, address: str, prompt: str,
         address = address.lower()
         # Only a record pending_restores would still act on opens the guard: one
         # for this device whose hardware is this interface's (it drops the rest).
-        entry = _read_entries()[0].get(device) or {}
+        try:
+            entry = _read_entries()[0].get(device) or {}
+        except RecordUnreadable as exc:
+            if address != interface.hardware:
+                # The unread record may hold this device's first original;
+                # recording what it uses now (perhaps a changed address) would
+                # save over it. Going back to the hardware needs no record.
+                return False, _unread_refusal(exc, device)
+            entry = {}
         restorable = entry.get("hardware") == interface.hardware
         if (address != interface.hardware and not restorable
                 and not is_valid(interface.current)):
@@ -507,7 +545,10 @@ def _change(device: str, address: str, prompt: str,
         # it. Going back to the hardware address needs no record (and must not
         # record someone else's change as ours to put back).
         if address != interface.hardware:
-            _remember(device, interface.current, interface.hardware)
+            try:
+                _remember(device, interface.current, interface.hardware)
+            except RecordUnreadable as exc:     # locked since the read above
+                return False, _unread_refusal(exc, device)
 
         # Sentinel's gated actions always use the macOS dialog, never a cached
         # sudo ticket left by some unrelated command.
@@ -523,8 +564,13 @@ def _change(device: str, address: str, prompt: str,
         # keeps running once the password is in), so the record stays until
         # pending_restores sees the original back.
         settled = ok or output in ("Cancelled.", ROOT_REFUSAL)
-        if settled and applied and applied in (interface.hardware, recorded().get(device)):
-            _forget(device)
+        if settled and applied:
+            try:
+                original = recorded().get(device)
+            except RecordUnreadable:
+                original = None         # unknown: only the hardware address settles it
+            if applied in (interface.hardware, original):
+                _forget(device)
     if not ok:
         # Timed out, refused or failed partway: say what the interface is
         # doing now, since the root side may still have run.
