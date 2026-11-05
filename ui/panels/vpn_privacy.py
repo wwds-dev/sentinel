@@ -89,8 +89,9 @@ class PrivacyTab(GatedTab):
             self._mac_notice = (
                 f"Sentinel {exc.strerror}, so it cannot tell whether it left a hardware "
                 "address changed. Changing an address is refused until it can; Restore "
-                "hardware address still works. Fix the folder's permissions and restart "
-                "Sentinel.")
+                "hardware address still works, but if Sentinel later offers to put back "
+                "an earlier address, you can say no. Fix the folder's permissions and "
+                "restart Sentinel.")
         self._build()
         self._refresh_chain()
         if self._chain_notice:

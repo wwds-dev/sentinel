@@ -1297,3 +1297,16 @@ def test_the_reset_note_says_an_unreadable_record_may_name_a_change(state):
     assert "could not read its record of changed hardware addresses" in note
     macaddr.record_path().unlink()
     assert dialogs.reset_mac_note() == ""
+
+
+def test_a_record_locked_after_the_check_still_refuses_the_change(monkeypatch, state, root):
+    # Review of 0ece5cf, P3-2: _remember raised out of set_mac instead of refusing.
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, current=NEW), ""))
+
+    def locked(*a):
+        raise macaddr.RecordUnreadable(13, "could not read mac_original.json in st: Permission denied")
+    monkeypatch.setattr(macaddr, "_remember", locked)
+    ok, message = macaddr.set_mac("en5", "02:00:00:00:00:77")
+    assert not ok and root["calls"] == []
+    assert "could not read mac_original.json" in message and message.endswith("Nothing was changed.")

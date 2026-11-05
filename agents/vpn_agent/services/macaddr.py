@@ -477,6 +477,12 @@ def restore_all_recorded() -> list[tuple[str, bool, str]]:
 # ── Applying it ──────────────────────────────────
 
 
+def _unread_refusal(exc: RecordUnreadable, device: str) -> str:
+    return (f"Sentinel {exc.strerror}, so it cannot tell whether {device} still has an "
+            "address to put back, and could not record the one it uses now. "
+            "Nothing was changed.")
+
+
 def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
     """
     Change an interface's address.
@@ -516,9 +522,7 @@ def _change(device: str, address: str, prompt: str,
                 # The unread record may hold this device's first original;
                 # recording what it uses now (perhaps a changed address) would
                 # save over it. Going back to the hardware needs no record.
-                return False, (f"Sentinel {exc.strerror}, so it cannot tell whether "
-                               f"{device} still has an address to put back, and could "
-                               "not record the one it uses now. Nothing was changed.")
+                return False, _unread_refusal(exc, device)
             entry = {}
         restorable = entry.get("hardware") == interface.hardware
         if (address != interface.hardware and not restorable
@@ -541,7 +545,10 @@ def _change(device: str, address: str, prompt: str,
         # it. Going back to the hardware address needs no record (and must not
         # record someone else's change as ours to put back).
         if address != interface.hardware:
-            _remember(device, interface.current, interface.hardware)
+            try:
+                _remember(device, interface.current, interface.hardware)
+            except RecordUnreadable as exc:     # locked since the read above
+                return False, _unread_refusal(exc, device)
 
         # Sentinel's gated actions always use the macOS dialog, never a cached
         # sudo ticket left by some unrelated command.

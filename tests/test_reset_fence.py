@@ -323,14 +323,19 @@ def test_the_final_confirmation_says_a_changed_address_stays_changed(win, monkey
     assert "aa:bb:cc" not in text
 
 
-def test_the_final_confirmation_survives_an_unreadable_record(win, monkeypatch):
-    """Review P3-5: reading the record must never block the reset."""
+@pytest.mark.parametrize("error", [OSError(5, "disk gone"), RuntimeError("bug")])
+def test_the_final_confirmation_survives_an_unreadable_record(win, monkeypatch, error):
+    """Review P3-5: reading the record must never block the reset.
+
+    An unreadable record may name a change, so it is said (TODO "unsearchable
+    Tunnel state folder"); any other failure leaves the note out.
+    """
     from PySide6.QtWidgets import QDialog, QInputDialog, QPushButton
 
     from agents.vpn_agent.services import macaddr
 
     def boom():
-        raise OSError("disk gone")
+        raise error
     monkeypatch.setattr(macaddr, "recorded", boom)
     asked = []
     monkeypatch.setattr(QMessageBox, "question",
@@ -343,4 +348,7 @@ def test_the_final_confirmation_survives_an_unreadable_record(win, monkeypatch):
     next(b for b in opened[0].findChildren(QPushButton)
          if b.objectName() == "EmergencyPortableReset").click()
     opened[0].reject()
-    assert len(asked) == 1 and "until this Mac restarts" not in asked[0]
+    assert len(asked) == 1
+    unread = "could not read its record of changed hardware addresses" in asked[0]
+    assert unread == isinstance(error, OSError)
+    assert ("until this Mac restarts" in asked[0]) == unread
