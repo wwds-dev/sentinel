@@ -23,7 +23,8 @@ from ui.widgets import MenuComboBox
 
 MAC_INFO = (
     "Changes the address this Mac presents on the local network only. It is one hop: "
-    "your router still sees your traffic, and the change lasts until restart or Restore. "
+    "your router still sees your traffic. Sentinel notes the original address and puts it "
+    "back when you quit (or offers to at the next launch); a restart also undoes it. "
     "On Wi-Fi, also switch Private Wi-Fi Address to Off for the network, or macOS may "
     "override it."
 )
@@ -439,8 +440,8 @@ class PrivacyTab(GatedTab):
                 "network and may need to rejoin it.") if iface.is_wifi else ""
         text = (f"{title}?\n\nInterface: {iface.describe()}\n"
                 f"{iface.current or 'unknown'}  →  {new}{wifi}\n\n"
-                "macOS will ask for your administrator password. The change lasts "
-                "until restart or until you restore it.")
+                "macOS will ask for your administrator password. Sentinel notes the "
+                "original address and puts it back when you quit; a restart also undoes it.")
         # The target names the device only: no address belongs in anything a
         # gate might keep (the Tunnel rules: no logging beyond redacted diagnostics).
         self._gated("mac-set", iface.device, title, text,
