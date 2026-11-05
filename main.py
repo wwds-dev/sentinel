@@ -1455,6 +1455,8 @@ class GodAI(QWidget):
 
     def start_local_measure(self, model, automatic: bool = False) -> bool:
         """Measure one local model in the background. False if it did not start."""
+        if self._background_stopped:
+            return False            # quitting or a failed reset: nothing new starts
         worker = self.local_measure_worker
         if worker is not None and worker.isRunning():
             self._set_chat_status("A local model is already being measured.")
@@ -1515,6 +1517,8 @@ class GodAI(QWidget):
     def _on_measure_finished(self, model, result, automatic) -> None:
         self.local_ratings.clear_progress(model)
         self.local_rating_store.record_result(model, result, automatic=automatic)
+        if self._background_stopped:
+            return                  # keep the result; no list rebuild or next run on the way out
         name = local_models.row_label(model)
         if result.status == local_ratings.STATUS_MEASURED:
             self._set_chat_status(f"Measured {name}: {self.local_ratings.text(model.provider, model.id)}.")

@@ -368,3 +368,21 @@ def test_the_final_confirmation_survives_an_unreadable_record(win, monkeypatch, 
     unread = "could not read its record of changed hardware addresses" in asked[0]
     assert unread == isinstance(error, OSError)
     assert ("until this Mac restarts" in asked[0]) == unread
+
+
+def test_a_measurement_finishing_after_the_quit_rebuilds_nothing(win, monkeypatch):
+    """A measurement that outlasts the quit keeps its result but rebuilds no list
+    and starts no next run; a manual start is refused."""
+    rebuilt, started = [], []
+    monkeypatch.setattr(win, "_local_ratings_changed", lambda *a, **k: rebuilt.append(1))
+    monkeypatch.setattr(win, "maybe_measure_local_models", lambda: started.append(1))
+    recorded = []
+    monkeypatch.setattr(win.local_rating_store, "record_result", lambda *a, **k: recorded.append(1))
+    monkeypatch.setattr(win, "_background_stopped", False)
+    win.stop_background_work()
+    model = SimpleNamespace(provider="lmstudio", id="m")
+    monkeypatch.setattr(win.local_ratings, "clear_progress", lambda m: None)
+    win._on_measure_finished(model, SimpleNamespace(status="x", reason="r"), True)
+    QApplication.processEvents()
+    assert win.start_local_measure(model) is False
+    assert recorded == [1] and rebuilt == [] and started == []
