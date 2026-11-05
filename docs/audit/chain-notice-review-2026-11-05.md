@@ -216,3 +216,34 @@ Reviewer: Opus 5.5, read-only (`code-reviewer`), 2026-11-05; a different agent f
 ### Not findings
 - `earlier_copy()` and `load_chain_checked()` read the folder separately; a file created between them needs a second writer, and only `save_chain` writes it.
 - The folder is listed twice on the missing-file path; negligible.
+
+---
+
+# Addendum 3: independent review of 4bf546d (+54e1676) and 25a902a
+
+Reviewer: Sonnet 5.5, read-only (`code-reviewer`), 2026-11-05; a different agent from the author. Saved by the author's session from the reviewer's report.
+
+**Verdicts:** 4bf546d (one ending for the chain notices): **ready to merge, no P0-P2.** 25a902a on `claude/rootscript-fifo-writer` (FIFO `writer_held`, test-only): **ready to merge, no P0-P2.** `tests/test_vpn_review_gate.py` needs no change: it calls only the Python `review()`, whose FIFO path (`services/vpn_execution.py:676-702`, `lstat` + `S_ISREG`, then `O_NONBLOCK` open + `fstat`) spawns no process.
+
+| Check | Result |
+|---|---|
+| Chain tests (scratch copy of HEAD) | 117 passed |
+| `tests/test_vpn_rootscript.py` (worktree 2) | 177 passed |
+| Every notice path probed (moved now; moved earlier; not moved; not moved beside an older copy; too many copies; directory at the path; listing fails after the move; non-UTF-8, empty, mode 000) | All correct; the `moved` check cannot race (it reads the disk after the load; "left in place" needs `is_file()` true) |
+| Chain-notice mutants | 6/6 killed (always kept, never kept, inverted, pre-load variable, earlier ending plain, "passwords" dropped); `earlier_copy()` `is_file` guard dropped: killed by 3 tests |
+| FIFO guard mutants (`-f` → `-e` at `services/vpn_rootscript.py:119`, `:237`, `:261`) | New tests: 3/3 killed, 0 `head` left. Parent tests: 3/3 killed, 1 `head` left for `:119` and `:237`, 2 `bash` + 1 `head` for `:261` |
+| `writer_held` on macOS | `O_RDWR|O_NONBLOCK` open succeeds with no peer; the fd is close-on-exec; a `head` past a broken guard blocks until the context exits, then gets EOF; the test still fails by `TimeoutExpired`; no fd or thread leak |
+
+### P3-1 (addendum 3): "your old hops … are still in that file" is stated for any unreadable file
+`ui/panels/vpn_privacy.py:53-56`. A zero-byte or binary file holds no hops, and "that file" follows a long folder path. Suggestion: name the copy and hedge, e.g. "whatever the old file held, including any proxy passwords, is still in proxychain.json.unreadable", with a zero-byte test. **Fixed** in the commit that adds this addendum (3/3 author's mutants killed: copy name dropped, moved ignored, left-in-place called kept). Not re-reviewed.
+
+### P3-2 (addendum 3): the left-in-place test covers only a failed move
+`tests/test_vpn_privacy_tab.py:864-874`. The commit message also claims the too-many-copies case. Fix: parametrize over a failed `Path.replace` and `MAX_UNREADABLE_COPIES=1` with an existing copy. **Fixed** in the same commit (both cases also have an older copy beside the file).
+
+### P3-3 (addendum 3, pre-existing since 924d1f5): `earlier_copy()` and `load_chain_checked()` call `path.is_file()`, which raises `PermissionError` on Python 3.11 when the state folder is not searchable
+Unguarded at `ui/panels/vpn_privacy.py:50`, so the tab would not build. Not verified end to end. Fix: catch `OSError` and treat as no file. **Open** in TODO.md.
+
+### P3-4 (addendum 3, optional): a broken FIFO guard fails by a 30 s timeout per case
+Writing a few bytes into the FIFO from `writer_held` would make a broken guard fail fast (wrong exit code or hash mismatch). The leak fix is sufficient without it. **Open, optional** in TODO.md.
+
+Accuracy: 25a902a's message ("1 head each, 3 in all") understates the `:261` case, where the parent test leaves the whole script blocked (2 `bash` + 1 `head`).
