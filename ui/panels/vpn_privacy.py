@@ -48,10 +48,13 @@ class PrivacyTab(GatedTab):
         self._loaded = False
         self._interfaces: list = []
         earlier = proxychain.earlier_copy()          # moved at an earlier launch
+        blocked = proxychain.chain_folder_error()
         self._chain, chain_error = proxychain.load_chain_checked()
         # A chain in a folder that could not be opened was never read; saving
-        # would open the folder and replace it, so edits are not saved.
-        self._chain_unread = bool(chain_error) and proxychain.chain_folder_error() is not None
+        # would open the folder and replace it, so edits are not saved. Probed on
+        # both sides of the load, so a folder unlocked in between still counts.
+        self._chain_unread = bool(chain_error) and (
+            blocked is not None or proxychain.chain_folder_error() is not None)
         folder = proxychain.chain_path().parent
         # Only a copy the user can go back to is pointed at; a file left in place
         # is about to be replaced, and the reason already says so.
@@ -61,15 +64,15 @@ class PrivacyTab(GatedTab):
                     f"proxy passwords, is still in {copy.name}.")
         # Kept under the chain until the next chain edit, not only on the shared
         # status line, which a restore offer or a failed listing can overwrite.
-        if earlier is not None:
-            self._chain_notice = (
-                f"An earlier saved proxy chain could not be read and was moved to "
-                f"{earlier.name} in {folder}. {kept(earlier)}")
-        elif self._chain_unread:
+        if self._chain_unread:                       # before "earlier": it blocks saves
             self._chain_notice = (
                 f"Could not read the saved proxy chain in {folder}: {chain_error}. "
                 "The chain is empty, and edits are not saved, so the saved chain is "
                 "not replaced. Fix the folder's permissions and restart Sentinel.")
+        elif earlier is not None:
+            self._chain_notice = (
+                f"An earlier saved proxy chain could not be read and was moved to "
+                f"{earlier.name} in {folder}. {kept(earlier)}")
         elif chain_error:
             moved = proxychain.earlier_copy()               # moved aside just now
             self._chain_notice = (
@@ -542,6 +545,10 @@ class PrivacyTab(GatedTab):
         self.chain_table.setCurrentCell(target, 0)
 
     def write_conf(self) -> None:
+        if self._chain_unread:           # writing opens the folder the chain is in
+            self._say("Not written: the saved proxy chain could not be read when Sentinel "
+                      "started. Fix the folder's permissions and restart Sentinel.")
+            return
         try:
             path = proxychain.write_proxychains_conf(self._chain)
         except OSError as exc:

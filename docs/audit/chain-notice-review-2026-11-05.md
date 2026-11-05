@@ -283,3 +283,30 @@ The raise comes from `record_path().exists()` inside `_read_entries`'s `except` 
 
 ### P3-5 (addendum 4): `unread()` logic
 Correct as written (EAGAIN from the O_RDWR fd means read; a partial read reports read). No change.
+
+---
+
+# Addendum 5: independent re-review of 73870c4 and 764dc89
+
+Reviewer: Sonnet 5.5, read-only (`code-reviewer`), 2026-11-05; a different agent from the author. Saved by the author's session from the reviewer's report.
+
+**Verdicts:** 73870c4: **accept, no P0/P1**; `proxychain.json` was never overwritten on any path run. 764dc89: **accept, no findings.**
+
+| Check | Result |
+|---|---|
+| Chain tests (scratch copy) / `tests/test_vpn_rootscript.py` | 127 passed / 178 passed |
+| Callers of `save_chain` / `write_proxychains_conf` | only `_save_chain` (mode, add, add Tor, remove, move) / only `write_conf`; Test chain does not save |
+| Locked folder + `write_conf` | `proxychain.json` unchanged, but the folder went 000 → 0700 and an existing `proxychains.conf` was replaced with the empty chain (P3-1) |
+| Missing file, dangling link, `ENOTDIR` | not "unread" (correct) |
+| Symlinked chain into a mode-000 folder; symlink loop | "unread", saves refused, link and target intact |
+| Folder 0600 (listable, not searchable) + an earlier copy | "unread", but the notice was the "earlier copy" text without "edits are not saved" (P3-2) |
+| Mutants | 10 killed; 2 survived: `ENOTDIR` not treated as absent, `move_hop` bypassing the guard (P3-3) |
+
+### Findings and what was done
+- **P3-1** `write_conf` was the one writer not guarded while the chain is unread. **Fixed**: it refuses ("Not written: …") and the folder is left alone; tested with the locked folder (no `proxychains.conf` appears, folder stays 000).
+- **P3-2** with a locked folder and an earlier copy, the notice omitted "edits are not saved". **Fixed**: the unread branch comes first; tested with a 0600 folder and an older copy.
+- **P3-3** `move_hop` and `ENOTDIR` were untested. **Fixed**: `move` and `write-conf` join the locked-folder parametrization; `test_a_chain_path_under_a_file_counts_as_absent`.
+- **P3-4** the unread flag came from a second probe after the load, so a folder unlocked in between would allow a save over a never-read chain. **Fixed**: probed before and after the load; tested with a fake that is locked only before.
+- **P3-5** (optional) a refused `add_hop` keeps the hop in memory and clears the password field (also true for an `OSError` before). **Open** in TODO.md.
+
+Author's mutants for these fixes: 5/5 killed (`write_conf` unguarded, earlier before unread, pre-load probe ignored, `ENOTDIR` as blocked, `move_hop` bypassing the guard). Not re-reviewed.

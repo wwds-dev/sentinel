@@ -523,3 +523,12 @@ def test_the_folder_check_does_not_depend_on_is_file_raising(tmp_path, monkeypat
     chain, error = proxychain.load_chain_checked()
     assert chain.hops == [] and error == "its folder could not be opened (Permission denied)"
     assert isinstance(proxychain.chain_folder_error(), PermissionError)
+
+
+def test_a_chain_path_under_a_file_counts_as_absent(tmp_path, monkeypatch):
+    # Re-review of 73870c4, P3-3: ENOTDIR means nothing is there, not a locked folder.
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("x")
+    monkeypatch.setattr(proxychain, "chain_path", lambda: blocker / "proxychain.json")
+    assert proxychain.chain_folder_error() is None
+    assert proxychain.load_chain_checked() == (proxychain.Chain(), "")
