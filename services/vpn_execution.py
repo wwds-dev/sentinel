@@ -347,10 +347,16 @@ def _which_privileged(name: str) -> str | None:
 def _unsafe_executable_reason(path: Path) -> str | None:
     """Why a root-run program could be replaced by a normal user, or None.
     Root must own the file and every directory above it, none of them group- or
-    world-writable. A path starting with ~ is a user's home: never acceptable."""
+    world-writable, for the path as written and for where a link leads. A path starting with ~ is a user's home: never acceptable."""
     if str(path).startswith("~"):
         return f"{path} is in a user's home directory"
-    for candidate in (path, *path.parents):
+    # The path as written, then the file it really is: a link in a root-only folder
+    # can point into a folder a user can write, and root would run what is there.
+    real = Path(os.path.realpath(path))
+    chain = [path, *path.parents]
+    if real != path:
+        chain += [real, *real.parents]
+    for candidate in chain:
         try:
             info = _stat(candidate)
         except OSError:
@@ -423,7 +429,9 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
         if len(raw) + len(value) > HOOK_LINE_LIMIT and key in hook_keys:
             blockers.append(f"The {raw} line is longer than {HOOK_LINE_LIMIT} characters; "
                             "Tunnel will not run what a person cannot review.")
-        if protocol == "WireGuard" and key == "saveconfig" and value.lower() == "true":
+        # wg-quick drops everything from the first "#" before it reads a value.
+        if (protocol == "WireGuard" and key == "saveconfig"
+                and value.split("#", 1)[0].strip(_WS).lower() == "true"):
             blockers.append("SaveConfig = true makes wg-quick rewrite the config as "
                             "administrator when the tunnel goes down; set it to false.")
         if protocol == "OpenVPN":

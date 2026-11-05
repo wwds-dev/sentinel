@@ -493,10 +493,16 @@ def test_an_unreadable_interface_only_conf_blocks_a_connect(tmp_path, monkeypatc
         os.chmod(conf, 0o600)
 
 
-@pytest.mark.parametrize("line", ["SaveConfig = true", "saveconfig=TRUE", "SAVECONFIG = True"])
+@pytest.mark.parametrize("line", ["SaveConfig = true", "saveconfig=TRUE", "SAVECONFIG = True",
+                                  "SaveConfig = true # keep my peers", "SaveConfig=true#x", "SaveConfig = true\t # x"])
 def test_saveconfig_true_is_a_blocker(tmp_path, line):
     path = wg_conf(tmp_path, interface_extra=line + "\n")
     assert _blocked(review("connect", profile_for(path)), "SaveConfig")
+
+
+def test_saveconfig_false_with_a_comment_is_fine(tmp_path):
+    path = wg_conf(tmp_path, interface_extra="SaveConfig = false # true would rewrite it\n")
+    assert review("connect", profile_for(path)).allowed
 
 
 def test_saveconfig_false_is_fine(tmp_path):
@@ -665,3 +671,24 @@ def test_a_bare_hook_command_that_is_not_installed_is_left_alone(tmp_path, monke
     monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: None)
     path = wg_conf(tmp_path, interface_extra="PostUp = some-builtin-or-missing\n")
     assert review("connect", profile_for(path)).allowed
+
+
+def test_a_link_into_a_user_writable_folder_is_unsafe(tmp_path, monkeypatch):
+    """A root-owned program reached through a link is judged by where the link
+    leads: its real folder is writable, so a normal user could replace it."""
+    safe, loose = tmp_path / "safe", tmp_path / "loose"
+    safe.mkdir()
+    loose.mkdir()
+    target = loose / "tool"
+    target.write_text("#!/bin/sh\n")
+    link = safe / "tool"
+    link.symlink_to(target)
+
+    def stat_(path, *a, **k):
+        loose_part = str(path) == str(loose) or str(path).startswith(str(loose) + "/")
+        mode = (stat.S_IFDIR | 0o777) if loose_part else ROOT_DIR
+        return types.SimpleNamespace(st_uid=0, st_mode=mode)
+    monkeypatch.setattr(vpn_execution, "_stat", stat_)
+    reason = vpn_execution._unsafe_executable_reason(link)
+    assert reason is not None and str(loose) in reason
+    assert vpn_execution._unsafe_executable_reason(safe / "missing") is None
