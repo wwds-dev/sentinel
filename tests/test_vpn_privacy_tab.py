@@ -657,7 +657,8 @@ def test_test_chain_comes_back_on_after_an_approved_action_with_a_valid_chain(en
 
 
 def test_a_mode_change_while_an_action_runs_keeps_test_chain_off(env, monkeypatch):
-    # P3-3 (a): the chain mode box stays usable during an action.
+    # P3-3 (a): the mode box is off during an action, but a mode change that
+    # still arrives (setCurrentText emits on a disabled box) must not light it.
     _add_hop(env.tab)
     DeferredWorker.started = []
     monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
@@ -665,6 +666,7 @@ def test_a_mode_change_while_an_action_runs_keeps_test_chain_off(env, monkeypatc
     env.answers = [True]
     env.tab.start_tor()
     assert env.tab.busy and not env.tab.chain_test_btn.isEnabled()
+    assert not env.tab.chain_mode_box.isEnabled()
     env.tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
     assert not env.tab.chain_test_btn.isEnabled()
     DeferredWorker.started[0].run_now()            # the action finishes ...
@@ -679,5 +681,76 @@ def test_a_chain_with_a_bad_hop_keeps_test_chain_off(env):
     env.tab._chain.hops[0].host = ""
     env.tab._refresh_chain()
     assert not env.tab.chain_test_btn.isEnabled()
+    assert "Problems: hop 1: no host" in env.tab.chain_summary_label.text()
     env.tab._controls_changed()
     assert not env.tab.chain_test_btn.isEnabled()
+
+
+# ── Review of d5d1d35 ──
+
+CHAIN_EDITS = ("hop_add_btn", "hop_add_tor_btn", "hop_remove_btn", "hop_up_btn",
+               "hop_down_btn", "chain_mode_box")
+
+
+def test_test_chain_probes_the_hops_that_were_confirmed(env, monkeypatch):
+    # P2-1: the probe used the live chain, so a hop added mid-probe joined the route.
+    _add_hop(env.tab, host="10.0.0.1")
+    _add_hop(env.tab, host="10.0.0.2")
+    seen = []
+    monkeypatch.setattr(proxychain, "http_get_through",
+                        lambda hops, *a, **k: (seen.append([h.host for h in hops]),
+                                               "203.0.113.7\n")[1])
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    env.answers = [True]
+    env.tab.test_chain()
+    assert "10.0.0.1" in env.asked[0][1] and "10.9.9.9" not in env.asked[0][1]
+    _add_hop(env.tab, host="10.9.9.9")             # an edit that still gets through
+    env.tab.chain_table.setCurrentCell(0, 0)
+    env.tab.remove_hop()
+    DeferredWorker.started[0].run_now()
+    assert seen == [["10.0.0.1", "10.0.0.2"]]
+    assert "203.0.113.7" in env.tab.status_label.text()
+
+
+def test_the_chain_cannot_be_edited_while_an_action_runs(env, monkeypatch):
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    monkeypatch.setattr(tor, "start", lambda: (True, "started"))
+    env.answers = [True]
+    env.tab.start_tor()
+    assert not any(getattr(env.tab, name).isEnabled() for name in CHAIN_EDITS)
+    DeferredWorker.started[0].run_now()
+    DeferredWorker.started[1].run_now()            # the interface listing after it
+    assert not env.tab.busy
+    assert all(getattr(env.tab, name).isEnabled() for name in CHAIN_EDITS)
+
+
+def test_a_mode_change_keeps_the_selected_hop(env):
+    # P3-1: _mode_changed rebuilt the table.
+    _add_hop(env.tab, host="10.0.0.1")
+    _add_hop(env.tab, host="10.0.0.2")
+    env.tab.chain_table.setCurrentCell(1, 0)
+    env.tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
+    assert env.tab.chain_table.currentRow() == 1
+    assert proxychain.load_chain().mode == proxychain.DYNAMIC
+
+
+def test_a_chain_without_proxychains_dns_can_still_be_tested(env):
+    # P3-2: the probe does not use proxychains' DNS setting, so it is no blocker.
+    _add_hop(env.tab)
+    env.tab._chain.proxy_dns = False
+    env.tab._refresh_chain()
+    assert env.tab.chain_test_btn.isEnabled()
+    assert "Problems" not in env.tab.chain_summary_label.text()
+
+
+@pytest.mark.parametrize("saved", ['{"hops": [{"host": 5}]}', '{"hops": [{"port": "1080"}]}', "[]",
+                                   '{"mode": 3}'])
+def test_a_malformed_saved_chain_still_builds_the_tab(env, saved):
+    # P3-3: a wrongly typed field used to raise in PrivacyTab().
+    path = proxychain.chain_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(saved)
+    tab = PrivacyTab()
+    assert tab._chain.hops == [] and not tab.chain_test_btn.isEnabled()

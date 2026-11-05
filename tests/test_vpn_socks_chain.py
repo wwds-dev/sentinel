@@ -159,6 +159,13 @@ def test_probe_reports_exit_ip_and_failure_point(proxy):
     assert not r.ok and "no proxies" in r.error
 
 
+def test_probe_runs_with_proxychains_dns_off(proxy):
+    # proxy_dns is proxychains' setting; the probe hands the name to the last hop anyway.
+    p = proxy()
+    r = proxychain.probe(proxychain.Chain(hops=[hop(p)], proxy_dns=False), timeout=3)
+    assert r.ok and r.exit_ip == "203.0.113.77"
+
+
 def test_probe_rejects_unreadable_answer(proxy):
     p = proxy(body=b"x" * 100)
     r = proxychain.probe(proxychain.Chain(hops=[hop(p)]), timeout=3)
@@ -181,3 +188,34 @@ def test_proxychains_conf_content_and_persistence(tmp_path, monkeypatch):
     assert proxychain.load_chain().hops == []
     c.proxy_dns = False
     assert "DNS will leak" in proxychain.render_proxychains_conf(c)
+
+
+@pytest.mark.parametrize("saved", [
+    '{"hops": [{"host": 5}]}',
+    '{"hops": [{"port": "1080"}]}',
+    '{"hops": [{"port": true}]}',
+    '{"hops": [{"password": null}]}',
+    '{"hops": {"host": "10.0.0.1"}}',
+    '{"hops": ["10.0.0.1"]}',
+    '{"mode": 3}',
+    '[]',
+])
+def test_a_wrongly_typed_saved_chain_loads_as_empty(tmp_path, monkeypatch, saved):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    proxychain.chain_path().write_text(saved)
+    chain = proxychain.load_chain()
+    assert chain.hops == [] and chain.problems()       # no exception, and nothing to probe
+
+
+def test_a_well_typed_saved_chain_still_loads(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    proxychain.chain_path().write_text(
+        '{"mode": "dynamic", "hops": [{"kind": "socks5", "host": "10.0.0.1", "port": 1080}]}')
+    chain = proxychain.load_chain()
+    assert [h.host for h in chain.hops] == ["10.0.0.1"] and chain.mode == "dynamic"
+
+
+def test_probe_problems_leave_out_only_the_dns_setting():
+    c = proxychain.Chain(hops=[ProxyHop(kind="DNS", host="10.0.0.1", port=1080)], proxy_dns=False)
+    assert any("DNS is not being sent" in p for p in c.problems())
+    assert c.probe_problems() == ["hop 1: unknown proxy type 'DNS'"]

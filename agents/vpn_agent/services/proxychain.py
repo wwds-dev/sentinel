@@ -65,6 +65,17 @@ class Chain:
     proxy_dns: bool = True
 
     def problems(self) -> list[str]:
+        issues = self.probe_problems()
+        if not self.proxy_dns:
+            issues.append(
+                "DNS is not being sent through the chain, so every lookup names "
+                "the host you are about to visit to your ISP's resolver"
+            )
+        return issues
+
+    def probe_problems(self) -> list[str]:
+        """What stops a probe: every problem but proxychains' DNS setting, which
+        the probe does not use (it hands the host name to the last hop)."""
         issues: list[str] = []
         if self.mode not in MODES:
             issues.append(f"unknown chain mode {self.mode!r}")
@@ -73,11 +84,6 @@ class Chain:
         for index, hop in enumerate(self.hops, start=1):
             for problem in hop.problems():
                 issues.append(f"hop {index}: {problem}")
-        if not self.proxy_dns:
-            issues.append(
-                "DNS is not being sent through the chain, so every lookup names "
-                "the host you are about to visit to your ISP's resolver"
-            )
         return issues
 
     def describe(self) -> str:
@@ -96,6 +102,13 @@ class Chain:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Chain":
+        # A hand-edited file must fail here, as a TypeError load_chain catches,
+        # rather than later in problems(), which runs while the tab is built.
+        if not isinstance(data, dict) or not isinstance(data.get("hops", []), list):
+            raise TypeError("a chain must be an object with a list of hops")
+        for key in ("name", "mode"):
+            if not isinstance(data.get(key, ""), str):
+                raise TypeError(f"chain {key} must be text")
         chain = cls(
             name=data.get("name", "default"),
             mode=data.get("mode", STRICT),
@@ -209,7 +222,7 @@ def probe(chain: Chain, timeout: float = 20.0) -> ProbeResult:
     Speaks SOCKS directly rather than shelling out to proxychains, so this is a
     real end-to-end test even on a Mac where SIP would defeat the wrapper.
     """
-    problems = [p for p in chain.problems() if "DNS" not in p]
+    problems = chain.probe_problems()
     if problems:
         return ProbeResult(False, error="; ".join(problems))
 
