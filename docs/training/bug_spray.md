@@ -2,8 +2,6 @@
 
 **Goal:** turn evidence from an in-scope asset into a useful report. **Time:** 20 minutes.
 
-![Bug Spray workspace](docs/training/images/bug-spray.png)
-
 Use Bug Spray only for assets you own or that an authorised program lists as in
 scope. A public website is not automatically permission to scan it.
 

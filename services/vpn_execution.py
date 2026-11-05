@@ -344,13 +344,54 @@ def _which_privileged(name: str) -> str | None:
     return None
 
 
+def _paths_touched(path: Path) -> list[Path]:
+    """``path``, its folders, and for every link met while resolving it the link's
+    own folders and its target's, followed to the end (bounded: 40 links)."""
+    seen: list[Path] = []
+
+    def add(item: Path) -> None:
+        for each in (item, *item.parents):
+            if each not in seen:
+                seen.append(each)
+
+    add(path)
+    pending, links = [path], 0
+    while pending and links < 40:
+        current = pending.pop()
+        walked = Path(current.anchor)
+        for part in current.parts[len(walked.parts):]:
+            walked = walked / part
+            try:
+                is_link = os.path.islink(walked)
+            except OSError:
+                is_link = False
+            if is_link:
+                links += 1
+                try:
+                    target = Path(os.readlink(walked))
+                except OSError:
+                    break
+                target = target if target.is_absolute() else walked.parent / target
+                add(target)
+                rest = current.parts[len(walked.parts):]
+                pending.append(Path(os.path.normpath(target.joinpath(*rest))))
+                break
+    real = Path(os.path.realpath(path))
+    add(real)
+    return seen
+
+
 def _unsafe_executable_reason(path: Path) -> str | None:
     """Why a root-run program could be replaced by a normal user, or None.
     Root must own the file and every directory above it, none of them group- or
-    world-writable. A path starting with ~ is a user's home: never acceptable."""
+    world-writable, for the path as written and for where a link leads. A path starting with ~ is a user's home: never acceptable."""
     if str(path).startswith("~"):
         return f"{path} is in a user's home directory"
-    for candidate in (path, *path.parents):
+    # Every path that resolving it touches: each component as written, each link on
+    # the way and the folders it sits in, and where it finally leads. A link in a
+    # root-only folder can point into a folder a user can write.
+    chain = _paths_touched(path)
+    for candidate in chain:
         try:
             info = _stat(candidate)
         except OSError:
@@ -423,7 +464,9 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
         if len(raw) + len(value) > HOOK_LINE_LIMIT and key in hook_keys:
             blockers.append(f"The {raw} line is longer than {HOOK_LINE_LIMIT} characters; "
                             "Tunnel will not run what a person cannot review.")
-        if protocol == "WireGuard" and key == "saveconfig" and value.lower() == "true":
+        # wg-quick drops everything from the first "#" before it reads a value.
+        if (protocol == "WireGuard" and key == "saveconfig"
+                and value.split("#", 1)[0].strip(_WS).lower() == "true"):
             blockers.append("SaveConfig = true makes wg-quick rewrite the config as "
                             "administrator when the tunnel goes down; set it to false.")
         if protocol == "OpenVPN":

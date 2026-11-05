@@ -39,10 +39,10 @@ A blocked action runs nothing and asks for no password. The reason appears in a 
 Warnings do not block: a split tunnel (only the listed networks use the VPN), a config file readable by other users on this Mac (it holds your private key), and on Disconnect either "traffic returns to your ordinary network in the clear" or "the kill switch is armed, so traffic stays blocked until you Disarm it".
 
 ### Config hooks that run as administrator
-A WireGuard config can contain `PreUp`, `PostUp`, `PreDown` and `PostDown` lines, and an OpenVPN config can contain script or plugin directives such as `up`, `down`, `route-up`, `plugin` and `script-security`. The tunnel tool runs these as administrator. The **Connect** review lists each one (each cut at 100 characters) in its own section, repeats them in the confirmation text and adds a warning, and after you answer Yes a second dialog lists them again and defaults to No. Declining at either step is recorded as declined. Known limitation: the list appears on Connect only (not on Disconnect or in Inspect config…), and other wg-quick directives such as `SaveConfig` are not flagged.
+A WireGuard config can contain `PreUp`, `PostUp`, `PreDown` and `PostDown` lines, and an OpenVPN config can contain script or plugin directives such as `up`, `down`, `route-up`, `plugin` and `script-security`. The tunnel tool runs these as administrator. The review lists each one in its own section, repeats them in the confirmation text and adds a warning, and after you answer Yes a second dialog lists them again and defaults to No. Each hook is kept in full; the dialog shows the first 300 characters of a long one with a note of how many more, and then offers **Show Details…** with every hook and the file's SHA-256. A hook line over 4000 characters is refused on Connect. **Disconnect** is reviewed the same way for a WireGuard profile (it scans `PreDown` and `PostDown`); there, findings that would block a Connect (a long hook, an unsafe program path, `SaveConfig = true`) are shown as risks and you can still go ahead after an extra confirmation. An OpenVPN Disconnect only gets a note. On Connect, a WireGuard hook that starts with an absolute path is refused unless root owns the program and every folder above it and none of them is group- or world-writable (the path as written is checked; a link is not followed), and a profile with `SaveConfig = true` is refused. Sentinel compares the file's SHA-256 with the one you confirmed just before it asks for the administrator password; a change after that point is not caught until the privileged copy of the config is built (audit step S7). Declining at either step is recorded as declined.
 
 ### Administrator prompt
-Connect, Disconnect, Arm and Disarm always go through the macOS authorisation dialog, even if an unrelated sudo ticket is cached, and Tunnel never stores the password. The prompt and the command share a 30-second limit. Cancelling the prompt, or a command that fails, is reported as Failed. If Sentinel itself is running as root there is nothing to ask for and the command runs directly; running Sentinel that way is not recommended.
+Connect, Disconnect, Arm and Disarm always go through the macOS authorisation dialog, even if an unrelated sudo ticket is cached, and Tunnel never stores the password. Tunnel waits up to two minutes in all: up to 90 seconds for you to answer the prompt, plus 30 for the command. If that runs out after you approved, the change may still have happened, so Tunnel re-checks before reporting. Cancelling the prompt, or a command that fails, is reported as Failed. A Sentinel that was itself started as root (with `sudo`) has no dialog to show, so it refuses Connect, Disconnect, the kill switch, a hardware-address change and a native server install, and says so; nothing runs. Quit and reopen Sentinel as your normal user.
 
 ### The post-change check
 It re-reads local state instead of trusting the command's exit status. WireGuard: the tunnel's run record under `/var/run/wireguard` (and, for a full tunnel, whether the route to a public address now uses the tunnel interface; `route get` sends no packets). OpenVPN: whether the process Sentinel started exists. **Verified** means that state was seen. It does not mean a handshake completed, DNS is safe, or traffic is protected — run Connection Check and Your IP & DNS. A full tunnel is recognised by a literal `0.0.0.0/0` or `::/0`; a config that splits the default route into two halves is treated as split, so the route check is skipped.
@@ -84,9 +84,20 @@ Known limitation: the VPN Agent state folder is outside Sentinel's data folder, 
 Three cards, each honest about its limits (the same text is in the tab).
 
 - **Hardware address.** Randomise or restore an interface's MAC. One hop only:
-  your router still sees your traffic; the change lasts until restart or Restore.
-  Review shows `old → new` and warns that Wi-Fi will be cycled. Asks for the
-  macOS administrator dialog (never a cached sudo). Nothing is logged.
+  your router still sees your traffic. Only locally administered unicast
+  addresses are generated. Review shows `old → new` and warns that Wi-Fi will be
+  cycled. Asks for the macOS administrator dialog (never a cached sudo). Nothing
+  is logged.
+  *Putting it back.* Before the change Sentinel records the address the
+  interface had (`mac_original.json` in the VPN state folder, 0600, tied to this
+  boot and this adapter). If it cannot read the current address or this boot's
+  ID there is nothing to restore to, so the change is refused. At quit Sentinel
+  puts the original back through the administrator dialog; a declined or failed
+  restore stays recorded and is offered again at the next launch. After a crash
+  the Privacy tab offers the restore at the next launch. A restart drops the
+  record, because an `ifconfig` change never survives a reboot. Emergency Reset
+  erases the record, so an address still changed then stays until restart (its
+  final confirmation says so).
 - **Tor.** A local client on 127.0.0.1:9250 (never a relay), state in Sentinel's
   data folder. Its start-up log is deleted as soon as Start has an answer. Start asks first; Stop only signals the Tor Sentinel started;
   Check contacts check.torproject.org through Tor (asks first); New identity

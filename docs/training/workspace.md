@@ -2,8 +2,6 @@
 
 **Goal:** know where to find every major part of Sentinel. **Time:** 10 minutes.
 
-![The current Sentinel workspace](docs/training/images/workspace-chat.png)
-
 ## Left sidebar
 
 Choose **Chat, Trace, Bloodhound, Beacon, Sentry, Bug Spray, Tunnel,** or **Forge**.

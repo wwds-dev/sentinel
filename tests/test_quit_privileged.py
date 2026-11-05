@@ -119,7 +119,7 @@ def test_panel_reports_a_running_connection_worker_as_privileged_work():
 def test_panel_reports_a_running_gated_tab_worker_as_privileged_work():
     tab = SimpleNamespace(has_privileged_work=lambda: True)
     assert VpnPanel.has_privileged_work(_panel(privacy_tab=tab)) is True
-    assert vpn_gate.GatedTab.has_privileged_work(SimpleNamespace(_worker=StuckWorker())) is True
+    assert vpn_gate.GatedTab.has_privileged_work(SimpleNamespace(_worker=StuckWorker(), _read_only=False)) is True
     assert vpn_gate.GatedTab.has_privileged_work(SimpleNamespace(_worker=None)) is False
 
 

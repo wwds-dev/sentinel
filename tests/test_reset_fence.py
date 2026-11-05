@@ -233,6 +233,22 @@ def test_the_fence_disconnects_the_muse_pull_results(win):
     assert got == []
 
 
+
+def test_a_late_local_discovery_after_the_quit_rebuilds_nothing(win, monkeypatch):
+    """Merge of routing phases 0-4: a discovery result queued before the quit
+    rebuilt every model list on the way out (about 1.7 s, past the 5 s quit
+    limit), and could start a new measurement thread."""
+    rebuilt, started = [], []
+    monkeypatch.setattr(win, "_reload_all_model_lists", lambda: rebuilt.append(1))
+    monkeypatch.setattr(win, "maybe_measure_local_models", lambda: started.append(1))
+    monkeypatch.setattr(workers.LocalDiscoveryWorker, "start", lambda self: started.append(1))
+    monkeypatch.setattr(win, "_background_stopped", False)
+    win.stop_background_work()
+    win._on_local_discovery(win.local_inventory.snapshot())
+    win.start_local_discovery()
+    assert rebuilt == [] and started == []
+
+
 @pytest.mark.parametrize("write", ["history_save", "history_update", "settings", "model_watch"])
 def test_no_data_write_once_erasing_has_started(tmp_path, latch, write):
     from services import history_store, model_watch, settings_store
@@ -294,3 +310,79 @@ def test_the_refusal_dialog_says_data_may_be_partly_erased(win, monkeypatch):
     opened[0].reject()
     assert len(shown) == 1 and "may already have been erased" in shown[0]
     assert not getattr(win, "_portable_reset_committed", False)
+
+
+# ── MAC re-audit 1 P3-2: the reset erases the record of a changed address ──
+
+@pytest.mark.parametrize("recorded, warned", [({"en5": "aa:bb:cc:00:00:05"}, True), ({}, False)])
+def test_the_final_confirmation_says_a_changed_address_stays_changed(win, monkeypatch,
+                                                                     recorded, warned):
+    from PySide6.QtWidgets import QDialog, QInputDialog, QPushButton
+
+    from agents.vpn_agent.services import macaddr
+    monkeypatch.setattr(macaddr, "recorded", lambda: dict(recorded))
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda p, t, text, *a, **k: asked.append(text) or QMessageBox.No))
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("ERASE SENTINEL DATA", True)))
+    monkeypatch.setattr(portable_reset, "erase_portable_user_data",
+                        lambda: pytest.fail("erased after No"))
+    opened = []
+    monkeypatch.setattr(QDialog, "exec", lambda self: opened.append(self) or 0)
+    dialogs.show_settings(win)
+    next(b for b in opened[0].findChildren(QPushButton)
+         if b.objectName() == "EmergencyPortableReset").click()
+    opened[0].reject()
+    [text] = asked
+    assert ("until this Mac restarts" in text) is warned and ("en5" in text) is warned
+    assert "aa:bb:cc" not in text
+
+
+@pytest.mark.parametrize("error", [OSError(5, "disk gone"), RuntimeError("bug")])
+def test_the_final_confirmation_survives_an_unreadable_record(win, monkeypatch, error):
+    """Review P3-5: reading the record must never block the reset.
+
+    An unreadable record may name a change, so it is said (TODO "unsearchable
+    Tunnel state folder"); any other failure leaves the note out.
+    """
+    from PySide6.QtWidgets import QDialog, QInputDialog, QPushButton
+
+    from agents.vpn_agent.services import macaddr
+
+    def boom():
+        raise error
+    monkeypatch.setattr(macaddr, "recorded", boom)
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda p, t, text, *a, **k: asked.append(text) or QMessageBox.No))
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("ERASE SENTINEL DATA", True)))
+    opened = []
+    monkeypatch.setattr(QDialog, "exec", lambda self: opened.append(self) or 0)
+    dialogs.show_settings(win)
+    next(b for b in opened[0].findChildren(QPushButton)
+         if b.objectName() == "EmergencyPortableReset").click()
+    opened[0].reject()
+    assert len(asked) == 1
+    unread = "could not read its record of changed hardware addresses" in asked[0]
+    assert unread == isinstance(error, OSError)
+    assert ("until this Mac restarts" in asked[0]) == unread
+
+
+def test_a_measurement_finishing_after_the_quit_rebuilds_nothing(win, monkeypatch):
+    """A measurement that outlasts the quit keeps its result but rebuilds no list
+    and starts no next run; a manual start is refused."""
+    rebuilt, started = [], []
+    monkeypatch.setattr(win, "_local_ratings_changed", lambda *a, **k: rebuilt.append(1))
+    monkeypatch.setattr(win, "maybe_measure_local_models", lambda: started.append(1))
+    recorded = []
+    monkeypatch.setattr(win.local_rating_store, "record_result", lambda *a, **k: recorded.append(1))
+    monkeypatch.setattr(win, "_background_stopped", False)
+    win.stop_background_work()
+    model = SimpleNamespace(provider="lmstudio", id="m")
+    monkeypatch.setattr(win.local_ratings, "clear_progress", lambda m: None)
+    win._on_measure_finished(model, SimpleNamespace(status="x", reason="r"), True)
+    QApplication.processEvents()
+    assert win.start_local_measure(model) is False
+    assert recorded == [1] and rebuilt == [] and started == []

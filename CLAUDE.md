@@ -41,3 +41,4 @@ Prepare Sentinel for a formal testing phase: professional level, with functional
 
 ## Decisions already made
 - The VPN Agent companion features (Tor, proxy chain, MAC changer, server provisioning) stay in Sentinel and must be fully functional. Do not propose removing them.
+- Mullvad is in the tested scope (owner, 2026-11-05): the VPN Apps tab check against a real Mullvad app (TODO.md) is a testing-phase blocker.

@@ -3,8 +3,6 @@
 **Goal:** use Chat as a continuing conversation without losing control of
 privacy or cost. **Time:** about ten minutes.
 
-![Chat controls and conversation](docs/training/images/workspace-chat.png)
-
 ## Choose the right tool
 
 - **General Chat** answers questions and helps develop ideas.

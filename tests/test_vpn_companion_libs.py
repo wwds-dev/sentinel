@@ -107,7 +107,7 @@ class _Iface:
 def test_set_mac_uses_dialog_and_quotes(state, monkeypatch):
     seen = {}
     monkeypatch.setattr(macaddr, "boot_id", lambda: "1")     # the record is boot-tied
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _Iface(True))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_Iface(True), ""))
     monkeypatch.setattr(macaddr, "current_mac", lambda d: "02:11:22:33:44:55")
 
     def fake(argv, prompt, *a, **kw):
@@ -125,14 +125,14 @@ def test_set_mac_rejects_hostile_device_and_bad_address(monkeypatch):
     called = []
     monkeypatch.setattr(macaddr, "run_argv_as_root", lambda *a, **k: called.append(a) or (True, ""))
     assert not macaddr.set_mac("en0", "zz")[0]
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: None)
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (None, ""))
     assert not macaddr.set_mac("en0; rm -rf /", "02:11:22:33:44:55")[0]
     assert called == []
 
 
 def test_set_mac_detects_silent_ignore(state, monkeypatch):
     monkeypatch.setattr(macaddr, "boot_id", lambda: "1")     # the record is boot-tied
-    monkeypatch.setattr(macaddr, "get_interface", lambda d: _Iface(False))
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_Iface(False), ""))
     monkeypatch.setattr(macaddr, "current_mac", lambda d: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(macaddr, "run_argv_as_root", lambda *a, **k: (True, ""))
     ok, msg = macaddr.set_mac("en5", "02:11:22:33:44:55")

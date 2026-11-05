@@ -344,6 +344,7 @@ class GodAI(QWidget):
         # below is the one place that talks to LM Studio, Ollama and the disk.
         self.local_inventory = local_models.LocalInventory()
         self.local_discovery_worker = None
+        self._background_stopped = False     # set by stop_background_work (quit, reset)
         # Ratings for local models: inherited from a base model or measured
         # here. Read from caches only; a measurement runs on its own worker.
         self.local_rating_store = local_ratings.RatingStore(LOCAL_RATINGS_FILE)
@@ -1336,7 +1337,7 @@ class GodAI(QWidget):
     def start_local_discovery(self) -> None:
         """Refresh the local inventory in the background (startup, Settings, Start server)."""
         worker = self.local_discovery_worker
-        if worker is not None and worker.isRunning():
+        if (worker is not None and worker.isRunning()) or self._background_stopped:
             return
         worker = LocalDiscoveryWorker(self.lmstudio, self.ollama, self.local_inventory)
         worker.finished_signal.connect(self._on_local_discovery)
@@ -1345,6 +1346,8 @@ class GodAI(QWidget):
 
     def _on_local_discovery(self, snap) -> None:
         """Runs on the UI thread: rows, router candidates and BEST FIT follow the snapshot."""
+        if self._background_stopped:
+            return                  # quitting or resetting: no rebuild of every model list
         register_local_models(local_models.router_candidates(snap))
         self.maybe_measure_local_models()
         try:
@@ -1369,7 +1372,7 @@ class GodAI(QWidget):
 
     def maybe_measure_local_models(self) -> None:
         """Start the automatic measurement of the next never-measured model."""
-        if not local_ratings.AUTOMATIC:
+        if not local_ratings.AUTOMATIC or self._background_stopped:
             return
         worker = self.local_measure_worker
         if worker is not None and worker.isRunning():
@@ -1454,6 +1457,8 @@ class GodAI(QWidget):
 
     def start_local_measure(self, model, automatic: bool = False) -> bool:
         """Measure one local model in the background. False if it did not start."""
+        if self._background_stopped:
+            return False            # quitting or a failed reset: nothing new starts
         worker = self.local_measure_worker
         if worker is not None and worker.isRunning():
             self._set_chat_status("A local model is already being measured.")
@@ -1514,6 +1519,8 @@ class GodAI(QWidget):
     def _on_measure_finished(self, model, result, automatic) -> None:
         self.local_ratings.clear_progress(model)
         self.local_rating_store.record_result(model, result, automatic=automatic)
+        if self._background_stopped:
+            return                  # keep the result; no list rebuild or next run on the way out
         name = local_models.row_label(model)
         if result.status == local_ratings.STATUS_MEASURED:
             self._set_chat_status(f"Measured {name}: {self.local_ratings.text(model.provider, model.id)}.")
@@ -5891,6 +5898,9 @@ class GodAI(QWidget):
         """
         if deadline is None:
             deadline = time.monotonic() + QUIT_JOIN_BUDGET_S
+        # A local-model result queued before this still arrives; it must not
+        # rebuild every model list or start a new measurement on the way out.
+        self._background_stopped = True
         worker = self.chat_worker
         if worker is not None and worker.isRunning():
             # Cancel, stop listening and park first; then a join out of the
@@ -5979,6 +5989,11 @@ class GodAI(QWidget):
             self.stop_background_work()
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
+        # The tooltip filter sees every event in the app, and each one needs
+        # the GIL; while a request thread holds it, the teardown's events
+        # alone cost about a second of the 5 s quit limit (Q4).
+        if isinstance(self, QWidget):    # tests call closeEvent on a stand-in
+            QApplication.instance().removeEventFilter(self)
         event.accept()
 
 def _stop_notice(backend: str) -> str:
@@ -6058,9 +6073,17 @@ def _restore_changed_hardware_addresses() -> None:
         from agents.vpn_agent.services import macaddr
         for device, ok, message in macaddr.restore_all_recorded():
             if not ok:
-                print(f"hardware address of {device} not restored: {message}", file=sys.stderr)
+                # stderr lands in a launch log file: no address in it.
+                print(f"hardware address of {device} not restored: "
+                      f"{macaddr.redact_addresses(message)}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - leaving matters more
-        print(f"hardware address restore skipped: {exc}", file=sys.stderr)
+        try:
+            # Not a bare re-import: the failure may be that import itself.
+            from agents.vpn_agent.services.macaddr import redact_addresses
+            detail = redact_addresses(str(exc))
+        except Exception:  # noqa: BLE001
+            detail = type(exc).__name__          # no text: it may hold an address
+        print(f"hardware address restore skipped: {detail}", file=sys.stderr)
 
 
 def _leave(window, settings, code: int = 0) -> None:

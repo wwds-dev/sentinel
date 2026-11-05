@@ -35,6 +35,10 @@ and the git log, and is not back-filled here.
   folder being erased.
 
 ### Fixed
+- **Hook review sees through two more tricks.** A WireGuard `SaveConfig = true`
+  followed by a `# comment` is now refused like a plain one, and a hook program
+  reached through a link (or a chain of links) is judged by where it really
+  lives, not only by the folder the link sits in.
 - Stop and Quit could, rarely, freeze the whole app (a blank window that ignored
   Close) or make it crash on exit. Sentinel no longer force-stops its background
   threads; it lets them finish on their own and stops listening to them.
@@ -44,6 +48,34 @@ and the git log, and is not back-filled here.
   in the Tunnel status line that you have not seen before.
 - An Emergency Reset that fails part-way now says that some data may already be
   erased. Check the `Sentinel Data` folder before using it again.
+- **Tunnel › Privacy: Test chain tests exactly the hops you confirmed.** Before,
+  adding, removing or reordering a hop while a test ran changed the route it
+  used. The hop buttons and the chain mode are now off while any action runs.
+- A saved proxy chain that Sentinel cannot read no longer stops the Tunnel panel
+  from opening, and is no longer overwritten by your next edit. It is moved to
+  `proxychain.json.unreadable` (then `-2`, `-3`, …) in the Tunnel data folder,
+  made readable only by you where possible, and the Privacy tab says so under
+  the chain until you edit it, on later launches too. A file that cannot even
+  be moved, or one past the 1,000th copy, is left in place, and the tab warns
+  that your next edit replaces it.
+- Changing the chain mode no longer clears the selected hop, and Test chain is
+  no longer switched on, or left on, against an empty or invalid chain.
+- **Tunnel › Privacy opens even when Sentinel cannot read its record of changed
+  hardware addresses** (for example when the Tunnel data folder's permissions
+  were changed). Before, the tab was not built. It now says so in the Hardware
+  address box and refuses to change an address until the record can be read,
+  since that record may still hold an original address to put back; Restore
+  hardware address still works. Emergency Reset's warning says the same.
+- **Hardware addresses at quit and at launch.** When Sentinel quits while a
+  change to an address is still waiting for your administrator password, it now
+  says which interface it left alone, instead of skipping it silently; the change
+  stays recorded and is offered again at the next launch. If Sentinel cannot
+  read this Mac's boot ID, it no longer offers to put back a recorded address,
+  which might date from before a restart; the record is kept for later.
+- A Tunnel confirmation dialog now holds the Privacy tab while it is open, so
+  nothing else in the tab can start behind it.
+- Hardware addresses are now hidden from the launch log in every common form
+  (dashes, dots, bare digits, unpadded), not only the colon form.
 
 ## v2.002 - 2026-09-29
 

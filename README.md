@@ -218,7 +218,10 @@ interface that is already up. A blocked action runs nothing; otherwise the revie
 is the confirmation dialog (default **No**), and `wg-quick`/`openvpn` then runs
 through the macOS authorisation dialog off the interface thread. The dialog is
 always used, even when an unrelated sudo ticket is cached, and it is the only
-prompt for the password (Tunnel never stores it). A WireGuard config's
+prompt for the password (Tunnel never stores it). A Sentinel that was itself
+started as root (with `sudo`) has no dialog to show, so it refuses Connect,
+Disconnect, the kill switch, a hardware-address change and a native server
+install, and says so; nothing runs. A WireGuard config's
 PreUp/PostUp/PreDown/PostDown lines and an OpenVPN config's script and plugin
 directives (`up`, `down`, `route-up`, `plugin`, `script-security`, …) run as
 administrator; the Connect review lists them in their own section, and a second

@@ -467,6 +467,28 @@ def BUILTIN_AGENTS_LABELS(app) -> dict:
     return {k: BUILTIN_AGENTS.get(k, {}).get("label", k) for k in keys}
 
 
+def reset_mac_note() -> str:
+    """What an emergency reset does to a hardware address Sentinel changed.
+
+    The reset erases the record of it, so the quit-time restore finds nothing;
+    say so rather than ask for an administrator password in an emergency.
+    """
+    try:
+        from agents.vpn_agent.services import macaddr
+        changed = sorted(macaddr.recorded())
+    except OSError:  # RecordUnreadable: it may name a change, so say so
+        return ("\n\nSentinel could not read its record of changed hardware addresses, "
+                "so an address it changed may not be put back at quit: if one is still "
+                "changed, it stays changed until this Mac restarts.")
+    except Exception:  # noqa: BLE001 - a note must never block the reset
+        return ""
+    if not changed:
+        return ""
+    return (f"\n\nThis also erases Sentinel's record of the hardware address it "
+            f"changed on {', '.join(changed)}, so it is not put back at quit: if it "
+            "is still changed, it stays changed until this Mac restarts.")
+
+
 def show_settings(app):
     dialog = QDialog(app)
     dialog.setWindowTitle("Settings")
@@ -1313,11 +1335,12 @@ def show_settings(app):
         )
         if not accepted or phrase != "ERASE SENTINEL DATA":
             return
+        mac_note = reset_mac_note()
         answer = QMessageBox.question(
             dialog,
             "Final confirmation",
             "Erase the complete Sentinel Data folder contents and quit now?\n\n"
-            "This cannot be undone.",
+            f"This cannot be undone.{mac_note}",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

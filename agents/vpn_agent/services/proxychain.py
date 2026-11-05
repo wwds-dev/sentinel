@@ -29,6 +29,8 @@ for other programs, with the caveat attached.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +67,17 @@ class Chain:
     proxy_dns: bool = True
 
     def problems(self) -> list[str]:
+        issues = self.probe_problems()
+        if not self.proxy_dns:
+            issues.append(
+                "DNS is not being sent through the chain, so every lookup names "
+                "the host you are about to visit to your ISP's resolver"
+            )
+        return issues
+
+    def probe_problems(self) -> list[str]:
+        """What stops a probe: every problem but proxychains' DNS setting, which
+        the probe does not use (it hands the host name to the last hop)."""
         issues: list[str] = []
         if self.mode not in MODES:
             issues.append(f"unknown chain mode {self.mode!r}")
@@ -73,11 +86,6 @@ class Chain:
         for index, hop in enumerate(self.hops, start=1):
             for problem in hop.problems():
                 issues.append(f"hop {index}: {problem}")
-        if not self.proxy_dns:
-            issues.append(
-                "DNS is not being sent through the chain, so every lookup names "
-                "the host you are about to visit to your ISP's resolver"
-            )
         return issues
 
     def describe(self) -> str:
@@ -96,6 +104,13 @@ class Chain:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Chain":
+        # A hand-edited file must fail here, as a TypeError load_chain catches,
+        # rather than later in problems(), which runs while the tab is built.
+        if not isinstance(data, dict) or not isinstance(data.get("hops", []), list):
+            raise TypeError("a chain must be an object with a list of hops")
+        for key in ("name", "mode"):
+            if not isinstance(data.get(key, ""), str):
+                raise TypeError(f"chain {key} must be text")
         chain = cls(
             name=data.get("name", "default"),
             mode=data.get("mode", STRICT),
@@ -113,14 +128,134 @@ def chain_path() -> Path:
     return paths.state_dir() / "proxychain.json"
 
 
+def _probe(path: Path) -> tuple[bool, OSError | None]:
+    """
+    Whether ``path`` is a regular file, and the error if its folder cannot be opened.
+
+    ``Path.is_file()`` is not used: on Python 3.11-3.13 it raises when the folder
+    cannot be searched, and from 3.14 it answers False, which would hide a chain
+    that exists but was never read.
+    """
+    try:
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False, None
+    except OSError as exc:
+        return False, exc
+    return stat.S_ISREG(st.st_mode), None
+
+
+def _is_file(path: Path) -> bool:
+    return _probe(path)[0]
+
+
+def chain_folder_error() -> OSError | None:
+    """Why the chain's folder cannot be opened, or None when it can."""
+    return _probe(chain_path())[1]
+
+
 def load_chain() -> Chain:
     path = chain_path()
-    if not path.is_file():
+    if not _is_file(path):
         return Chain()
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, TypeError):
+    except (OSError, ValueError, TypeError, RecursionError):
         return Chain()
+
+
+# Copies are numbered upwards and never reused, so the highest is the newest.
+MAX_UNREADABLE_COPIES = 1000
+
+
+def _unreadable_copies(path: Path) -> dict[int, Path]:
+    """Earlier moved-aside copies of ``path`` by number (``.unreadable`` is 1)."""
+    base = path.name + ".unreadable"
+    try:
+        names = os.listdir(path.parent)
+    except OSError:
+        return {}
+    copies = {}
+    for name in names:
+        if name == base:
+            copies[1] = path.with_name(name)
+        elif name.startswith(base + "-"):
+            suffix = name[len(base) + 1:]
+            if not (suffix.isascii() and suffix.isdigit()):   # "²" is a digit int() refuses
+                continue
+            number = int(suffix)
+            if number >= 2:
+                copies[number] = path.with_name(name)
+    return copies
+
+
+def earlier_copy() -> Path | None:
+    """The newest moved-aside copy, while no chain has been saved since."""
+    path = chain_path()
+    if _is_file(path):
+        return None
+    copies = _unreadable_copies(path)
+    return copies[max(copies)] if copies else None
+
+
+def load_chain_checked() -> tuple[Chain, str]:
+    """
+    Load the saved chain, or say why it could not be read.
+
+    An unreadable file may still hold proxy passwords, so it is moved aside
+    before an edit can save over it, and made owner-only where possible (a
+    hand edit may have left it readable by others). A file that cannot be
+    opened is moved too: a rename needs the folder, not the file. The reason
+    names what is wrong, never what the file contains.
+
+    The move happens when Sentinel starts, so until the next save a missing
+    chain with a copy beside it names the newest copy again.
+    """
+    path = chain_path()
+    present, blocked = _probe(path)
+    if blocked is not None:                             # never read, so never moved
+        return Chain(), f"its folder could not be opened ({blocked.strerror or 'read error'})"
+    if not present:
+        earlier = earlier_copy()
+        return Chain(), (f"it was moved to {earlier.name} earlier" if earlier else "")
+    try:
+        return Chain.from_dict(json.loads(path.read_text(encoding="utf-8"))), ""
+    except OSError as exc:
+        why = f"it could not be opened ({exc.strerror or 'read error'})"
+    except UnicodeDecodeError:
+        why = "it is not UTF-8 text"
+    except json.JSONDecodeError:
+        why = "it is not valid JSON"
+    except RecursionError:
+        why = "it is nested too deeply"
+    except (TypeError, ValueError) as exc:
+        why = str(exc) if isinstance(exc, TypeError) else "it holds a value that cannot be read"
+    number = max(_unreadable_copies(path), default=0) + 1
+    if number > MAX_UNREADABLE_COPIES:
+        return Chain(), (f"{why}, and there are too many earlier unreadable copies, "
+                         "so it will be replaced when you edit the chain")
+    aside = path.with_name(path.name + ".unreadable" + (f"-{number}" if number > 1 else ""))
+    try:
+        paths.ensure_private_dir(path.parent)           # as save_chain does
+    except OSError:
+        pass                                            # the copy's own mode still applies
+    try:
+        if os.path.lexists(aside):                      # never replace an earlier copy
+            raise FileExistsError(aside)
+        path.replace(aside)
+    except OSError:
+        return Chain(), f"{why}, and it could not be moved aside, so it will be replaced when you edit the chain"
+    try:
+        st = os.lstat(aside)
+        # Never through a symlink, and never a file with another name elsewhere.
+        if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+            if os.chmod in os.supports_follow_symlinks:
+                os.chmod(aside, 0o600, follow_symlinks=False)
+            else:
+                os.chmod(aside, 0o600)                  # no lchmod (Linux): lstat ruled out a link
+    except OSError:
+        pass                                            # best-effort: moved, mode unchanged
+    return Chain(), f"{why}; it was moved to {aside.name}"
 
 
 def save_chain(chain: Chain) -> Path:
@@ -209,7 +344,7 @@ def probe(chain: Chain, timeout: float = 20.0) -> ProbeResult:
     Speaks SOCKS directly rather than shelling out to proxychains, so this is a
     real end-to-end test even on a Mac where SIP would defeat the wrapper.
     """
-    problems = [p for p in chain.problems() if "DNS" not in p]
+    problems = chain.probe_problems()
     if problems:
         return ProbeResult(False, error="; ".join(problems))
 

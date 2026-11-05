@@ -47,15 +47,63 @@ class PrivacyTab(GatedTab):
         super().__init__(parent)
         self._loaded = False
         self._interfaces: list = []
-        self._chain = proxychain.load_chain()
+        earlier = proxychain.earlier_copy()          # moved at an earlier launch
+        blocked = proxychain.chain_folder_error()
+        self._chain, chain_error = proxychain.load_chain_checked()
+        # A chain in a folder that could not be opened was never read; saving
+        # would open the folder and replace it, so edits are not saved. Probed on
+        # both sides of the load, so a folder unlocked in between still counts.
+        self._chain_unread = bool(chain_error) and (
+            blocked is not None or proxychain.chain_folder_error() is not None)
+        folder = proxychain.chain_path().parent
+        # Only a copy the user can go back to is pointed at; a file left in place
+        # is about to be replaced, and the reason already says so.
+        # The file may hold nothing usable (empty, binary), so say what it kept, not hops.
+        def kept(copy) -> str:
+            return ("The chain is empty; whatever the old file held, including any "
+                    f"proxy passwords, is still in {copy.name}.")
+        # Kept under the chain until the next chain edit, not only on the shared
+        # status line, which a restore offer or a failed listing can overwrite.
+        if self._chain_unread:                       # before "earlier": it blocks saves
+            self._chain_notice = (
+                f"Could not read the saved proxy chain in {folder}: {chain_error}. "
+                "The chain is empty, and edits are not saved, so the saved chain is "
+                "not replaced. Fix the folder's permissions and restart Sentinel.")
+        elif earlier is not None:
+            self._chain_notice = (
+                f"An earlier saved proxy chain could not be read and was moved to "
+                f"{earlier.name} in {folder}. {kept(earlier)}")
+        elif chain_error:
+            moved = proxychain.earlier_copy()               # moved aside just now
+            self._chain_notice = (
+                f"Could not read the saved proxy chain in {folder}: "
+                f"{chain_error}. {kept(moved) if moved else 'The chain is empty.'}")
+        else:
+            self._chain_notice = ""
+        try:
+            changed = macaddr.recorded()
+            self._mac_notice = ""
+        except macaddr.RecordUnreadable as exc:
+            # Never "nothing recorded": an original may still be waiting in it.
+            changed = {}
+            self._mac_notice = (
+                f"Sentinel {exc.strerror}, so it cannot tell whether it left a hardware "
+                "address changed. Changing an address is refused until it can; Restore "
+                "hardware address still works, but if Sentinel later offers to put back "
+                "an earlier address, you can say no. Fix the folder's permissions and "
+                "restart Sentinel.")
         self._build()
         self._refresh_chain()
+        if self._chain_notice:
+            self._say(self._chain_notice)
+        if self._mac_notice:
+            self._say(self._mac_notice)
         self._show_mac()
         self.refresh_tor()
-        if macaddr.recorded():
+        if changed:
             # A change was left in place by a crash or a declined restore at
             # quit. Reading the record runs nothing; the offer waits for the
-            # event loop so it does not block the window being built.
+            # event loop and lists the interfaces off the UI thread.
             QTimer.singleShot(0, self, self.offer_recorded_restore)
 
     def showEvent(self, event) -> None:
@@ -98,14 +146,16 @@ class PrivacyTab(GatedTab):
         self.mac_hardware_label = QLabel("")
         ml.addWidget(self.mac_current_label)
         ml.addWidget(self.mac_hardware_label)
+        # Kept in the box: the shared status line is overwritten by the next action.
+        self.mac_notice_label = self._info(self._mac_notice)
+        self.mac_notice_label.setVisible(bool(self._mac_notice))
+        ml.addWidget(self.mac_notice_label)
         row = QHBoxLayout()
-        self.mac_mode_box = MenuComboBox()
-        self.mac_mode_box.addItems(list(macaddr.MODES))
         self.mac_random_btn = QPushButton("Randomise…")
         self.mac_random_btn.clicked.connect(self.randomise_mac)
         self.mac_restore_btn = QPushButton("Restore hardware address…")
         self.mac_restore_btn.clicked.connect(self.restore_mac)
-        for w in (self.mac_mode_box, self.mac_random_btn, self.mac_restore_btn):
+        for w in (self.mac_random_btn, self.mac_restore_btn):
             row.addWidget(w)
         ml.addLayout(row)
         ml.addWidget(self._info(macaddr.wifi_private_address_note()))
@@ -202,23 +252,47 @@ class PrivacyTab(GatedTab):
         label.setObjectName("InfoLine")
         return label
 
+    def _controls_changed(self) -> None:
+        self._show_mac()
+        self.refresh_tor()
+        self._show_chain_test()
+
     def _after_finish(self) -> None:
         self.refresh_interfaces()
         self.refresh_tor()
+        self._show_chain_test()
 
     def _set_enabled(self, enabled: bool) -> None:
-        for w in (self.mac_random_btn, self.mac_restore_btn, self.mac_refresh_btn,
+        for w in (self.mac_device_box, self.mac_random_btn, self.mac_restore_btn,
+                  self.mac_refresh_btn,
                   self.tor_start_btn, self.tor_stop_btn, self.tor_check_btn,
-                  self.tor_newnym_btn, self.chain_test_btn):
+                  self.tor_newnym_btn, self.chain_test_btn,
+                  # The chain is not edited while an action runs (a running Test
+                  # chain uses the hops that were confirmed, not later edits).
+                  self.hop_add_btn, self.hop_add_tor_btn, self.hop_remove_btn,
+                  self.hop_up_btn, self.hop_down_btn, self.chain_mode_box):
             w.setEnabled(enabled)
 
     # ── hardware address ──
     def refresh_interfaces(self) -> None:
-        current = self.mac_device_box.currentData()
-        try:
-            self._interfaces = macaddr.list_interfaces()
-        except Exception:
-            self._interfaces = []
+        """List the interfaces off the UI thread; networksetup can take seconds."""
+        if self.busy:
+            return      # Refresh is off while busy; a finishing action refreshes after
+        self._read_off_thread(macaddr.list_interfaces_checked, self._interfaces_listed)
+
+    def _interfaces_listed(self, result) -> None:
+        interfaces, error = result
+        self._interfaces = [] if error else list(interfaces)
+        self._fill_interfaces()     # keeps whatever is selected when the answer lands
+        if error:
+            error = f"Could not list network interfaces: {error}"
+            self.mac_current_label.setText(error)
+            self._say(error)
+
+    def _fill_interfaces(self, current=None) -> None:
+        """Rebuild the combo box from self._interfaces, keeping ``current`` selected."""
+        if current is None:
+            current = self.mac_device_box.currentData()
         self.mac_device_box.blockSignals(True)
         self.mac_device_box.clear()
         for iface in self._interfaces:
@@ -249,19 +323,49 @@ class PrivacyTab(GatedTab):
             + ("  (changed)" if iface.spoofed else ""))
         self.mac_hardware_label.setText(f"Hardware: {iface.hardware or 'unknown'}")
 
-    def randomise_mac(self) -> None:
-        iface = self._selected_interface()
-        if iface is None:
+    def _with_fresh_interface(self, then) -> None:
+        """Read the selected interface again, off the UI thread, then ``then(iface)``.
+
+        The address can change (or the adapter go) between the list and the
+        click, and the confirmation must show what is true when it is asked.
+        A failed listing is reported as such; only a successful listing that
+        lacks the device means it is gone.
+        """
+        selected = self._selected_interface()
+        if selected is None:
             self._refuse("mac-set", "", "Choose a network interface first.")
             return
-        new = macaddr.random_mac(self.mac_mode_box.currentText(), like=iface.hardware)
-        self._set_mac(iface, new, "Randomise hardware address")
+        device = selected.device
+
+        def got(result):
+            fresh, error = result
+            if error:
+                self._refuse("mac-set", device,
+                             f"Could not read the network interfaces: {error}")
+                return
+            if fresh is None:
+                self._interfaces = [i for i in self._interfaces if i.device != device]
+                self._fill_interfaces()
+                self._refuse("mac-set", device, "That interface is no longer available.")
+                return
+            self._interfaces = [fresh if i.device == device else i for i in self._interfaces]
+            index = self.mac_device_box.findData(device)
+            if index >= 0:
+                self.mac_device_box.setItemText(index, fresh.describe())
+            self._show_mac()
+            then(fresh)
+
+        self._read_off_thread(lambda: macaddr.read_interface(device), got)
+
+    def randomise_mac(self) -> None:
+        self._with_fresh_interface(
+            lambda iface: self._set_mac(iface, macaddr.random_mac(),
+                                        "Randomise hardware address"))
 
     def restore_mac(self) -> None:
-        iface = self._selected_interface()
-        if iface is None:
-            self._refuse("mac-set", "", "Choose a network interface first.")
-            return
+        self._with_fresh_interface(self._restore_fresh)
+
+    def _restore_fresh(self, iface) -> None:
         if not iface.hardware:
             self._refuse("mac-set", iface.device,
                          f"The permanent address of {iface.device} is unknown.")
@@ -275,15 +379,37 @@ class PrivacyTab(GatedTab):
             return
         self._set_mac(iface, iface.hardware, "Restore hardware address")
 
+    OFFER_RETRY_MS = 500
+
     def offer_recorded_restore(self) -> None:
-        """Offer back an original address Sentinel changed and did not restore."""
-        try:
-            pending = macaddr.pending_restores()
-        except OSError as exc:
-            self._say(f"Could not read the record of changed addresses: {exc}")
+        """Offer back an original address Sentinel changed and did not restore.
+
+        The check lists the interfaces (an ifconfig per port), so it runs off
+        the UI thread; while another action holds the tab, it waits its turn
+        rather than showing "Busy" to someone who clicked nothing.
+        """
+        if self.busy:
+            QTimer.singleShot(self.OFFER_RETRY_MS, self, self.offer_recorded_restore)
             return
-        if not pending:
-            return
+
+        def read():
+            try:
+                return macaddr.pending_restores(), ""
+            except OSError as exc:
+                return [], f"Could not read the record of changed addresses: {exc}"
+        self._read_off_thread(read, self._offer_pending)
+
+    def _offer_pending(self, result) -> None:
+        pending, error = result
+        if error:
+            self._say(error)
+        if error or not pending or not self._offer(pending):
+            if self._loaded:
+                # A first show during the read skipped its listing (busy); a
+                # restore that ran refreshes in _after_finish instead.
+                self.refresh_interfaces()
+
+    def _offer(self, pending) -> bool:
         lines = "\n".join(f"{device}: {current}  →  {original}"
                           for device, original, current in pending)
         text = ("Sentinel changed the hardware address of these interfaces and did not "
@@ -297,12 +423,16 @@ class PrivacyTab(GatedTab):
             results = macaddr.restore_all_recorded()
             if not results:
                 return True, "Nothing left to restore."
+            # A held device (its change still waiting) may not be one offered,
+            # and its message does not name it.
+            held = (macaddr.HELD_BUSY, macaddr.HELD_NO_BOOT)
             return (all(ok for _, ok, _ in results),
-                    " ".join(message for _, _, message in results))
+                    " ".join(f"{device}: {message}." if message in held else message
+                             for device, _, message in results))
 
-        self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text, restore_all,
-                    after=lambda ok: QMessageBox.information(
-                        self, title, self.status_label.text()))
+        return self._gated("mac-set", " ".join(d for d, _, _ in pending), title, text,
+                           restore_all, after=lambda ok: QMessageBox.information(
+                               self, title, self.status_label.text()))
 
     def _set_mac(self, iface, new: str, title: str) -> None:
         wifi = ("\n\nWi-Fi will be switched off and on, so you will drop off your "
@@ -311,7 +441,9 @@ class PrivacyTab(GatedTab):
                 f"{iface.current or 'unknown'}  →  {new}{wifi}\n\n"
                 "macOS will ask for your administrator password. The change lasts "
                 "until restart or until you restore it.")
-        self._gated("mac-set", f"{iface.device} {iface.current}->{new}", title, text,
+        # The target names the device only: no address belongs in anything a
+        # gate might keep (the Tunnel rules: no logging beyond redacted diagnostics).
+        self._gated("mac-set", iface.device, title, text,
                     lambda: macaddr.set_mac(iface.device, new))
 
     # ── Tor ──
@@ -359,16 +491,28 @@ class PrivacyTab(GatedTab):
         self._gated("tor-check", tor.CHECK_HOST, "Check Tor", text, tor.check)
 
     # ── proxy chain ──
-    def _save_chain(self) -> None:
+    def _save_chain(self) -> bool:
+        """Save the chain; False (and said why) when it was not saved."""
+        if self._chain_unread:
+            self._say("Not saved: the saved proxy chain could not be read when Sentinel "
+                      "started, and saving would replace it. Fix the folder's permissions "
+                      "and restart Sentinel.")
+            return False
         try:
             proxychain.save_chain(self._chain)
         except OSError as exc:
             self._say(f"Could not save the chain: {exc}")
+            return False
+        self._chain_notice = ""          # the saved chain is now this one
+        return True
 
     def _mode_changed(self, mode: str) -> None:
         self._chain.mode = mode
         self._save_chain()
-        self._refresh_chain()
+        # The table does not show the mode, so it is not rebuilt (that would drop
+        # the selected hop); the summary can name a mode problem, so it is.
+        self._show_chain_summary()
+        self._show_chain_test()
 
     def _refresh_chain(self) -> None:
         self.chain_table.setRowCount(0)
@@ -378,11 +522,23 @@ class PrivacyTab(GatedTab):
             for col, value in enumerate(
                     [str(number), hop.kind, hop.host, str(hop.port), hop.username, hop.label]):
                 self.chain_table.setItem(row, col, QTableWidgetItem(value))
-        problems = [p for p in self._chain.problems() if "DNS" not in p]
+        self._show_chain_summary()
+        self._show_chain_test()
+
+    def _show_chain_summary(self) -> None:
+        problems = self._chain_problems()
         self.chain_summary_label.setText(
             f"Chain: {self._chain.describe()}"
-            + (("\nProblems: " + "; ".join(problems)) if problems else ""))
-        self.chain_test_btn.setEnabled(bool(self._chain.hops) and not problems and not self.busy)
+            + (("\nProblems: " + "; ".join(problems)) if problems else "")
+            + (f"\n{self._chain_notice}" if self._chain_notice else ""))
+
+    def _chain_problems(self) -> list[str]:
+        return self._chain.probe_problems()
+
+    def _show_chain_test(self) -> None:
+        # Button state only: rebuilding the table would drop the selected hop.
+        self.chain_test_btn.setEnabled(
+            bool(self._chain.hops) and not self._chain_problems() and not self.busy)
 
     def add_hop(self) -> None:
         hop = ProxyHop(kind=self.hop_kind_box.currentText(),
@@ -396,16 +552,25 @@ class PrivacyTab(GatedTab):
             self._say("Not added: " + "; ".join(problems))
             return
         self._chain.hops.append(hop)
-        self.hop_pass_input.clear()
-        self._save_chain()
+        saved = self._save_chain()
+        if saved:
+            self.hop_pass_input.clear()
+        else:
+            # Not saved, so not added: the table, Write conf and Test chain use
+            # only saved hops, and the password stays typed for another try.
+            self._chain.hops.pop()
         self._refresh_chain()
-        self._say(f"Added {hop.describe()}.")
+        if saved:                        # otherwise keep the reason it was not saved
+            self._say(f"Added {hop.describe()}.")
 
     def add_tor_hop(self) -> None:
         self._chain.hops.append(tor.hop())
-        self._save_chain()
+        saved = self._save_chain()
+        if not saved:
+            self._chain.hops.pop()       # not saved, so not added (as add_hop)
         self._refresh_chain()
-        self._say("Added Tor as a hop.")
+        if saved:
+            self._say("Added Tor as a hop.")
 
     def _selected_row(self) -> int:
         return self.chain_table.currentRow()
@@ -431,6 +596,10 @@ class PrivacyTab(GatedTab):
         self.chain_table.setCurrentCell(target, 0)
 
     def write_conf(self) -> None:
+        if self._chain_unread:           # writing opens the folder the chain is in
+            self._say("Not written: the saved proxy chain could not be read when Sentinel "
+                      "started. Fix the folder's permissions and restart Sentinel.")
+            return
         try:
             path = proxychain.write_proxychains_conf(self._chain)
         except OSError as exc:
@@ -439,7 +608,7 @@ class PrivacyTab(GatedTab):
         self._say(f"Wrote {path} (owner-only; it may contain proxy passwords).")
 
     def test_chain(self) -> None:
-        problems = [p for p in self._chain.problems() if "DNS" not in p]
+        problems = self._chain_problems()
         if problems:
             self._refuse("chain-probe", self._chain.describe(), "; ".join(problems))
             return
@@ -448,6 +617,8 @@ class PrivacyTab(GatedTab):
                 f"{proxychain.PROBE_HOST} through, in order:\n{hops}\n\n"
                 "Every hop sees that a request is made, and the last one sees its "
                 "content. The site sees the chain's exit address.")
-        chain = self._chain
+        # A copy: the probe runs the hops listed above, whatever happens to the
+        # chain while it runs.
+        chain = proxychain.Chain.from_dict(self._chain.to_dict())
         self._gated("chain-probe", proxychain.PROBE_HOST, "Test chain", text,
                     lambda: (lambda r: (r.ok, r.summary()))(proxychain.probe(chain)))

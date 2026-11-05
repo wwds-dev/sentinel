@@ -2,8 +2,6 @@
 
 **Goal:** diagnose your network and understand the lab-only Kali workflow. **Time:** 20 minutes.
 
-![Beacon workspace](docs/training/images/beacon.png)
-
 Use Beacon only on networks you own or have written permission to test.
 
 ## Modes

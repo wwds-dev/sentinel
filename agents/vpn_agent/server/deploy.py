@@ -323,7 +323,10 @@ def _run_local(site: Site, script: str, on_output: OutputCallback | None,
     from agents.vpn_agent.services import privileged
 
     if os.geteuid() == 0:
-        return _stream(["bash", "-s"], script, on_output)
+        # No dialog can be shown to a root process, and this is a gated action:
+        # refuse before the key-bearing installer is written anywhere.
+        return DeployResult(False, error=privileged.ROOT_REFUSAL,
+                            command="(installer not run: Sentinel is running as root)")
 
     import hashlib
 

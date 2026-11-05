@@ -2,8 +2,6 @@
 
 **Goal:** compare the current VPN state with an intended profile, understand the topology, and either create a reviewable configuration or run a gated connection. **Time:** 30 minutes.
 
-![Tunnel workspace. This capture predates the Your IP & DNS group, which sits between VPN Connection and Deployment, and the VPN Apps tab, the last tab after Servers.](docs/training/images/tunnel.png)
-
 Tunnel is for infrastructure you own or administer. It has six distinct
 paths: **VPN Connection (live)** actually connects or disconnects a real
 tunnel, but only through an execution gate; **Connection Check** reads current
@@ -53,7 +51,10 @@ asks a Yes/No question that defaults to **No**. The gate has fixed stages:
    second dialog lists them and also defaults to **No**.
 3. **Administrator prompt** — macOS asks for your password in its own dialog,
    even when an unrelated `sudo` ticket happens to be cached, and Tunnel never
-   stores it. The prompt and the command share a 30-second limit; cancelling the
+   stores it. If Sentinel itself was started as root (with `sudo`), there is no
+   prompt to show, so Tunnel refuses the action and changes nothing: quit and
+   open Sentinel as your normal user. Tunnel waits up to two minutes in all (90 seconds to answer
+   the prompt, plus 30 for the command); cancelling the
    prompt is reported as a failed attempt.
 4. **Post-change check** re-reads local state after the command so the result
    reflects what actually happened, not what was requested.
@@ -82,15 +83,22 @@ Disconnect.
 A WireGuard config can contain `PreUp`, `PostUp`, `PreDown` and `PostDown` lines,
 and an OpenVPN config can contain script or plugin directives such as `up`,
 `down`, `route-up`, `plugin` and `script-security`. The tunnel tool runs these as
-administrator. The Connect review lists each one (cut at 100 characters) in its
-own section and repeats them in the confirmation, and a second dialog asks
-again, defaulting to **No**. Continue only if you wrote them or trust their
-source; if a line is cut off or you do not recognise it, read the file itself
-first.
+administrator. The review lists each one in its own section and repeats them in
+the confirmation, and a second dialog asks again, defaulting to **No**. A long
+hook is shown cut after 300 characters with a note of how many more; **Show
+Details…** lists every hook in full with the file's SHA-256. Continue only if you
+wrote them or trust their source; if you do not recognise a line, read the file
+itself first.
 
-**Known limitation:** the list appears on Connect only — not on Disconnect and not
-in **Inspect config…** — and other `wg-quick` directives such as `SaveConfig` are
-not flagged.
+**Also checked:** Disconnect shows the same review for a WireGuard profile (its
+`PreDown` and `PostDown` lines run then). There, a long hook, an unsafe program
+path or `SaveConfig = true` is shown as a risk and you can still go ahead after an
+extra confirmation; an OpenVPN Disconnect only shows a note. On Connect, a hook
+that starts with an absolute path is refused unless root owns the program and
+every folder above it and none of them can be written by a group or by everyone,
+and a profile with `SaveConfig = true` is refused. If the file changes after you
+confirm and before the password prompt, nothing runs; a change after that is not
+caught yet (audit step S7).
 
 ### Reading the result
 
@@ -309,8 +317,6 @@ own; its result is ignored, and after Emergency Reset it writes nothing into the
 data being erased. A Connect in flight is handled as described under VPN
 Connection.
 
-![Tunnel action preview](docs/training/images/tunnel-action-preview.png)
-
 ## Config Inspection
 
 Select **Inspect config…** and choose a WireGuard `.conf` file when you want to
@@ -338,8 +344,15 @@ Three cards. Each says plainly what it does not do.
 **Hardware address.** Pick an interface, then *Randomise…* or *Restore hardware
 address…*. The review shows `old → new` and warns that Wi-Fi will be switched off
 and on. macOS asks for your administrator password. This changes what the local
-network sees, nothing more: your router still sees your traffic, and the change
-lasts until restart or Restore. For Wi-Fi, also set Private Wi-Fi Address to Off
+network sees, nothing more: your router still sees your traffic. The new address
+is always a locally administered, unicast one. Before changing it, Sentinel notes
+the address you had (if it cannot read it, it refuses and changes nothing). When
+you quit, it puts the original back and macOS asks for your password again; if you
+decline or it fails, Sentinel asks again at the next launch. After a crash, the
+Privacy tab offers the restore when you next open Sentinel. A restart also undoes
+the change, so the note is dropped then. Emergency Reset erases the note, so an
+address that is still changed stays that way until you restart (the final
+confirmation tells you). For Wi-Fi, also set Private Wi-Fi Address to Off
 for that network or macOS may override it.
 
 **Tor.** *Start Tor…* runs a local client on 127.0.0.1:9250 (never a relay).

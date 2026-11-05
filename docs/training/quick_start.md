@@ -2,8 +2,6 @@
 
 **Goal:** complete a safe first request. **Time:** about five minutes.
 
-![Sentinel Chat workspace](docs/training/images/workspace-chat.png)
-
 1. Choose **Chat** in the left sidebar.
 2. Select **General Chat** and type a simple question.
 3. Press **Auto-route** to see the recommended provider and model.

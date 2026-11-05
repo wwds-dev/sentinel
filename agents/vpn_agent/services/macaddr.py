@@ -25,21 +25,27 @@ privacy measure in common use:
 
 from __future__ import annotations
 
-import functools
+import contextlib
 import json
 import os
 import re
 import secrets
-import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from agents.vpn_agent.server import paths
-from agents.vpn_agent.services.privileged import run, run_argv_as_root
+from agents.vpn_agent.services.privileged import ROOT_REFUSAL, run, run_argv_as_root
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9A-Fa-f]{2}$")
+# Anything address-shaped, failing toward hiding: six or more colon or dash
+# groups of one or two hex digits (padded or not, glued to a word or not),
+# Cisco's dotted form, or twelve bare hex digits.
+_ANY_MAC_RE = re.compile(
+    r"(?i)[0-9a-f]{1,2}(?:[:-][0-9a-f]{1,2}){5,}"
+    r"|(?<![0-9a-f])[0-9a-f]{4}(?:\.[0-9a-f]{4}){2}(?![0-9a-f])"
+    r"|(?<![0-9a-f])[0-9a-f]{12}(?![0-9a-f])")
 # BSD interface names: a short lowercase driver name and a unit number. \Z,
 # not $, so a trailing newline is not let through.
 DEVICE_RE = re.compile(r"^[a-z]{2,8}[0-9]{1,3}\Z")
@@ -71,9 +77,10 @@ fi
 /sbin/ifconfig "$dev" ether "$addr"
 """
 
+# The only mode. A "same-vendor" mode (keep the real OUI) was removed on
+# 2026-10-28: it broke the rule that every address is locally administered.
 MODE_LOCAL = "locally-administered"
-MODE_SAME_VENDOR = "same-vendor"
-MODES = (MODE_LOCAL, MODE_SAME_VENDOR)
+MODES = (MODE_LOCAL,)
 
 
 @dataclass
@@ -103,8 +110,16 @@ class Interface:
 
 
 def list_interfaces() -> list[Interface]:
+    """The interfaces, or [] when they cannot be listed (see list_interfaces_checked)."""
+    return list_interfaces_checked()[0]
+
+
+def list_interfaces_checked() -> tuple[list[Interface], str]:
     """
-    Enumerate hardware ports and their addresses.
+    Enumerate hardware ports and their addresses: (interfaces, error).
+
+    ``error`` is empty on success and says why when the listing itself failed,
+    so "could not look" is not mistaken for "nothing there".
 
     `networksetup -listallhardwareports` reports the *permanent* address burned
     into the hardware, while `ifconfig` reports what is in use right now. Both
@@ -114,7 +129,7 @@ def list_interfaces() -> list[Interface]:
     interfaces: list[Interface] = []
     ok, output = run(["networksetup", "-listallhardwareports"])
     if not ok:
-        return interfaces
+        return interfaces, redact_addresses((output or "networksetup failed").strip())[:200]
 
     port = ""
     device = ""
@@ -133,7 +148,7 @@ def list_interfaces() -> list[Interface]:
                               current=current_mac(device))
                 )
             device = ""
-    return interfaces
+    return interfaces, ""
 
 
 def current_mac(device: str) -> str:
@@ -156,11 +171,26 @@ def wifi_power(device: str) -> str:
     return word if word in ("On", "Off") else ""
 
 
-def get_interface(device: str) -> Interface | None:
-    for interface in list_interfaces():
+def _find_interface(device: str) -> tuple[Interface | None, str]:
+    """(interface, refusal): one listing decides both, so the wording cannot disagree with it."""
+    interface, error = read_interface(device)
+    if interface is not None:
+        return interface, ""
+    if error:
+        return None, f"Could not read the network interfaces: {error.rstrip('.')}. Nothing was changed."
+    return None, f"No such interface: {device}"
+
+
+def read_interface(device: str) -> tuple[Interface | None, str]:
+    """(the interface, error): ``(None, "")`` means it is not there, a
+    non-empty error means the listing failed and nothing is known."""
+    interfaces, error = list_interfaces_checked()
+    if error:
+        return None, error
+    for interface in interfaces:
         if interface.device == device:
-            return interface
-    return None
+            return interface, ""
+    return None, ""
 
 
 # ── Generating an address ────────────────────────
@@ -168,27 +198,29 @@ def get_interface(device: str) -> Interface | None:
 
 def random_mac(mode: str = MODE_LOCAL, like: str = "") -> str:
     """
-    Generate an address.
+    Generate a locally administered unicast address.
 
-    MODE_LOCAL sets the locally-administered bit and clears the multicast bit,
-    which is the correct way to mint an address that cannot collide with a real
-    manufacturer's. It is also, by construction, visibly not a real vendor —
-    a network operator looking for spoofed clients can spot it.
+    Sets the locally-administered bit and clears the multicast bit, which is
+    the correct way to mint an address that cannot collide with a real
+    manufacturer's. It is also, by construction, visibly not a real vendor.
 
-    MODE_SAME_VENDOR keeps the first three octets of the existing address and
-    randomises the rest, so the interface still looks like the same make of
-    hardware. Less conspicuous, at the cost of using an OUI that is not ours to
-    use.
+    ``mode`` and ``like`` are accepted only so an old caller or saved setting
+    that still names the removed "same-vendor" mode falls back to this one:
+    neither changes the result, and a real OUI is never copied.
     """
-    if mode == MODE_SAME_VENDOR and MAC_RE.match(like or ""):
-        prefix = like.lower().split(":")[:3]
-        suffix = [f"{secrets.randbelow(256):02x}" for _ in range(3)]
-        return ":".join(prefix + suffix)
-
     # Bit 0 clear = unicast; bit 1 set = locally administered.
     first = (secrets.randbelow(256) & 0xFE) | 0x02
     rest = [f"{secrets.randbelow(256):02x}" for _ in range(5)]
     return ":".join([f"{first:02x}", *rest])
+
+
+def redact_addresses(text: str) -> str:
+    """``text`` with every hardware address replaced, for output that is kept
+    (stderr goes to a launch log file). The device name and the reason stay.
+    Matches the colon and dash forms (padded or not, any run of six or more
+    groups), the dotted form and twelve bare hex digits; something else that
+    looks like one (part of an IPv6 address, the tail of a UUID) is hidden too."""
+    return _ANY_MAC_RE.sub("<address>", text or "")
 
 
 def valid_device(device: str) -> bool:
@@ -199,8 +231,9 @@ def is_valid(address: str) -> bool:
     if not MAC_RE.match(address or ""):
         return False
     first = int(address.split(":")[0], 16)
-    # A multicast address as a source is invalid and some drivers reject it.
-    return not (first & 0x01)
+    if first & 0x01:        # multicast, and so broadcast: invalid as a source
+        return False
+    return int(address.replace(":", ""), 16) != 0     # all zeros is not an address
 
 
 # ── The record of what Sentinel changed ──────────
@@ -218,27 +251,51 @@ def is_valid(address: str) -> bool:
 # whose hardware no longer matches is dropped too.
 
 _lock = threading.RLock()            # the record file and _in_flight
-_in_flight: set[str] = set()         # devices whose root command has not returned
+_in_flight: dict[str, int] = {}      # device -> changes listing or waiting for root
+# The root helper's whole argument tail ($0, device, address, Wi-Fi flag) in
+# any process (the dialog's osascript carries it); a change from a process
+# that has since quit. The full shape, so a grep that mentions it is not one.
+_ELSEWHERE_RE = re.compile(
+    r"\bsentinel-mac ([a-z]{2,8}[0-9]{1,3}) [0-9a-f]{2}(?::[0-9a-f]{2}){5} [01]\b")
 
 
 def record_path() -> Path:
     return paths.state_dir() / "mac_original.json"
 
 
+class RecordUnreadable(OSError):
+    """The record (or its folder) is there but cannot be read.
+
+    Never "nothing recorded": it may hold an original still to be put back,
+    so nothing reads past it and nothing saves over it.
+    """
+
+
 BOOT_UUID_RE = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\Z")
 
 
-@functools.cache
+_boot: list[str] = []                # the boot ID once read; a failed read is not kept
+
+
 def boot_id() -> str:
     """kern.bootsessionuuid, or '' when it cannot be read (then nothing is dropped).
 
     Not kern.boottime: XNU shifts that on wake and on a clock step to keep
     boot time plus uptime equal to the wall clock, so within one boot its
     seconds can change and a live record would be taken for a stale one.
+    Only a good read is cached: a cached failure would make every later
+    record boot-less, and a boot-less entry survives reboots.
     """
-    ok, output = run(["sysctl", "-n", "kern.bootsessionuuid"])
-    uuid = output.strip().upper() if ok else ""
-    return uuid if BOOT_UUID_RE.match(uuid) else ""
+    if not _boot:
+        ok, output = run(["sysctl", "-n", "kern.bootsessionuuid"])
+        uuid = output.strip().upper() if ok else ""
+        if not BOOT_UUID_RE.match(uuid):
+            return ""
+        _boot.append(uuid)
+    return _boot[0]
+
+
+boot_id.cache_clear = _boot.clear    # type: ignore[attr-defined]
 
 
 def _valid_entry(device, entry) -> bool:
@@ -252,21 +309,33 @@ def _read_entries() -> tuple[dict[str, dict[str, str]], bool]:
     """(the valid entries of this boot, whether the file holds anything else).
 
     Entries that are not a valid interface name and addresses are dropped:
-    the file must never be a way to steer the root helper.
+    the file must never be a way to steer the root helper. Raises
+    RecordUnreadable when the file or its folder cannot be read; asking
+    ``exists()`` instead raised for a folder that cannot be searched (3.11-3.13)
+    or answered False (3.14), which read as nothing recorded.
     """
+    path = record_path()
     try:
-        data = json.loads(record_path().read_text())
-    except (OSError, ValueError):
-        return {}, record_path().exists()
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, NotADirectoryError):
+        return {}, False
+    except OSError as exc:
+        raise RecordUnreadable(
+            exc.errno, f"could not read {path.name} in {path.parent}: "
+            f"{exc.strerror or type(exc).__name__}") from exc
+    except (ValueError, RecursionError):              # deep nesting: damaged
+        return {}, True
     if not isinstance(data, dict):
         return {}, True
     entries = {device: {key: entry[key].lower() if key != "boot" else entry[key]
                         for key in ("original", "hardware", "boot")}
                for device, entry in data.items() if _valid_entry(device, entry)}
     if entries:
+        # A known boot drops every entry not made in it, a boot-less one too
+        # (older versions wrote those); an unknown boot is no proof of a reboot.
         boot = boot_id()
         entries = {device: entry for device, entry in entries.items()
-                   if not (boot and entry["boot"] and entry["boot"] != boot)}
+                   if not (boot and entry["boot"] != boot)}
     return entries, len(entries) != len(data)
 
 
@@ -274,7 +343,7 @@ def recorded() -> dict[str, str]:
     """device -> the address it had before Sentinel first changed it, this boot.
 
     Reads one file (and, when it holds entries, the boot ID), so a quit with
-    no change pending costs nothing.
+    no change pending costs nothing. Raises RecordUnreadable.
     """
     return {device: entry["original"] for device, entry in _read_entries()[0].items()}
 
@@ -282,6 +351,37 @@ def recorded() -> dict[str, str]:
 def in_flight() -> frozenset[str]:
     with _lock:
         return frozenset(_in_flight)
+
+
+@contextlib.contextmanager
+def _busy(device: str):
+    """Mark ``device`` in flight, from its listing until root has answered.
+
+    A count, not a set: the first of two overlapping changes to finish must
+    not clear the mark of the other.
+    """
+    with _lock:
+        _in_flight[device] = _in_flight.get(device, 0) + 1
+    try:
+        yield
+    finally:
+        with _lock:
+            _in_flight[device] -= 1
+            if not _in_flight[device]:
+                del _in_flight[device]
+
+
+def _changes_elsewhere() -> set[str] | None:
+    """Devices with a change waiting in any process, None when ps fails.
+
+    The admin dialog outlives os._exit: a Quit anyway leaves it open, and the
+    next launch's _in_flight knows nothing of it.
+    """
+    try:
+        ok, output = run(["ps", "-axww", "-o", "command="])
+    except ValueError:              # undecodable output: as unreadable as a failure
+        return None
+    return set(_ELSEWHERE_RE.findall(output)) if ok else None
 
 
 def _save_record(entries: dict[str, dict[str, str]]) -> None:
@@ -304,7 +404,10 @@ def _save_record(entries: dict[str, dict[str, str]]) -> None:
 def _remember(device: str, original: str, hardware: str) -> None:
     with _lock:
         entries, _ = _read_entries()
-        if device not in entries:          # the first original wins
+        # The first original wins, unless the entry is another adapter's
+        # under a reused name: pending_restores would drop it, leaving this
+        # change unrecorded.
+        if (entries.get(device) or {}).get("hardware") != hardware.lower():
             entries[device] = {"original": original.lower(), "hardware": hardware.lower(),
                                "boot": boot_id()}
             _save_record(entries)
@@ -312,9 +415,19 @@ def _remember(device: str, original: str, hardware: str) -> None:
 
 def _forget(device: str) -> None:
     with _lock:
-        entries, stale = _read_entries()
+        try:
+            entries, stale = _read_entries()
+        except RecordUnreadable:
+            return              # left as it is: saving would replace the unread record
         if entries.pop(device, None) is not None or stale:
             _save_record(entries)
+
+
+HELD_BUSY = ("a change to it was still waiting for an answer, so it was left as it is; "
+             "it stays recorded and is offered again at the next launch")
+HELD_NO_BOOT = ("Sentinel could not read this Mac's boot ID, so it cannot tell whether the "
+                "record is from before a restart; it stays recorded and is offered again "
+                "once the boot ID can be read")
 
 
 def pending_restores() -> list[tuple[str, str, str]]:
@@ -323,35 +436,68 @@ def pending_restores() -> list[tuple[str, str, str]]:
     An interface already back on its original is forgotten, and so is one
     whose hardware no longer matches (another adapter under the same name).
     One that cannot be read now (an unplugged adapter) is kept but not
-    offered: there is nothing to restore it on. A device whose own change is
-    still waiting for root (a Quit anyway during the dialog) is left alone:
-    its outcome is unknown, and the next launch decides.
+    offered: there is nothing to restore it on. A device whose change is
+    still listing or waiting for root, in this process or in one that quit
+    with its dialog open, is left alone: its outcome is unknown, and the next
+    launch decides. While the boot ID cannot be read, nothing is offered: an
+    entry kept then may be an earlier boot's, and putting its address back
+    would replace one Sentinel never changed. Raises RecordUnreadable, and
+    then forgets nothing.
     """
+    return _pending()[0]
+
+
+def _pending() -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
+    """pending_restores, plus (device, why) for each changed device it held back."""
     with _lock:
         entries, stale = _read_entries()
         if stale:
             _save_record(entries)
         busy = set(_in_flight)
+    if not entries:
+        return [], []
+    # Unknown (None): an orphaned dialog may still land, so nothing back on
+    # its original is forgotten; a changed one is still offered.
+    elsewhere = _changes_elsewhere()
+    busy |= elsewhere or set()
+    held = [(device, HELD_BUSY) for device in sorted(entries) if device in busy]
     entries = {device: entry for device, entry in entries.items() if device not in busy}
     if not entries:
-        return []
+        return [], held
+    boot = boot_id()            # read again: the record's read may have found none
     ports = {interface.device: interface for interface in list_interfaces()}
     pending = []
     for device, entry in entries.items():
         port = ports.get(device)
         if port is None or not port.current:
             continue
-        if port.hardware != entry["hardware"] or port.current == entry["original"]:
+        if port.hardware != entry["hardware"]:
             _forget(device)
+        elif port.current == entry["original"]:
+            with _lock:
+                # Again, just before forgetting: a change may have begun here
+                # since the snapshot, and its record is the one about to go.
+                if elsewhere is not None and device not in _in_flight:
+                    _forget(device)
+        elif not boot:
+            held.append((device, HELD_NO_BOOT))
+        elif entry["boot"] != boot:
+            continue            # kept while the boot was unknown: an earlier boot's
         else:
             pending.append((device, entry["original"], port.current))
-    return pending
+    return pending, held
 
 
 def restore_all_recorded() -> list[tuple[str, bool, str]]:
-    """Put every recorded original back; a refused one stays recorded."""
-    results = []
-    for device, original, _ in pending_restores():
+    """Put every recorded original back; a refused one stays recorded.
+
+    A changed device held back (its change still waiting, or the boot ID
+    unreadable) is reported as not restored, with why, so a quit names it.
+    Raises RecordUnreadable: an unread record is never taken for an empty one.
+    """
+    pending, held = _pending()
+    results = [(device, False, why) for device, why in held]
+    for device, original, _ in pending:
         # "original", not "hardware": it is often a private Wi-Fi address.
         ok, message = set_mac(device, original,
                               prompt=f"Put back the original address of {device}")
@@ -360,6 +506,12 @@ def restore_all_recorded() -> list[tuple[str, bool, str]]:
 
 
 # ── Applying it ──────────────────────────────────
+
+
+def _unread_refusal(exc: RecordUnreadable, device: str) -> str:
+    return (f"Sentinel {exc.strerror}, so it cannot tell whether {device} still has an "
+            "address to put back, and could not record the one it uses now. "
+            "Nothing was changed.")
 
 
 def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
@@ -371,27 +523,63 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
     like it worked. Cycling power on the interface is the reliable way to force
     it on current macOS, where the old `airport -z` tool no longer exists.
     """
+    return _change(device, address, prompt, None)
+
+
+def _change(device: str, address: str, prompt: str,
+            found: tuple[Interface | None, str] | None) -> tuple[bool, str]:
+    """set_mac's body. ``found`` is a listing the caller already took (restore),
+    so one call reads the interfaces once; None means list them here."""
     if not valid_device(device):
         return False, f"{device!r} is not a valid interface name."
     if not is_valid(address):
         return False, f"{address!r} is not a usable unicast MAC address."
 
-    interface = get_interface(device)
-    if interface is None:
-        return False, f"No such interface: {device}"
-    if not interface.current:
-        return False, (f"Sentinel could not read the address {device} is using now, so it "
-                       "could not record it for restoring. Nothing was changed.")
+    with _busy(device):
+        interface, refusal = found if found is not None else _find_interface(device)
+        if interface is None:
+            return False, refusal
+        if not interface.current:
+            return False, (f"Sentinel could not read the address {device} is using now, so it "
+                           "could not record it for restoring. Nothing was changed.")
 
-    address = address.lower()
-    with _lock:
-        _in_flight.add(device)
-    try:
+        address = address.lower()
+        # Only a record pending_restores would still act on opens the guard: one
+        # for this device whose hardware is this interface's (it drops the rest).
+        try:
+            entry = _read_entries()[0].get(device) or {}
+        except RecordUnreadable as exc:
+            if address != interface.hardware:
+                # The unread record may hold this device's first original;
+                # recording what it uses now (perhaps a changed address) would
+                # save over it. Going back to the hardware needs no record.
+                return False, _unread_refusal(exc, device)
+            entry = {}
+        restorable = entry.get("hardware") == interface.hardware
+        if (address != interface.hardware and not restorable
+                and not is_valid(interface.current)):
+            # What it uses now is the "original" a restore would put back; an
+            # all-zero or multicast one cannot be recorded (the record drops it),
+            # so a change would leave nothing to restore. Fail closed.
+            return False, (f"Sentinel could not record the address {device} is using now "
+                           f"({interface.current}) for restoring. Nothing was changed.")
+        if (address != interface.hardware and not boot_id()
+                and not (restorable and address == entry["original"])):
+            # A record must name its boot, or it would outlive the change; and
+            # an entry kept only because the boot is unknown may be an earlier
+            # boot's, so it cannot stand in for this change's. Only a way back.
+            return False, (f"Sentinel could not read this Mac's boot ID, so it could not "
+                           f"record the address {device} is using now for restoring. "
+                           "Nothing was changed.")
+
         # Recorded before root runs: a crash after the change must still find
         # it. Going back to the hardware address needs no record (and must not
         # record someone else's change as ours to put back).
         if address != interface.hardware:
-            _remember(device, interface.current, interface.hardware)
+            try:
+                _remember(device, interface.current, interface.hardware)
+            except RecordUnreadable as exc:     # locked since the read above
+                return False, _unread_refusal(exc, device)
 
         # Sentinel's gated actions always use the macOS dialog, never a cached
         # sudo ticket left by some unrelated command.
@@ -402,16 +590,18 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
             allow_cached_sudo=False,
         )
         applied = current_mac(device)
-        # Only a finished command or a cancelled dialog is a known outcome. A
-        # timeout can land after this read (root keeps running once the
-        # password is in), so the record stays until pending_restores sees
-        # the original back.
-        settled = ok or output == "Cancelled."
-        if settled and applied and applied in (interface.hardware, recorded().get(device)):
-            _forget(device)
-    finally:
-        with _lock:
-            _in_flight.discard(device)
+        # Only a finished command, a cancelled dialog or a refusal to run as
+        # root is a known outcome. A timeout can land after this read (root
+        # keeps running once the password is in), so the record stays until
+        # pending_restores sees the original back.
+        settled = ok or output in ("Cancelled.", ROOT_REFUSAL)
+        if settled and applied:
+            try:
+                original = recorded().get(device)
+            except RecordUnreadable:
+                original = None         # unknown: only the hardware address settles it
+            if applied in (interface.hardware, original):
+                _forget(device)
     if not ok:
         # Timed out, refused or failed partway: say what the interface is
         # doing now, since the root side may still have run.
@@ -433,25 +623,26 @@ def set_mac(device: str, address: str, *, prompt: str = "") -> tuple[bool, str]:
 
 
 def randomize(device: str, mode: str = MODE_LOCAL) -> tuple[bool, str]:
-    interface = get_interface(device)
-    if interface is None:
-        return False, f"No such interface: {device}"
-    return set_mac(device, random_mac(mode, like=interface.hardware))
+    # random_mac ignores `like`, so set_mac's own listing is the only one needed.
+    return set_mac(device, random_mac(mode))
 
 
 def restore(device: str) -> tuple[bool, str]:
     """Put back the address the hardware shipped with."""
-    interface = get_interface(device)
-    if interface is None:
-        return False, f"No such interface: {device}"
-    if not interface.hardware:
-        return False, f"The permanent address of {device} is unknown."
-    if not interface.current:
-        # Empty is unknown, not "unchanged": `spoofed` is False for it.
-        return False, f"Sentinel could not read the address {device} is using now."
-    if not interface.spoofed:
-        return True, f"{device} is already using its hardware address."
-    return set_mac(device, interface.hardware)
+    if not valid_device(device):       # before the listing, as set_mac does
+        return False, f"{device!r} is not a valid interface name."
+    with _busy(device):
+        interface, refusal = _find_interface(device)
+        if interface is None:
+            return False, refusal
+        if not interface.hardware:
+            return False, f"The permanent address of {device} is unknown."
+        if not interface.current:
+            # Empty is unknown, not "unchanged": `spoofed` is False for it.
+            return False, f"Sentinel could not read the address {device} is using now."
+        if not interface.spoofed:
+            return True, f"{device} is already using its hardware address."
+        return _change(device, interface.hardware, "", (interface, ""))
 
 
 def wifi_private_address_note() -> str:
