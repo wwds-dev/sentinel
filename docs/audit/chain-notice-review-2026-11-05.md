@@ -136,3 +136,43 @@ Suggested fix, which covers both ways of being killed: have each FIFO test hold 
 - The redundant `try` around `ensure_private_dir` (M16).
 
 **Not verified:** the full suite; the commit's 15 mutants; Linux (no lchmod) behaviour beyond the monkeypatched tests; launching the app with the P3-1 file; the contents of `docs/company/app-context.md`, which is missing from this worktree.
+
+---
+
+# Addendum: independent review of a571747 (answers P3-1, P3-2 and P3-4 above; P3-3 deferred)
+
+Reviewer: Opus 5.5, read-only (`code-reviewer`), 2026-11-05; a different agent from the author. Saved by the author's session from the reviewer's report.
+
+**Verdict: ready to merge. No P0, P1 or P2 findings.** P3-1, P3-2 and P3-4 are closed. One new P3 (TODO wording), fixed in the commit that adds this addendum.
+
+| Check | Method | Result |
+|---|---|---|
+| Target suites | `pytest -q tests/test_vpn_socks_chain.py tests/test_vpn_privacy_tab.py` | 113 passed in 1.97 s |
+| FIFO unblock path | `-k "not_a_regular and fifo"` under the `exists()` mutant | `Failed: load_chain_checked() opened a FIFO` in 6.4 s; no ENXIO, no thread-exception warning, no leftover thread; the writer fd is closed at once |
+| Other names that can make the loader raise | read `_unreadable_copies` | None: after `isascii() and isdigit()`, `int()` only sees `[0-9]+` (at most ~228 digits, under the 4300-digit limit); empty suffix, non-UTF-8 (surrogate-escaped) names, `-0` and `-1` are skipped |
+| TODO.md:156 facts | `git grep`, `git branch -a --contains`, `git worktree list`, `ps` (read-only) | Accurate except the pinned SHA (P3-1 below); orphan `bash` 65541 (ppid 1) still carries the `true \|\| unverified` mutant with its `head` blocked |
+| TODO.md:139 | against the report and diff | Accurate |
+| Tree at end | `git status --short` | empty |
+
+No live MAC, Wi-Fi, root, tunnel or network action was run; no `.env` read; no process killed.
+
+| # | Mutant | Result | Killed by |
+|---|---|---|---|
+| A | `isascii()` dropped | Killed | `test_a_hand_made_copy_name_never_stops_the_loader` (alone); `…names_the_newest_earlier_copy[names0]` with `-x` |
+| B | `isdigit()` dropped | Killed | `…names_the_newest_earlier_copy[names0]` |
+| C | `is_file()` → `exists()` | Killed | `[directory]`, `[fifo]` (FIFO in ~6 s by `pytest.fail`) |
+| D | `is_file()` → `os.path.lexists()` | Killed | `[directory]`, `[fifo]`, `[dangling-link]` |
+| E | `exists() or is_dir()` | Killed | `[fifo]` only (6.8 s), so the FIFO case has value of its own |
+| F | `int(suffix) if suffix.isdigit() else 0` | Survived, equivalent (the guard above filters) | none |
+
+### P3-1 (addendum): TODO.md:156 pinned the other worktree's detached HEAD at a SHA that had moved on
+The worktree `.claude/worktrees/intelligent-archimedes-e15a0e` was at `3ca1f6c` (parent `03b2d57`); neither is on any branch, and the worktree is in active use. Fix: say "only on the detached HEAD of that worktree (from `03b2d57` on), which no branch contains", and note that removing the worktree without a branch loses those commits. **Fixed** in the commit that adds this addendum.
+
+### Checked, not findings
+- The TODO's suggested fix (a held-open `O_RDWR | O_NONBLOCK` writer end) is sound: `head`'s open succeeds and its read sees EOF at teardown or when pytest dies, even by SIGKILL.
+- A FIFO-test worker that raises instead of hanging still fails the test (`IndexError`), less clearly; the raise path is pinned on the main thread by `test_a_hand_made_copy_name…`.
+- The unblock `os.open` would raise for the directory or dangling-link cases, but is only reached when the worker is alive, which cannot happen for those.
+- No CHANGELOG entry needed: the `²` crash came in with 924d1f5 on this unmerged branch and never shipped.
+- `Path.is_file()` can still raise `PermissionError` on 3.11 when the state folder cannot be searched; pre-existing, folder is 0700 and owner-owned. Out of scope.
+
+**Not verified:** the full suite (run by the author); Linux behaviour; launching the app.
