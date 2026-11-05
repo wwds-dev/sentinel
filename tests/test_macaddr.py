@@ -28,6 +28,15 @@ def _same_boot(monkeypatch):
     monkeypatch.setattr(macaddr, "boot_id", lambda: BOOT)
 
 
+REAL_ELSEWHERE = getattr(macaddr, "_changes_elsewhere", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_other_process(monkeypatch):
+    """No change is waiting in another process unless a test says so."""
+    monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: set())
+
+
 @pytest.fixture
 def root(monkeypatch):
     """Record every root call macaddr makes; the address 'takes' by default."""
@@ -1059,3 +1068,72 @@ def test_a_restore_to_a_private_original_forgets_the_record(monkeypatch, state, 
     root["mac"] = PRIVATE
     assert macaddr.set_mac("en5", PRIVATE)[0]
     assert macaddr.recorded() == {}
+
+
+# ── Re-audit 2 P3-1, P3-2: a change still waiting for root, here or in an earlier process ──
+
+def test_the_device_is_in_flight_while_it_is_listed(monkeypatch, state, root):
+    """P3-2: a quit during the listing must not restore under a change about to ask for root."""
+    seen = []
+
+    def listing(d):
+        seen.append(d in macaddr.in_flight())
+        return _iface(device=d, current=NEW if seen[1:] else ORIG), ""
+    monkeypatch.setattr(macaddr, "read_interface", listing)
+    macaddr.set_mac("en5", NEW)
+    root["mac"] = ORIG
+    macaddr.restore("en5")
+    assert seen == [True, True] and not macaddr.in_flight()
+
+
+def test_in_flight_is_a_count(monkeypatch, state, root):
+    """P3-2: the first of two overlapping changes to finish must not clear the other's mark."""
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d), ""))
+    with macaddr._busy("en5"):
+        macaddr.set_mac("en5", NEW)
+        assert macaddr.in_flight() == {"en5"}
+    assert not macaddr.in_flight()
+
+
+PS = ("  PID COMMAND\n/usr/bin/osascript -e do shell script \"/bin/bash -c 'dev=$1; addr=$2\n"
+      "/sbin/ifconfig \\\"$dev\\\" ether \\\"$addr\\\"\n' sentinel-mac en5 02:11:22:33:44:55 1\" "
+      "with prompt \"x\" with administrator privileges\n/bin/zsh -c echo sentinel-mac\n"
+      "/bin/echo sentinel-mac en1234 x\n")      # not a device name: no en123
+
+
+def test_changes_elsewhere_reads_the_process_list(monkeypatch):
+    seen = []
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: seen.append(argv) or (True, PS))
+    assert REAL_ELSEWHERE() == {"en5"}
+    assert seen == [["ps", "-axww", "-o", "command="]]
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: (False, "ps: failed"))
+    assert REAL_ELSEWHERE() is None
+
+
+def test_an_orphaned_dialog_keeps_the_record(monkeypatch, state):
+    """P3-1: a relaunch while the last process's dialog is still open must not forget it."""
+    _write_record({"en5": ORIG, "en6": ORIG})
+    _ports(monkeypatch, {"en5": ORIG, "en6": NEW})
+    monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: {"en5", "en6"})
+    assert macaddr.pending_restores() == []
+    assert macaddr.recorded() == {"en5": ORIG, "en6": ORIG}
+
+
+def test_an_unreadable_process_list_forgets_nothing_but_still_offers(monkeypatch, state):
+    _write_record({"en5": ORIG, "en6": ORIG})
+    _ports(monkeypatch, {"en5": ORIG, "en6": NEW})
+    monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: None)
+    assert macaddr.pending_restores() == [("en6", ORIG, NEW)]
+    assert macaddr.recorded() == {"en5": ORIG, "en6": ORIG}
+
+
+def test_another_adapter_is_still_dropped_when_the_process_list_is_unreadable(monkeypatch, state):
+    _write_record({"en7": ORIG})
+    _ports(monkeypatch, {"en7": NEW}, hardware={"en7": "aa:bb:cc:00:00:99"})
+    monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: None)
+    assert macaddr.pending_restores() == [] and macaddr.recorded() == {}
+
+
+def test_no_process_list_is_read_without_a_record(monkeypatch, state):
+    monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: pytest.fail("ps run for nothing"))
+    assert macaddr.pending_restores() == []
