@@ -49,6 +49,9 @@ class PrivacyTab(GatedTab):
         self._interfaces: list = []
         earlier = proxychain.earlier_copy()          # moved at an earlier launch
         self._chain, chain_error = proxychain.load_chain_checked()
+        # A chain in a folder that could not be opened was never read; saving
+        # would open the folder and replace it, so edits are not saved.
+        self._chain_unread = bool(chain_error) and proxychain.chain_folder_error() is not None
         folder = proxychain.chain_path().parent
         # Only a copy the user can go back to is pointed at; a file left in place
         # is about to be replaced, and the reason already says so.
@@ -62,6 +65,11 @@ class PrivacyTab(GatedTab):
             self._chain_notice = (
                 f"An earlier saved proxy chain could not be read and was moved to "
                 f"{earlier.name} in {folder}. {kept(earlier)}")
+        elif self._chain_unread:
+            self._chain_notice = (
+                f"Could not read the saved proxy chain in {folder}: {chain_error}. "
+                "The chain is empty, and edits are not saved, so the saved chain is "
+                "not replaced. Fix the folder's permissions and restart Sentinel.")
         elif chain_error:
             moved = proxychain.earlier_copy()               # moved aside just now
             self._chain_notice = (
@@ -436,13 +444,20 @@ class PrivacyTab(GatedTab):
         self._gated("tor-check", tor.CHECK_HOST, "Check Tor", text, tor.check)
 
     # ── proxy chain ──
-    def _save_chain(self) -> None:
+    def _save_chain(self) -> bool:
+        """Save the chain; False (and said why) when it was not saved."""
+        if self._chain_unread:
+            self._say("Not saved: the saved proxy chain could not be read when Sentinel "
+                      "started, and saving would replace it. Fix the folder's permissions "
+                      "and restart Sentinel.")
+            return False
         try:
             proxychain.save_chain(self._chain)
         except OSError as exc:
             self._say(f"Could not save the chain: {exc}")
-            return
+            return False
         self._chain_notice = ""          # the saved chain is now this one
+        return True
 
     def _mode_changed(self, mode: str) -> None:
         self._chain.mode = mode
@@ -491,15 +506,17 @@ class PrivacyTab(GatedTab):
             return
         self._chain.hops.append(hop)
         self.hop_pass_input.clear()
-        self._save_chain()
+        saved = self._save_chain()
         self._refresh_chain()
-        self._say(f"Added {hop.describe()}.")
+        if saved:                        # otherwise keep the reason it was not saved
+            self._say(f"Added {hop.describe()}.")
 
     def add_tor_hop(self) -> None:
         self._chain.hops.append(tor.hop())
-        self._save_chain()
+        saved = self._save_chain()
         self._refresh_chain()
-        self._say("Added Tor as a hop.")
+        if saved:
+            self._say("Added Tor as a hop.")
 
     def _selected_row(self) -> int:
         return self.chain_table.currentRow()

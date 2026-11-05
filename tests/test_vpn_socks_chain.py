@@ -489,6 +489,7 @@ def test_earlier_copy_is_only_reported_while_no_chain_is_saved(tmp_path, monkeyp
     assert proxychain.earlier_copy() is None
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="mode 000 does not stop root")
 def test_an_unsearchable_folder_is_reported_not_raised(tmp_path, monkeypatch):
     # Review of 4bf546d, P3-3: Path.is_file() raises PermissionError there on 3.11.
     state = tmp_path / "state"
@@ -504,3 +505,21 @@ def test_an_unsearchable_folder_is_reported_not_raised(tmp_path, monkeypatch):
         state.chmod(0o700)
     assert chain.hops == [] and error == "its folder could not be opened (Permission denied)"
     assert proxychain.chain_path().read_text().startswith('{"hops"')     # never moved
+
+
+@pytest.mark.parametrize("found", [False, True])
+def test_the_folder_check_does_not_depend_on_is_file_raising(tmp_path, monkeypatch, found):
+    # Review of 19efce1, P3-1: from Python 3.14 Path.is_file() answers False in a
+    # folder that cannot be searched; the loader must still say why.
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    real_stat = os.stat
+
+    def locked(path, *a, **k):
+        if Path(path) == proxychain.chain_path():
+            raise PermissionError(13, "Permission denied")
+        return real_stat(path, *a, **k)
+    monkeypatch.setattr(os, "stat", locked)
+    monkeypatch.setattr(Path, "is_file", lambda self: found)     # either answer
+    chain, error = proxychain.load_chain_checked()
+    assert chain.hops == [] and error == "its folder could not be opened (Permission denied)"
+    assert isinstance(proxychain.chain_folder_error(), PermissionError)

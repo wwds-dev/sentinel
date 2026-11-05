@@ -128,15 +128,30 @@ def chain_path() -> Path:
     return paths.state_dir() / "proxychain.json"
 
 
-def _is_file(path: Path) -> bool:
-    """``Path.is_file()``, but a folder that cannot be searched counts as no file.
+def _probe(path: Path) -> tuple[bool, OSError | None]:
+    """
+    Whether ``path`` is a regular file, and the error if its folder cannot be opened.
 
-    Python 3.11 raises ``PermissionError`` there instead of answering False.
+    ``Path.is_file()`` is not used: on Python 3.11-3.13 it raises when the folder
+    cannot be searched, and from 3.14 it answers False, which would hide a chain
+    that exists but was never read.
     """
     try:
-        return path.is_file()
-    except OSError:
-        return False
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False, None
+    except OSError as exc:
+        return False, exc
+    return stat.S_ISREG(st.st_mode), None
+
+
+def _is_file(path: Path) -> bool:
+    return _probe(path)[0]
+
+
+def chain_folder_error() -> OSError | None:
+    """Why the chain's folder cannot be opened, or None when it can."""
+    return _probe(chain_path())[1]
 
 
 def load_chain() -> Chain:
@@ -197,10 +212,9 @@ def load_chain_checked() -> tuple[Chain, str]:
     chain with a copy beside it names the newest copy again.
     """
     path = chain_path()
-    try:
-        present = path.is_file()
-    except OSError as exc:                              # 3.11: the folder cannot be searched
-        return Chain(), f"its folder could not be opened ({exc.strerror or 'read error'})"
+    present, blocked = _probe(path)
+    if blocked is not None:                             # never read, so never moved
+        return Chain(), f"its folder could not be opened ({blocked.strerror or 'read error'})"
     if not present:
         earlier = earlier_copy()
         return Chain(), (f"it was moved to {earlier.name} earlier" if earlier else "")
