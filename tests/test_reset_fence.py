@@ -233,6 +233,22 @@ def test_the_fence_disconnects_the_muse_pull_results(win):
     assert got == []
 
 
+
+def test_a_late_local_discovery_after_the_quit_rebuilds_nothing(win, monkeypatch):
+    """Merge of routing phases 0-4: a discovery result queued before the quit
+    rebuilt every model list on the way out (about 1.7 s, past the 5 s quit
+    limit), and could start a new measurement thread."""
+    rebuilt, started = [], []
+    monkeypatch.setattr(win, "_reload_all_model_lists", lambda: rebuilt.append(1))
+    monkeypatch.setattr(win, "maybe_measure_local_models", lambda: started.append(1))
+    monkeypatch.setattr(workers.LocalDiscoveryWorker, "start", lambda self: started.append(1))
+    monkeypatch.setattr(win, "_background_stopped", False)
+    win.stop_background_work()
+    win._on_local_discovery(win.local_inventory.snapshot())
+    win.start_local_discovery()
+    assert rebuilt == [] and started == []
+
+
 @pytest.mark.parametrize("write", ["history_save", "history_update", "settings", "model_watch"])
 def test_no_data_write_once_erasing_has_started(tmp_path, latch, write):
     from services import history_store, model_watch, settings_store
@@ -352,3 +368,21 @@ def test_the_final_confirmation_survives_an_unreadable_record(win, monkeypatch, 
     unread = "could not read its record of changed hardware addresses" in asked[0]
     assert unread == isinstance(error, OSError)
     assert ("until this Mac restarts" in asked[0]) == unread
+
+
+def test_a_measurement_finishing_after_the_quit_rebuilds_nothing(win, monkeypatch):
+    """A measurement that outlasts the quit keeps its result but rebuilds no list
+    and starts no next run; a manual start is refused."""
+    rebuilt, started = [], []
+    monkeypatch.setattr(win, "_local_ratings_changed", lambda *a, **k: rebuilt.append(1))
+    monkeypatch.setattr(win, "maybe_measure_local_models", lambda: started.append(1))
+    recorded = []
+    monkeypatch.setattr(win.local_rating_store, "record_result", lambda *a, **k: recorded.append(1))
+    monkeypatch.setattr(win, "_background_stopped", False)
+    win.stop_background_work()
+    model = SimpleNamespace(provider="lmstudio", id="m")
+    monkeypatch.setattr(win.local_ratings, "clear_progress", lambda m: None)
+    win._on_measure_finished(model, SimpleNamespace(status="x", reason="r"), True)
+    QApplication.processEvents()
+    assert win.start_local_measure(model) is False
+    assert recorded == [1] and rebuilt == [] and started == []
