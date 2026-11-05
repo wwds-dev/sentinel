@@ -98,10 +98,12 @@ from services.model_watch import ModelWatch
 from services.price_resolution import table_lookup
 from services import benchmarks
 from services import portable_reset
+from agents.sentry.sentry import baseline as sentry_baseline
 
 # Once, on the main thread at startup: no ratings-cache write lands while an
 # Emergency Reset is erasing the data folder, whoever calls benchmarks.
 benchmarks.WRITE_GUARD = portable_reset.writes_allowed
+sentry_baseline.WRITE_GUARD = portable_reset.writes_allowed
 
 
 # Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
