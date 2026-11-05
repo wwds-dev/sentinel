@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import socket
+import stat
 import struct
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -159,6 +161,13 @@ def test_probe_reports_exit_ip_and_failure_point(proxy):
     assert not r.ok and "no proxies" in r.error
 
 
+def test_probe_runs_with_proxychains_dns_off(proxy):
+    # proxy_dns is proxychains' setting; the probe hands the name to the last hop anyway.
+    p = proxy()
+    r = proxychain.probe(proxychain.Chain(hops=[hop(p)], proxy_dns=False), timeout=3)
+    assert r.ok and r.exit_ip == "203.0.113.77"
+
+
 def test_probe_rejects_unreadable_answer(proxy):
     p = proxy(body=b"x" * 100)
     r = proxychain.probe(proxychain.Chain(hops=[hop(p)]), timeout=3)
@@ -181,3 +190,137 @@ def test_proxychains_conf_content_and_persistence(tmp_path, monkeypatch):
     assert proxychain.load_chain().hops == []
     c.proxy_dns = False
     assert "DNS will leak" in proxychain.render_proxychains_conf(c)
+
+
+DEEP = b'{"hops": ' + b"[" * 3000 + b"]" * 3000 + b"}"
+
+
+@pytest.mark.parametrize("saved", [
+    '{"hops": [{"host": 5}]}',
+    '{"hops": [{"port": "1080"}]}',
+    '{"hops": [{"port": true}]}',
+    '{"hops": [{"password": null}]}',
+    '{"hops": {"host": "10.0.0.1"}}',
+    '{"hops": ["10.0.0.1"]}',
+    '{"mode": 3}',
+    '[]',
+    b'{"hops": [], "name": "\xff"}',             # not UTF-8
+    pytest.param(DEEP, id="nested-too-deeply"),       # RecursionError in json
+])
+def test_a_wrongly_typed_saved_chain_loads_as_empty(tmp_path, monkeypatch, saved):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    path = proxychain.chain_path()
+    path.write_bytes(saved) if isinstance(saved, bytes) else path.write_text(saved)
+    chain = proxychain.load_chain()
+    assert chain.hops == [] and chain.problems()       # no exception, and nothing to probe
+    chain, error = proxychain.load_chain_checked()
+    assert chain.hops == [] and "moved to proxychain.json.unreadable" in error
+    assert not path.exists() and path.with_name("proxychain.json.unreadable").exists()
+
+
+def test_a_well_typed_saved_chain_still_loads(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    proxychain.chain_path().write_text(
+        '{"mode": "dynamic", "hops": [{"kind": "socks5", "host": "10.0.0.1", "port": 1080}]}')
+    chain = proxychain.load_chain()
+    assert [h.host for h in chain.hops] == ["10.0.0.1"] and chain.mode == "dynamic"
+
+
+def test_probe_problems_leave_out_only_the_dns_setting():
+    c = proxychain.Chain(hops=[ProxyHop(kind="DNS", host="10.0.0.1", port=1080)], proxy_dns=False)
+    assert any("DNS is not being sent" in p for p in c.problems())
+    assert c.probe_problems() == ["hop 1: unknown proxy type 'DNS'"]
+
+
+def test_load_chain_checked_keeps_every_unreadable_copy(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    for body in ("{one", "{two", "{three"):
+        proxychain.chain_path().write_text(body)
+        _, error = proxychain.load_chain_checked()
+        assert "not valid JSON" in error
+    assert (tmp_path / "proxychain.json.unreadable").read_text() == "{one"
+    assert (tmp_path / "proxychain.json.unreadable-2").read_text() == "{two"
+    assert (tmp_path / "proxychain.json.unreadable-3").read_text() == "{three"
+
+
+def test_load_chain_checked_is_quiet_for_a_good_or_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    assert proxychain.load_chain_checked()[1] == ""
+    proxychain.save_chain(proxychain.Chain(hops=[ProxyHop(host="10.0.0.1")]))
+    chain, error = proxychain.load_chain_checked()
+    assert error == "" and chain.hops[0].host == "10.0.0.1"
+
+
+def test_probe_refuses_a_dns_kind_without_opening_a_socket(monkeypatch):
+    # Review of 729fd02, P3-4: probe() must use probe_problems, not a text filter.
+    def no_socket(*a, **k):
+        raise AssertionError("probe opened a socket for a chain it should refuse")
+    monkeypatch.setattr(socket, "create_connection", no_socket)
+    r = proxychain.probe(proxychain.Chain(hops=[ProxyHop(kind="DNS", host="10.0.0.1")]))
+    assert not r.ok and "unknown proxy type" in r.error
+
+
+@pytest.mark.parametrize("saved, why", [
+    (b'{"hops": [], "name": "\xff"}', "not UTF-8 text"),
+    (b"{broken", "not valid JSON"),
+    (b'{"hops": [{"port": "1080"}]}', "hop port must be a number"),
+    pytest.param(DEEP, "nested too deeply", id="nested-too-deeply"),
+])
+def test_load_chain_checked_names_what_is_wrong(tmp_path, monkeypatch, saved, why):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    proxychain.chain_path().write_bytes(saved)
+    assert why in proxychain.load_chain_checked()[1]
+
+
+# ── Review of 380227c ──
+
+def test_a_chain_that_cannot_be_opened_is_moved_aside(tmp_path, monkeypatch):
+    # P3-2: a rename needs the folder, not the file, so this one is kept too.
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    path = proxychain.chain_path()
+    path.write_text('{"hops": [{"host": "10.0.0.1", "username": "u", "password": "s3cret"}]}')
+    real_read = Path.read_text
+
+    def refuse(self, *a, **k):
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real_read(self, *a, **k)
+    monkeypatch.setattr(Path, "read_text", refuse)
+    chain, error = proxychain.load_chain_checked()
+    assert chain.hops == [] and "could not be opened (Permission denied)" in error
+    assert "moved to proxychain.json.unreadable" in error and not path.exists()
+    assert "s3cret" in (tmp_path / "proxychain.json.unreadable").read_bytes().decode()
+
+
+def test_a_chain_that_cannot_be_moved_is_left_in_place_with_a_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    path = proxychain.chain_path()
+    path.write_text("{broken")
+    monkeypatch.setattr(Path, "replace", lambda self, target: (_ for _ in ()).throw(OSError(30, "Read-only")))
+    chain, error = proxychain.load_chain_checked()
+    assert chain.hops == [] and "could not be moved aside" in error
+    assert "will be replaced when you edit the chain" in error and path.read_text() == "{broken"
+
+
+def test_a_moved_aside_copy_is_made_owner_only(tmp_path, monkeypatch):
+    # P3-4: a hand edit can leave the file 0644.
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    path = proxychain.chain_path()
+    path.write_text('{"hops": [{"port": "1080", "password": "s3cret"}]}')
+    path.chmod(0o644)
+    proxychain.load_chain_checked()
+    assert stat.S_IMODE((tmp_path / "proxychain.json.unreadable").stat().st_mode) == 0o600
+
+
+def test_a_linked_chain_is_moved_without_touching_its_target(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(state))
+    outside = tmp_path / "outside.json"
+    outside.write_text("{broken")
+    outside.chmod(0o644)
+    proxychain.chain_path().symlink_to(outside)
+    _, error = proxychain.load_chain_checked()
+    aside = state / "proxychain.json.unreadable"
+    assert "moved to" in error and aside.is_symlink()
+    assert outside.read_text() == "{broken" and stat.S_IMODE(outside.stat().st_mode) == 0o644

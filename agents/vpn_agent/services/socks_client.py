@@ -81,8 +81,15 @@ class ProxyHop:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProxyHop":
+        if not isinstance(data, dict):
+            raise TypeError("a hop must be an object")
         known = {"kind", "host", "port", "username", "password", "label"}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        values = {k: v for k, v in data.items() if k in known}
+        for key, value in values.items():
+            wanted = int if key == "port" else str
+            if not isinstance(value, wanted) or isinstance(value, bool):
+                raise TypeError(f"hop {key} must be {'a number' if wanted is int else 'text'}")
+        return cls(**values)
 
 
 # ── Per-protocol negotiation ─────────────────────

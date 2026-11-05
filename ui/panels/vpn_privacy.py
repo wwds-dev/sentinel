@@ -47,9 +47,16 @@ class PrivacyTab(GatedTab):
         super().__init__(parent)
         self._loaded = False
         self._interfaces: list = []
-        self._chain = proxychain.load_chain()
+        self._chain, chain_error = proxychain.load_chain_checked()
+        # Kept under the chain until the next chain edit, not only on the shared
+        # status line, which a restore offer or a failed listing can overwrite.
+        self._chain_notice = (
+            f"Could not read the saved proxy chain in {proxychain.chain_path().parent}: "
+            f"{chain_error}. The chain starts empty." if chain_error else "")
         self._build()
         self._refresh_chain()
+        if self._chain_notice:
+            self._say(self._chain_notice)
         self._show_mac()
         self.refresh_tor()
         if macaddr.recorded():
@@ -214,7 +221,11 @@ class PrivacyTab(GatedTab):
         for w in (self.mac_device_box, self.mac_random_btn, self.mac_restore_btn,
                   self.mac_refresh_btn,
                   self.tor_start_btn, self.tor_stop_btn, self.tor_check_btn,
-                  self.tor_newnym_btn, self.chain_test_btn):
+                  self.tor_newnym_btn, self.chain_test_btn,
+                  # The chain is not edited while an action runs (a running Test
+                  # chain uses the hops that were confirmed, not later edits).
+                  self.hop_add_btn, self.hop_add_tor_btn, self.hop_remove_btn,
+                  self.hop_up_btn, self.hop_down_btn, self.chain_mode_box):
             w.setEnabled(enabled)
 
     # ── hardware address ──
@@ -414,11 +425,16 @@ class PrivacyTab(GatedTab):
             proxychain.save_chain(self._chain)
         except OSError as exc:
             self._say(f"Could not save the chain: {exc}")
+            return
+        self._chain_notice = ""          # the saved chain is now this one
 
     def _mode_changed(self, mode: str) -> None:
         self._chain.mode = mode
         self._save_chain()
-        self._refresh_chain()
+        # The table does not show the mode, so it is not rebuilt (that would drop
+        # the selected hop); the summary can name a mode problem, so it is.
+        self._show_chain_summary()
+        self._show_chain_test()
 
     def _refresh_chain(self) -> None:
         self.chain_table.setRowCount(0)
@@ -428,14 +444,18 @@ class PrivacyTab(GatedTab):
             for col, value in enumerate(
                     [str(number), hop.kind, hop.host, str(hop.port), hop.username, hop.label]):
                 self.chain_table.setItem(row, col, QTableWidgetItem(value))
+        self._show_chain_summary()
+        self._show_chain_test()
+
+    def _show_chain_summary(self) -> None:
         problems = self._chain_problems()
         self.chain_summary_label.setText(
             f"Chain: {self._chain.describe()}"
-            + (("\nProblems: " + "; ".join(problems)) if problems else ""))
-        self._show_chain_test()
+            + (("\nProblems: " + "; ".join(problems)) if problems else "")
+            + (f"\n{self._chain_notice}" if self._chain_notice else ""))
 
     def _chain_problems(self) -> list[str]:
-        return [p for p in self._chain.problems() if "DNS" not in p]
+        return self._chain.probe_problems()
 
     def _show_chain_test(self) -> None:
         # Button state only: rebuilding the table would drop the selected hop.
@@ -497,7 +517,7 @@ class PrivacyTab(GatedTab):
         self._say(f"Wrote {path} (owner-only; it may contain proxy passwords).")
 
     def test_chain(self) -> None:
-        problems = [p for p in self._chain.problems() if "DNS" not in p]
+        problems = self._chain_problems()
         if problems:
             self._refuse("chain-probe", self._chain.describe(), "; ".join(problems))
             return
@@ -506,6 +526,8 @@ class PrivacyTab(GatedTab):
                 f"{proxychain.PROBE_HOST} through, in order:\n{hops}\n\n"
                 "Every hop sees that a request is made, and the last one sees its "
                 "content. The site sees the chain's exit address.")
-        chain = self._chain
+        # A copy: the probe runs the hops listed above, whatever happens to the
+        # chain while it runs.
+        chain = proxychain.Chain.from_dict(self._chain.to_dict())
         self._gated("chain-probe", proxychain.PROBE_HOST, "Test chain", text,
                     lambda: (lambda r: (r.ok, r.summary()))(proxychain.probe(chain)))

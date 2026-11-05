@@ -44,6 +44,17 @@ and the git log, and is not back-filled here.
   in the Tunnel status line that you have not seen before.
 - An Emergency Reset that fails part-way now says that some data may already be
   erased. Check the `Sentinel Data` folder before using it again.
+- **Tunnel › Privacy: Test chain tests exactly the hops you confirmed.** Before,
+  adding, removing or reordering a hop while a test ran changed the route it
+  used. The hop buttons and the chain mode are now off while any action runs.
+- A saved proxy chain that Sentinel cannot read no longer stops the Tunnel panel
+  from opening, and is no longer overwritten by your next edit. It is moved to
+  `proxychain.json.unreadable` (then `-2`, `-3`, …) in the Tunnel data folder,
+  made readable only by you, and the Privacy tab says so under the chain until
+  you edit it. A file that cannot even be moved is left in place, and the tab
+  warns that your next edit replaces it.
+- Changing the chain mode no longer clears the selected hop, and Test chain is
+  no longer switched on, or left on, against an empty or invalid chain.
 
 ## v2.002 - 2026-09-29
 
