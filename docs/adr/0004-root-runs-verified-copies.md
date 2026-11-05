@@ -35,8 +35,9 @@ on-disk contract.
    directory or is not owned by root; copy the user's file with
    `/bin/cat -- SRC > copy`; hash the **copy** with `shasum -a 256` and compare it
    with the hash the user confirmed; on mismatch remove the subdirectory and exit 98
-   without running anything. Only then run the tool, and only on the copy. No path
-   in a user-writable directory is used after the hash check.
+   without running anything. Only then run the tool, and only on the copy. The
+   **config** is never read from a user-writable path after the hash check; the
+   tool itself may be (see Consequences and the 2026-11-05 amendment).
 4. **Lifetime.** The copy stays while the tunnel is up and is removed after a
    successful `down`, or straight away if `up` fails. Disconnect with no stored copy
    (a tunnel from an older build, started by hand, or a missing copy) falls back to
@@ -65,8 +66,17 @@ on-disk contract.
 - The user's file is never run by root again; edits after confirming are refused
   with "config changed" (exit 98) and nothing runs.
 - A private key exists in a second place, root-only, while the tunnel is up.
-- `SaveConfig = true` rewrites the root copy, not the user's file; the review warns
-  about this.
+- `SaveConfig = true` is refused by the review (a blocker since S1), so a root copy
+  is never rewritten by wg-quick.
+- **The copy protects the config, not the tools.** `wg-quick` is found with
+  `shutil.which` and its folder goes first on root's PATH; on Apple silicon that is
+  Homebrew's `/opt/homebrew/bin`, owned by the user. A process running as the user
+  can replace `wg-quick`, `wg` or `wireguard-go` there and gets root at the next
+  approved Connect or Disconnect, whatever the config hash says. This predates S7.
+  The owner chose (2026-11-05) to **warn, not block**: the review says so when
+  `wg-quick` or a folder above it is not root-owned or is group/other-writable. The
+  same is true of Sentinel's own checkout and `.venv`. Closing it needs a privileged
+  helper (spec §7, non-goal).
 - `/private/var/run` itself is `root:daemon 0775` on macOS 27, so a process in group
   `daemon` could pre-create `sentinel-vpn`; the ownership check catches that and the
   action is refused (exit 97) rather than trusting it.
@@ -76,3 +86,29 @@ on-disk contract.
 - Moving the base later means every build must also look in the old place until no
   tunnel from an older build can still be up.
 - S8 reuses this layout; deferring S8 does not change this ADR.
+
+## Amendment 2026-11-05 (after the independent code and security reviews)
+Reports: `docs/audit/s7-wireguard-root-copy-code-review-2026-11-05.md`,
+`docs/audit/s7-wireguard-root-copy-security-review-2026-11-05.md`. What was built
+differs from decision 3 as follows (details in spec §14):
+- Root starts from an **empty environment** (`/usr/bin/env -i /bin/bash -c …`), so
+  `BASH_ENV`, `PERL5OPT` and the like cannot run code before the hash check; the
+  script sets its own PATH (wg-quick's folder, then `/usr/bin:/bin:/usr/sbin:/sbin`).
+- Directories: `mkdir -m` + ownership check + `chown root:wheel` + `chmod` (on an
+  existing directory too, so its group is normalised), not `install -d`.
+- After creating the base the script `cd -P`s into it, refuses (97) if the physical
+  path differs, and works by relative paths, so renaming the base cannot redirect the
+  copy or the `rm -rf`.
+- The source must be a regular file; it is read with `head -c 262145` (one byte over
+  the review's limit) and the read is cut off after 20 seconds, so a FIFO cannot hold
+  an approved run open until a time someone else picks.
+- The copy is hashed with `/sbin/sha256 -q` (a Mach-O tool), not `shasum` (Perl).
+- A read failure and a hash mismatch give the same exit (98) and the same message,
+  with no path, so the result says nothing about other files.
+- wg-quick's run record (`/var/run/wireguard/<iface>.name`) decides state: Connect
+  refuses (94) an interface that is up, before touching its copy; Disconnect of an
+  interface that is not up removes any kept copy (no key left behind) and refuses (94).
+- Disconnect prints which path it took (the kept copy, or a verified copy of the
+  user's file), and its review says that the hooks shown are the file's now and that
+  the kept copy, if any, is what runs.
+

@@ -1448,3 +1448,64 @@ def test_the_review_shows_search_domains_and_says_system_dns_stays(tmp_path):
     r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="DNS = corp.example\n")))
     assert "DNS: Not specified — system DNS stays in use" in r.config_lines
     assert any(line.startswith("DNS search domains: corp.example") for line in r.config_lines)
+
+
+# ── S7 review follow-ups (docs/audit/s7-wireguard-root-copy-*-2026-11-05.md) ──
+
+def test_a_wg_quick_the_user_can_replace_draws_a_warning_not_a_blocker(tmp_path, monkeypatch):
+    # Owner decision 2026-11-05: warn, do not block (Homebrew's bin is the user's).
+    exe = tmp_path / "bin" / "wg-quick"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/bash\n")
+    real_which = vpn_connection.shutil.which
+    monkeypatch.setattr(vpn_connection.shutil, "which",
+                        lambda name, *a, **k: str(exe) if name == "wg-quick" else real_which(name, *a, **k))
+    for action, probe in (("connect", Probe()), ("disconnect", Probe(up={"wgnl"}))):
+        r = review(action, profile_for(wg_conf(tmp_path)), probe)
+        assert r.allowed, r.blockers
+        found = [w for w in r.warnings if w.startswith(f"wg-quick runs as administrator from {exe}")]
+        assert found and "not owned by root" in found[0]
+        assert "protects the config file, not these tools" in found[0]
+
+
+def test_a_root_owned_wg_quick_draws_no_such_warning(tmp_path, monkeypatch):
+    real_which = vpn_connection.shutil.which
+    monkeypatch.setattr(vpn_connection.shutil, "which",
+                        lambda name, *a, **k: "/bin/ls" if name == "wg-quick" else real_which(name, *a, **k))
+    r = review("connect", profile_for(wg_conf(tmp_path)))
+    assert not [w for w in r.warnings if w.startswith("wg-quick runs as administrator")]
+
+
+def test_a_wireguard_disconnect_says_the_kept_copy_may_be_what_runs(tmp_path):
+    p = profile_for(wg_conf(tmp_path, interface_extra="PostDown = echo bye\n"))
+    r = review("disconnect", p, Probe(up={"wgnl"}))
+    text = r.confirmation_text()
+    assert "only if Sentinel kept no copy at Connect" in text
+    assert "copy you connected with runs" in text
+    assert "this config executes:" not in text
+    assert "SHA-256 of your config file now" in r.confirmation_detail()
+    assert any(title == "Runs commands as administrator (your file now)"
+               for title, _, _ in r.sections())
+    assert any("Disconnect runs that copy" in w for w in r.warnings)
+    # Connect is unchanged: what is shown is what runs.
+    c = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = echo hi\n")))
+    assert "RUNS COMMANDS AS ADMINISTRATOR — this config executes:" in c.confirmation_text()
+    assert not any("Disconnect runs that copy" in w for w in c.warnings)
+
+
+def test_a_config_not_named_interface_conf_is_refused_before_the_prompt(tmp_path):
+    path = tmp_path / "wg0.txt"
+    path.write_text(wg_conf(tmp_path).read_text())
+    p = {**profile_for(wg_conf(tmp_path)), "config_path": str(path)}
+    r = review("connect", p)
+    assert any("is not named <interface>.conf" in b for b in r.blockers)
+    runner = Recorder()
+    outcome = run("connect", p, runner, r)
+    assert outcome.ran is False and runner.scripts == []
+
+
+def test_an_interface_only_disconnect_with_no_file_says_nothing_else_runs():
+    r = review("disconnect", {"name": "Bare", "protocol": "WireGuard",
+                              "endpoint": "203.0.113.7", "interface": "wgzz"},
+               Probe(up={"wgzz"}))
+    assert r.command.endswith("(the copy kept since Connect; without one, nothing runs)")

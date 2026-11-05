@@ -72,7 +72,7 @@ from typing import Callable
 from agents.vpn_agent.services.config_inspection import (
     inspect_wireguard_text as inspect_config_text,
 )
-from services import openvpn_manager, vpn_apps, vpn_connection
+from services import openvpn_manager, vpn_apps, vpn_connection, vpn_rootscript
 
 # wg-quick's own interface-name rule (wg-quick(8)); a config file whose stem
 # fails it is refused by wg-quick, so refuse before the password prompt instead.
@@ -966,12 +966,29 @@ class ExecutionReview:
             lines += ["", self._hash_line()]
         return "\n".join(lines)
 
+    @property
+    def _may_run_kept_copy(self) -> bool:
+        """A WireGuard Disconnect: root runs the copy kept since Connect when there
+        is one, and Sentinel cannot see into root's folder to know which."""
+        return self.protocol == "WireGuard" and self.action == "disconnect"
+
     def _hash_line(self) -> str:
+        if self._may_run_kept_copy:
+            return (f"SHA-256 of your config file now: {self.config_sha256} (root checks "
+                    "it on its own copy only if it kept no copy at Connect; otherwise the "
+                    "copy you connected with runs)")
         if self.protocol == "WireGuard":
             return (f"Config SHA-256: {self.config_sha256} (checked again by root on its "
                     "own copy, which is what runs)")
         return (f"Config SHA-256: {self.config_sha256} (verified when the password prompt "
                 "opened, not when it ran)")
+
+    def _hooks_heading(self) -> str:
+        if self._may_run_kept_copy:
+            return ("RUNS COMMANDS AS ADMINISTRATOR — your config file now executes these, "
+                    "but only if Sentinel kept no copy at Connect; otherwise the copy you "
+                    "connected with runs, with its hooks as they were then:")
+        return "RUNS COMMANDS AS ADMINISTRATOR — this config executes:"
 
     def confirmation_text(self) -> str:
         verb = "Start" if self.action == "connect" else "Stop"
@@ -984,7 +1001,7 @@ class ExecutionReview:
         if self.config_lines:
             lines += [""] + list(self.config_lines)
         if self.root_hooks:
-            lines += ["", "RUNS COMMANDS AS ADMINISTRATOR — this config executes:"]
+            lines += ["", self._hooks_heading()]
             lines += [f"• {self._shown_hook(item)}" for item in self.root_hooks]
         if self.risks:
             lines += ["", "Not reviewable (Disconnect asks once more before it goes ahead):"]
@@ -1013,7 +1030,8 @@ class ExecutionReview:
             sections.append(("Configuration intent (keys discarded)",
                              "\n".join(self.config_lines), True))
         if self.root_hooks:
-            sections.append(("Runs commands as administrator",
+            sections.append(("Runs commands as administrator" + (
+                                 " (your file now)" if self._may_run_kept_copy else ""),
                              "\n".join(f"• {item}" for item in self.root_hooks), True))
         if self.risks:
             sections.append(("Risks — Disconnect anyway?",
@@ -1098,6 +1116,12 @@ def review_execution(action: str, profile: dict | None, *,
                 f"'{interface}' is not a valid WireGuard interface name (letters, digits "
                 "and _=+.- only, at most 15 characters). wg-quick names the interface "
                 "after the config file, so rename the file and import it again.")
+        elif (vpn_connection.resolve_config_path(profile)
+              and vpn_rootscript.interface_for(target) is None):
+            blockers.append(
+                f"'{Path(target).name}' is not named <interface>.conf. wg-quick only loads a "
+                "config named after its interface (letters, digits and _=+.- only, at most "
+                "15 characters, then .conf), so rename the file and import it again.")
         config_path = vpn_connection.resolve_config_path(profile)
         source = Path(config_path).expanduser() if config_path else None
         if source is None and interface and WG_INTERFACE_NAME.fullmatch(interface):
@@ -1172,6 +1196,20 @@ def review_execution(action: str, profile: dict | None, *,
                 f"No config for '{interface}' was found in {', '.join(WG_CONFIG_DIRS)}. "
                 "wg-quick would fail, and Tunnel cannot review what it cannot read; "
                 "import the .conf file instead.")
+        exe = shutil.which("wg-quick")
+        reason = _unsafe_executable_reason(Path(exe)) if exe else None
+        if reason:
+            # Owner decision 2026-11-05: warn, do not block (it would stop every
+            # Homebrew install). The verified copy protects the config, not the tools.
+            warnings.append(
+                f"wg-quick runs as administrator from {exe}, and {reason}: a program "
+                "running as you could replace it (or wg and wireguard-go beside it). "
+                "Sentinel's verified copy protects the config file, not these tools.")
+        if action == "disconnect" and source is not None:
+            warnings.append(
+                "If Sentinel kept a copy of the config at Connect, Disconnect runs that "
+                "copy (its PreDown/PostDown as they were when you connected), not your "
+                "file as it is now.")
         if interface and WG_INTERFACE_NAME.fullmatch(interface):
             state = probe["wireguard"](interface)
             if action == "connect" and state.get("up"):

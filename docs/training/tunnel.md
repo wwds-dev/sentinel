@@ -129,8 +129,11 @@ folder only root can read, checks that the copy is exactly what the review
 showed, and runs the copy. If you edit the file after answering Yes, nothing runs
 and Tunnel says the config changed. While the tunnel is up, Disconnect uses the
 copy you connected with, so edits made in the meantime do not change what
-Disconnect runs. OpenVPN does not have this protection yet: `openvpn` still reads
-your `.ovpn` and its files after the review.
+Disconnect runs; the Disconnect confirmation says so. The copy protects the config
+file, not the `wg-quick` program: if Homebrew installed it in a folder your account
+owns, Tunnel warns that another program running as you could replace it. OpenVPN
+does not have this protection yet: `openvpn` still reads your `.ovpn` and its files
+after the review.
 
 ### Reading the result
 

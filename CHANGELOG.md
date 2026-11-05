@@ -41,8 +41,12 @@ and the git log, and is not back-filled here.
   changed the file in between chose what ran as administrator. Now Sentinel
   copies the file into a root-only folder, checks the copy against the hash you
   confirmed, and runs only the copy; a changed file is refused and nothing runs.
-  While the tunnel is up, Disconnect uses the copy you connected with. OpenVPN
-  still reads your `.ovpn` after the check; that part is planned, not built.
+  While the tunnel is up, Disconnect uses the copy you connected with, and its
+  confirmation says so. Root also starts with an empty environment now. What the
+  copy does **not** protect: the `wg-quick` program and its neighbours, which on
+  Apple silicon live in Homebrew's folder that your account owns; Tunnel warns when
+  that is the case. OpenVPN still reads your `.ovpn` after the check; that part is
+  planned, not built.
 
 ### Fixed
 - **A WireGuard hook must now be plain commands with full paths.** wg-quick runs

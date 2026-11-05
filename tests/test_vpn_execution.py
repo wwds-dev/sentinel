@@ -194,13 +194,11 @@ def test_openvpn_review_requires_client_and_file(tmp_path, monkeypatch):
 
 # ── Command construction (the PATH the admin dialog does not have) ──────────
 
-def test_wg_quick_command_uses_an_absolute_path_and_its_directory(monkeypatch):
-    monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: "/opt/homebrew/bin/wg-quick")
-    assert vpn_connection.wg_quick_command("up", "/Users/me/wg nl.conf") == (
-        "cd / && /usr/bin/env -i HOME=/var/root "
-        "PATH='/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin' '/opt/homebrew/bin/wg-quick' "
-        "up '/Users/me/wg nl.conf'")
+def test_hook_commands_resolve_in_the_order_root_uses():
+    # _which_privileged must look where ROOT_SCRIPT's PATH looks, in that order.
+    assert vpn_execution._PRIVILEGED_PATH == vpn_rootscript.SYSTEM_PATH
+    assert ('PATH="${wgq%/*}:' + ":".join(vpn_rootscript.SYSTEM_PATH) + '"'
+            in vpn_rootscript.ROOT_SCRIPT)
 
 
 def test_wg_quick_runs_from_root_with_nothing_of_the_users_environment(monkeypatch, tmp_path):

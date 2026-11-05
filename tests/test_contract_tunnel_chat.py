@@ -241,7 +241,7 @@ class Gate:
             # S7: the WireGuard command is the constant root script; its verb is
             # the first value after the script's $0 ("sentinel-wg").
             words = shlex.split(script)
-            verb = words[4] if words[:2] == ["/bin/bash", "-c"] else ""
+            verb = words[words.index("sentinel-wg") + 1] if "sentinel-wg" in words else ""
             if verb == "up":
                 self.probe.up.add(self.bring_up)
             elif verb == "down":
@@ -594,8 +594,8 @@ class TestConnectDisconnect:
         assert PRIVATE_KEY not in text
         assert len(gate.run.scripts) == 1
         words = shlex.split(gate.run.scripts[0])
-        assert words[3:7] == ["sentinel-wg", "up", str(conf), words[6]]
-        assert vpn_rootscript.SHA256_RE.fullmatch(words[6])     # the confirmed hash
+        assert words[5:9] == ["sentinel-wg", "up", str(conf), words[8]]
+        assert vpn_rootscript.SHA256_RE.fullmatch(words[8])     # the confirmed hash
         assert "verified locally" in tunnel.connection_status_label.text()
         assert tunnel.connect_btn.isEnabled() and tunnel.disconnect_btn.isEnabled()
         assert gate.entries() == []
@@ -607,7 +607,7 @@ class TestConnectDisconnect:
         pick(tunnel, wg_profile(conf, "NL"))
         tunnel.disconnect_vpn()
         assert len(gate.run.scripts) == 1
-        assert shlex.split(gate.run.scripts[0])[3:5] == ["sentinel-wg", "down"]
+        assert shlex.split(gate.run.scripts[0])[5:7] == ["sentinel-wg", "down"]
         assert "wgnl" not in gate.probe.up
         assert gate.entries() == []
 

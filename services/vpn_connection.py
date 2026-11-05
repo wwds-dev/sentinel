@@ -84,44 +84,6 @@ def _quote(text: str) -> str:
     return "'" + str(text).replace("'", "'\\''") + "'"
 
 
-def _absolute(path: str) -> str:
-    """``path`` from the current directory, without ``os.path.abspath``'s
-    lexical ``..``: ``link/../x.conf`` must stay the file the review opened."""
-    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
-
-
-# The PATH root's wg-quick gets, after its own folder; wg-quick puts these
-# first itself (darwin.bash), so nothing of the caller's PATH is kept.
-SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-
-
-def wg_quick_command(verb: str, target: str) -> str:
-    """The shell line for ``wg-quick <verb> <target>``, runnable as root.
-
-    The macOS authorisation dialog (``do shell script``) and ``sudo``'s
-    secure_path both drop Homebrew's bin directory, so a bare ``wg-quick`` is not
-    found there — and wg-quick itself shells out to ``wg`` and ``wireguard-go``.
-    Use the absolute path and put its directory first on PATH for that one call.
-
-    wg-quick and the hooks it runs inherit nothing from the user: the working
-    directory is ``/`` and the environment is only ``HOME=/var/root`` and that
-    PATH (``env -i``). Otherwise a hook's program could read code the review
-    never saw from the user's home (~/.zshenv, ~/.bash_profile, Python .pth
-    files), from the working directory, which the app sets to its checkout (a
-    Makefile, a relative ``pfctl -f`` file, files a ``DNS`` wildcard expands
-    to), or from the environment. A relative config path, and a wg-quick found
-through a relative PATH entry, are made absolute first, keeping ``..`` for
-the kernel to resolve through any link.
-    """
-    if "/" in target and not os.path.isabs(target):
-        target = _absolute(target)
-    exe = shutil.which("wg-quick")
-    exe = _absolute(exe) if exe else None       # a relative PATH entry; root runs from /
-    program, path = (exe, f"{os.path.dirname(exe)}:{SYSTEM_PATH}") if exe else ("wg-quick", SYSTEM_PATH)
-    return (f"cd / && /usr/bin/env -i HOME=/var/root PATH={_quote(path)} "
-            f"{_quote(program)} {verb} {_quote(target)}")
-
-
 def wg_root_summary(verb: str, target: str) -> str:
     """What root does for a WireGuard Connect or Disconnect, in words the review
     shows (``vpn_rootscript`` builds the script itself): it runs a verified
@@ -131,6 +93,8 @@ def wg_root_summary(verb: str, target: str) -> str:
     if verb == "up":
         return (f"copy {_quote(target)} to {copy}, check that the copy's SHA-256 is the "
                 f"one below, then wg-quick up {copy}")
+    if not os.path.isabs(os.path.expanduser(target)):
+        return f"wg-quick down {copy} (the copy kept since Connect; without one, nothing runs)"
     return (f"wg-quick down {copy} (the copy kept since Connect; without one, copy "
             f"{_quote(target)} and check its SHA-256 first)")
 

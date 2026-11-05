@@ -58,7 +58,7 @@ def openvpn_binary() -> str | None:
 
     Homebrew installs it under ``sbin``, which the macOS authorisation dialog's
     shell and sudo's secure_path both drop, so the privileged script must name
-    the binary by its full path (the same fix ``wg_quick_command`` carries).
+    the binary by its full path (the WireGuard root script does the same, ``services/vpn_rootscript.py``).
     """
     found = shutil.which("openvpn")
     if found:
