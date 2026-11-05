@@ -56,6 +56,12 @@ and the git log, and is not back-filled here.
   that your next edit replaces it.
 - Changing the chain mode no longer clears the selected hop, and Test chain is
   no longer switched on, or left on, against an empty or invalid chain.
+- **Tunnel › Privacy opens even when Sentinel cannot read its record of changed
+  hardware addresses** (for example when the Tunnel data folder's permissions
+  were changed). Before, the tab was not built. It now says so in the Hardware
+  address box and refuses to change an address until the record can be read,
+  since that record may still hold an original address to put back; Restore
+  hardware address still works. Emergency Reset's warning says the same.
 
 ## v2.002 - 2026-09-29
 

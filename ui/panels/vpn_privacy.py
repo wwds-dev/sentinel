@@ -80,13 +80,26 @@ class PrivacyTab(GatedTab):
                 f"{chain_error}. {kept(moved) if moved else 'The chain is empty.'}")
         else:
             self._chain_notice = ""
+        try:
+            changed = macaddr.recorded()
+            self._mac_notice = ""
+        except macaddr.RecordUnreadable as exc:
+            # Never "nothing recorded": an original may still be waiting in it.
+            changed = {}
+            self._mac_notice = (
+                f"Sentinel {exc.strerror}, so it cannot tell whether it left a hardware "
+                "address changed. Changing an address is refused until it can; Restore "
+                "hardware address still works. Fix the folder's permissions and restart "
+                "Sentinel.")
         self._build()
         self._refresh_chain()
         if self._chain_notice:
             self._say(self._chain_notice)
+        if self._mac_notice:
+            self._say(self._mac_notice)
         self._show_mac()
         self.refresh_tor()
-        if macaddr.recorded():
+        if changed:
             # A change was left in place by a crash or a declined restore at
             # quit. Reading the record runs nothing; the offer waits for the
             # event loop and lists the interfaces off the UI thread.
@@ -132,6 +145,10 @@ class PrivacyTab(GatedTab):
         self.mac_hardware_label = QLabel("")
         ml.addWidget(self.mac_current_label)
         ml.addWidget(self.mac_hardware_label)
+        # Kept in the box: the shared status line is overwritten by the next action.
+        self.mac_notice_label = self._info(self._mac_notice)
+        self.mac_notice_label.setVisible(bool(self._mac_notice))
+        ml.addWidget(self.mac_notice_label)
         row = QHBoxLayout()
         self.mac_random_btn = QPushButton("Randomise…")
         self.mac_random_btn.clicked.connect(self.randomise_mac)
