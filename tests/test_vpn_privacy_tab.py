@@ -794,3 +794,28 @@ def test_an_unreadable_saved_chain_survives_the_first_edit(env):
     aside = proxychain.chain_path().with_name("proxychain.json.unreadable")
     assert aside.read_bytes() == original
     assert proxychain.load_chain().mode == proxychain.DYNAMIC
+
+
+# ── Review of 380227c ──
+
+def test_the_unreadable_chain_notice_outlives_the_status_line(env):
+    # P3-3: a restore offer or a failed listing at start overwrites the status line.
+    _save_raw(b"{broken")
+    tab = PrivacyTab()
+    folder = str(proxychain.chain_path().parent)
+    tab._say("Not run: confirmation declined.")
+    summary = tab.chain_summary_label.text()
+    assert "Could not read the saved proxy chain" in summary
+    assert folder in summary and "proxychain.json.unreadable" in summary
+    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)      # an edit saves a new chain
+    assert "Could not read" not in tab.chain_summary_label.text()
+
+
+def test_a_failed_save_keeps_the_unreadable_chain_notice(env, monkeypatch):
+    _save_raw(b"{broken")
+    tab = PrivacyTab()
+    monkeypatch.setattr(proxychain, "save_chain",
+                        lambda chain: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
+    assert "Could not read the saved proxy chain" in tab.chain_summary_label.text()
+    assert "Could not save the chain" in tab.status_label.text()

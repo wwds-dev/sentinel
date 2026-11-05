@@ -29,6 +29,8 @@ for other programs, with the caveat attached.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,7 +134,7 @@ def load_chain() -> Chain:
         return Chain()
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RecursionError):
         return Chain()
 
 
@@ -141,8 +143,10 @@ def load_chain_checked() -> tuple[Chain, str]:
     Load the saved chain, or say why it could not be read.
 
     An unreadable file may still hold proxy passwords, so it is moved aside
-    (keeping its owner-only mode) before an edit can save over it. The reason
-    names what is wrong, never what the file contains.
+    before an edit can save over it, and made owner-only (a hand edit may have
+    left it readable by others). A file that cannot be opened is moved too: a
+    rename needs the folder, not the file. The reason names what is wrong,
+    never what the file contains.
     """
     path = chain_path()
     if not path.is_file():
@@ -150,12 +154,13 @@ def load_chain_checked() -> tuple[Chain, str]:
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8"))), ""
     except OSError as exc:
-        return Chain(), (f"it could not be opened ({exc.strerror or 'read error'}), "
-                         "so it will be replaced when you edit the chain")
+        why = f"it could not be opened ({exc.strerror or 'read error'})"
     except UnicodeDecodeError:
         why = "it is not UTF-8 text"
     except json.JSONDecodeError:
         why = "it is not valid JSON"
+    except RecursionError:
+        why = "it is nested too deeply"
     except (TypeError, ValueError) as exc:
         why = str(exc) if isinstance(exc, TypeError) else "it holds a value that cannot be read"
     aside = path.with_name(path.name + ".unreadable")
@@ -167,6 +172,11 @@ def load_chain_checked() -> tuple[Chain, str]:
         path.replace(aside)
     except OSError:
         return Chain(), f"{why}, and it could not be moved aside, so it will be replaced when you edit the chain"
+    try:
+        if stat.S_ISREG(os.lstat(aside).st_mode):      # never chmod through a link
+            os.chmod(aside, 0o600)
+    except OSError:
+        pass                                            # moved; the folder is owner-only
     return Chain(), f"{why}; it was moved to {aside.name}"
 
 

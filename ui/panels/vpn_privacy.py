@@ -48,10 +48,15 @@ class PrivacyTab(GatedTab):
         self._loaded = False
         self._interfaces: list = []
         self._chain, chain_error = proxychain.load_chain_checked()
+        # Kept under the chain until the next chain edit, not only on the shared
+        # status line, which a restore offer or a failed listing can overwrite.
+        self._chain_notice = (
+            f"Could not read the saved proxy chain in {proxychain.chain_path().parent}: "
+            f"{chain_error}. The chain starts empty." if chain_error else "")
         self._build()
         self._refresh_chain()
-        if chain_error:
-            self._say(f"Could not read the saved proxy chain: {chain_error}. The chain starts empty.")
+        if self._chain_notice:
+            self._say(self._chain_notice)
         self._show_mac()
         self.refresh_tor()
         if macaddr.recorded():
@@ -420,6 +425,8 @@ class PrivacyTab(GatedTab):
             proxychain.save_chain(self._chain)
         except OSError as exc:
             self._say(f"Could not save the chain: {exc}")
+            return
+        self._chain_notice = ""          # the saved chain is now this one
 
     def _mode_changed(self, mode: str) -> None:
         self._chain.mode = mode
@@ -444,7 +451,8 @@ class PrivacyTab(GatedTab):
         problems = self._chain_problems()
         self.chain_summary_label.setText(
             f"Chain: {self._chain.describe()}"
-            + (("\nProblems: " + "; ".join(problems)) if problems else ""))
+            + (("\nProblems: " + "; ".join(problems)) if problems else "")
+            + (f"\n{self._chain_notice}" if self._chain_notice else ""))
 
     def _chain_problems(self) -> list[str]:
         return self._chain.probe_problems()
