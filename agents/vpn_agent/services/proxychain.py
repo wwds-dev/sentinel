@@ -163,6 +163,15 @@ def _unreadable_copies(path: Path) -> dict[int, Path]:
     return copies
 
 
+def earlier_copy() -> Path | None:
+    """The newest moved-aside copy, while no chain has been saved since."""
+    path = chain_path()
+    if path.is_file():
+        return None
+    copies = _unreadable_copies(path)
+    return copies[max(copies)] if copies else None
+
+
 def load_chain_checked() -> tuple[Chain, str]:
     """
     Load the saved chain, or say why it could not be read.
@@ -178,10 +187,8 @@ def load_chain_checked() -> tuple[Chain, str]:
     """
     path = chain_path()
     if not path.is_file():
-        copies = _unreadable_copies(path)
-        if copies:
-            return Chain(), f"it was moved to {copies[max(copies)].name} earlier"
-        return Chain(), ""
+        earlier = earlier_copy()
+        return Chain(), (f"it was moved to {earlier.name} earlier" if earlier else "")
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8"))), ""
     except OSError as exc:
