@@ -1137,3 +1137,16 @@ def test_another_adapter_is_still_dropped_when_the_process_list_is_unreadable(mo
 def test_no_process_list_is_read_without_a_record(monkeypatch, state):
     monkeypatch.setattr(macaddr, "_changes_elsewhere", lambda: pytest.fail("ps run for nothing"))
     assert macaddr.pending_restores() == []
+
+
+def test_the_quit_restore_survives_its_own_module_failing_to_import(monkeypatch, capsys):
+    """Review 3 P3-4: the except must not re-import what just failed, or quit raises."""
+    import sys
+
+    import main
+    from agents.vpn_agent import services
+    monkeypatch.delattr(services, "macaddr")      # so "from services import macaddr" imports ...
+    monkeypatch.setitem(sys.modules, "agents.vpn_agent.services.macaddr", None)   # ... and fails
+    main._restore_changed_hardware_addresses()          # must not raise
+    err = capsys.readouterr().err
+    assert "hardware address restore skipped" in err
