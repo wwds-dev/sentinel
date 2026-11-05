@@ -1150,6 +1150,8 @@ def test_the_quit_restore_survives_its_own_module_failing_to_import(monkeypatch,
     main._restore_changed_hardware_addresses()          # must not raise
     err = capsys.readouterr().err
     assert "hardware address restore skipped" in err
+    # The type name only: the exception's text is not printed (it may hold an address).
+    assert err.strip().endswith("Error") and "sys.modules" not in err and "halted" not in err
 
 
 # ── Review of the P3 fixes (docs/audit/macaddr-p3s-review-2026-11-05.md) ──
@@ -1173,7 +1175,8 @@ def test_only_the_helpers_own_shape_counts_as_a_change_elsewhere(monkeypatch):
     real_form = ("/usr/bin/osascript -e do shell script \"/bin/bash -c 'dev=$1\\\\012"
                  "/sbin/ifconfig' sentinel-mac en6 02:aa:bb:cc:dd:ee 0\" with prompt \"p\"\n")
     noise = ("grep -r sentinel-mac en5 .\n/bin/zsh -c echo sentinel-mac en7 later\n"
-             "/bin/echo sentinel-mac en8 02:aa:bb:cc:dd:ee 2\n")
+             "/bin/echo sentinel-mac en8 02:aa:bb:cc:dd:ee 2\n/bin/echo sentinel-mac en9 x 1\n"
+             "/bin/echo sentinel-mac en10 02:aa:bb:cc:dd:ee 10\n")
     monkeypatch.setattr(macaddr, "run", lambda argv, *a, **k: (True, PS + real_form + noise))
     assert REAL_ELSEWHERE() == {"en5", "en6"}
 
