@@ -49,12 +49,17 @@ def root(monkeypatch):
     "en0; rm -rf /", "en0 ", "en0\n", "$(id)", "../en0", "EN0", "en", "e0",
     "en1234", "abcdefghi0", "", "en0`x`",
 ])
-def test_hostile_or_malformed_device_is_refused_before_anything_runs(monkeypatch, device):
+@pytest.mark.parametrize("entry", ["set_mac", "randomize", "restore"])
+def test_hostile_or_malformed_device_is_refused_before_anything_runs(monkeypatch, device, entry):
+    # Nothing stubbed above run(): the real listing would run if the name got through.
     touched = []
     monkeypatch.setattr(macaddr, "run", lambda *a, **k: touched.append(a) or (True, ""))
     monkeypatch.setattr(macaddr, "run_argv_as_root", lambda *a, **k: touched.append(a) or (True, ""))
-    ok, msg = macaddr.set_mac(device, NEW)
-    assert not ok and "interface name" in msg
+    call = {"set_mac": lambda: macaddr.set_mac(device, NEW),
+            "randomize": lambda: macaddr.randomize(device),
+            "restore": lambda: macaddr.restore(device)}[entry]
+    ok, msg = call()
+    assert not ok and msg == f"{device!r} is not a valid interface name."
     assert touched == []
 
 
@@ -680,21 +685,21 @@ def test_going_back_to_hardware_needs_no_recordable_current(monkeypatch, state, 
 
 # ── Review 3 P3-1/P3-2: only a record pending_restores would act on opens the guard ──
 
-def _unrecordable(monkeypatch, root):
+def _unrecordable(monkeypatch):
     monkeypatch.setattr(macaddr, "read_interface",
                         lambda d: (_iface(device=d, current="00:00:00:00:00:00"), ""))
 
 
 def test_a_record_for_another_device_does_not_open_the_guard(monkeypatch, state, root):
     _write_record({"en0": "06:aa:bb:cc:dd:ee"})
-    _unrecordable(monkeypatch, root)
+    _unrecordable(monkeypatch)
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not record" in msg and root["calls"] == []
 
 
 def test_a_record_with_other_hardware_does_not_open_the_guard(monkeypatch, state, root):
     _write_record({"en5": "06:aa:bb:cc:dd:ee"}, hardware="aa:bb:cc:99:99:99")
-    _unrecordable(monkeypatch, root)
+    _unrecordable(monkeypatch)
     ok, msg = macaddr.set_mac("en5", NEW)
     assert not ok and "could not record" in msg and root["calls"] == []
 
@@ -907,3 +912,36 @@ def test_a_listing_error_is_redacted_before_it_is_cut(monkeypatch):
     monkeypatch.setattr(macaddr, "run", lambda argv, *a, **kw: (False, noisy))
     _, error = macaddr.list_interfaces_checked()
     assert len(error) <= 200 and "02:aa:bb" not in error
+
+
+# ── Review of 3389384 (P3-1, P3-3) and review 4 P3-A ──
+
+def test_restore_passes_the_wifi_flag(monkeypatch, root):
+    monkeypatch.setattr(macaddr, "read_interface",
+                        lambda d: (_iface(device=d, port="Wi-Fi", current=NEW), ""))
+    root["mac"] = ORIG
+    ok, msg = macaddr.restore("en0")
+    assert ok and "rejoin" in msg
+    assert root["calls"][0]["argv"][-1] == "1"
+
+
+def test_restore_is_not_a_success_when_the_address_did_not_take(monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (_iface(device=d, current=NEW), ""))
+    root["mac"] = NEW                    # root accepted, the adapter ignored it
+    ok, msg = macaddr.restore("en5")
+    assert not ok and "still reports" in msg
+
+
+def test_restore_refuses_an_unusable_hardware_address(monkeypatch, state, root):
+    monkeypatch.setattr(macaddr, "read_interface", lambda d: (
+        _iface(device=d, current=NEW, hardware="01:00:5e:00:00:01"), ""))
+    ok, msg = macaddr.restore("en5")
+    assert not ok and "not a usable" in msg and root["calls"] == []
+
+
+def test_a_record_from_an_earlier_boot_does_not_open_the_guard(monkeypatch, state, root):
+    """The guard reads the record as pending_restores would: an earlier boot's entry is gone."""
+    _write_record({"en5": "06:aa:bb:cc:dd:ee"}, boot="999")
+    _unrecordable(monkeypatch)
+    ok, msg = macaddr.set_mac("en5", NEW)
+    assert not ok and "could not record" in msg and root["calls"] == []

@@ -482,6 +482,8 @@ def randomize(device: str, mode: str = MODE_LOCAL) -> tuple[bool, str]:
 
 def restore(device: str) -> tuple[bool, str]:
     """Put back the address the hardware shipped with."""
+    if not valid_device(device):       # before the listing, as set_mac does
+        return False, f"{device!r} is not a valid interface name."
     interface, refusal = _find_interface(device)
     if interface is None:
         return False, refusal
