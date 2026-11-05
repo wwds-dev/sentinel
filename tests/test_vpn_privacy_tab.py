@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QMessageBox
@@ -830,7 +831,8 @@ def test_the_unreadable_chain_notice_survives_a_restart(env):
     tab = PrivacyTab()                                            # the next launch
     folder = str(proxychain.chain_path().parent)
     expected = ("An earlier saved proxy chain could not be read and was moved to "
-                f"proxychain.json.unreadable in {folder}. The chain starts empty until you edit it.")
+                f"proxychain.json.unreadable in {folder}. The chain is empty; your old hops, "
+                "with any proxy passwords, are still in that file.")
     # Review of 924d1f5, P3-3: this launch read nothing, so it must not say it could not read.
     assert expected in tab.chain_summary_label.text() and expected in tab.status_label.text()
     assert "Could not read" not in tab.chain_summary_label.text()
@@ -845,6 +847,8 @@ def test_the_first_launch_after_a_bad_chain_still_says_why(env):
     summary = PrivacyTab().chain_summary_label.text()
     assert "Could not read the saved proxy chain" in summary and "not valid JSON" in summary
     assert "earlier saved proxy chain" not in summary
+    assert summary.endswith("The chain is empty; your old hops, with any proxy passwords, "
+                            "are still in that file.")
 
 
 def test_a_new_bad_chain_beside_an_earlier_copy_still_says_why(env):
@@ -857,3 +861,14 @@ def test_a_new_bad_chain_beside_an_earlier_copy_still_says_why(env):
     assert "earlier saved proxy chain" not in summary
     later = PrivacyTab().chain_summary_label.text()
     assert "earlier saved proxy chain" in later and "proxychain.json.unreadable-2 in" in later
+
+
+def test_a_chain_left_in_place_is_not_called_kept(env, monkeypatch):
+    # Review of 80dda42, P3-2: only a moved copy holds the old hops; one left in
+    # place is replaced by the next edit, so the notice must not point at it.
+    _save_raw(b"{broken")
+    monkeypatch.setattr(Path, "replace",
+                        lambda self, target: (_ for _ in ()).throw(OSError(30, "Read-only")))
+    summary = PrivacyTab().chain_summary_label.text()
+    assert "will be replaced when you edit the chain" in summary
+    assert summary.endswith("The chain is empty.") and "still in that file" not in summary

@@ -50,16 +50,21 @@ class PrivacyTab(GatedTab):
         earlier = proxychain.earlier_copy()          # moved at an earlier launch
         self._chain, chain_error = proxychain.load_chain_checked()
         folder = proxychain.chain_path().parent
+        # Only a copy the user can go back to is pointed at; a file left in place
+        # is about to be replaced, and the reason already says so.
+        kept = ("The chain is empty; your old hops, with any proxy passwords, "
+                "are still in that file.")
         # Kept under the chain until the next chain edit, not only on the shared
         # status line, which a restore offer or a failed listing can overwrite.
         if earlier is not None:
             self._chain_notice = (
                 f"An earlier saved proxy chain could not be read and was moved to "
-                f"{earlier.name} in {folder}. The chain starts empty until you edit it.")
+                f"{earlier.name} in {folder}. {kept}")
         elif chain_error:
+            moved = proxychain.earlier_copy() is not None    # moved aside just now
             self._chain_notice = (
                 f"Could not read the saved proxy chain in {folder}: "
-                f"{chain_error}. The chain starts empty.")
+                f"{chain_error}. {kept if moved else 'The chain is empty.'}")
         else:
             self._chain_notice = ""
         self._build()
