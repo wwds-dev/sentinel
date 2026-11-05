@@ -832,8 +832,8 @@ def test_a_failing_networksetup_is_reported_through_the_real_listing_path(monkey
     assert root["calls"] == []
 
 
-def test_each_call_lists_the_interfaces_once(monkeypatch, root):
-    """One read decides both the interface and the refusal wording (review P3-1)."""
+def test_a_failed_listing_is_read_once_per_call(monkeypatch, root):
+    """On a failed listing, one read decides both the refusal and its wording (review P3-1)."""
     reads = []
     monkeypatch.setattr(macaddr, "read_interface", lambda d: reads.append(d) or (None, "boom"))
     for call in (lambda: macaddr.set_mac("en5", NEW), lambda: macaddr.randomize("en5"),
@@ -841,3 +841,69 @@ def test_each_call_lists_the_interfaces_once(monkeypatch, root):
         reads.clear()
         ok, msg = call()
         assert not ok and "boom" in msg and len(reads) == 1
+
+
+@pytest.mark.parametrize("call", [
+    lambda: macaddr.set_mac("en5", NEW),
+    lambda: macaddr.randomize("en5"),
+    lambda: macaddr.restore("en5"),
+])
+def test_the_wording_comes_from_the_one_listing_that_decided(monkeypatch, root, call):
+    """The first listing fails and any later one would succeed: a second listing taken only
+    for the wording would say "No such interface" or find the interface (review 3 P3-2)."""
+    listings = []
+
+    def fake(argv, *a, **kw):
+        if argv[0] == "networksetup":
+            listings.append(argv)
+            return (False, "networksetup: boom") if len(listings) == 1 else (True, LISTING)
+        return True, "\tether 02:11:22:33:44:55\n"
+    monkeypatch.setattr(macaddr, "run", fake)
+    ok, msg = call()
+    assert not ok and "Could not read the network interfaces: networksetup: boom" in msg
+    assert "No such interface" not in msg and root["calls"] == []
+    assert len(listings) == 1
+
+
+def test_a_listing_timeout_is_worded_without_a_double_full_stop(monkeypatch, root):
+    """privileged.run's own text ends in a full stop (review 3 P3-1)."""
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **kw: (False, "Timed out."))
+    for call in (lambda: macaddr.set_mac("en5", NEW), lambda: macaddr.randomize("en5"),
+                 lambda: macaddr.restore("en5")):
+        ok, msg = call()
+        assert not ok and ".." not in msg
+        assert msg == "Could not read the network interfaces: Timed out. Nothing was changed."
+    assert root["calls"] == []
+
+
+def _count_listings(monkeypatch):
+    listings = []
+
+    def fake(argv, *a, **kw):
+        if argv[0] == "networksetup":
+            listings.append(argv)
+            return True, LISTING
+        return True, "\tether 02:11:22:33:44:55\n"
+    monkeypatch.setattr(macaddr, "run", fake)
+    return listings
+
+
+def test_a_successful_call_lists_the_interfaces_once(monkeypatch, root):
+    """set_mac, randomize and restore each read the listing once on success (review 3 P3-2)."""
+    listings = _count_listings(monkeypatch)
+    calls = {"set_mac": lambda: macaddr.set_mac("en5", NEW),
+             "randomize": lambda: macaddr.randomize("en5"),
+             "restore": lambda: macaddr.restore("en5")}
+    for name, call in calls.items():
+        listings.clear()
+        call()
+        assert len(listings) == 1, name
+
+
+def test_a_listing_error_is_redacted_before_it_is_cut(monkeypatch):
+    # An address straddling the 200-character cut: cutting first leaves "02:aa:bb"
+    # behind, which the six-octet pattern no longer recognises.
+    noisy = "x" * 189 + " 02:aa:bb:cc:dd:ee " + "y" * 50
+    monkeypatch.setattr(macaddr, "run", lambda argv, *a, **kw: (False, noisy))
+    _, error = macaddr.list_interfaces_checked()
+    assert len(error) <= 200 and "02:aa:bb" not in error

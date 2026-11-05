@@ -555,6 +555,9 @@ def test_a_worker_failure_during_the_read_frees_the_tab(env, monkeypatch):
     DeferredWorker.started[0].error_signal.emit("boom")
     assert not env.tab.busy and env.asked == []
     assert "boom" in env.tab.status_label.text()
+    # Off before the read (Tor not ours, chain empty), so off after it.
+    assert not env.tab.tor_stop_btn.isEnabled() and not env.tab.chain_test_btn.isEnabled()
+    assert env.tab.mac_random_btn.isEnabled()
 
 
 # ── Review of 5a81ab9 ──
@@ -615,3 +618,13 @@ def test_the_interface_picker_is_off_while_reading(env, monkeypatch):
     env.answers = [False]
     DeferredWorker.started[0].finished_signal.emit((env.ifaces[0], ""))
     assert env.tab.mac_device_box.isEnabled()
+
+
+def test_test_chain_stays_off_after_an_approved_action_with_an_empty_chain(env, monkeypatch):
+    # Review 2 of 45d7fe2, P3-1: _finish re-enabled every button, chain included.
+    monkeypatch.setattr(tor, "start", lambda: (True, "started"))
+    assert not env.tab.chain_test_btn.isEnabled()
+    env.answers = [True]
+    env.tab.start_tor()
+    assert not env.tab.busy
+    assert not env.tab.chain_test_btn.isEnabled()
