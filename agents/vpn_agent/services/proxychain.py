@@ -153,8 +153,11 @@ def _unreadable_copies(path: Path) -> dict[int, Path]:
     for name in names:
         if name == base:
             copies[1] = path.with_name(name)
-        elif name.startswith(base + "-") and name[len(base) + 1:].isdigit():
-            number = int(name[len(base) + 1:])
+        elif name.startswith(base + "-"):
+            suffix = name[len(base) + 1:]
+            if not (suffix.isascii() and suffix.isdigit()):   # "²" is a digit int() refuses
+                continue
+            number = int(suffix)
             if number >= 2:
                 copies[number] = path.with_name(name)
     return copies

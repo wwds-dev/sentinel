@@ -435,9 +435,45 @@ def test_an_existing_copy_name_is_never_replaced(tmp_path, monkeypatch):
 def test_a_missing_chain_names_the_newest_earlier_copy(tmp_path, monkeypatch, names, newest):
     # Review 3, P3-1: the move happens at start-up, so the next launch must say so too.
     monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
-    for name in names + ["proxychain.json.unreadable-x", "proxychain.json.unreadable-1", "other.unreadable"]:
+    for name in names + ["proxychain.json.unreadable-x", "proxychain.json.unreadable-1",
+                         "proxychain.json.unreadable-\u00b2", "other.unreadable"]:
         (tmp_path / name).write_text("{broken")
     chain, error = proxychain.load_chain_checked()
     assert chain.hops == [] and error == f"it was moved to {newest} earlier"
     proxychain.save_chain(proxychain.Chain(hops=[ProxyHop(host="10.0.0.1")]))
     assert proxychain.load_chain_checked()[1] == ""             # a save ends it
+
+
+def test_a_hand_made_copy_name_never_stops_the_loader(tmp_path, monkeypatch):
+    # Review of 924d1f5, P3-1: "²" passes str.isdigit() but int() refuses it.
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    (tmp_path / "proxychain.json.unreadable-\u00b2").write_text("{old")
+    assert proxychain.load_chain_checked()[1] == ""
+    proxychain.chain_path().write_text("{new")
+    assert proxychain.load_chain_checked()[1].endswith("moved to proxychain.json.unreadable")
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo", "dangling-link"])
+def test_a_chain_that_is_not_a_regular_file_is_never_read_or_moved(tmp_path, monkeypatch, kind):
+    # Review of 924d1f5, P3-2: reading a FIFO with no writer would block the UI thread.
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    path = proxychain.chain_path()
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(path)
+    else:
+        path.symlink_to(tmp_path / "gone.json")
+    copy = tmp_path / "proxychain.json.unreadable"
+    copy.write_text("{old")
+    result = []
+    worker = threading.Thread(target=lambda: result.append(proxychain.load_chain_checked()), daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():                       # unblock the reader so nothing is left behind
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(timeout=5)
+        pytest.fail("load_chain_checked() opened a FIFO")
+    assert result[0][1] == "it was moved to proxychain.json.unreadable earlier"
+    assert copy.read_text() == "{old" and os.path.lexists(path)
+    assert not (tmp_path / "proxychain.json.unreadable-2").exists()
