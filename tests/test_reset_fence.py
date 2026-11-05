@@ -294,3 +294,30 @@ def test_the_refusal_dialog_says_data_may_be_partly_erased(win, monkeypatch):
     opened[0].reject()
     assert len(shown) == 1 and "may already have been erased" in shown[0]
     assert not getattr(win, "_portable_reset_committed", False)
+
+
+# ── MAC re-audit 1 P3-2: the reset erases the record of a changed address ──
+
+@pytest.mark.parametrize("recorded, warned", [({"en5": "aa:bb:cc:00:00:05"}, True), ({}, False)])
+def test_the_final_confirmation_says_a_changed_address_stays_changed(win, monkeypatch,
+                                                                     recorded, warned):
+    from PySide6.QtWidgets import QDialog, QInputDialog, QPushButton
+
+    from agents.vpn_agent.services import macaddr
+    monkeypatch.setattr(macaddr, "recorded", lambda: dict(recorded))
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda p, t, text, *a, **k: asked.append(text) or QMessageBox.No))
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("ERASE SENTINEL DATA", True)))
+    monkeypatch.setattr(portable_reset, "erase_portable_user_data",
+                        lambda: pytest.fail("erased after No"))
+    opened = []
+    monkeypatch.setattr(QDialog, "exec", lambda self: opened.append(self) or 0)
+    dialogs.show_settings(win)
+    next(b for b in opened[0].findChildren(QPushButton)
+         if b.objectName() == "EmergencyPortableReset").click()
+    opened[0].reject()
+    [text] = asked
+    assert ("until this Mac restarts" in text) is warned and ("en5" in text) is warned
+    assert "aa:bb:cc" not in text
