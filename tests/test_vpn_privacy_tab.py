@@ -828,10 +828,32 @@ def test_the_unreadable_chain_notice_survives_a_restart(env):
     _save_raw(b"{broken")
     PrivacyTab()                                                  # first launch moves it
     tab = PrivacyTab()                                            # the next launch
-    summary = tab.chain_summary_label.text()
-    assert "Could not read the saved proxy chain" in summary
-    assert "moved to proxychain.json.unreadable earlier" in summary
-    assert "moved to proxychain.json.unreadable earlier" in tab.status_label.text()
-    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)         # the first save ends it
+    folder = str(proxychain.chain_path().parent)
+    expected = ("An earlier saved proxy chain could not be read and was moved to "
+                f"proxychain.json.unreadable in {folder}. The chain starts empty until you edit it.")
+    # Review of 924d1f5, P3-3: this launch read nothing, so it must not say it could not read.
+    assert expected in tab.chain_summary_label.text() and expected in tab.status_label.text()
     assert "Could not read" not in tab.chain_summary_label.text()
-    assert "Could not read" not in PrivacyTab().chain_summary_label.text()
+    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)         # the first save ends it
+    assert "earlier saved proxy chain" not in tab.chain_summary_label.text()
+    assert "earlier saved proxy chain" not in PrivacyTab().chain_summary_label.text()
+
+
+def test_the_first_launch_after_a_bad_chain_still_says_why(env):
+    # The new wording is for later launches only; the launch that moves it names the reason.
+    _save_raw(b"{broken")
+    summary = PrivacyTab().chain_summary_label.text()
+    assert "Could not read the saved proxy chain" in summary and "not valid JSON" in summary
+    assert "earlier saved proxy chain" not in summary
+
+
+def test_a_new_bad_chain_beside_an_earlier_copy_still_says_why(env):
+    # Review of 80dda42, P3-1: an older copy must not hide this launch's reason.
+    _save_raw(b"{broken")
+    PrivacyTab()                                                  # moved to .unreadable
+    _save_raw(b"{broken again")
+    summary = PrivacyTab().chain_summary_label.text()             # moved to -2
+    assert "not valid JSON" in summary and "proxychain.json.unreadable-2" in summary
+    assert "earlier saved proxy chain" not in summary
+    later = PrivacyTab().chain_summary_label.text()
+    assert "earlier saved proxy chain" in later and "proxychain.json.unreadable-2 in" in later

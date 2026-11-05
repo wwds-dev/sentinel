@@ -477,3 +477,13 @@ def test_a_chain_that_is_not_a_regular_file_is_never_read_or_moved(tmp_path, mon
     assert result[0][1] == "it was moved to proxychain.json.unreadable earlier"
     assert copy.read_text() == "{old" and os.path.lexists(path)
     assert not (tmp_path / "proxychain.json.unreadable-2").exists()
+
+
+def test_earlier_copy_is_only_reported_while_no_chain_is_saved(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    assert proxychain.earlier_copy() is None
+    (tmp_path / "proxychain.json.unreadable-3").write_text("{old")
+    (tmp_path / "proxychain.json.unreadable").write_text("{older")
+    assert proxychain.earlier_copy() == tmp_path / "proxychain.json.unreadable-3"
+    proxychain.save_chain(proxychain.Chain(hops=[ProxyHop(host="10.0.0.1")]))
+    assert proxychain.earlier_copy() is None

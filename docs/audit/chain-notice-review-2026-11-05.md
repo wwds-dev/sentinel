@@ -176,3 +176,43 @@ The worktree `.claude/worktrees/intelligent-archimedes-e15a0e` was at `3ca1f6c` 
 - `Path.is_file()` can still raise `PermissionError` on 3.11 when the state folder cannot be searched; pre-existing, folder is 0700 and owner-owned. Out of scope.
 
 **Not verified:** the full suite (run by the author); Linux behaviour; launching the app.
+
+---
+
+# Addendum 2: independent review of 80dda42 (answers P3-3 above)
+
+Reviewer: Opus 5.5, read-only (`code-reviewer`), 2026-11-05; a different agent from the author. Saved by the author's session from the reviewer's report. Mutants ran in a scratch copy (`git archive HEAD`), never in the worktree, because a full-suite run was in progress there.
+
+**Verdict: ready to merge. No P0, P1 or P2 findings.** P3-3 is closed. Two optional P3s.
+
+| Check | Result |
+|---|---|
+| `pytest -q tests/test_vpn_socks_chain.py tests/test_vpn_privacy_tab.py` | 115 passed in 2.30 s |
+| Order: `earlier_copy()` before `load_chain_checked()` (`ui/panels/vpn_privacy.py:50-51`) | Correct; swapping it makes the moving launch use the "earlier" sentence (mutant A, killed) |
+| Earlier copy **and** a new unreadable `proxychain.json` | Correct: `earlier_copy()` is None (`is_file()` true); the file moves to `-2`; the tab names the reason; the next launch's "earlier" sentence names `-2` |
+| A move that fails this launch | Correct: the loader's "could not be moved aside … replaced when you edit" warning is shown; an older copy does not hide it |
+| `is_file()` raising (EACCES on the folder) | Same behaviour as before the commit, one line earlier |
+| First successful save clears the notice | Yes (`_save_chain` clears it; `earlier_copy()` returns None once a chain is saved); a failed save keeps it |
+| Directory at `proxychain.json` + copy | "Earlier" sentence; an edit fails "Is a directory" and the notice stays (pre-existing) |
+| `load_chain_checked()` reason | Unchanged; it now delegates to `earlier_copy()` |
+| CHANGELOG, TODO.md:139 | Accurate |
+
+| # | Mutant | Result | Killed by |
+|---|---|---|---|
+| A | tab: `earlier_copy()` after `load_chain_checked()` | Killed | `test_a_malformed_saved_chain_still_builds_the_tab[...]` |
+| B | tab: newest copy from the listing without the `is_file` check | Killed | `test_the_unreadable_chain_notice_survives_a_restart` |
+| C | `earlier_copy`: `is_file` check removed | Killed | `test_earlier_copy_is_only_reported_while_no_chain_is_saved` |
+| D | `earlier_copy`: `max` → `min` | Killed | `test_a_missing_chain_names_the_newest_earlier_copy[names1-…-2]` |
+| E | tab: `chain_error` branch before `earlier` | Killed | `test_the_unreadable_chain_notice_survives_a_restart` |
+| F | tab: folder dropped from the "earlier" sentence | Killed | same |
+| G | `earlier_copy`: `is_file()` → `exists()` | Killed | `test_a_chain_that_is_not_a_regular_file_is_never_read_or_moved[directory]` |
+
+### P3-1 (addendum 2): an earlier copy plus a new unreadable file is not pinned at tab level
+`tests/test_vpn_privacy_tab.py:826-847`. Only a loader test guards it; a tab change could show the "earlier" sentence there and hide "not valid JSON". Fix: bad file, launch, second bad file, launch; assert "not valid JSON" and "unreadable-2", no "earlier saved proxy chain"; launch again and assert the "earlier" sentence names `-2`. **Fixed** in the test-only commit that adds this addendum.
+
+### P3-2 (addendum 2): wording nits
+`ui/panels/vpn_privacy.py:56-62`. The two sentences end differently ("The chain starts empty." / "… until you edit it."), "until you edit it" describes the notice rather than the chain, and neither tells a non-expert that the moved file still holds their old hops (and possibly proxy passwords) to copy back by hand. Suggestion: one ending for both, e.g. "The chain is empty; your old hops are still in that file." **Deferred** to TODO.md.
+
+### Not findings
+- `earlier_copy()` and `load_chain_checked()` read the folder separately; a file created between them needs a second writer, and only `save_chain` writes it.
+- The folder is listed twice on the missing-file path; negligible.
