@@ -2,8 +2,6 @@
 
 **Goal:** build a structured dossier or find files without changing them. **Time:** 20 minutes.
 
-![Bloodhound workspace](docs/training/images/bloodhound.png)
-
 ## Investigation dossier
 
 Enter the target, target type, investigation scope and objective. Target type

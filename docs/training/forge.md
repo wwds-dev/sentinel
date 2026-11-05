@@ -2,8 +2,6 @@
 
 **Goal:** turn an agent idea into a safe, reviewable specification. **Time:** 15 minutes.
 
-![Forge workspace](docs/training/images/forge.png)
-
 Forge is different from Chat: Chat helps think and answer; Forge creates a
 concrete agent specification and, only after approval, a source-code scaffold.
 The scaffold is a small Python file holding the agent's name, description and

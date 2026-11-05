@@ -6,8 +6,6 @@ shared controls, settings, privacy/cost decisions, portable operation,
 troubleshooting and combined-agent workflows. Open it from Sentinel's
 **More (•••) → Learning Centre** menu.
 
-![Learning Centre lesson browser](docs/training/images/learning-centre.png)
-
 ## Complete curriculum
 
 ### Foundations

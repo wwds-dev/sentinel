@@ -2,8 +2,6 @@
 
 **Goal:** structure and run a lawful public-source search. **Time:** 15 minutes.
 
-![Trace workspace](docs/training/images/trace.png)
-
 The capture above predates the **Exposure Check** button, which now sits beside
 **Live Research** in the run bar; **Stop** replaces the three action buttons
 while a request runs.

@@ -2,8 +2,6 @@
 
 **Goal:** compare the current VPN state with an intended profile, understand the topology, and either create a reviewable configuration or run a gated connection. **Time:** 30 minutes.
 
-![Tunnel workspace. This capture predates the Your IP & DNS group, which sits between VPN Connection and Deployment, and the VPN Apps tab, the last tab after Servers.](docs/training/images/tunnel.png)
-
 Tunnel is for infrastructure you own or administer. It has six distinct
 paths: **VPN Connection (live)** actually connects or disconnects a real
 tunnel, but only through an execution gate; **Connection Check** reads current
@@ -311,8 +309,6 @@ or erases its portable data. A check that takes longer is left to finish on its
 own; its result is ignored, and after Emergency Reset it writes nothing into the
 data being erased. A Connect in flight is handled as described under VPN
 Connection.
-
-![Tunnel action preview](docs/training/images/tunnel-action-preview.png)
 
 ## Config Inspection
 
