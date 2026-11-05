@@ -29,6 +29,7 @@ from urllib.parse import quote
 
 import requests
 
+from services import portable_reset
 from services.runtime_paths import user_data_base
 
 WMN_DATA_URL = (
@@ -86,8 +87,9 @@ def load_sites(*, now: float | None = None) -> tuple[list[dict], str]:
                             headers={"User-Agent": "Sentinel-OSINT/2.0"})
         resp.raise_for_status()
         data = resp.json()
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps(data), encoding="utf-8")
+        if portable_reset.writes_allowed():     # never into a folder a Reset is erasing
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(data), encoding="utf-8")
         return usable_sites(data), "download"
     except Exception as exc:
         if cached is not None:

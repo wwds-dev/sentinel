@@ -8,7 +8,18 @@ pure parsers and hand-built snapshots to the pure diff. Run with:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+# `sentry` is imported by its own name. Appended, never prepended: from the
+# Sentinel root, agents/sentry/main.py must not shadow the app's own main.py.
+# (This replaced agents/sentry/conftest.py, whose module name collided with
+# tests/conftest.py when both suites ran in one pytest session.)
+_SENTRY_ROOT = str(Path(__file__).resolve().parents[1])
+if _SENTRY_ROOT not in sys.path:
+    sys.path.append(_SENTRY_ROOT)
 
 from sentry import collectors, engine
 from sentry.baseline import BaselineStore

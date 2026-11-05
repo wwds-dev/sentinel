@@ -17,6 +17,7 @@
 - [x] `P1` `docs` `@ai` `docs/agents/sentry.md`, README roster 7 → 8.
 - [x] `P1` `bug` `security` `@ai` Code-review fixes (2026-09-29): arp-spoof findings now dedupe against the baseline (a steady benign duplicate mapping no longer re-emits an identical finding every pass and evict real history through the 500-record cap); lsof parsing locates the protocol column from the right so a process name with a space (e.g. the truncated "Google Ch") no longer shifts the columns and drops the row; baseline/findings are written atomically under a cross-process flock (a truncated write no longer makes `load_baseline` return None and `run_watch` silently suppress every finding); the connections baseline is capped; the unused one-MAC-many-IPs path (ordinary for dual-stack/routers, not a spoof signal) was removed.
 - [x] `P1` `bug` `@ai` Background watch hardened (audit tier-2): `install()` refuses in a packaged (frozen) build, and success is verified with `launchctl print gui/<uid>/<label>` instead of the `launchctl load` exit code; `status()` now returns `frozen`, `last_run` and `last_exit_code`.
+- [x] `P1` `bug` `@ai` Reset baseline is all-or-nothing and lock-aware (2026-10-23, #20): `BaselineStore.reset()` takes the watch-pass lock without waiting (raises `BaselineBusy` while a pass holds it) and clears the findings log before the baseline; the panel calls it instead of unlinking the two files itself.
 
 ## v2 — planned
 

@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from services import portable_reset
 from services.runtime_paths import user_data_base
 
 CATALOG_URL = (
@@ -148,6 +149,8 @@ def refresh(*, now: float | None = None) -> str:
         data = resp.json()
         if not parse(data):
             return "failed: the downloaded catalogue held no usable tools"
+        if not portable_reset.writes_allowed():  # never into a folder a Reset is erasing
+            return "skipped: Sentinel's data is being erased"
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")

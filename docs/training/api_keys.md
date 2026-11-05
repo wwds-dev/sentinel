@@ -2,7 +2,7 @@
 
 **Goal:** connect a cloud AI provider and keep its models current. **Time:** about ten minutes.
 
-Ollama needs no key: it runs on this Mac. Every other provider in the
+Ollama and LM Studio need no key: they run on this Mac. Every other provider in the
 Provider dropdown is a cloud service that needs an API key from that
 provider's own website. Sentinel only reads keys; it never creates one.
 
@@ -183,8 +183,13 @@ What is never assumed:
   the cost check uses) and skips every model whose context window is
   smaller. Over 100K tokens the request is treated as long-document work.
 - **An unrated model is not chosen over rated ones**, because nothing shows
-  it is good enough. That includes your local Ollama models: the
-  leaderboard rates full models, not the copy on this Mac. They still win
+  it is good enough. That includes a local model (Ollama or LM Studio)
+  with no rating yet: the leaderboard rates full models, not the copy on
+  this Mac. An unmodified build of a model the leaderboard rates inherits
+  that rating, less a penalty for heavy quantisation; any other local model
+  is measured once against a cloud model you have a key for, automatically
+  when your API permissions and budgets allow it, otherwise when you press
+  **Measure** in **Settings → Local models**. Unrated local models still win
   in **Local only** mode and with **Privacy first**, where Sentinel's own
   scoring decides.
 - **Ratings at a higher effort setting are not borrowed.** When the

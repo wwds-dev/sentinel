@@ -78,6 +78,15 @@ class AgentHost(Protocol):
         """Real token counts, when the worker reports them."""
         ...
 
+    def stopped_request_context(self, agent: str,
+                                request_id: str | None = None) -> dict | None:
+        """What is needed to bill this request if it is stopped and still answered."""
+        ...
+
+    def record_stopped_request(self, run: dict, payload: dict) -> None:
+        """Record the late cost of a stopped cloud request (at most once per worker)."""
+        ...
+
     def record_external_research(self, *, agent: str, target: str,
                                  query_type: str, response: str,
                                  cancelled: bool = False) -> None:
