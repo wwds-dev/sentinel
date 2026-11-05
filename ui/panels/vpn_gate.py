@@ -43,9 +43,17 @@ class GatedTab(QWidget):
         if self.busy:
             QMessageBox.information(self, "Busy", "A Tunnel action is already running.")
             return False
-        if text is not None and not self._ask(title, text):
-            self._say("Not run: confirmation declined.")
-            return False
+        if text is not None:
+            # Reserved while the dialog is open: its nested event loop runs
+            # timers, and one that found the tab free could start beside this.
+            self._active = True
+            try:
+                confirmed = self._ask(title, text)
+            finally:
+                self._active = False
+            if not confirmed:
+                self._say("Not run: confirmation declined.")
+                return False
         self._say(f"{title}…")
         self._set_enabled(False)
         worker = CallWorker(func)
