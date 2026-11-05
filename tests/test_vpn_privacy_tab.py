@@ -628,3 +628,56 @@ def test_test_chain_stays_off_after_an_approved_action_with_an_empty_chain(env, 
     env.tab.start_tor()
     assert not env.tab.busy
     assert not env.tab.chain_test_btn.isEnabled()
+
+
+# ── Review of bb4d35d ──
+
+def test_an_action_keeps_the_selected_hop(env, monkeypatch):
+    # P3-1: recomputing Test chain after an action rebuilt the table and lost the row.
+    _add_hop(env.tab, host="10.0.0.1")
+    _add_hop(env.tab, host="10.0.0.2")
+    env.tab.chain_table.setCurrentCell(1, 0)
+    monkeypatch.setattr(tor, "start", lambda: (True, "started"))
+    env.answers = [True]
+    env.tab.start_tor()                            # approved: _finish path
+    assert env.tab.chain_table.currentRow() == 1
+    env.tab.randomise_mac()                        # declined: read path
+    assert env.tab.chain_table.currentRow() == 1
+
+
+def test_test_chain_comes_back_on_after_an_approved_action_with_a_valid_chain(env, monkeypatch):
+    # P3-2
+    _add_hop(env.tab)
+    assert env.tab.chain_test_btn.isEnabled()
+    monkeypatch.setattr(tor, "start", lambda: (True, "started"))
+    env.answers = [True]
+    env.tab.start_tor()
+    assert env.tab.chain_test_btn.isEnabled()
+    assert env.tab.mac_random_btn.isEnabled()      # _after_finish ran with the tab free
+
+
+def test_a_mode_change_while_an_action_runs_keeps_test_chain_off(env, monkeypatch):
+    # P3-3 (a): the chain mode box stays usable during an action.
+    _add_hop(env.tab)
+    DeferredWorker.started = []
+    monkeypatch.setattr(vpn_gate, "CallWorker", DeferredWorker)
+    monkeypatch.setattr(tor, "start", lambda: (True, "started"))
+    env.answers = [True]
+    env.tab.start_tor()
+    assert env.tab.busy and not env.tab.chain_test_btn.isEnabled()
+    env.tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
+    assert not env.tab.chain_test_btn.isEnabled()
+    DeferredWorker.started[0].run_now()            # the action finishes ...
+    assert not env.tab.chain_test_btn.isEnabled()  # ... and the interface listing starts
+    DeferredWorker.started[1].run_now()
+    assert not env.tab.busy and env.tab.chain_test_btn.isEnabled()
+
+
+def test_a_chain_with_a_bad_hop_keeps_test_chain_off(env):
+    # P3-3 (b): e.g. a hand-edited saved chain.
+    _add_hop(env.tab)
+    env.tab._chain.hops[0].host = ""
+    env.tab._refresh_chain()
+    assert not env.tab.chain_test_btn.isEnabled()
+    env.tab._controls_changed()
+    assert not env.tab.chain_test_btn.isEnabled()
