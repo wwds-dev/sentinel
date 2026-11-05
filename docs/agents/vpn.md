@@ -84,9 +84,20 @@ Known limitation: the VPN Agent state folder is outside Sentinel's data folder, 
 Three cards, each honest about its limits (the same text is in the tab).
 
 - **Hardware address.** Randomise or restore an interface's MAC. One hop only:
-  your router still sees your traffic; the change lasts until restart or Restore.
-  Review shows `old → new` and warns that Wi-Fi will be cycled. Asks for the
-  macOS administrator dialog (never a cached sudo). Nothing is logged.
+  your router still sees your traffic. Only locally administered unicast
+  addresses are generated. Review shows `old → new` and warns that Wi-Fi will be
+  cycled. Asks for the macOS administrator dialog (never a cached sudo). Nothing
+  is logged.
+  *Putting it back.* Before the change Sentinel records the address the
+  interface had (`mac_original.json` in the VPN state folder, 0600, tied to this
+  boot and this adapter). If it cannot read the current address or this boot's
+  ID there is nothing to restore to, so the change is refused. At quit Sentinel
+  puts the original back through the administrator dialog; a declined or failed
+  restore stays recorded and is offered again at the next launch. After a crash
+  the Privacy tab offers the restore at the next launch. A restart drops the
+  record, because an `ifconfig` change never survives a reboot. Emergency Reset
+  erases the record, so an address still changed then stays until restart (its
+  final confirmation says so).
 - **Tor.** A local client on 127.0.0.1:9250 (never a relay), state in Sentinel's
   data folder. Its start-up log is deleted as soon as Start has an answer. Start asks first; Stop only signals the Tor Sentinel started;
   Check contacts check.torproject.org through Tor (asks first); New identity

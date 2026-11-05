@@ -337,8 +337,15 @@ Three cards. Each says plainly what it does not do.
 **Hardware address.** Pick an interface, then *Randomise…* or *Restore hardware
 address…*. The review shows `old → new` and warns that Wi-Fi will be switched off
 and on. macOS asks for your administrator password. This changes what the local
-network sees, nothing more: your router still sees your traffic, and the change
-lasts until restart or Restore. For Wi-Fi, also set Private Wi-Fi Address to Off
+network sees, nothing more: your router still sees your traffic. The new address
+is always a locally administered, unicast one. Before changing it, Sentinel notes
+the address you had (if it cannot read it, it refuses and changes nothing). When
+you quit, it puts the original back and macOS asks for your password again; if you
+decline or it fails, Sentinel asks again at the next launch. After a crash, the
+Privacy tab offers the restore when you next open Sentinel. A restart also undoes
+the change, so the note is dropped then. Emergency Reset erases the note, so an
+address that is still changed stays that way until you restart (the final
+confirmation tells you). For Wi-Fi, also set Private Wi-Fi Address to Off
 for that network or macOS may override it.
 
 **Tor.** *Start Tor…* runs a local client on 127.0.0.1:9250 (never a relay).
