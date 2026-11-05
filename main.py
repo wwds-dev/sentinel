@@ -3028,6 +3028,14 @@ class GodAI(QWidget):
             row = self.routing_rows[key]
             routing_layout.addWidget(row)
 
+        # How the route was resolved (Local only substituting a model): shown
+        # in the card, hidden while there is nothing to say.
+        self.route_notice_label = QLabel()
+        self.route_notice_label.setWordWrap(True)
+        self.route_notice_label.setObjectName("RouteNotice")
+        self.route_notice_label.hide()
+        routing_layout.addWidget(self.route_notice_label)
+
         # kept so the existing update paths still have something to write to
         self.route_result_label = QLabel()
         self.route_result_label.hide()
@@ -3748,6 +3756,11 @@ class GodAI(QWidget):
         label = getattr(self, "route_result_label", None)
         if label is not None and text:
             label.setText(text)
+        notice = getattr(self, "route_notice_label", None)
+        if notice is not None:
+            notice.setText(text)
+            notice.setToolTip(text)
+            notice.setVisible(bool(text))
         bar = getattr(self, "runbar_cost", None)
         if bar is not None:
             bar.setToolTip(text)
