@@ -487,3 +487,20 @@ def test_earlier_copy_is_only_reported_while_no_chain_is_saved(tmp_path, monkeyp
     assert proxychain.earlier_copy() == tmp_path / "proxychain.json.unreadable-3"
     proxychain.save_chain(proxychain.Chain(hops=[ProxyHop(host="10.0.0.1")]))
     assert proxychain.earlier_copy() is None
+
+
+def test_an_unsearchable_folder_is_reported_not_raised(tmp_path, monkeypatch):
+    # Review of 4bf546d, P3-3: Path.is_file() raises PermissionError there on 3.11.
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(state))
+    proxychain.chain_path().write_text('{"hops": [{"host": "10.0.0.1", "password": "s3cret"}]}')
+    state.chmod(0o000)
+    try:
+        assert proxychain.load_chain().hops == []
+        assert proxychain.earlier_copy() is None
+        chain, error = proxychain.load_chain_checked()
+    finally:
+        state.chmod(0o700)
+    assert chain.hops == [] and error == "its folder could not be opened (Permission denied)"
+    assert proxychain.chain_path().read_text().startswith('{"hops"')     # never moved

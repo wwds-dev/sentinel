@@ -885,3 +885,19 @@ def test_an_empty_chain_file_is_not_said_to_hold_hops(env):
     _save_raw(b"")
     summary = PrivacyTab().chain_summary_label.text()
     assert "hops" not in summary and "still in proxychain.json.unreadable." in summary
+
+
+def test_an_unsearchable_chain_folder_still_builds_the_tab(env, monkeypatch, tmp_path):
+    # Review of 4bf546d, P3-3: the tab must build and say why, never raise.
+    # Only the chain's folder is locked; the MAC state beside it is a separate item.
+    folder = tmp_path / "chain"
+    folder.mkdir()
+    (folder / "proxychain.json").write_text('{"hops": []}')
+    monkeypatch.setattr(proxychain, "chain_path", lambda: folder / "proxychain.json")
+    folder.chmod(0o000)
+    try:
+        summary = PrivacyTab().chain_summary_label.text()
+    finally:
+        folder.chmod(0o700)
+    assert "its folder could not be opened (Permission denied). The chain is empty." in summary
+    assert "still in" not in summary

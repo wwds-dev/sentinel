@@ -128,9 +128,20 @@ def chain_path() -> Path:
     return paths.state_dir() / "proxychain.json"
 
 
+def _is_file(path: Path) -> bool:
+    """``Path.is_file()``, but a folder that cannot be searched counts as no file.
+
+    Python 3.11 raises ``PermissionError`` there instead of answering False.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def load_chain() -> Chain:
     path = chain_path()
-    if not path.is_file():
+    if not _is_file(path):
         return Chain()
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8")))
@@ -166,7 +177,7 @@ def _unreadable_copies(path: Path) -> dict[int, Path]:
 def earlier_copy() -> Path | None:
     """The newest moved-aside copy, while no chain has been saved since."""
     path = chain_path()
-    if path.is_file():
+    if _is_file(path):
         return None
     copies = _unreadable_copies(path)
     return copies[max(copies)] if copies else None
@@ -186,7 +197,11 @@ def load_chain_checked() -> tuple[Chain, str]:
     chain with a copy beside it names the newest copy again.
     """
     path = chain_path()
-    if not path.is_file():
+    try:
+        present = path.is_file()
+    except OSError as exc:                              # 3.11: the folder cannot be searched
+        return Chain(), f"its folder could not be opened ({exc.strerror or 'read error'})"
+    if not present:
         earlier = earlier_copy()
         return Chain(), (f"it was moved to {earlier.name} earlier" if earlier else "")
     try:
