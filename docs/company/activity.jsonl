@@ -28,3 +28,7 @@
 {"ts": "2026-11-05T14:36:27", "phase": "architect", "state": "done", "spec": "audit-tier2-privileged-layer"}
 {"ts": "2026-11-05T14:36:27", "phase": "build", "state": "start", "spec": "audit-tier2-privileged-layer"}
 {"ts": "2026-11-05T14:55:23", "phase": "build", "state": "done", "spec": "audit-tier2-privileged-layer"}
+{"ts": "2026-11-05T15:23:26", "phase": "review", "state": "start", "spec": "audit-tier2-privileged-layer"}
+{"ts": "2026-11-05T15:23:26", "phase": "secure", "state": "start", "spec": "audit-tier2-privileged-layer"}
+{"ts": "2026-11-05T15:36:12", "phase": "review", "state": "done", "spec": "audit-tier2-privileged-layer"}
+{"ts": "2026-11-05T15:36:12", "phase": "secure", "state": "done", "spec": "audit-tier2-privileged-layer"}
