@@ -736,13 +736,18 @@ def test_a_mode_change_keeps_the_selected_hop(env):
     assert proxychain.load_chain().mode == proxychain.DYNAMIC
 
 
-def test_a_chain_without_proxychains_dns_can_still_be_tested(env):
+def test_a_chain_without_proxychains_dns_can_still_be_tested(env, monkeypatch):
     # P3-2: the probe does not use proxychains' DNS setting, so it is no blocker.
     _add_hop(env.tab)
     env.tab._chain.proxy_dns = False
     env.tab._refresh_chain()
     assert env.tab.chain_test_btn.isEnabled()
     assert "Problems" not in env.tab.chain_summary_label.text()
+    # ... and pressing it runs the probe (review of 729fd02, P3-4: test_chain's own check).
+    monkeypatch.setattr(proxychain, "probe", env.net("probe", proxychain.ProbeResult(True, "1.2.3.4", 5)))
+    env.answers = [True]
+    env.tab.test_chain()
+    assert env.calls == ["probe"]
 
 
 @pytest.mark.parametrize("saved", ['{"hops": [{"host": 5}]}', '{"hops": [{"port": "1080"}]}', "[]",
@@ -754,3 +759,38 @@ def test_a_malformed_saved_chain_still_builds_the_tab(env, saved):
     path.write_text(saved)
     tab = PrivacyTab()
     assert tab._chain.hops == [] and not tab.chain_test_btn.isEnabled()
+    assert "Could not read the saved proxy chain" in tab.status_label.text()
+
+
+# ── Review of 729fd02 ──
+
+def _save_raw(data: bytes) -> None:
+    path = proxychain.chain_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def test_a_mode_change_refreshes_the_summary(env):
+    # P3-1: a hand-edited unknown mode, then a real one picked in the box.
+    _save_raw(b'{"mode": "xyz", "hops": [{"host": "10.0.0.1", "port": 1080}]}')
+    tab = PrivacyTab()
+    assert "unknown chain mode" in tab.chain_summary_label.text()
+    assert not tab.chain_test_btn.isEnabled()
+    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)
+    assert "Problems" not in tab.chain_summary_label.text()
+    assert tab.chain_test_btn.isEnabled()
+
+
+def test_an_unreadable_saved_chain_survives_the_first_edit(env):
+    # P3-2: one bad field emptied the chain silently and the next save overwrote it.
+    original = (b'{"hops": [{"host": "10.0.0.1", "username": "u", "password": "s3cret"},'
+                b' {"host": "10.0.0.2", "port": 1080.0}]}')
+    _save_raw(original)
+    tab = PrivacyTab()
+    text = tab.status_label.text()
+    assert "Could not read the saved proxy chain" in text and "proxychain.json.unreadable" in text
+    assert "s3cret" not in text and "1080.0" not in text
+    tab.chain_mode_box.setCurrentText(proxychain.DYNAMIC)      # an edit saves the chain
+    aside = proxychain.chain_path().with_name("proxychain.json.unreadable")
+    assert aside.read_bytes() == original
+    assert proxychain.load_chain().mode == proxychain.DYNAMIC

@@ -132,8 +132,42 @@ def load_chain() -> Chain:
         return Chain()
     try:
         return Chain.from_dict(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, TypeError):
+    except (OSError, ValueError, TypeError):
         return Chain()
+
+
+def load_chain_checked() -> tuple[Chain, str]:
+    """
+    Load the saved chain, or say why it could not be read.
+
+    An unreadable file may still hold proxy passwords, so it is moved aside
+    (keeping its owner-only mode) before an edit can save over it. The reason
+    names what is wrong, never what the file contains.
+    """
+    path = chain_path()
+    if not path.is_file():
+        return Chain(), ""
+    try:
+        return Chain.from_dict(json.loads(path.read_text(encoding="utf-8"))), ""
+    except OSError as exc:
+        return Chain(), (f"it could not be opened ({exc.strerror or 'read error'}), "
+                         "so it will be replaced when you edit the chain")
+    except UnicodeDecodeError:
+        why = "it is not UTF-8 text"
+    except json.JSONDecodeError:
+        why = "it is not valid JSON"
+    except (TypeError, ValueError) as exc:
+        why = str(exc) if isinstance(exc, TypeError) else "it holds a value that cannot be read"
+    aside = path.with_name(path.name + ".unreadable")
+    number = 2
+    while aside.exists():
+        aside = path.with_name(f"{path.name}.unreadable-{number}")
+        number += 1
+    try:
+        path.replace(aside)
+    except OSError:
+        return Chain(), f"{why}, and it could not be moved aside, so it will be replaced when you edit the chain"
+    return Chain(), f"{why}; it was moved to {aside.name}"
 
 
 def save_chain(chain: Chain) -> Path:

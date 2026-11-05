@@ -199,12 +199,17 @@ def test_proxychains_conf_content_and_persistence(tmp_path, monkeypatch):
     '{"hops": ["10.0.0.1"]}',
     '{"mode": 3}',
     '[]',
+    b'{"hops": [], "name": "\xff"}',             # not UTF-8
 ])
 def test_a_wrongly_typed_saved_chain_loads_as_empty(tmp_path, monkeypatch, saved):
     monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
-    proxychain.chain_path().write_text(saved)
+    path = proxychain.chain_path()
+    path.write_bytes(saved) if isinstance(saved, bytes) else path.write_text(saved)
     chain = proxychain.load_chain()
     assert chain.hops == [] and chain.problems()       # no exception, and nothing to probe
+    chain, error = proxychain.load_chain_checked()
+    assert chain.hops == [] and "moved to proxychain.json.unreadable" in error
+    assert not path.exists() and path.with_name("proxychain.json.unreadable").exists()
 
 
 def test_a_well_typed_saved_chain_still_loads(tmp_path, monkeypatch):
@@ -219,3 +224,41 @@ def test_probe_problems_leave_out_only_the_dns_setting():
     c = proxychain.Chain(hops=[ProxyHop(kind="DNS", host="10.0.0.1", port=1080)], proxy_dns=False)
     assert any("DNS is not being sent" in p for p in c.problems())
     assert c.probe_problems() == ["hop 1: unknown proxy type 'DNS'"]
+
+
+def test_load_chain_checked_keeps_every_unreadable_copy(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    for n, body in enumerate(("{one", "{two")):
+        proxychain.chain_path().write_text(body)
+        _, error = proxychain.load_chain_checked()
+        assert "not valid JSON" in error
+    assert (tmp_path / "proxychain.json.unreadable").read_text() == "{one"
+    assert (tmp_path / "proxychain.json.unreadable-2").read_text() == "{two"
+
+
+def test_load_chain_checked_is_quiet_for_a_good_or_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    assert proxychain.load_chain_checked()[1] == ""
+    proxychain.save_chain(proxychain.Chain(hops=[ProxyHop(host="10.0.0.1")]))
+    chain, error = proxychain.load_chain_checked()
+    assert error == "" and chain.hops[0].host == "10.0.0.1"
+
+
+def test_probe_refuses_a_dns_kind_without_opening_a_socket(monkeypatch):
+    # Review of 729fd02, P3-4: probe() must use probe_problems, not a text filter.
+    def no_socket(*a, **k):
+        raise AssertionError("probe opened a socket for a chain it should refuse")
+    monkeypatch.setattr(socket, "create_connection", no_socket)
+    r = proxychain.probe(proxychain.Chain(hops=[ProxyHop(kind="DNS", host="10.0.0.1")]))
+    assert not r.ok and "unknown proxy type" in r.error
+
+
+@pytest.mark.parametrize("saved, why", [
+    (b'{"hops": [], "name": "\xff"}', "not UTF-8 text"),
+    (b"{broken", "not valid JSON"),
+    (b'{"hops": [{"port": "1080"}]}', "hop port must be a number"),
+])
+def test_load_chain_checked_names_what_is_wrong(tmp_path, monkeypatch, saved, why):
+    monkeypatch.setenv("VPN_AGENT_STATE_DIR", str(tmp_path))
+    proxychain.chain_path().write_bytes(saved)
+    assert why in proxychain.load_chain_checked()[1]

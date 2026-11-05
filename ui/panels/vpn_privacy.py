@@ -47,9 +47,11 @@ class PrivacyTab(GatedTab):
         super().__init__(parent)
         self._loaded = False
         self._interfaces: list = []
-        self._chain = proxychain.load_chain()
+        self._chain, chain_error = proxychain.load_chain_checked()
         self._build()
         self._refresh_chain()
+        if chain_error:
+            self._say(f"Could not read the saved proxy chain: {chain_error}. The chain starts empty.")
         self._show_mac()
         self.refresh_tor()
         if macaddr.recorded():
@@ -422,7 +424,10 @@ class PrivacyTab(GatedTab):
     def _mode_changed(self, mode: str) -> None:
         self._chain.mode = mode
         self._save_chain()
-        self._show_chain_test()      # the table does not show the mode; keep the selection
+        # The table does not show the mode, so it is not rebuilt (that would drop
+        # the selected hop); the summary can name a mode problem, so it is.
+        self._show_chain_summary()
+        self._show_chain_test()
 
     def _refresh_chain(self) -> None:
         self.chain_table.setRowCount(0)
@@ -432,11 +437,14 @@ class PrivacyTab(GatedTab):
             for col, value in enumerate(
                     [str(number), hop.kind, hop.host, str(hop.port), hop.username, hop.label]):
                 self.chain_table.setItem(row, col, QTableWidgetItem(value))
+        self._show_chain_summary()
+        self._show_chain_test()
+
+    def _show_chain_summary(self) -> None:
         problems = self._chain_problems()
         self.chain_summary_label.setText(
             f"Chain: {self._chain.describe()}"
             + (("\nProblems: " + "; ".join(problems)) if problems else ""))
-        self._show_chain_test()
 
     def _chain_problems(self) -> list[str]:
         return self._chain.probe_problems()
