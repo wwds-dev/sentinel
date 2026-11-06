@@ -564,7 +564,7 @@ def test_relative_openvpn_files_draw_one_warning():
     text = ("client\nproto udp\nremote vpn.example.com 1194\n"
             "ca ca.crt\nkey ~/k.key\ntls-auth ta.key 1\ncert /etc/c.crt\n"
             "tls-crypt [inline]\nauth-user-pass stdin\nauth-user-pass\n"
-            "<ca>\nMIIBogus\n</ca>\n")
+            "<ca>\nMIIBogus\n</ca>\n<tls-crypt>\nMIIBogus\n</tls-crypt>\n")
     blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
     assert blockers == [] and soft == []
     found = [w for w in warnings if "looks for these files in /" in w]
@@ -572,7 +572,7 @@ def test_relative_openvpn_files_draw_one_warning():
     assert "ca ca.crt, key ~/k.key, tls-auth ta.key." in found[0]
     for absent in ("/etc/c.crt", "[inline]", "stdin", "MIIBogus", "udp", "vpn.example.com"):
         assert absent not in found[0]
-    for key in ("ca", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth", "tls-crypt",
+    for key in ("ca", "capath", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth", "tls-crypt",
                 "tls-crypt-v2", "secret", "crl-verify", "auth-user-pass", "askpass",
                 "http-proxy-user-pass"):
         one = vpn_execution._hook_findings(f"client\n{key} f.txt\n", "OpenVPN")[2]
@@ -584,7 +584,8 @@ def test_relative_openvpn_files_draw_one_warning():
     ("http-proxy proxy.example 8080 creds.txt basic", "http-proxy creds.txt."),
     ("socks-proxy socks.example 1080 sa.txt", "socks-proxy sa.txt."),
     ("http-proxy proxy.example 8080 auto", None),
-    ("http-proxy proxy.example 8080 AUTO-NCT", None),
+    ("http-proxy proxy.example 8080 auto-nct", None),
+    ("http-proxy proxy.example 8080 AUTO-NCT", "http-proxy AUTO-NCT."),   # streq: exact
     ("http-proxy proxy.example 8080 stdin", None),
     ("http-proxy proxy.example 8080 /etc/creds.txt", None),
     ("http-proxy proxy.example 8080", None),
@@ -595,12 +596,23 @@ def test_relative_openvpn_files_draw_one_warning():
     # credentials (get_user_pass); tls-auth stdin opens /stdin.
     ("tls-auth stdin 1", "tls-auth stdin."),
     ("ca STDIN", "ca STDIN."),
-    ("auth-user-pass STDIN", None),
+    ("auth-user-pass STDIN", "auth-user-pass STDIN."),   # PR #37 review: streq, exact
+    ("auth-user-pass stdin", None),
     ("askpass stdin", None),
     ("http-proxy-user-pass stdin", None),
+    # PR #37 review (Codex P2): "[inline]" is no keyword in OpenVPN 2.6; it only
+    # works beside a <tag> block of the same directive, which replaces the name.
+    ("askpass [inline]", "askpass [inline]."),
+    ("tls-auth [inline] 1", "tls-auth [inline]."),
+    ("tls-auth [inline] 1\n<tls-auth>\nMIIBogus\n</tls-auth>", None),
+    ("tls-auth [inline] 1\n<ca>\nMIIBogus\n</ca>", "tls-auth [inline]."),
+    ("capath ca-certs", "capath ca-certs."),          # PR #37 review: a directory
+    ("tls-auth [inline] 1\n  <tls-auth>\nMIIBogus\n</tls-auth>", None),   # read like _scan
+    ("TLS-AUTH [inline] 1\n<TLS-AUTH>\nMIIBogus\n</TLS-AUTH>", None),    # keys are lowercased
 ])
 def test_proxy_auth_files_are_warned_from_their_own_position(line, listed):
     warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[2]
+    assert not any("not on the reviewed list" in w for w in warnings)
     found = [w for w in warnings if "looks for these files in /" in w]
     if listed is None:
         assert found == []
