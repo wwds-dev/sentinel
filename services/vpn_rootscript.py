@@ -394,7 +394,7 @@ if [ "$verb" = up ]; then
     /bin/rm -f -- "$priv/check"
   done
   for p in "${progs[@]}"; do
-    r=$p && root_owned "$p" && root_owned "$r" || {
+    r=$(real "$p") && root_owned "$p" && root_owned "$r" || {
       forget
       echo "refused: $p is not owned by root all the way up; nothing was run." >&2
       exit 98; }
