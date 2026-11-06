@@ -573,9 +573,31 @@ def test_relative_openvpn_files_draw_one_warning():
     for absent in ("/etc/c.crt", "[inline]", "stdin", "MIIBogus", "udp", "vpn.example.com"):
         assert absent not in found[0]
     for key in ("ca", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth", "tls-crypt",
-                "tls-crypt-v2", "secret", "crl-verify", "auth-user-pass", "askpass"):
+                "tls-crypt-v2", "secret", "crl-verify", "auth-user-pass", "askpass",
+                "http-proxy-user-pass"):
         one = vpn_execution._hook_findings(f"client\n{key} f.txt\n", "OpenVPN")[2]
         assert any(f"{key} f.txt." in w for w in one), key
+
+
+@pytest.mark.parametrize("line, listed", [
+    # PR #37 review (Codex P2): a proxy's auth file is its third word.
+    ("http-proxy proxy.example 8080 creds.txt basic", "http-proxy creds.txt."),
+    ("socks-proxy socks.example 1080 sa.txt", "socks-proxy sa.txt."),
+    ("http-proxy proxy.example 8080 auto", None),
+    ("http-proxy proxy.example 8080 AUTO-NCT", None),
+    ("http-proxy proxy.example 8080 stdin", None),
+    ("http-proxy proxy.example 8080 /etc/creds.txt", None),
+    ("http-proxy proxy.example 8080", None),
+    ("socks-proxy socks.example 1080", None),
+    ("ca auto", "ca auto."),                            # "auto" is http-proxy's word only
+])
+def test_proxy_auth_files_are_warned_from_their_own_position(line, listed):
+    warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[2]
+    found = [w for w in warnings if "looks for these files in /" in w]
+    if listed is None:
+        assert found == []
+    else:
+        assert len(found) == 1 and listed in found[0]
     many = "client\n" + "".join(f"ca c{i}.crt\n" for i in range(7))
     listed = [w for w in vpn_execution._hook_findings(many, "OpenVPN")[2] if "looks for" in w][0]
     assert "c5.crt …" in listed and "c6.crt" not in listed
