@@ -432,6 +432,11 @@ the root script's copy-and-verify holds and that every earlier S8 P1/P2 fix surv
   from a whole `Opened utun device utunN` / `TUN/TAP device tunN opened` line, so server
   text cannot pick it. P3-3: all reads together stop after 30 s, not 20 s per file.
 - Tests: 30 new or changed cases; 19 mutants over the new branches, all killed.
+- PR #40 review (Codex P2): `/bin/realpath` exists only from macOS 13, and Sentinel supports
+  12 (`Sentinel.spec`), so root's re-check would have refused every hook program there. The
+  script resolves links itself (`readlink` one link at a time, at most 40, folder by
+  `cd -P`); a test compares it with `os.path.realpath` on link chains. The Linux CI runner's
+  tool layout is pinned like the WireGuard allowlist's (`tests/conftest.py`).
 
 ### Limits that remain
 - Pid reuse between root's identity check and `kill` (ADR R4). The `openvpn` program in a

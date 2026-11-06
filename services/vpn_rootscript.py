@@ -354,6 +354,19 @@ root_owned() {
     p=${p%/*}; [ -n "$p" ] || p=/
   done
 }
+# The physical path of $1: each link followed (at most 40) and its folder
+# resolved by cd -P. /bin/realpath does not exist before macOS 13.
+real() {
+  local p=$1 n=0 l d
+  while [ -L "$p" ]; do
+    n=$((n + 1)); [ "$n" -le 40 ] || return 1
+    l=$(/usr/bin/readlink -- "$p") || return 1
+    case $l in /*) p=$l;; *) p=${p%/*}/$l;; esac
+  done
+  d=${p%/*}; [ -n "$d" ] || d=/
+  d=$(cd -P -- "$d" 2>/dev/null && /bin/pwd -P) || return 1
+  printf '%s/%s\n' "${d%/}" "${p##*/}"
+}
 if [ "$verb" = up ]; then
   old=$(recorded_pid)
   if [ -n "$old" ] && tracked "$old" "$base/$pidf"; then
@@ -381,7 +394,7 @@ if [ "$verb" = up ]; then
     /bin/rm -f -- "$priv/check"
   done
   for p in "${progs[@]}"; do
-    r=$(/bin/realpath -- "$p" 2>/dev/null) && root_owned "$p" && root_owned "$r" || {
+    r=$p && root_owned "$p" && root_owned "$r" || {
       forget
       echo "refused: $p is not owned by root all the way up; nothing was run." >&2
       exit 98; }

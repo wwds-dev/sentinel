@@ -1459,3 +1459,34 @@ def test_all_reads_together_are_cut_off_at_the_deadline(ovpn):
         os.close(fd)
     assert proc.returncode == rs.EXIT_CHANGED, proc.stderr
     assert elapsed < 6
+
+
+@harness
+def test_root_resolves_links_without_realpath_which_macos_12_lacks(tmp_path):
+    """PR #40 review (Codex P2): /bin/realpath exists only from macOS 13, and
+    Sentinel supports 12. The script's own resolver must agree with the kernel."""
+    assert "/bin/realpath" not in rs.OVPN_SCRIPT.replace("/bin/realpath does not exist", "")
+    start = rs.OVPN_SCRIPT.index("real() {")
+    func = rs.OVPN_SCRIPT[start:rs.OVPN_SCRIPT.index("\n}\n", start) + 3]
+    (tmp_path / "real" / "deep").mkdir(parents=True)
+    target = tmp_path / "real" / "deep" / "up.sh"
+    target.write_text("")
+    (tmp_path / "abs.sh").symlink_to(target)                       # absolute target
+    (tmp_path / "real" / "rel.sh").symlink_to("deep/up.sh")        # relative target
+    (tmp_path / "chain.sh").symlink_to("real/rel.sh")              # link to a link
+    (tmp_path / "dirlink").symlink_to(tmp_path / "real" / "deep")  # a linked folder
+    (tmp_path / "up2.sh").symlink_to("dirlink/../deep/up.sh")      # .. after a link
+    (tmp_path / "loop").symlink_to("loop")
+    cases = ["abs.sh", "real/rel.sh", "chain.sh", "dirlink/up.sh", "up2.sh", "real/deep/up.sh"]
+    for name in cases + ["loop"]:
+        path = str(tmp_path / name)
+        proc = subprocess.run(["/bin/bash", "-c", func + 'real "$1"', "x", path],
+                              capture_output=True, text=True, timeout=10)
+        if name == "loop":
+            assert proc.returncode != 0                            # refused, not hung
+        else:
+            assert proc.returncode == 0, (name, proc.stderr)
+            assert proc.stdout.strip() == os.path.realpath(path), name
+    proc = subprocess.run(["/bin/bash", "-c", func + 'real "$1"', "x", "/etc"],
+                          capture_output=True, text=True, timeout=10)
+    assert proc.stdout.strip() == os.path.realpath("/etc")          # /private/etc on a Mac
