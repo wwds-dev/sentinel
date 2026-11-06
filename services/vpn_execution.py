@@ -88,7 +88,7 @@ _WG_HOOK_KEYS_LOWER = frozenset(k.lower() for k in WG_HOOK_KEYS)
 OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                      "client-connect", "client-disconnect", "learn-address",
                      "tls-verify", "auth-user-pass-verify", "plugin",
-                     "script-security")
+                     "script-security", "pkcs11-providers")
 # A hook is shown whole: the model keeps every character. The dialog body
 # shortens each one to HOOK_DISPLAY_LIMIT (the full text goes in the dialog's
 # detail and in sections()); a single line over HOOK_LINE_LIMIT is refused
@@ -102,7 +102,15 @@ CONFIG_READ_LIMIT = 256 * 1024
 # local control socket (`management*`), or make root write or change directory
 # somewhere the review cannot see. Blockers, not warnings.
 OPENVPN_BLOCKER_KEYS = ("config", "log", "log-append", "writepid", "status",
-                        "tmp-dir", "cd", "chroot", "setenv")
+                        "tmp-dir", "cd", "chroot", "setenv", "replay-persist")
+# Directives that load a library into the root process with no hook line to
+# check: `engine x` loads x as a shared library when it is no built-in engine
+# (crypto_openssl.c, the "dynamic" engine's SO_PATH). Blockers.
+OPENVPN_CODE_KEYS = ("engine",)
+# `providers` hands each word to OSSL_PROVIDER_load (crypto_openssl.c), which
+# loads a path, or a name it does not know from OpenSSL's module folder. Only
+# OpenSSL's own providers are accepted, matched exactly as OpenSSL does.
+OPENVPN_PROVIDERS = frozenset(("default", "base", "legacy", "null", "fips"))
 # Directives whose value is a program or plugin that runs as root.
 OPENVPN_EXECUTABLE_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                            "client-connect", "client-disconnect", "learn-address",
@@ -124,7 +132,8 @@ OPENVPN_STDIN_KEYS = ("auth-user-pass", "askpass", "http-proxy-user-pass", "http
                       "socks-proxy")
 # The reviewed client directive list. Anything else is still allowed (a real
 # profile must not break) but is named in one warning.
-OPENVPN_KNOWN_KEYS = frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KEYS) | frozenset((
+OPENVPN_KNOWN_KEYS = (frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KEYS)
+                      | frozenset(OPENVPN_CODE_KEYS)) | frozenset((
     "client", "capath", "dev", "dev-type", "dev-node", "proto", "remote", "remote-random",
     "remote-random-hostname", "resolv-retry", "nobind", "persist-key", "persist-tun",
     "persist-local-ip", "persist-remote-ip", "ca", "cert", "key", "dh", "tls-client",
@@ -142,7 +151,7 @@ OPENVPN_KNOWN_KEYS = frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KE
     "connect-retry-max", "connect-timeout", "server-poll-timeout", "explicit-exit-notify",
     "ns-cert-type", "crl-verify", "extra-certs", "pkcs12", "lport", "rport", "local",
     "bind", "mark", "fast-io", "user", "group", "askpass", "setenv-safe",
-    "ignore-unknown-option", "engine", "inactive", "replay-window", "reneg-bytes",
+    "ignore-unknown-option", "inactive", "replay-window", "reneg-bytes",
     "reneg-pkts", "tcp-queue-limit", "tran-window", "hand-window", "tls-timeout",
     "tls-auth", "tls-crypt", "tls-crypt-v2", "secret", "providers", "show-net",
     "disable-dco", "dns", "register-dns", "windows-driver", "lladdr", "txqueuelen",
@@ -784,8 +793,27 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
             if key in OPENVPN_BLOCKER_KEYS or key.startswith("management"):
                 blockers.append(f"The OpenVPN directive '{key}' can hide commands or redirect "
                                 "what administrator rights write; remove it from the profile.")
+            elif key in OPENVPN_CODE_KEYS:
+                blockers.append(f"The OpenVPN directive '{key}' can load a library into "
+                                "OpenVPN as administrator; remove it from the profile.")
             elif key not in OPENVPN_KNOWN_KEYS and key not in unknown:
                 unknown.append(key)
+            other = [word for word in words if word not in OPENVPN_PROVIDERS]
+            if key == "providers" and other:
+                blockers.append(f"The OpenVPN providers line names {other[0]!r}, which is not "
+                                "one of OpenSSL's own providers (" + ", ".join(
+                                    sorted(OPENVPN_PROVIDERS)) + "); OpenSSL would load it "
+                                "as a module into OpenVPN as administrator. Remove it.")
+            if key == "pkcs11-providers" and not overlong:
+                for library in words:
+                    if not _spend(budget):
+                        break
+                    if not library.startswith("/"):
+                        soft.append(f"The {raw} line loads {library}, a relative path, into "
+                                    "OpenVPN as administrator; the system decides where it "
+                                    "is found, so Tunnel cannot check it. Write the full path.")
+                    else:
+                        _path_findings(raw, library, 0, True, protocol, soft, warnings)
             index = OPENVPN_FILE_WORD.get(key)
             name = words[index] if index is not None and len(words) > index else ""
             not_files = ((("[inline]",) if key in inline_tags else ())

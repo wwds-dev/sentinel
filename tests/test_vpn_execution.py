@@ -657,6 +657,70 @@ def test_an_ambiguous_connection_block_blocks(text):
     assert vpn_execution._hook_findings(text, "OpenVPN")[0]
 
 
+# ── OpenVPN directives that load code or write as root (TODO, found for #37) ──
+
+@pytest.mark.parametrize("line", [
+    "replay-persist /var/tmp/replay",                   # root writes the file (options.c)
+    "replay-persist replay",
+    "engine /tmp/x.dylib",                              # loaded through the "dynamic" engine
+    "engine dynamic",
+    "engine",
+])
+def test_root_writes_and_engines_block(line):
+    blockers = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[0]
+    assert len(blockers) == 1 and f"'{line.split()[0]}'" in blockers[0]
+
+
+@pytest.mark.parametrize("line", ["providers legacy default", "providers default",
+                                  "providers fips base null"])
+def test_openssls_own_providers_are_accepted(line):
+    assert vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN") == ([], [], [])
+
+
+@pytest.mark.parametrize("line, named", [
+    ("providers /tmp/evil", "/tmp/evil"),               # OSSL_PROVIDER_load takes a path
+    ("providers evil", "evil"),                         # or a module from OpenSSL's folder
+    ("providers Legacy", "Legacy"),                     # matched exactly, as OpenSSL does
+    ("providers legacy ./x default", "./x"),
+])
+def test_any_other_provider_blocks(line, named):
+    blockers = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[0]
+    assert len(blockers) == 1 and f"names {named!r}" in blockers[0]
+
+
+def test_pkcs11_libraries_are_checked_like_hook_programs(monkeypatch):
+    unsafe = {"/Users/me/lib.dylib": "it is in a user's home directory"}
+    monkeypatch.setattr(vpn_execution, "_unsafe_executable_reason", lambda p: unsafe.get(str(p)))
+    monkeypatch.setattr(vpn_execution, "_exists", lambda p: True)
+    line = "pkcs11-providers /usr/local/lib/ok.dylib /Users/me/lib.dylib p11.dylib"
+    text = f"client\n{line}\n"
+    assert vpn_execution.hooks_from_text(text, "OpenVPN") == [
+        "pkcs11-providers: /usr/local/lib/ok.dylib /Users/me/lib.dylib p11.dylib"]
+    blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
+    assert blockers == [] and warnings == []
+    assert len(soft) == 2
+    assert "/Users/me/lib.dylib" in soft[0] and "user's home directory" in soft[0]
+    assert "loads p11.dylib, a relative path" in soft[1]
+    clean = "client\npkcs11-providers /usr/local/lib/ok.dylib\n"
+    assert vpn_execution._hook_findings(clean, "OpenVPN") == ([], [], [])
+
+
+def test_pkcs11_libraries_count_against_the_review_budget(monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_unsafe_executable_reason", lambda p: None)
+    monkeypatch.setattr(vpn_execution, "_exists", lambda p: True)
+    paths = " ".join(f"/l/p{i}" for i in range(vpn_execution.HOOK_CHECK_LIMIT + 1))
+    blockers = vpn_execution._hook_findings(f"client\npkcs11-providers {paths}\n", "OpenVPN")[0]
+    assert not any("longer than" in b for b in blockers)
+    assert any("more than" in b for b in blockers)
+
+
+def test_a_foreign_provider_blocks_connect(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    path = tmp_path / "srv.ovpn"
+    path.write_text("client\nremote 203.0.113.7 1194\nproviders legacy /tmp/evil\n")
+    assert any("names '/tmp/evil'" in b for b in review("connect", profile_for(path)).blockers)
+
+
 # test_disconnect_review_does_not_rescan_hooks pinned a gap (wg-quick down re-reads
 # the config and runs PreDown/PostDown as root, yet a disconnect was never scanned).
 # It is replaced by its inverse, test_disconnect_review_scans_predown_and_postdown
