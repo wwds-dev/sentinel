@@ -35,6 +35,12 @@ and the git log, and is not back-filled here.
   folder being erased.
 
 ### Fixed
+- **A WireGuard hook hidden behind a comment is now shown and refused.** wg-quick
+  runs `PostUp # = command` and a bare `PreUp` line as administrator, but the review
+  read them as comments and listed nothing. They are now listed and stop a Connect
+  (on Disconnect they are a risk you confirm). A hook program reached through links
+  is now followed one step at a time, as the system does, and a path with a NUL
+  byte is refused instead of stopping the review with an error.
 - **Hook review sees through two more tricks.** A WireGuard `SaveConfig = true`
   followed by a `# comment` is now refused like a plain one, and a hook program
   reached through a link (or a chain of links) is judged by where it really

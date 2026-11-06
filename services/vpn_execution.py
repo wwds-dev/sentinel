@@ -60,6 +60,7 @@ OUTPUT_LIMIT = 2000
 # set of keys and routes; the review names each so the operator confirms it
 # knowingly (auditor finding: these were neither inspected nor warned about).
 WG_HOOK_KEYS = ("PreUp", "PostUp", "PreDown", "PostDown")
+_WG_HOOK_KEYS_LOWER = frozenset(k.lower() for k in WG_HOOK_KEYS)
 OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                      "client-connect", "client-disconnect", "learn-address",
                      "tls-verify", "auth-user-pass-verify", "plugin",
@@ -204,10 +205,22 @@ def _scan(text: str, protocol: str):
         if protocol == "WireGuard":
             if not line or line[0] in "#;":
                 continue
-            key, sep, value = line.partition("=")
-            if sep:
-                value = value.strip(_WS)
-                found.append((key.strip(_WS), key.strip(_WS).lower(), value, value.split()))
+            # Read the line as wg-quick does: the key comes from the line cut at
+            # its first "#", but a hook's command is everything after the first
+            # "=" of the uncut line, or the whole line when there is no "=".
+            # So "PostUp # = cmd" and a bare "PreUp" both run as administrator.
+            stripped = line.split("#", 1)[0]
+            key = stripped.partition("=")[0].strip(_WS)
+            lowered = key.lower()
+            hook = lowered in _WG_HOOK_KEYS_LOWER
+            if "=" not in stripped and not hook:
+                continue                            # a section header or a note
+            value = line.partition("=")[2].strip(_WS) if "=" in line else line
+            if hook and "=" not in stripped:
+                problems.append(f"line {number}: the {key} line has no '=' before its "
+                                f"first '#', but wg-quick still runs {value[:60]!r} as "
+                                "administrator")
+            found.append((key, lowered, value, value.split()))
             continue
         if block:
             if line_.rstrip(_WS) == f"</{block}>":
@@ -345,8 +358,11 @@ def _which_privileged(name: str) -> str | None:
 
 
 def _paths_touched(path: Path) -> list[Path]:
-    """``path``, its folders, and for every link met while resolving it the link's
-    own folders and its target's, followed to the end (bounded: 40 links)."""
+    """``path`` and its folders as written, then every path the kernel goes
+    through to resolve it: one component at a time, each link resolved before
+    any ".." after it (as the kernel does), each link and its folders added, and
+    the final file and its folders. Bounded: after 40 links the rest is left to
+    the final ``realpath``. ValueError (a NUL byte) propagates to the caller."""
     seen: list[Path] = []
 
     def add(item: Path) -> None:
@@ -355,29 +371,28 @@ def _paths_touched(path: Path) -> list[Path]:
                 seen.append(each)
 
     add(path)
-    pending, links = [path], 0
-    while pending and links < 40:
-        current = pending.pop()
-        walked = Path(current.anchor)
-        for part in current.parts[len(walked.parts):]:
-            walked = walked / part
-            try:
-                is_link = os.path.islink(walked)
-            except OSError:
-                is_link = False
-            if is_link:
-                links += 1
-                try:
-                    target = Path(os.readlink(walked))
-                except OSError:
-                    break
-                target = target if target.is_absolute() else walked.parent / target
-                add(target)
-                rest = current.parts[len(walked.parts):]
-                pending.append(Path(os.path.normpath(target.joinpath(*rest))))
-                break
-    real = Path(os.path.realpath(path))
-    add(real)
+    current = Path(path.anchor or os.sep)
+    parts = list(Path(os.path.abspath(path) if not path.is_absolute() else path).parts[1:])
+    links = 0
+    while parts:
+        part = parts.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent
+            continue
+        step = current / part
+        if links < 40 and os.path.islink(step):
+            links += 1
+            add(step)                                # the link itself and its folders
+            target = os.readlink(step)
+            if os.path.isabs(target):
+                current = Path(os.sep)
+            parts = list(Path(target).parts[1 if os.path.isabs(target) else 0:]) + parts
+            continue
+        current = step
+    add(current)
+    add(Path(os.path.realpath(path)))
     return seen
 
 
@@ -390,10 +405,17 @@ def _unsafe_executable_reason(path: Path) -> str | None:
     # Every path that resolving it touches: each component as written, each link on
     # the way and the folders it sits in, and where it finally leads. A link in a
     # root-only folder can point into a folder a user can write.
-    chain = _paths_touched(path)
+    try:
+        chain = _paths_touched(path)
+    except ValueError:                            # a NUL byte: no file has that name
+        return f"{path!r} is not a usable path"
+    except OSError as exc:                        # a link that cannot be read
+        return f"{path} could not be resolved ({exc.strerror or 'read error'})"
     for candidate in chain:
         try:
             info = _stat(candidate)
+        except ValueError:
+            return f"{candidate!r} is not a usable path"
         except OSError:
             continue                              # not there yet: judged by what exists
         if info.st_uid != 0:
@@ -457,7 +479,7 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
     warnings: list[str] = []
     unknown: list[str] = []
     found, problems = _scan(text, protocol)
-    blockers.extend(f"OpenVPN config: {item}." for item in problems)
+    blockers.extend(f"{protocol} config: {item}." for item in problems)
     hook_keys = ({k.lower() for k in WG_HOOK_KEYS} if protocol == "WireGuard"
                  else set(OPENVPN_HOOK_KEYS))
     for raw, key, value, words in found:
