@@ -96,9 +96,10 @@ path or `SaveConfig = true` is shown as a risk and you can still go ahead after 
 extra confirmation; an OpenVPN Disconnect only shows a note. On Connect, a hook
 that starts with an absolute path is refused unless root owns the program and
 every folder above it and none of them can be written by a group or by everyone,
-and a profile with `SaveConfig = true` is refused. If the file changes after you
-confirm and before the password prompt, nothing runs; a change after that is not
-caught yet (audit step S7).
+and a profile with `SaveConfig = true` is refused. If a WireGuard file changes
+after you confirm, nothing runs: administrator rights only ever run a copy that
+root has checked against the hash you confirmed. For OpenVPN a change after the
+password prompt opens is not caught yet (audit step S8).
 
 **WireGuard hooks must be plain commands with full paths.** wg-quick hands each
 hook to the shell, so Tunnel only accepts commands that start with a full path

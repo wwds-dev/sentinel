@@ -43,7 +43,8 @@ on-disk contract.
    (a tunnel from an older build, started by hand, or a missing copy) falls back to
    copy-and-hash of the user's file with a fresh review that lists the down hooks.
    A stale `wg/<iface>/` from a crash is replaced by the next connect for that
-   interface after the same ownership checks.
+   interface after the same ownership checks, once the interface is not up (see the
+   2026-11-06 amendment: wg-quick's `.name` alone no longer counts as up).
 5. **Gated actions are not run as root.** Sentinel refuses gated actions while it
    runs as root (`privileged.ROOT_REFUSAL`, `e4caccd`), so the script is only ever
    reached through the macOS administrator dialog. (The spec's §1.2 note that the
@@ -112,3 +113,31 @@ differs from decision 3 as follows (details in spec §14):
   user's file), and its review says that the hooks shown are the file's now and that
   the kept copy, if any, is what runs.
 
+## Amendment 2026-11-06 (rebase onto main, rebase reviews and Opus audit)
+Reports: `docs/audit/s7-rebase-code-review-2026-11-06.md`,
+`docs/audit/s7-rebase-security-review-2026-11-06.md`,
+`docs/audit/s7-opus-audit-2026-11-06.md`. Details in spec §14.
+- **Layout addition:** `wg/lock@<iface>`, a lock file per interface (`lockf -k`, kept,
+  empty). `@` is not allowed in an interface name, so a lock is never a copy's folder.
+  The script re-runs itself under that lock (`lockf -t 30`), so only one Connect or
+  Disconnect per interface runs at a time; a run that waits 30 s gets exit 75 from
+  `lockf`. Without it a second Connect could replace and then remove the copy a live
+  tunnel needs for its Disconnect.
+- **State:** an interface is up when `/var/run/wireguard/<iface>.name` exists and the
+  device it names has its `.sock` (an unreadable or empty `.name` counts as up), the
+  rule Sentinel's review already used. A `.name` left by a crash is stale: Connect
+  goes ahead and Disconnect removes the kept copy (94).
+- **wg-quick's surroundings:** wg-quick and its hooks run from `/` with only
+  `HOME=/var/root` and `PATH` (main's #35 rule, moved into the script); the config
+  and wg-quick paths reach root absolute. The administrator dialog's own `/bin/sh`
+  gets only a fixed PATH (`privileged.DIALOG_ENV`), so an inherited `SHELLOPTS`/`PS4`
+  cannot run code as root before the script starts.
+- **Which wg-quick:** the path the review judged is part of the confirmed review and
+  is the one root runs; a `wg-quick` placed earlier on PATH after the dialog stops
+  the run. This narrows, does not close, the user-writable-tools gap above: the
+  judged file itself, and the interpreter on its `#!` line, can still be replaced.
+- **Still open (outside the same-user model or availability only):** a group-`daemon`
+  process can rename the base and re-create the name after `cd -P` (the physical-path
+  check does not catch a re-created name), and wg-quick reads the copy by its absolute
+  path under the base; a source on a stalling filesystem can delay the run before the
+  20 s cut-off starts (the regular-file check runs first).

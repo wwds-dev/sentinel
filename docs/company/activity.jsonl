@@ -40,3 +40,4 @@
 {"ts": "2026-11-06T16:42:31", "phase": "review", "state": "done", "spec": "audit-tier2-privileged-layer"}
 {"ts": "2026-11-06T16:42:31", "phase": "verify", "state": "done", "spec": "audit-tier2-privileged-layer"}
 {"ts": "2026-11-06T16:42:31", "phase": "secure", "state": "done", "spec": "audit-tier2-privileged-layer"}
+{"ts": "2026-11-06T17:23:20", "phase": "document", "state": "done", "spec": "audit-tier2-privileged-layer"}
