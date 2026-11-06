@@ -54,6 +54,16 @@ and the git log, and is not back-filled here.
   (checked like the program itself), so `sh -c id`, `sh 1`, `xcrun tool`,
   `dtrace -c %I` or `SH -c tool` is refused. Program names are matched in any
   case, since macOS treats `/bin/SH` as `/bin/sh`.
+- **wg-quick runs with nothing of yours around it.** Tunnel now starts
+  wg-quick from `/` with an empty environment apart from `HOME=/var/root` and
+  `PATH`. A hook such as `/bin/zsh /etc/wireguard/up.sh`, `/bin/bash -l`,
+  `/usr/bin/python3` or `/usr/bin/make` passed the review but, as
+  administrator, read your shell startup files, Python `.pth` files or a
+  `Makefile` in Sentinel's folder.
+- **A wildcard in DNS stops a Connect.** wg-quick expands `DNS = 10.64.0.*`, so
+  which DNS server applies could not be known; the review said "system DNS
+  stays in use". Search domains without a server are marked as not applied,
+  and keys wg-quick ignores (`DNS_`, `D-NS`) no longer count as DNS.
 - **The review's DNS line now matches what wg-quick sets.** `DNS # = 10.64.0.1`
   sets no DNS server (wg-quick cuts the line at `#` before it reads the key), but
   the review showed "DNS: 10.64.0.1". It now says system DNS stays in use and

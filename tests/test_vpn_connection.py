@@ -23,6 +23,10 @@ class Recorder:
         return self.ok, self.output
 
 
+# wg-quick with no PATH lookup of its own: run from / with only HOME and PATH.
+BARE = "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' 'wg-quick'"
+
+
 @pytest.fixture(autouse=True)
 def bare_wg_quick_command(monkeypatch):
     """Pin the command shape: without this the expected strings depend on
@@ -69,7 +73,7 @@ def test_wireguard_connect_runs_wg_quick_up(monkeypatch):
     result = vpn_connection.connect(profile, run_as_root=run)
     assert result["success"] is True
     assert result["protocol"] == "WireGuard"
-    assert run.scripts == ["wg-quick up 'wg0'"]
+    assert run.scripts == [BARE + " up 'wg0'"]
 
 
 def test_wireguard_connect_prefers_a_config_path(monkeypatch):
@@ -78,7 +82,7 @@ def test_wireguard_connect_prefers_a_config_path(monkeypatch):
     profile = {"name": "Imported", "protocol": "WireGuard", "endpoint": "203.0.113.7",
                "interface": "wg0", "config_path": "/Users/me/nl.conf"}
     vpn_connection.connect(profile, run_as_root=run)
-    assert run.scripts == ["wg-quick up '/Users/me/nl.conf'"]
+    assert run.scripts == [BARE + " up '/Users/me/nl.conf'"]
 
 
 def test_wireguard_connect_reports_tool_failure(monkeypatch):
@@ -108,7 +112,7 @@ def test_wireguard_disconnect_runs_wg_quick_down(monkeypatch):
     vpn_connection.disconnect(
         {"protocol": "WireGuard", "endpoint": "203.0.113.7", "interface": "wg0"},
         run_as_root=run)
-    assert run.scripts == ["wg-quick down 'wg0'"]
+    assert run.scripts == [BARE + " down 'wg0'"]
 
 
 # ── OpenVPN ─────────────────────────────────────────────────────────────────

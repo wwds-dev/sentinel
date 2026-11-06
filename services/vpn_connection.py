@@ -84,6 +84,11 @@ def _quote(text: str) -> str:
     return "'" + str(text).replace("'", "'\\''") + "'"
 
 
+# The PATH root's wg-quick gets, after its own folder; wg-quick puts these
+# first itself (darwin.bash), so nothing of the caller's PATH is kept.
+SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
 def wg_quick_command(verb: str, target: str) -> str:
     """The shell line for ``wg-quick <verb> <target>``, runnable as root.
 
@@ -91,12 +96,21 @@ def wg_quick_command(verb: str, target: str) -> str:
     secure_path both drop Homebrew's bin directory, so a bare ``wg-quick`` is not
     found there — and wg-quick itself shells out to ``wg`` and ``wireguard-go``.
     Use the absolute path and put its directory first on PATH for that one call.
+
+    wg-quick and the hooks it runs inherit nothing from the user: the working
+    directory is ``/`` and the environment is only ``HOME=/var/root`` and that
+    PATH (``env -i``). Otherwise a hook's program could read code the review
+    never saw from the user's home (~/.zshenv, ~/.bash_profile, Python .pth
+    files), from the working directory, which the app sets to its checkout (a
+    Makefile, a relative ``pfctl -f`` file, files a ``DNS`` wildcard expands
+    to), or from the environment. A relative config path is made absolute first.
     """
+    if "/" in target and not os.path.isabs(target):
+        target = os.path.abspath(target)
     exe = shutil.which("wg-quick")
-    if not exe:
-        return f"wg-quick {verb} {_quote(target)}"
-    bindir = os.path.dirname(exe)
-    return f'PATH={_quote(bindir)}:"$PATH" {_quote(exe)} {verb} {_quote(target)}'
+    program, path = (exe, f"{os.path.dirname(exe)}:{SYSTEM_PATH}") if exe else ("wg-quick", SYSTEM_PATH)
+    return (f"cd / && /usr/bin/env -i HOME=/var/root PATH={_quote(path)} "
+            f"{_quote(program)} {verb} {_quote(target)}")
 
 
 def _placeholder_result(action: str, profile: dict) -> dict:

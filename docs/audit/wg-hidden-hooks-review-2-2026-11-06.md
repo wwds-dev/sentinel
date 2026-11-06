@@ -66,6 +66,29 @@ plain, allowlist path not pinned, allowlist ignores the link target, allowlist
 path and name case-sensitive, DNS glob and extglob not detected, warnings not
 capped, warnings not deduplicated).
 
+### Independent review of fbf36d5 (Opus code-reviewer, read-only)
+
+| ID | Sev | Finding | Resolution |
+|---|---|---|---|
+| P0 | P0 | PR #34 was merged (0f77e90) before fbf36d5 was pushed; `main` accepts `/bin/sh 1`, `/usr/bin/env /etc/wireguard/up.sh %I`, `/USR/SBIN/dtrace -c %I`. | New PR from this branch. |
+| P1-1 | P1 | The allowlist pins `/sbin/route` by realpath; on merged-/usr Linux (CI) it resolves to `/usr/sbin/route`. | `_realpath` indirection; `tests/conftest.py` pins a Mac's layout only when the host moves the pinned paths. Checked with a merged-/usr simulation plugin: 857 passed. The pin is unchanged. |
+| P1-2 | P1 | Allowed hooks still ran user files as root: `/bin/zsh …` (~/.zshenv), `/bin/bash -l`, `/usr/bin/python3` (.pth), `/usr/bin/make -s` (./Makefile in the checkout the launcher chdirs to). | Owner's choice: `wg_quick_command` is `cd / && /usr/bin/env -i HOME=/var/root PATH=… wg-quick …`; a relative config path is made absolute. A test runs the exact prefix unprivileged and sees only `/`, HOME, PATH. |
+| P2-1 | P2 | `DNS = 10.64.0.*` allowed, shown as "system DNS stays in use". | A DNS wildcard is a Connect blocker; the line says "Unknown — an entry has a wildcard". |
+| P2-2 | P2 | 25 junk lines pushed the wildcard warning past the cap. | Ignored lines are one warning per kind with line numbers; the "'=' after '#'" warning comes first. |
+| P3-1 | P3 | `pfctl -f rules.conf` reads a file in the user-owned working directory. | Closed by `cd /`. |
+| P3-2 | P3 | `--opt=value` refusal untested. | `/usr/bin/tar --use-compress-program=evilprog` alone is a test case. |
+| P3-3 | P3 | Realpath-pin mutants survived. | Test with `_realpath` mapped both ways. |
+| P3-4 | P3 | `wg` trusted by name alone. | Documented (root must have installed it); not pinned. |
+| P3-5 | P3 | `DNS_`/`D-NS` counted as DNS. | [Interface] keys compared trimmed and lowercased, as wg-quick does; [Peer] keys with blanks removed, as `wg setconf` does. |
+| P3-6 | P3 | `Address` globs not flagged. | Warning. |
+| P3-7 | P3 | Ordinary hooks now refused (`/etc/wireguard/up.sh %i`, `/bin/kill -HUP 123`, `/sbin//route`). | Documented in `docs/agents/vpn.md`. |
+| — | — | Not verified by the reviewer: search domains without a server. | Checked in `darwin.bash` (line 468: `set_dns` only when `${#DNS[@]} -gt 0`); the review marks them "not applied". |
+
+Fourth round of hand mutants: 64 of 64 killed (adds: no `cd /`, env not cleared,
+HOME kept, relative target kept, DNS wildcard not a blocker, wildcard says
+system DNS, search not-applied note gone, Address glob not warned, DNS key
+loose, peer key keeps blanks, "'#'" warning not first).
+
 ### Residual after the allowlist
 
 What a program does with its options is not interpreted: an option that takes a
@@ -73,7 +96,8 @@ program name (`dtrace -c -x`)
 still names a program found on wg-quick's PATH. The only folder on that
 PATH a normal user might write is wg-quick's own (`${SELF%/*}`), and a user who
 can write it can already replace `wg-quick` itself, which runs as root; both
-are closed by the root-owned copy (audit step S7, TODO.md).
+are closed by the root-owned copy (audit step S7, TODO.md). OpenVPN is not run
+with a scrubbed environment or `cd /` yet; its scripts keep the earlier rules.
 
 ## Not verified
 

@@ -37,7 +37,11 @@ ipconfig, logger; the macOS tools at their own paths, and wg wherever root
 installed it) may be given plain words; any other command gets only options and
 full paths (checked as code), not numbers or %i / %I. What a program does with
 its options is not interpreted: an option that takes a program name
-(``dtrace -c -x``) still names one found on wg-quick's PATH.
+(``dtrace -c -x``) still names one found on wg-quick's PATH. What a program reads
+on its own (startup files, the working directory, the environment) is closed off
+by running wg-quick from / with only HOME=/var/root and PATH
+(``vpn_connection.wg_quick_command``). A DNS entry with a shell wildcard is a
+blocker on Connect: wg-quick expands it, so the DNS that applies is unknown.
 """
 
 from __future__ import annotations
@@ -331,6 +335,7 @@ def _read_config(path: Path) -> tuple[str | None, str, list[str], list[str]]:
 
 _stat = os.stat      # indirection so tests can describe a root-owned filesystem
 _lstat = os.lstat    # the link walk's view of a path; tests inject errors through it
+_realpath = os.path.realpath    # where the allowlist looks a tool up; tests pin a Mac's layout
 
 # A stat that fails with one of these (ENOENT, ENOTDIR) means the path is not
 # there (yet), which is judged by the folders that do exist. Any other failure
@@ -586,7 +591,7 @@ def _data_only(program: str) -> bool:
     """Whether a program is one of the allowlisted network tools: its name as
     written and the file a link leads to are the same listed tool, at that
     tool's own path (any case), or wg anywhere."""
-    for candidate in (program, os.path.realpath(program)):
+    for candidate in (program, _realpath(program)):
         name = candidate.rsplit("/", 1)[-1].lower()
         if name not in _DATA_ONLY_PROGRAMS:
             return False
@@ -1020,12 +1025,24 @@ def review_execution(action: str, profile: dict | None, *,
                     config_lines = [
                         f"Routing: {summary.route_mode}",
                         "Endpoints: " + (", ".join(summary.endpoints) or "Not specified"),
-                        "DNS: " + (", ".join(summary.dns_servers) or "Not specified — system DNS stays in use"),
-                        *(["DNS search domains: " + ", ".join(summary.dns_search)]
+                        "DNS: " + (", ".join(summary.dns_servers)
+                                   or ("Unknown — an entry has a wildcard" if summary.dns_wildcards
+                                       else "Not specified — system DNS stays in use")),
+                        *(["DNS search domains: " + ", ".join(summary.dns_search)
+                           + ("" if summary.dns_servers else
+                              " (not applied: wg-quick sets them only with a DNS server)")]
                           if summary.dns_search else []),
                         f"Peers: {summary.peer_count}",
                     ]
                     warnings.extend(summary.warnings)
+                    if summary.dns_wildcards:
+                        # wg-quick expands DNS unquoted: what a wildcard becomes, and so
+                        # which DNS server applies, cannot be known before it runs.
+                        blockers.append("The DNS line has an entry with a wildcard ("
+                                        + ", ".join(summary.dns_wildcards[:5])
+                                        + "); wg-quick's shell may expand it to other "
+                                        "entries, so the DNS this tunnel uses cannot be "
+                                        "checked. Write each DNS server out in full.")
                     if summary.peer_count == 0 or not summary.endpoints:
                         blockers.append("The config has no peer endpoint to connect to.")
                     if route_mode == "Split tunnel":
