@@ -261,11 +261,13 @@ def test_arming_refuses_when_openvpn_is_up_but_its_device_is_unknown(monkeypatch
     ("Opened utun device utun4; pass quick all\n", "utun4"),
 ])
 def test_the_openvpn_device_is_read_from_its_log(tmp_path, monkeypatch, log, expected):
+    # A tunnel an older Sentinel started (before S8a) may still have its log in
+    # the user folder; new tunnels get the device from the root script, whose
+    # grep is tested in test_vpn_rootscript.py with the same lines.
     from services import openvpn_manager
-    path = tmp_path / "openvpn.log"
-    path.write_text(log)
-    monkeypatch.setattr(openvpn_manager, "log_file", lambda: path)
-    monkeypatch.setattr(openvpn_manager, "is_running", lambda: True)
+    monkeypatch.setattr(openvpn_manager, "_legacy_dir", lambda: tmp_path)
+    (tmp_path / "openvpn.log").write_text(log)
+    monkeypatch.setattr(openvpn_manager, "_tracked", lambda: (4242, tmp_path / "openvpn.pid"))
     assert openvpn_manager.tunnel_device() == expected
 
 

@@ -112,7 +112,8 @@ def run_with_dialog(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT) 
         # "nothing happened" — callers re-check local state afterwards.
         output = ("Timed out waiting for the administrator dialog or the command. "
                   "If you had already approved it, the change may still have happened.")
-    return ok, output
+    # do shell script turns the command's line breaks into carriage returns.
+    return ok, output.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,

@@ -224,55 +224,49 @@ def test_a_relative_wireguard_config_reaches_root_as_an_absolute_path(monkeypatc
         "up", f"{os.getcwd()}/sub/wg0.conf", "a" * 64, "wg0", FAKE_WG_QUICK)
     assert _wg_root_argv(monkeypatch, "~/wg0.conf")[7] == f"{tmp_path}/home/wg0.conf"
 
-def test_openvpn_start_command_is_scrubbed_and_absolute(monkeypatch, tmp_path):
-    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
-    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path / "vpn")
-    assert openvpn_manager.start_command("/Users/me/my nl.ovpn") == (
-        "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' "
-        "'/opt/homebrew/sbin/openvpn' --config '/Users/me/my nl.ovpn' --daemon sentinel-ovpn "
-        f"--log '{tmp_path}/vpn/openvpn.log' --writepid '{tmp_path}/vpn/openvpn.pid' --verb 3")
-    assert openvpn_manager.SYSTEM_PATH == vpn_connection.SYSTEM_PATH == ":".join(
-        vpn_rootscript.SYSTEM_PATH)
+def _ovpn_root_argv(monkeypatch, config_path, program="/opt/homebrew/sbin/openvpn"):
+    """The argv root gets for an OpenVPN Connect of ``config_path`` (S8b)."""
+    import shlex
+    monkeypatch.setattr(openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(openvpn_manager, "is_running", lambda: False)
+    seen = []
+    openvpn_manager.connect(config_path, config_sha256="a" * 64, openvpn=program,
+                            run_as_root=lambda script, prompt: seen.append(script) or (True, ""))
+    return shlex.split(seen[0]) if seen else []
 
 
-def test_openvpn_runs_from_root_with_nothing_of_the_users_environment(monkeypatch, tmp_path):
-    """The same isolation as wg-quick: openvpn keeps its starting directory
-    under --daemon and its hooks inherit it (`up up.sh` ran ./up.sh from the
-    checkout), and openvpn reads OPENSSL_CONF and friends from its environment."""
-    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: None)
+def test_openvpn_connect_hands_root_only_values(monkeypatch, tmp_path):
+    """S8b: root gets the constant script and positional values; the config's
+    path is one of them and never reaches openvpn (its copy does)."""
+    cfg = tmp_path / "my nl.ovpn"
+    cfg.write_text("client\n")
+    argv = _ovpn_root_argv(monkeypatch, str(cfg))
+    assert argv == vpn_rootscript.openvpn_argv(
+        "up", config=str(cfg), sha256="a" * 64, openvpn="/opt/homebrew/sbin/openvpn")
+    assert argv[:5] == ["/usr/bin/env", "-i", "/bin/bash", "-c", vpn_rootscript.OVPN_SCRIPT]
+
+
+def test_openvpn_runs_from_root_with_nothing_of_the_users_environment():
+    """The same isolation as wg-quick (#36, now inside the root script): openvpn
+    keeps its starting directory under --daemon and its hooks inherit it, and
+    openvpn reads OPENSSL_CONF and friends from its environment. The harness in
+    test_vpn_rootscript runs this for real."""
+    script = vpn_rootscript.OVPN_SCRIPT
+    assert "PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH" in script
+    assert "HOME=/var/root; export HOME" in script
+    assert '(cd / && exec "$ovpn" --cd "$base/$cfgd" --config "$base/$copy"' in script
+
+
+def test_a_relative_or_home_config_reaches_root_as_an_absolute_path(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(openvpn_manager, "user_data_base", lambda: Path("data"))
-    command = openvpn_manager.start_command("sub/srv.ovpn")
-    assert command.startswith("cd / && /usr/bin/env -i HOME=/var/root PATH=")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "home").mkdir()
+    (tmp_path / "sub" / "srv.ovpn").write_text("client\n")
+    (tmp_path / "home" / "srv.ovpn").write_text("client\n")
     here = os.getcwd()
-    assert f"--config '{here}/sub/srv.ovpn'" in command
-    assert f"--log '{here}/data/vpn/openvpn.log'" in command      # never relative to /
-    assert f"--writepid '{here}/data/vpn/openvpn.pid'" in command
-    assert str(tmp_path) not in command.split(" 'openvpn' ")[0]
-    assert f"--config '{tmp_path}/home/srv.ovpn'" in openvpn_manager.start_command("~/srv.ovpn")
-
-
-@pytest.mark.allow_process
-def test_the_scrubbed_openvpn_command_really_drops_the_environment_and_directory(tmp_path, monkeypatch):
-    """Run the command's own prefix unprivileged, with a shell in openvpn's place."""
-    import subprocess
-    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: None)
-    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
-    prefix = openvpn_manager.start_command("/x.ovpn").split(" 'openvpn' ")[0]
-    out = subprocess.run(["/bin/sh", "-c", prefix + " /bin/sh -c 'pwd; /usr/bin/env'"],
-                         cwd=tmp_path, env={"OPENSSL_CONF": str(tmp_path / "evil.cnf"),
-                                            "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-                         capture_output=True, text=True, timeout=10).stdout.splitlines()
-    assert out[0] == "/"
-    assert "HOME=/var/root" in out and "PATH=/usr/bin:/bin:/usr/sbin:/sbin" in out
-    assert {line.split("=", 1)[0] for line in out[1:]} <= {"HOME", "PATH", "PWD", "OLDPWD", "SHLVL", "_"}
-
-
-def _config_word(command, flag):
-    import shlex
-    words = shlex.split(command.split(" && ", 1)[1])
-    return words[words.index(flag) + 1] if flag else words[-1]
+    assert _ovpn_root_argv(monkeypatch, "sub/srv.ovpn")[8] == f"{here}/sub/srv.ovpn"
+    assert _ovpn_root_argv(monkeypatch, "~/srv.ovpn")[8] == f"{tmp_path}/home/srv.ovpn"
 
 
 def test_a_relative_config_through_a_link_and_dotdot_stays_the_reviewed_file(monkeypatch, tmp_path):
@@ -284,10 +278,8 @@ def test_a_relative_config_through_a_link_and_dotdot_stays_the_reviewed_file(mon
         (tmp_path / "real" / name).write_text("reviewed")
         (tmp_path / name).write_text("decoy")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
-    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
-    ovpn = _config_word(openvpn_manager.start_command("link/../client.ovpn"), "--config")
-    wg = _wg_root_argv(monkeypatch, "link/../wg0.conf")[7]          # the source root copies
+    ovpn = _ovpn_root_argv(monkeypatch, "link/../client.ovpn")[8]   # the source root copies
+    wg = _wg_root_argv(monkeypatch, "link/../wg0.conf")[7]
     for word, name in ((ovpn, "client.ovpn"), (wg, "wg0.conf")):
         assert os.path.isabs(word) and "/link/../" in word
         assert Path(word).read_text() == Path(f"link/../{name}").read_text() == "reviewed"
@@ -298,37 +290,43 @@ def test_a_binary_found_through_a_relative_path_entry_is_made_absolute(monkeypat
     monkeypatch.chdir(tmp_path)
     here = os.getcwd()
     monkeypatch.setattr(openvpn_manager.shutil, "which", lambda name, *a, **k: f"bin/{name}")
-    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
     assert openvpn_manager.openvpn_binary() == f"{here}/bin/openvpn"
-    assert f" '{here}/bin/openvpn' --config " in openvpn_manager.start_command("/x.ovpn")
+    cfg = tmp_path / "srv.ovpn"
+    cfg.write_text("client\nremote 203.0.113.7 1194\n")
+    assert review("connect", profile_for(cfg)).program == f"{here}/bin/openvpn"
     assert _wg_root_argv(monkeypatch, "/x/wg0.conf", which="bin/wg-quick")[10] == f"{here}/bin/wg-quick"
 
 
-def test_the_scrubbed_openvpn_is_still_recognised_as_sentinels(monkeypatch, tmp_path):
-    """env execs openvpn, so ps shows openvpn's own argv: Disconnect must still
-    verify the process the scrubbed line started (pid path with a space)."""
-    import shlex
+def test_the_root_started_openvpn_is_recognised_as_sentinels(monkeypatch):
+    """ps shows the argv the root script gives openvpn: Disconnect must verify
+    exactly that process, by root's own --writepid path."""
     from types import SimpleNamespace
-    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
-    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path / "Sentinel Data")
-    argv = shlex.split(openvpn_manager.start_command(str(tmp_path / "s.ovpn")).split(" && ", 1)[1])
-    argv = argv[argv.index("PATH=/usr/bin:/bin:/usr/sbin:/sbin") + 1:]
-    assert argv[0] == "/opt/homebrew/sbin/openvpn"
-    monkeypatch.setattr(openvpn_manager.subprocess, "run", lambda *a, **k:
-                        SimpleNamespace(returncode=0, stdout=" ".join(argv) + "\n"))
+    base = vpn_rootscript.BASE_DIR
+    line = (f"/opt/homebrew/sbin/openvpn --cd {base}/ovpn/private/cfg --config "
+            f"{base}/ovpn/private/config.ovpn --daemon sentinel-ovpn --log "
+            f"{base}/ovpn/private/openvpn.log --writepid {base}/ovpn/openvpn.pid --verb 3\n")
+    assert f'--writepid "$base/$pidf"' in vpn_rootscript.OVPN_SCRIPT
+    monkeypatch.setattr(openvpn_manager.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=0, stdout=line))
     assert openvpn_manager._is_tracked_process(4242) is True
+    monkeypatch.setattr(openvpn_manager.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=line.replace(f"{base}/ovpn/openvpn.pid", "/tmp/openvpn.pid")))
+    assert openvpn_manager._is_tracked_process(4242) is False
 
 
-def test_openvpn_review_shows_the_line_root_runs(monkeypatch, tmp_path):
+def test_openvpn_review_shows_what_root_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
-    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
     cfg = tmp_path / "srv.ovpn"
     cfg.write_text("client\nremote 203.0.113.7 1194\n")
     profile = {"name": "O", "protocol": "OpenVPN", "endpoint": "203.0.113.7",
                "config_path": str(cfg)}
     r = review("connect", profile)
-    assert r.command == openvpn_manager.start_command(str(cfg))
-    assert r.command.startswith("cd / && /usr/bin/env -i ")
+    base = vpn_rootscript.BASE_DIR
+    assert r.command.startswith(f"copy '{cfg}' and the files it reads into {base}/ovpn/private")
+    assert (f"/opt/homebrew/sbin/openvpn --cd {base}/ovpn/private/cfg --config "
+            f"{base}/ovpn/private/config.ovpn --daemon sentinel-ovpn --writepid "
+            f"{base}/ovpn/openvpn.pid") in r.command
+    assert r.program == "/opt/homebrew/sbin/openvpn"
     assert review("disconnect", profile).command.startswith("kill -TERM")
 
 
@@ -430,11 +428,11 @@ def test_a_failed_command_is_reported(tmp_path):
 def test_openvpn_post_check_reads_the_tracked_process(tmp_path, monkeypatch):
     conf = tmp_path / "home.ovpn"
     conf.write_text("client\nremote 203.0.113.7 1194\n")
-    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     probe = Probe()
     monkeypatch.setattr(vpn_connection.openvpn_manager, "connect",
-                        lambda path, run_as_root: (setattr(probe, "openvpn", True)
-                                                   or {"success": True, "output": ""}))
+                        lambda path, **kwargs: (setattr(probe, "openvpn", True)
+                                                or {"success": True, "output": ""}))
     outcome = execute("connect", profile_for(conf), probe=probe,
                                     run_as_root=Recorder(), killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.verified is True
@@ -519,7 +517,7 @@ def test_review_surfaces_hooks_in_sections_confirmation_and_warnings(tmp_path, m
 
 
 def test_openvpn_review_surfaces_hooks(tmp_path, monkeypatch):
-    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     path = tmp_path / "srv.ovpn"
     path.write_text("client\nremote 203.0.113.7 1194\nscript-security 2\nup /x/y.sh\n")
     r = review("connect", profile_for(path))
@@ -532,95 +530,93 @@ def test_openvpn_review_surfaces_hooks(tmp_path, monkeypatch):
     ('route-up "scripts/r.sh arg"', "scripts/r.sh"),
     ("tls-verify 'v.sh'", "v.sh"),
     ("plugin ./p.so", "./p.so"),                        # "./" loads from the cwd
+    # S8b: a bare plugin name loads from OpenVPN's plugin folder, which Homebrew
+    # leaves to the user.
+    ("plugin openvpn-plugin-down-root.so /etc/x", "openvpn-plugin-down-root.so"),
 ])
 def test_a_relative_openvpn_hook_program_is_refused(line, program):
-    """OpenVPN execve()s the word with no PATH lookup, from / since it runs
-    there: the review cannot check what a relative word reaches."""
+    """OpenVPN execve()s the word with no PATH lookup, from root's copy of the
+    config's folder (--cd): the review cannot check what a relative word reaches."""
     blockers, soft, warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
-    assert blockers == [] and len(soft) == 1
-    assert f"runs {program}, a relative path" in soft[0] and "full path" in soft[0]
+    assert blockers == [] and len(soft) >= 1
+    assert f"names '{program}', which is not an absolute path" in soft[0]
+    assert "absolute path" in soft[0]
 
 
 @pytest.mark.parametrize("line", [
-    "plugin openvpn-plugin-down-root.so /etc/x",        # OpenVPN's plugin folder
     "up /usr/bin/true",
     "up",
     "script-security 2",
 ])
 def test_openvpn_hooks_that_are_not_relative_programs_are_not_refused_for_it(line):
     _, soft, _ = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
-    assert not any("relative path" in item for item in soft)
+    assert not any("not an absolute path" in item for item in soft)
 
 
 def test_a_relative_openvpn_hook_blocks_connect(tmp_path, monkeypatch):
-    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary",
+                        lambda: "/opt/homebrew/sbin/openvpn")
     path = tmp_path / "srv.ovpn"
     path.write_text("client\nremote 203.0.113.7 1194\nscript-security 2\nup up.sh\n")
-    assert any("runs up.sh, a relative path" in b
+    assert any("names 'up.sh', which is not an absolute path" in b
                for b in review("connect", profile_for(path)).blockers)
 
 
-def test_relative_openvpn_files_draw_one_warning():
+def test_openvpn_files_are_named_for_root_to_copy_not_warned_about():
+    """S8b: a relative file is copied with the config and read from the copy
+    (openvpn starts there with --cd), so it is listed, not warned about."""
     text = ("client\nproto udp\nremote vpn.example.com 1194\n"
-            "ca ca.crt\nkey ~/k.key\ntls-auth ta.key 1\ncert /etc/c.crt\n"
+            "ca ca.crt\nkey ~/k.key\ntls-auth ./ta.key 1\ncert /etc/c.crt\n"
             "tls-crypt [inline]\nauth-user-pass stdin\nauth-user-pass\n"
             "<ca>\nMIIBogus\n</ca>\n<tls-crypt>\nMIIBogus\n</tls-crypt>\n")
     blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
     assert blockers == [] and soft == []
-    found = [w for w in warnings if "looks for these files in /" in w]
-    assert len(found) == 1
-    assert "ca ca.crt, key ~/k.key, tls-auth ta.key." in found[0]
-    for absent in ("/etc/c.crt", "[inline]", "stdin", "MIIBogus", "udp", "vpn.example.com"):
-        assert absent not in found[0]
+    assert not any("looks for these files" in w for w in warnings)
+    names, refused = vpn_execution._openvpn_file_names(text)
+    assert refused == []
+    assert names == ["ca.crt", "~/k.key", "ta.key", "/etc/c.crt"]     # ./ta.key normalised
     for key in ("ca", "capath", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth", "tls-crypt",
                 "tls-crypt-v2", "secret", "crl-verify", "auth-user-pass", "askpass",
                 "http-proxy-user-pass"):
-        one = vpn_execution._hook_findings(f"client\n{key} f.txt\n", "OpenVPN")[2]
-        assert any(f"{key} f.txt." in w for w in one), key
+        assert vpn_execution._openvpn_file_names(f"client\n{key} f.txt\n")[0] == ["f.txt"], key
 
 
 @pytest.mark.parametrize("line, listed", [
     # PR #37 review (Codex P2): a proxy's auth file is its third word.
-    ("http-proxy proxy.example 8080 creds.txt basic", "http-proxy creds.txt."),
-    ("socks-proxy socks.example 1080 sa.txt", "socks-proxy sa.txt."),
+    ("http-proxy proxy.example 8080 creds.txt basic", "creds.txt"),
+    ("socks-proxy socks.example 1080 sa.txt", "sa.txt"),
     ("http-proxy proxy.example 8080 auto", None),
     ("http-proxy proxy.example 8080 auto-nct", None),
-    ("http-proxy proxy.example 8080 AUTO-NCT", "http-proxy AUTO-NCT."),   # streq: exact
+    ("http-proxy proxy.example 8080 AUTO-NCT", "AUTO-NCT"),   # streq: exact
     ("http-proxy proxy.example 8080 stdin", None),
-    ("http-proxy proxy.example 8080 /etc/creds.txt", None),
+    ("http-proxy proxy.example 8080 /etc/creds.txt", "/etc/creds.txt"),
     ("http-proxy proxy.example 8080", None),
     ("socks-proxy socks.example 1080", None),
-    ("ca auto", "ca auto."),                            # "auto" is http-proxy's word only
+    ("ca auto", "auto"),                                # "auto" is http-proxy's word only
     ("socks-proxy socks.example 1080 stdin", None),
     # PR #37 review (Codex P2): "stdin" is special only where OpenVPN reads
-    # credentials (get_user_pass); tls-auth stdin opens /stdin.
-    ("tls-auth stdin 1", "tls-auth stdin."),
-    ("ca STDIN", "ca STDIN."),
-    ("auth-user-pass STDIN", "auth-user-pass STDIN."),   # PR #37 review: streq, exact
+    # credentials (get_user_pass); tls-auth stdin opens a file named stdin.
+    ("tls-auth stdin 1", "stdin"),
+    ("ca STDIN", "STDIN"),
+    ("auth-user-pass STDIN", "STDIN"),                  # PR #37 review: streq, exact
     ("auth-user-pass stdin", None),
     ("askpass stdin", None),
     ("http-proxy-user-pass stdin", None),
     # PR #37 review (Codex P2): "[inline]" is no keyword in OpenVPN 2.6; it only
     # works beside a <tag> block of the same directive, which replaces the name.
-    ("askpass [inline]", "askpass [inline]."),
-    ("tls-auth [inline] 1", "tls-auth [inline]."),
+    ("askpass [inline]", "[inline]"),
+    ("tls-auth [inline] 1", "[inline]"),
     ("tls-auth [inline] 1\n<tls-auth>\nMIIBogus\n</tls-auth>", None),
-    ("tls-auth [inline] 1\n<ca>\nMIIBogus\n</ca>", "tls-auth [inline]."),
-    ("capath ca-certs", "capath ca-certs."),          # PR #37 review: a directory
+    ("tls-auth [inline] 1\n<ca>\nMIIBogus\n</ca>", "[inline]"),
+    ("capath ca-certs", "ca-certs"),                    # PR #37 review: a directory
     ("tls-auth [inline] 1\n  <tls-auth>\nMIIBogus\n</tls-auth>", None),   # read like _scan
     ("TLS-AUTH [inline] 1\n<TLS-AUTH>\nMIIBogus\n</TLS-AUTH>", None),    # keys are lowercased
 ])
-def test_proxy_auth_files_are_warned_from_their_own_position(line, listed):
+def test_proxy_auth_files_are_named_from_their_own_position(line, listed):
     warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[2]
     assert not any("not on the reviewed list" in w for w in warnings)
-    found = [w for w in warnings if "looks for these files in /" in w]
-    if listed is None:
-        assert found == []
-    else:
-        assert len(found) == 1 and listed in found[0]
-    many = "client\n" + "".join(f"ca c{i}.crt\n" for i in range(7))
-    listed = [w for w in vpn_execution._hook_findings(many, "OpenVPN")[2] if "looks for" in w][0]
-    assert "c5.crt …" in listed and "c6.crt" not in listed
+    names, _ = vpn_execution._openvpn_file_names(f"client\n{line}\n")
+    assert names == ([] if listed is None else [listed])
 
 
 CONNECTIONS = ("client\n<connection>\nremote a.example 1194\ntls-auth ta.key 1\n"
@@ -634,15 +630,14 @@ def test_connection_blocks_are_read_as_directives():
     found, problems = vpn_execution._scan(CONNECTIONS, "OpenVPN")
     assert problems == []                    # a nested inline block is fine
     assert [f[1] for f in found] == ["client", "remote", "tls-auth", "http-proxy", "remote"]
-    warnings = vpn_execution._hook_findings(CONNECTIONS, "OpenVPN")[2]
-    assert any("tls-auth ta.key, http-proxy creds.txt." in w for w in warnings)
+    assert vpn_execution._openvpn_file_names(CONNECTIONS)[0] == ["ta.key", "creds.txt"]
 
 
 def test_a_hook_in_a_connection_block_is_still_reviewed():
     # OpenVPN refuses it there (OPT_P_CONNECTION only), but nothing hides from the review.
     text = "client\n<connection>\nremote a.example 1194\nup up.sh\n</connection>\n"
     assert vpn_execution.hooks_from_text(text, "OpenVPN") == ["up: up.sh"]
-    assert any("runs up.sh" in item for item in vpn_execution._hook_findings(text, "OpenVPN")[1])
+    assert any("names 'up.sh'" in item for item in vpn_execution._hook_findings(text, "OpenVPN")[1])
 
 
 @pytest.mark.parametrize("text", [
@@ -715,7 +710,7 @@ def test_pkcs11_libraries_count_against_the_review_budget(monkeypatch):
 
 
 def test_a_foreign_provider_blocks_connect(tmp_path, monkeypatch):
-    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     path = tmp_path / "srv.ovpn"
     path.write_text("client\nremote 203.0.113.7 1194\nproviders legacy /tmp/evil\n")
     assert any("names '/tmp/evil'" in b for b in review("connect", profile_for(path)).blockers)

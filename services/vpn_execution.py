@@ -19,14 +19,18 @@
 6. **Rollback guidance** travels with every review and every outcome.
 
 The review is re-run inside ``execute`` so a file changed between the dialog and
-the worker is still caught. For WireGuard, root then copies the file into a
-root-owned directory and runs the copy only if its SHA-256 is the one shown in the
-dialog (audit step S7, ``services/vpn_rootscript.py``, ADR 0004): root never runs
-the user's file. For OpenVPN the check is made when the privileged prompt opens,
-not when root reads the file: openvpn still reads the user's .ovpn and the files
-it names afterwards, a gap that stays open until step S8 (deferred). The contents
-of a hook script are not covered by the config hash either; only programs that
-root owns are accepted.
+the worker is still caught. Root then copies the file into a root-owned
+directory and runs the copy only if its SHA-256 is the one shown in the dialog
+(audit steps S7 and S8b, ``services/vpn_rootscript.py``, ADR 0004): root never
+runs the user's file. For OpenVPN the same goes for every data file the config
+names beside it (certificates, keys, password files): they are listed with
+their hashes, copied, and openvpn starts in the copies' folder (``--cd``). A
+data file named by absolute path must be owned by root all the way up and is
+checked in place just before start (residual D2). The contents of a hook
+script are not covered by the config hash either: a hook program must be
+root-owned all the way up, and root checks that again before openvpn starts;
+an OpenVPN hook must also name it directly by absolute path, never through a
+system program, an interpreter or a wrapper.
 
 wg-quick runs a WireGuard hook through bash's ``eval``, so the review only
 accepts plain commands with full paths (or plain names of programs in /usr/bin,
@@ -44,9 +48,9 @@ its options is not interpreted: an option that takes a program name
 on its own (startup files, the working directory, the environment) is closed off
 by running wg-quick from / with only HOME=/var/root and PATH
 (``vpn_rootscript.ROOT_SCRIPT``); openvpn is started the same way
-(``openvpn_manager.start_command``), so a relative OpenVPN hook program
-would resolve from /, not from the app's working directory; the review refuses
-one (``_openvpn_relative_program``) and warns about relative file names. A DNS entry with a shell
+(``vpn_rootscript.OVPN_SCRIPT``), in root's copy of the config's folder, so the
+review refuses a relative OpenVPN hook program or path argument
+(``_ovpn_program_findings``). A DNS entry with a shell
 wildcard is a blocker on Connect: wg-quick expands it, so the DNS that applies
 is unknown.
 """
@@ -57,12 +61,14 @@ import errno
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
 import stat
 import subprocess
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -91,7 +97,8 @@ _WG_HOOK_KEYS_LOWER = frozenset(k.lower() for k in WG_HOOK_KEYS)
 OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                      "client-connect", "client-disconnect", "learn-address",
                      "tls-verify", "auth-user-pass-verify", "plugin",
-                     "script-security", "pkcs11-providers")
+                     "script-security", "pkcs11-providers",
+                     "dns-updown", "tls-crypt-v2-verify", "client-crresponse")
 # A hook is shown whole: the model keeps every character. The dialog body
 # shortens each one to HOOK_DISPLAY_LIMIT (the full text goes in the dialog's
 # detail and in sections()); a single line over HOOK_LINE_LIMIT is refused
@@ -102,14 +109,31 @@ HOOK_LINE_LIMIT = 4000
 # same bytes), so the size is capped well below what a profile ever needs.
 CONFIG_READ_LIMIT = 256 * 1024
 # OpenVPN directives that hide hooks (`config` pulls in a second file), open a
-# local control socket (`management*`), or make root write or change directory
-# somewhere the review cannot see. Blockers, not warnings.
+# local control socket (`management*`), or make root write, log or change
+# directory somewhere the review cannot see (`daemon` and `syslog` also take
+# the start-up log the root script reads the tunnel device from). Blockers,
+# not warnings.
 OPENVPN_BLOCKER_KEYS = ("config", "log", "log-append", "writepid", "status",
-                        "tmp-dir", "cd", "chroot", "setenv", "replay-persist")
+                        "tmp-dir", "cd", "chroot", "setenv", "replay-persist",
+                        "daemon", "syslog", "genkey", "ifconfig-pool-persist",
+                        "tls-export-cert", "client-config-dir", "auth-gen-token-secret")
+# Tunnel is a client: a server profile multiplies the hook surface (S8b security P1-3).
+OPENVPN_SERVER_KEYS = ("server", "server-bridge", "tls-server", "server-ipv6")
+# The only dev-node values allowed: any other makes root open that path (S8b security P2-1).
+OPENVPN_DEV_NODE = re.compile(r"utun[0-9]{0,3}")
+# The only dev values allowed: a TAP name with a path makes root open it (re-review R-P3-3).
+OPENVPN_DEV = re.compile(r"(tun|tap|utun)[0-9]{0,3}")
+# OpenVPN reads each config line into a 256-byte buffer; a line this long or
+# longer (bytes, without its newline) is refused, with a small margin.
+OPENVPN_LINE_LIMIT = 250
+# What a directive name may look like; anything else (an invisible or look-alike
+# character) could rename it for this review but not for OpenVPN (S8b security P1-1).
+OPENVPN_DIRECTIVE_NAME = re.compile(r"-{0,2}[A-Za-z0-9][A-Za-z0-9-]*")
 # Directives that load a library into the root process with no hook line to
 # check: `engine x` loads x as a shared library when it is no built-in engine
-# (crypto_openssl.c, the "dynamic" engine's SO_PATH). Blockers.
-OPENVPN_CODE_KEYS = ("engine",)
+# (crypto_openssl.c, the "dynamic" engine's SO_PATH), and `show-pkcs11-ids x`
+# loads x while the config is still being read (security review P1-2). Blockers.
+OPENVPN_CODE_KEYS = ("engine", "show-pkcs11-ids")    # the latter loads its library at parse time
 # `providers` hands each word to OSSL_PROVIDER_load (crypto_openssl.c), which
 # loads a path, or a name it does not know from OpenSSL's module folder. Only
 # OpenSSL's own providers are accepted, matched exactly as OpenSSL does.
@@ -117,11 +141,14 @@ OPENVPN_PROVIDERS = frozenset(("default", "base", "legacy", "null", "fips"))
 # Directives whose value is a program or plugin that runs as root.
 OPENVPN_EXECUTABLE_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                            "client-connect", "client-disconnect", "learn-address",
-                           "tls-verify", "auth-user-pass-verify", "plugin")
+                           "tls-verify", "auth-user-pass-verify", "plugin",
+                           "dns-updown", "tls-crypt-v2-verify", "client-crresponse")
 # Directives that name a file OpenVPN reads, and which word it is (the first,
-# or a proxy's auth file after server and port). OpenVPN opens a relative name
-# from its working directory, which is / (openvpn_manager.start_command), not
-# the config's folder, and expands no ~. OpenVPN compares its special words
+# or a proxy's auth file after server and port). Each goes into the review's
+# manifest with its hash; root copies a relative one into its own folder,
+# keeping the layout, and starts openvpn there (--cd), so a relative name is
+# read from root's copy of the config's folder. OpenVPN expands no ~ and
+# compares its special words
 # exactly (streq): http-proxy's "auto" and "auto-nct", and "stdin" only where it
 # reads credentials (get_user_pass, misc.c); anywhere else they are files.
 # "[inline]" is not special to OpenVPN 2.6: it only works because a <tag> block
@@ -198,10 +225,26 @@ _WS = " \t\r\v\f"
 _OVPN_TAG = re.compile(r"<([A-Za-z0-9_-]+)>")
 
 
+# The only backslash escapes OpenVPN's parse_line accepts (re-review R-P3-4).
+_ESCAPABLE = '\\"' + _WS
+
+
 def _ovpn_tokens(line: str) -> list[str] | None:
-    """Split a line the way OpenVPN does: quotes group, a backslash escapes the
-    next character, and a # or ; at the start of a token begins a comment.
-    None means an unbalanced quote."""
+    """The tokens of ``_ovpn_split``, or None when it refuses the line."""
+    return _ovpn_split(line)[0]
+
+
+def _ovpn_split(line: str) -> tuple[list[str] | None, str]:
+    r"""(tokens, "") for a line split as OpenVPN does, or (None, why) to refuse
+    it: quotes group, a # or ; at the start of a token begins a comment, and a
+    backslash escapes only ``\\``, ``\"`` or a space (outside single quotes).
+
+    None means a line the two parsers could read differently, so the caller
+    refuses it: an unbalanced quote; a quote that touches other text (OpenVPN
+    opens a quote only at a token's start and ends the token at the closing
+    quote, so ``"a"b`` splits differently; S8b security P1-2); or any other
+    backslash, which OpenVPN rejects or treats as a comment start where this
+    scanner would not (``\q``, ``\#``, a trailing backslash; re-review R-P3-4)."""
     tokens: list[str] = []
     cur: list[str] = []
     in_token = False
@@ -212,7 +255,11 @@ def _ovpn_tokens(line: str) -> list[str] | None:
         if quote:
             if c == quote:
                 quote = ""
-            elif c == "\\" and quote == '"' and i + 1 < len(line):
+                if i + 1 < len(line) and line[i + 1] not in _WS:
+                    return None, "quote"
+            elif c == "\\" and quote == '"':
+                if i + 1 >= len(line) or line[i + 1] not in _ESCAPABLE:
+                    return None, "backslash"
                 i += 1
                 cur.append(line[i])
             else:
@@ -224,8 +271,12 @@ def _ovpn_tokens(line: str) -> list[str] | None:
         elif not in_token and c in "#;":
             break
         elif c in "'\"":
+            if in_token:
+                return None, "quote"
             quote, in_token = c, True
-        elif c == "\\" and i + 1 < len(line):
+        elif c == "\\":
+            if i + 1 >= len(line) or line[i + 1] not in _ESCAPABLE:
+                return None, "backslash"
             i += 1
             cur.append(line[i])
             in_token = True
@@ -234,10 +285,18 @@ def _ovpn_tokens(line: str) -> list[str] | None:
             in_token = True
         i += 1
     if quote:
-        return None
+        return None, "quote"
     if in_token:
         tokens.append("".join(cur))
-    return tokens
+    return tokens, ""
+
+
+def _split_problem(where: str, what: str, why: str) -> str:
+    if why == "backslash":
+        return (f"{where}: a backslash in '{what}' is not \\\\, \\\" or before a space, so "
+                "OpenVPN would read it differently; remove it")
+    return (f"{where}: a quote in '{what}' is unbalanced or touches other text; put spaces "
+            "around quoted values")
 
 
 def _scan(text: str, protocol: str):
@@ -263,6 +322,8 @@ def _scan(text: str, protocol: str):
         # PostUp to it: scan the text it sees. _hook_findings refuses NULs too.
         text = text.replace("\x00", "")
     for number, line_ in enumerate(text.split("\n"), 1):
+        if number == 1 and protocol == "OpenVPN" and line_.startswith("\ufeff"):
+            line_ = line_[1:]              # OpenVPN skips a leading byte-order mark
         line = line_.strip(_WS)
         if protocol == "WireGuard":
             if not line or line[0] in "#;":
@@ -320,9 +381,13 @@ def _scan(text: str, protocol: str):
             problems.append(f"line {number}: the directive name {first[:30]!r} uses a quote or "
                             "backslash; OpenVPN and Sentinel might read it differently")
             continue
-        tokens = _ovpn_tokens(line)
+        if not OPENVPN_DIRECTIVE_NAME.fullmatch(first):
+            problems.append(f"line {number}: the directive name {first[:30]!r} has characters "
+                            "OpenVPN and Sentinel might read differently")
+            continue
+        tokens, why = _ovpn_split(line)
         if tokens is None:
-            problems.append(f"line {number}: unbalanced quote in '{first[:30]}'")
+            problems.append(_split_problem(f"line {number}", first[:30], why))
             continue
         if not tokens:
             continue
@@ -408,9 +473,39 @@ _INTERPRETER = re.compile(
     r"zip|sandbox-exec|installer|make|sqlite3|lockf|launchctl)[0-9.]*")
 
 
+def _fold(text: str) -> str:
+    """A name as the default macOS volume compares it: case and Unicode form ignored."""
+    return unicodedata.normalize("NFD", text).casefold()
+
+
 def _runs_code(command: str) -> bool:
-    """Whether an OpenVPN command word names a known interpreter or wrapper."""
-    return bool(_INTERPRETER.fullmatch(command.strip("'\"").rsplit("/", 1)[-1].lower()))
+    """Whether an OpenVPN command word names a known interpreter or wrapper, by
+    the name it is written with or the name links lead to, ignoring case,
+    Unicode form and a version suffix (S8b review R5-P1-1)."""
+    command = command.strip("'\"")
+    names = {command.rsplit("/", 1)[-1]}
+    if command.startswith("/"):
+        names.add(os.path.basename(_realpath(command)))
+    return any(_INTERPRETER.fullmatch(_fold(name)) for name in names)
+
+
+# Where macOS keeps its own programs. Many of them run another program or code
+# given as an argument, so an OpenVPN hook may not name one (S8b review
+# R5-P1-1, R7-P2-1); hooks are purpose-built scripts. Compared case-folded on
+# the written and the real path, because the system volume ignores case.
+_SYSTEM_PROGRAM_DIRS = ("/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/",
+                        "/usr/lib/", "/system/", "/private/var/select/", "/library/apple/",
+                        "/library/developer/")
+_ALLOWED_SYSTEM_PROGRAMS = frozenset(("/usr/bin/true", "/usr/bin/false"))
+# An address or network (10.0.0.0/8, fd00::/64): a slash that is not a path (review R7-P3-1).
+_CIDR = re.compile(r"[0-9A-Fa-f:.]+/[0-9]{1,3}")
+
+
+def _system_program(program: str) -> bool:
+    forms = {_fold(posixpath.normpath(program)), _fold(_realpath(program))}
+    if forms <= _ALLOWED_SYSTEM_PROGRAMS:
+        return False
+    return any(form.startswith(_SYSTEM_PROGRAM_DIRS) for form in forms)
 
 # The most commands and paths the hooks of one config may name. A config is at
 # most CONFIG_READ_LIMIT bytes, which is room for ~130,000 one-letter commands;
@@ -477,10 +572,15 @@ _SHELL_WORDS = frozenset((
 
 
 def _segments(words: list[str]) -> list[list[str]]:
-    """Commands in an OpenVPN executable directive: one program and its arguments."""
+    """Commands in an OpenVPN executable directive: one program and its
+    arguments. OpenVPN splits a script value again with the same rules
+    (argv_parse_cmd); a value it could read differently raises ValueError."""
     flat: list[str] = []
     for word in words:
-        flat.extend(word.split())
+        tokens, why = _ovpn_split(word)
+        if tokens is None:
+            raise ValueError(why)
+        flat.extend(tokens)
     return [flat]
 
 
@@ -569,6 +669,11 @@ def _unsafe_executable_reason(path: Path) -> str | None:
     world-writable, for the path as written and for where a link leads. A path starting with ~ is a user's home: never acceptable."""
     if str(path).startswith("~"):
         return f"{path} is in a user's home directory"
+    if path.is_absolute() and len(path.parts) > 1 and path.parts[1].startswith("."):
+        # /.vol/<dev>/<ino>, /.nofollow, /.resolve/N reach any file under another
+        # name, past every location and name rule (S8b review R7-P1-1).
+        return (f"{path} uses a hidden macOS path prefix (/{path.parts[1]}) that can reach "
+                "any file under another name")
     # Every path that resolving it touches: each component as written, each link on
     # the way and the folders it sits in, and where it finally leads. A link in a
     # root-only folder can point into a folder a user can write.
@@ -728,38 +833,168 @@ def _program_findings(raw: str, value: str, words: list[str], protocol: str,
     script are NOT covered by the config hash: only a program that root owns,
     in directories only root can write, is accepted. A WireGuard hook must be
     plain commands with full paths (``_wg_hook_findings``). An OpenVPN
-    executable directive is one program and its arguments: the program, and
-    every path given to an interpreter or wrapper (sh, python, env, ...), must
-    be safe, while a data argument of a root-owned program only draws a warning."""
+    executable directive is one program and its arguments, judged by
+    ``_ovpn_program_findings``."""
     if protocol == "WireGuard":
         return _wg_hook_findings(raw, value, budget)
+    try:
+        segment = _segments(words)[0]
+    except ValueError as exc:
+        return [_split_problem(f"The {raw} hook", value[:30], str(exc)) + "."], []
+    key = raw.lstrip("-").lower()
+    if not segment or (key == "dns-updown" and segment in (["disable"], ["force"])):
+        return [], []
+    if key != "plugin":
+        return _ovpn_program_findings(raw, segment, budget), []
+    # The module is a library; down-root runs its arguments as a command, other
+    # plugins take them as data (S8b review R5-P2-1).
+    unsafe = _ovpn_program_findings(raw, segment[:1], budget, library=True)
+    rest = segment[1:]
+    names = (segment[0].rsplit("/", 1)[-1], os.path.basename(_realpath(segment[0])))
+    if rest and any("down-root" in _fold(name) for name in names):
+        unsafe += _ovpn_program_findings(raw, rest, budget)
+    else:
+        unsafe += _ovpn_argument_findings(raw, rest, budget)
+    return unsafe, []
+
+
+def _interpreter(program: str) -> str | None:
+    """The program a script's ``#!`` line runs, as the kernel finds it: an
+    absolute path, or for ``#!/usr/bin/env name`` the name looked up in the
+    system folders ("" when it is not there). None for no ``#!`` line or a file
+    that cannot be read without blocking."""
+    try:
+        fd = os.open(program, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None
+            head = handle.read(256)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    words = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").split()
+    if not words:
+        return ""
+    if _fold(os.path.basename(words[0])) == "env" and len(words) > 1:
+        name = next((w for w in words[1:] if not w.startswith("-")), "")
+        return _which_privileged(name) or "" if _PLAIN_NAME.fullmatch(name) else ""
+    return words[0]
+
+
+def _ovpn_program_findings(raw: str, command: list[str], budget: dict | None = None, *,
+                           library: bool = False) -> list[str]:
+    """Why an OpenVPN hook command could run code the review did not show, or [].
+
+    OpenVPN execs the first word itself: no shell, no PATH, no VAR=. It must be
+    an absolute, existing, root-owned path. A relative one would resolve inside
+    root's copies of the config's folder (openvpn starts there with --cd), and
+    '..' leaves them (S8b re-review R-P1-1); a bare plugin name is loaded from
+    OpenVPN's plugin folder, which Homebrew leaves to the user. A system
+    program or an interpreter or wrapper, by any spelling, runs other code the
+    review cannot check (R-P1-2, review R5-P1-1). The arguments follow
+    ``_ovpn_argument_findings``. ``library`` (a plugin module) skips the
+    program-kind checks."""
+    program, args = command[0], command[1:]
+    if not program.startswith("/"):
+        return [f"The {raw} hook names '{program}', which is not an absolute path. OpenVPN "
+                "starts in root's copy of the config's folder, so Tunnel cannot check what "
+                "it runs; name a root-owned program by absolute path."]
+    if not _spend(budget):
+        return []
     unsafe: list[str] = []
-    warnings: list[str] = []
-    for segment in _segments(words):
-        runs_code = _runs_code(segment[0] if segment else "")
-        for position, word in enumerate(segment):
-            path = _path_word(word)
-            if path is None:
-                continue
+    reason = _unsafe_executable_reason(Path(program))
+    if reason:
+        unsafe.append(f"The {raw} hook runs {program} as administrator, and {reason}, so a "
+                      "normal user could replace it.")
+    elif not _exists(program):
+        # It would fail anyway, and a missing path is what an OpenVPN parse
+        # mismatch looks like (S8b security P1-2).
+        unsafe.append(f"The {raw} hook names {program}, which does not exist.")
+    if not library and _system_program(program):
+        unsafe.append(f"The {raw} hook runs {program}, a macOS system program; many of these "
+                      "run other code they are given (an interpreter or wrapper), so name a "
+                      "root-owned script of your own by absolute path.")
+    elif not library and _runs_code(program):
+        unsafe.append(f"The {raw} hook runs its command through {program}, an interpreter or "
+                      "wrapper whose arguments the review cannot check; name a root-owned "
+                      "script directly.")
+    elif not library and not unsafe:
+        # A root-owned script is only as safe as the interpreter its #! line
+        # names (security review P2-1); root re-checks it too (_openvpn_programs).
+        interpreter = _interpreter(program)
+        if interpreter == "" or (interpreter and not interpreter.startswith("/")):
+            unsafe.append(f"The {raw} hook runs {program}, whose #! line names no program in "
+                          f"{', '.join(_PRIVILEGED_PATH)} by full path; Tunnel cannot check "
+                          "what runs it.")
+        elif interpreter:
+            reason = _unsafe_executable_reason(Path(interpreter))
+            if reason is None and not _exists(interpreter):
+                reason = f"{interpreter} does not exist"
+            if reason:
+                unsafe.append(f"The {raw} hook runs {program}, whose #! line runs it with "
+                              f"{interpreter} as administrator, and {reason}, so a normal "
+                              "user could replace it.")
+    return unsafe + _ovpn_argument_findings(raw, args, budget)
+
+
+def _ovpn_argument_findings(raw: str, args: list[str], budget: dict | None = None) -> list[str]:
+    """Any argument that names a path (contains '/', or starts with '.' or '~')
+    must be an absolute, existing, root-owned path: the program may run or read
+    it, a relative one resolves inside root's copies or, through '..',
+    anywhere, and a missing one is whatever a user mounts there later (review
+    R5-P1-1, R5-P2-1, R7-P2-3)."""
+    unsafe: list[str] = []
+    for arg in args:
+        # --conf=/x and KEY=../x: judge the value (review R7-P3-1).
+        word = arg.split("=", 1)[1] if "=" in arg and not arg.startswith(("/", "~", ".")) else arg
+        if word == "/dev/null":
+            continue
+        if word.startswith("/"):
             if not _spend(budget):
-                return unsafe, warnings
-            _path_findings(raw, path, position, runs_code, protocol, unsafe, warnings)
-    return unsafe, warnings
+                return unsafe
+            reason = _unsafe_executable_reason(Path(word))
+            if reason is None and not _exists(word):
+                reason = f"{word} does not exist"
+            if reason:
+                unsafe.append(f"The {raw} hook hands {word} to the program as administrator, "
+                              f"and {reason}, so a normal user could replace it.")
+        elif word.startswith("~"):
+            unsafe.append(f"The {raw} hook hands {word}, in a user's home directory, to the "
+                          "program; name a root-owned file by absolute path.")
+        elif ("/" in word or word.startswith(".")) and not _CIDR.fullmatch(word):
+            unsafe.append(f"The {raw} hook hands '{word}', a relative path, to the program; "
+                          "name a root-owned file by absolute path.")
+    return unsafe
 
 
-def _openvpn_relative_program(key: str, words: list[str]) -> str | None:
-    """The program an OpenVPN executable directive names by a relative path, or
-    None. OpenVPN ``execve``s the word as written, with no PATH lookup, from its
-    working directory (/), so the review cannot check what a relative word
-    reaches. A ``plugin`` name without a leading "." is loaded from OpenVPN's
-    plugin folder instead (plugin.c), and is left to the earlier rules."""
-    segment = _segments(words)[0]
-    program = segment[0].strip("'\"") if segment else ""
-    if not program or program.startswith(("/", "~")):
-        return None
-    if key == "plugin" and not program.startswith("."):
-        return None
-    return program
+def _openvpn_programs(text: str) -> list[str]:
+    """The hook programs, plugin modules and PKCS#11 libraries an OpenVPN config
+    names by absolute path, as root re-checks them before start (spec 1.3)."""
+    found: list[str] = []
+    for raw, key, _value, words in _scan(text, "OpenVPN")[0]:
+        if key in OPENVPN_EXECUTABLE_KEYS:
+            try:
+                segment = _segments(words)[0]
+            except ValueError:
+                continue
+            candidates = segment[:1]
+            names = ((segment[0].rsplit("/", 1)[-1], os.path.basename(_realpath(segment[0])))
+                     if segment else ())
+            if key == "plugin" and len(segment) > 1 and any("down-root" in _fold(n) for n in names):
+                candidates.append(segment[1])
+        elif key == "pkcs11-providers":
+            candidates = list(words)
+        else:
+            continue
+        if key != "pkcs11-providers":
+            # The interpreter of a hook script is re-checked like the script.
+            candidates += [i for i in map(_interpreter, candidates[:1])
+                           if i and i.startswith("/")]
+        for program in candidates:
+            if program.startswith("/") and program not in found:
+                found.append(program)
+    return found
 
 
 def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list[str]]:
@@ -770,11 +1005,19 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
     soft: list[str] = []
     warnings: list[str] = []
     unknown: list[str] = []
-    relative_files: list[str] = []
     found, problems = _scan(text, protocol)
-    inline_tags = {match.group(1).lower() for line in text.split("\n")
-                   if (match := _OVPN_TAG.fullmatch(line.strip(_WS)))}
     blockers.extend(f"{protocol} config: {item}." for item in problems)
+    if protocol == "OpenVPN":
+        # OpenVPN reads a config through a 256-byte buffer (OPTION_LINE_SIZE):
+        # a longer line, inline blocks included, is split, and its tail read as
+        # a line of its own, which can end a <ca> block early and turn what
+        # follows into directives this review took for data (security review P1-1).
+        long_lines = [number for number, line in enumerate(text.split("\n"), 1)
+                      if len(line.encode("utf-8", "surrogatepass")) >= OPENVPN_LINE_LIMIT]
+        if long_lines:
+            blockers.append(f"OpenVPN config: line {long_lines[0]} is {OPENVPN_LINE_LIMIT} bytes "
+                            "or longer, and OpenVPN would read it as more than one line; "
+                            "Tunnel cannot tell what it would see. Shorten it.")
     if "\x00" in text:
         # Never depend on agreeing with bash or OpenVPN byte for byte.
         blockers.append(f"{protocol} config: it contains a NUL byte, which can hide a "
@@ -799,6 +1042,17 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
             elif key in OPENVPN_CODE_KEYS:
                 blockers.append(f"The OpenVPN directive '{key}' can load a library into "
                                 "OpenVPN as administrator; remove it from the profile.")
+            elif key in OPENVPN_SERVER_KEYS or (key == "mode" and words[:1] == ["server"]):
+                blockers.append(f"The OpenVPN directive '{key}' sets up a server; Tunnel runs "
+                                "only client profiles.")
+            elif key == "dev-node" and not (len(words) == 1
+                                            and OPENVPN_DEV_NODE.fullmatch(words[0])):
+                blockers.append("The OpenVPN directive 'dev-node' names something other than a "
+                                "utun device, which administrator rights would open; remove it.")
+            elif key == "dev" and not (len(words) == 1 and OPENVPN_DEV.fullmatch(words[0])):
+                blockers.append("The OpenVPN directive 'dev' names something other than a tun, "
+                                "tap or utun device, which administrator rights could open; use "
+                                "'dev tun'.")
             elif key not in OPENVPN_KNOWN_KEYS and key not in unknown:
                 unknown.append(key)
             other = [word for word in words if word not in OPENVPN_PROVIDERS]
@@ -815,21 +1069,12 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
                         soft.append(f"The {raw} line loads {library}, a relative path, into "
                                     "OpenVPN as administrator; the system decides where it "
                                     "is found, so Tunnel cannot check it. Write the full path.")
+                    elif not _exists(library):
+                        # A library that is not there is what a parse mismatch
+                        # looks like, and a user could create it later (S8b security P1-2).
+                        soft.append(f"The {raw} line loads {library}, which does not exist.")
                     else:
                         _path_findings(raw, library, 0, True, protocol, soft, warnings)
-            index = OPENVPN_FILE_WORD.get(key)
-            name = words[index] if index is not None and len(words) > index else ""
-            not_files = ((("[inline]",) if key in inline_tags else ())
-                         + (("stdin",) if key in OPENVPN_STDIN_KEYS else ())
-                         + (("auto", "auto-nct") if key == "http-proxy" else ()))
-            if name and not name.startswith("/") and name not in not_files:
-                relative_files.append(f"{raw} {name}")
-            program = (_openvpn_relative_program(key, words)
-                       if key in OPENVPN_EXECUTABLE_KEYS else None)
-            if program:
-                soft.append(f"The {raw} hook runs {program}, a relative path. OpenVPN runs "
-                            "it from /, not from the config's folder, and Tunnel cannot "
-                            "check it; write the full path.")
         # An overlong hook is already refused; walking its paths could take long
         # enough (a 256 KiB line) to freeze the window before the refusal shows.
         if (key in hook_keys and not overlong and not budget["over"]
@@ -841,17 +1086,160 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
         blockers.append(f"The {protocol} config's hooks name more than {HOOK_CHECK_LIMIT} "
                         "commands and paths; Tunnel will not run more than a person can "
                         "review.")
-    if relative_files:
-        warnings.append("OpenVPN looks for these files in / (it runs from there, not from "
-                        "the config's folder, and does not expand ~), so it will probably "
-                        "not find them: " + ", ".join(relative_files[:6])
-                        + (" …" if len(relative_files) > 6 else "")
-                        + ". Write full paths or put them inline (<ca>…</ca>).")
     if unknown:
         warnings.append("OpenVPN directives not on the reviewed list (allowed, but Tunnel "
                         "has not checked what they do): " + ", ".join(unknown[:12])
                         + (" …" if len(unknown) > 12 else ""))
     return blockers, soft, warnings
+
+
+def _same_name(a: str, b: str) -> bool:
+    """Whether two file names are one name on the default macOS volume, which
+    ignores case and Unicode normalisation form (S8b security P3-5)."""
+    return _fold(a) == _fold(b)
+
+
+def _openvpn_file_names(text: str) -> tuple[list[str], list[str]]:
+    """(names, blockers): each file an OpenVPN config reads, once, as root will
+    take it (a relative name normalised), and why any name is refused. Inline
+    blocks, ``[inline]`` beside its block and OpenVPN's special words are not
+    files (see ``OPENVPN_FILE_WORD``)."""
+    inline_tags = {match.group(1).lower() for line in text.split("\n")
+                   if (match := _OVPN_TAG.fullmatch(line.strip(_WS)))}
+    names: list[str] = []
+    blockers: list[str] = []
+    for _raw, key, _value, words in _scan(text, "OpenVPN")[0]:
+        index = OPENVPN_FILE_WORD.get(key)
+        ref = words[index] if index is not None and len(words) > index else ""
+        not_files = ((("[inline]",) if key in inline_tags else ())
+                     + (("stdin",) if key in OPENVPN_STDIN_KEYS else ())
+                     + (("auto", "auto-nct") if key == "http-proxy" else ())
+                     + (("none",) if key == "dh" else ()))      # ECDH only, no file
+        if not ref or ref in not_files:
+            continue
+        if ref.startswith("/"):
+            name = ref
+        elif ".." in ref.split("/"):
+            blockers.append(f"The config reads '{ref}', which is outside the folder the config "
+                            "is in or reached through '..'; Tunnel copies only files beside "
+                            "the config. Move it next to the config and name it plainly.")
+            continue
+        else:
+            name = posixpath.normpath(ref)
+        try:
+            vpn_rootscript.include_path(name)
+        except ValueError:
+            blockers.append(f"The config reads '{ref}', which is not a plain file path; "
+                            "write it without '.', '..', doubled slashes or a hidden '/.' prefix.")
+            continue
+        twin = next((other for other in names
+                     if other != name and _same_name(other, name)), None)
+        if twin is not None:
+            # The default macOS volume reads both as one file, and root refuses the pair.
+            blockers.append(f"The config reads '{twin}' and '{name}', which differ only in case "
+                            "or Unicode form; use one spelling.")
+            continue
+        if name not in names:
+            names.append(name)
+    return names, blockers
+
+
+def _openvpn_includes(text: str, config: Path
+                      ) -> tuple[list[tuple[str, str]], list[str], list[str], list[str]]:
+    """(manifest, blockers, warnings, root_only) for the data files an OpenVPN
+    config reads. ``root_only`` holds absolute files only root may read (a key in
+    ``/etc/openvpn``): Sentinel cannot hash them, and they are root-owned all the
+    way up, so root re-checks that ownership before start instead (code review P2-1).
+
+    The manifest holds (path as root takes it, SHA-256 of the bytes). A relative
+    path is normalised and must stay inside the config's folder, through
+    symbolic links too, because root copies it there; an absolute one must be
+    root-owned all the way up and is checked in place. Each must be a regular
+    file (not a link) of at most ``vpn_rootscript.INCLUDE_LIMIT`` bytes, at most
+    ``vpn_rootscript.MAX_INCLUDES`` in all. Anything else blocks, and then the
+    manifest is empty (audit step S8b)."""
+    names, blockers = _openvpn_file_names(text)
+    if len(names) > vpn_rootscript.MAX_INCLUDES:
+        # Checked before any file is opened.
+        return [], blockers + [f"The config reads {len(names)} files; Tunnel copies at most "
+                               f"{vpn_rootscript.MAX_INCLUDES}."], [], []
+    folder = config.parent
+    limit = vpn_rootscript.INCLUDE_LIMIT
+    manifest: list[tuple[str, str]] = []
+    root_only: list[str] = []
+    real_folder = _realpath(folder)
+    for name in names:
+        path = Path(name) if name.startswith("/") else folder / name
+        try:
+            info = path.lstat()
+        except OSError:
+            blockers.append(f"The config reads {name}, which does not exist or cannot be read.")
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            blockers.append(f"The config reads {name}, which is a symbolic link; point the "
+                            "config at the file itself.")
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            # capath, crl-verify <dir> dir: a folder's contents cannot be listed
+            # and checked like one file (code review P3-4).
+            blockers.append(f"The config reads {name}, which is a folder; Tunnel copies and "
+                            "checks only files. Put the certificates in one file (ca, "
+                            "crl-verify) or inline (<ca>…</ca>).")
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            blockers.append(f"The config reads {name}, which is not a regular file.")
+            continue
+        if name.startswith("/"):
+            # Not copied, so it must be a file the user cannot swap after root's
+            # check: openvpn reads it as root, and re-reads some while the tunnel
+            # is up (S8b security P2-2).
+            reason = _unsafe_executable_reason(path)
+            if reason:
+                blockers.append(f"The config reads {name} by absolute path, and {reason}, so "
+                                "it could be swapped after the check; put it beside the config "
+                                "so root copies it.")
+                continue
+        elif os.path.commonpath([_realpath(path), real_folder]) != real_folder:
+            blockers.append(f"The config reads {name}, which is outside the folder the config "
+                            "is in (through a symbolic link); move it next to the config.")
+            continue
+        try:
+            # O_NONBLOCK: a file swapped for a FIFO since lstat must not hang the review.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise OSError("not a regular file")
+                data = handle.read(limit + 1)
+        except PermissionError:
+            if name.startswith("/"):                 # root-owned all the way up (above)
+                root_only.append(name)
+                continue
+            blockers.append(f"The config reads {name}, which cannot be read.")
+            continue
+        except OSError:
+            blockers.append(f"The config reads {name}, which cannot be read.")
+            continue
+        if len(data) > limit:
+            blockers.append(f"The config reads {name}, which is larger than "
+                            f"{limit // 1024} KiB; Tunnel will not copy it.")
+            continue
+        manifest.append((name, hashlib.sha256(data).hexdigest()))
+    if blockers:
+        return [], blockers, [], []
+    absolute = [name for name, _ in manifest if name.startswith("/")]
+    warnings = []
+    if absolute:
+        warnings.append(f"{len(absolute)} file(s) the config reads are named by absolute path "
+                        f"({', '.join(absolute[:3])}{' …' if len(absolute) > 3 else ''}). "
+                        "Root does not copy them: they are checked in place just before "
+                        "OpenVPN starts. Root owns them, so your user cannot change them; "
+                        "keep them beside the config to have them copied instead.")
+    if root_only:
+        warnings.append(f"{len(root_only)} file(s) the config reads can be read only by root "
+                        f"({', '.join(root_only[:3])}{' …' if len(root_only) > 3 else ''}), "
+                        "so Tunnel cannot check their contents. Root owns them and every folder "
+                        "above them, and checks that again just before OpenVPN starts.")
+    return manifest, [], warnings, root_only
 
 
 ACTIONS = ("connect", "disconnect")
@@ -932,6 +1320,16 @@ class ExecutionReview:
     # Disconnect only: findings that would block a Connect but must not make a
     # Disconnect impossible. They need a second, explicit "Disconnect anyway".
     risks: tuple[str, ...] = ()
+    # OpenVPN Connect only: (path as root takes it, SHA-256) for each file the
+    # config reads. Relative paths are inside the config's folder; root copies
+    # those and checks absolute ones in place (ADR 0004, S8b).
+    includes: tuple[tuple[str, str], ...] = ()
+    # OpenVPN Connect only: the openvpn program the review resolved; root runs
+    # this path and no other (S8b security P3-1).
+    program: str = ""
+    # OpenVPN Connect only: the hook programs and libraries the review accepted
+    # as root-owned; root checks them again just before start (spec 1.3).
+    programs: tuple[str, ...] = ()
 
     @property
     def allowed(self) -> bool:
@@ -943,12 +1341,15 @@ class ExecutionReview:
 
     def fingerprint(self) -> str:
         """Identity of what administrator rights would run: action, protocol,
-        target, interface, command, every hook in full, the hash of the
-        config bytes and the wg-quick that runs. Warnings and blockers are left out on purpose (probe
-        state may legitimately change between the dialog and the worker)."""
+        target, interface, command, every hook in full, the hash of the config
+        bytes and of every file an OpenVPN config reads, and the program that
+        runs. Warnings and blockers are left out on purpose (probe state may
+        legitimately change between the dialog and the worker)."""
         payload = json.dumps([self.action, self.protocol, self.target, self.interface,
                               self.command, list(self.root_hooks), self.config_sha256,
-                              list(self.risks), self.wg_quick],
+                              list(self.risks), self.wg_quick,
+                              [list(item) for item in self.includes], self.program,
+                              list(self.programs)],
                              ensure_ascii=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -968,7 +1369,20 @@ class ExecutionReview:
         lines = [f"• {item}" for item in self.root_hooks]
         if self.config_sha256:
             lines += ["", self._hash_line()]
+        if self.includes:
+            lines += ["", self._includes_heading()] + self._include_lines()
         return "\n".join(lines)
+
+    @staticmethod
+    def _includes_heading() -> str:
+        return ("Files the config reads (root copies those beside the config and checks each "
+                "against the SHA-256 this review read; a file named by absolute path is "
+                "checked where it is):")
+
+    def _include_lines(self) -> list[str]:
+        # No hash is shown: a password file's hash can be guessed offline (S8b
+        # review P3-4). The hashes are in the fingerprint and go to root.
+        return [f"• {path}" for path, _digest in self.includes]
 
     @property
     def _may_run_kept_copy(self) -> bool:
@@ -981,11 +1395,8 @@ class ExecutionReview:
             return (f"SHA-256 of your config file now: {self.config_sha256} (root checks "
                     "it on its own copy only if it kept no copy at Connect; otherwise the "
                     "copy you connected with runs)")
-        if self.protocol == "WireGuard":
-            return (f"Config SHA-256: {self.config_sha256} (checked again by root on its "
-                    "own copy, which is what runs)")
-        return (f"Config SHA-256: {self.config_sha256} (verified when the password prompt "
-                "opened, not when it ran)")
+        return (f"Config SHA-256: {self.config_sha256} (checked again by root on its "
+                "own copy, which is what runs)")
 
     def _hooks_heading(self) -> str:
         if self._may_run_kept_copy:
@@ -1037,6 +1448,10 @@ class ExecutionReview:
             sections.append(("Runs commands as administrator" + (
                                  " (your file now)" if self._may_run_kept_copy else ""),
                              "\n".join(f"• {item}" for item in self.root_hooks), True))
+        if self.includes:
+            sections.append(("Files the config reads (hashed)",
+                             "\n".join([self._includes_heading()] + self._include_lines()),
+                             True))
         if self.risks:
             sections.append(("Risks — Disconnect anyway?",
                              "\n".join(f"• {item}" for item in self.risks), False))
@@ -1101,6 +1516,9 @@ def review_execution(action: str, profile: dict | None, *,
     route_mode = ""
     config_sha256 = ""
     wg_quick = ""
+    program = ""
+    includes: list[tuple[str, str]] = []
+    programs: list[str] = []
     ks_armed = killswitch_armed()
 
     if action == "connect" and vpn_connection.is_placeholder(profile):
@@ -1246,20 +1664,38 @@ def review_execution(action: str, profile: dict | None, *,
     elif protocol == "OpenVPN":
         interface = ""
         target = vpn_connection.resolve_config_path(profile) or ""
-        # The line root runs, as for wg-quick: from /, with an empty environment.
+        # Resolved once: root runs exactly this path, and it is in the fingerprint,
+        # so a program planted earlier in the search order changes the review
+        # (S8b security P3-1).
+        program = (openvpn_manager.openvpn_binary() or "") if action == "connect" else ""
         if action == "connect":
-            command = openvpn_manager.start_command(target) if target else ""
+            command = (f"copy {vpn_connection._quote(target)} and the files it reads into "
+                       f"{vpn_rootscript.ovpn_path('ovpn/private')}, check each copy's SHA-256 "
+                       f"against this review, then from / with an empty environment: "
+                       f"{shlex.quote(program) if program else 'openvpn'} --cd "
+                       f"{vpn_rootscript.ovpn_path(vpn_rootscript.OVPN_COPY_DIR)} --config "
+                       f"{vpn_rootscript.ovpn_path(vpn_rootscript.OVPN_CONFIG_COPY)} "
+                       f"--daemon sentinel-ovpn --writepid "
+                       f"{vpn_rootscript.ovpn_path(vpn_rootscript.OVPN_PID)} …"
+                       if target else "")
         else:
-            command = "kill -TERM <pid of Sentinel's tracked openvpn>"
+            command = "kill -TERM <pid of Sentinel's openvpn, re-checked as administrator>"
         if action == "connect":
-            if not openvpn_manager.is_openvpn_available():
+            if not program:
+                # The resolved program decides, not a second lookup (re-review R-P3-5).
                 blockers.append("openvpn client not found — install it, e.g. "
                                 "`brew install openvpn`.")
+            elif any(ch.isspace() for ch in program):
+                # ps prints argv unquoted, so Sentinel could never recognise the
+                # tunnel; the root script refuses it too (code review P3-3).
+                blockers.append(f"openvpn is installed at {program}, a path with a space; "
+                                "Tunnel cannot track a tunnel started from there. Install "
+                                "it where the path has no spaces (Homebrew does).")
             if not target:
                 blockers.append("This OpenVPN profile has no config file.")
             else:
-                text, config_sha256, read_blockers, read_warnings = _read_config(
-                    Path(target).expanduser())
+                source = Path(target).expanduser()
+                text, config_sha256, read_blockers, read_warnings = _read_config(source)
                 warnings.extend(read_warnings)
                 blockers.extend(read_blockers)
                 if text is not None:
@@ -1267,8 +1703,25 @@ def review_execution(action: str, profile: dict | None, *,
                     hook_blockers, soft_blockers, hook_warnings = _hook_findings(text, "OpenVPN")
                     blockers.extend(hook_blockers + soft_blockers)
                     warnings.extend(hook_warnings)
+                    includes, file_blockers, file_warnings, root_only = _openvpn_includes(
+                        text, Path(vpn_connection._absolute(str(source))))
+                    blockers.extend(file_blockers)
+                    warnings.extend(file_warnings)
+                    # Root re-checks hook programs, libraries and root-only files
+                    # the same way: owned by root all the way up (spec 1.3).
+                    programs = _openvpn_programs(text) + root_only
+                    if len(programs) > vpn_rootscript.MAX_PROGRAMS:
+                        blockers.append(f"The config names {len(programs)} hook programs; "
+                                        f"Tunnel checks at most {vpn_rootscript.MAX_PROGRAMS}.")
             if probe["openvpn_running"]():
                 blockers.append("An OpenVPN process is already running — Disconnect it first.")
+            reason = _unsafe_executable_reason(Path(program)) if program else None
+            if reason:
+                # As for wg-quick (owner decision 2026-11-05): warn, do not block.
+                warnings.append(
+                    f"openvpn runs as administrator from {program}, and {reason}: a program "
+                    "running as you could replace it. Sentinel's verified copies protect the "
+                    "config and its files, not the tool.")
             rollback = ["Press Disconnect (only a process Sentinel started and "
                         "tracks will be stopped)."]
         else:
@@ -1305,7 +1758,8 @@ def review_execution(action: str, profile: dict | None, *,
         config_lines=tuple(config_lines), blockers=tuple(blockers),
         warnings=tuple(warnings), rollback=tuple(rollback),
         root_hooks=tuple(root_hooks), config_sha256=config_sha256,
-        wg_quick=wg_quick, risks=tuple(risks),
+        wg_quick=wg_quick, risks=tuple(risks), includes=tuple(includes),
+        program=program, programs=tuple(programs),
     )
 
 
@@ -1449,11 +1903,11 @@ def execute(action: str, profile: dict, *,
     fresh review's fingerprint differs, nothing runs and no administrator
     prompt appears (fail closed).
 
-    For WireGuard, root copies the config into a root-owned directory and runs
-    the copy only if its hash is the confirmed one (audit step S7, ADR 0004).
-    For OpenVPN the hash is checked as the privileged prompt opens, and
-    not when root reads the config: openvpn still reads the user's .ovpn and its
-    files afterwards (step S8, deferred)."""
+    Root copies the config into a root-owned directory and runs the copy only
+    if its hash is the confirmed one (audit steps S7 and S8b, ADR 0004).
+    OpenVPN also hands root the manifest of data files: relative ones are
+    copied and checked, those named by absolute path are checked in place just
+    before start."""
     probe = probe or _default_probe()
     review = review_execution(action, profile, probe=probe, killswitch_armed=killswitch_armed)
     kwargs = {"run_as_root": run_as_root} if run_as_root is not None else {}
@@ -1474,6 +1928,9 @@ def execute(action: str, profile: dict, *,
             run_profile = {**profile, "config_path": review.target}
         if review.protocol == "WireGuard":
             kwargs["wg_quick"] = review.wg_quick       # the one the review judged
+        elif review.action == "connect":
+            kwargs.update(includes=review.includes, openvpn=review.program,
+                          programs=review.programs)
         result = runner(run_profile, config_sha256=review.config_sha256, **kwargs)
         outcome = ExecutionOutcome(
             review, ran=True, success=bool(result.get("success")),

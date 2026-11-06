@@ -145,6 +145,15 @@ def _macos_tool_layout(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_tunnel_run_dir(monkeypatch, tmp_path):
+    """Tunnel reads root's files under /private/var/run/sentinel-vpn (OpenVPN's
+    pid and device); a real tunnel on this Mac must not change a test's outcome.
+    Point it at an empty temp directory."""
+    monkeypatch.setattr("services.vpn_rootscript._READ_BASE",
+                        str(tmp_path / "no-sentinel-vpn"))       # fails loudly on a rename
+
+
+@pytest.fixture(autouse=True)
 def _deny_network_and_processes(request, monkeypatch):
     """Deny by default: a normal test may not leave this machine or run a program.
 

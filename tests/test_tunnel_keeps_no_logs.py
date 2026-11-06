@@ -117,53 +117,47 @@ def test_a_secret_in_any_field_never_reaches_the_nmap_record(tmp_path, field, sh
 
 def _openvpn_in(tmp_path, monkeypatch):
     from services import openvpn_manager
-    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
+    monkeypatch.setattr(openvpn_manager, "_legacy_dir", lambda: tmp_path / "vpn")
     monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     monkeypatch.setattr(openvpn_manager, "is_running", lambda: False)
     return openvpn_manager
 
 
-def test_openvpn_keeps_only_the_device_name_not_the_log(tmp_path, monkeypatch):
+def test_openvpn_writes_nothing_in_the_user_folder(tmp_path, monkeypatch):
+    # S8a: the log, pid and device live in root's run dir; the root script
+    # keeps only the device name and deletes the log (harness:
+    # test_vpn_rootscript.py::test_ovpn_up_keeps_pid_and_device_in_root_files_and_deletes_the_log).
+    import hashlib
+    import shlex
     ovpn = _openvpn_in(tmp_path, monkeypatch)
     cfg = tmp_path / "srv.ovpn"
     cfg.write_text("client\nremote 203.0.113.7 1194\n")
+    seen = []
+    # S8b: root needs the confirmed hash; it copies the config and nothing else.
+    result = ovpn.connect(str(cfg), config_sha256=hashlib.sha256(cfg.read_bytes()).hexdigest(),
+                          openvpn="/opt/homebrew/sbin/openvpn",
+                          run_as_root=lambda script, prompt, timeout=30:
+                          seen.append(shlex.split(script)) or (True, ""))
+    assert result["success"] and seen
+    assert not (tmp_path / "vpn").exists()
+    assert all(str(tmp_path / "vpn") not in part for part in seen[0])
+    script = seen[0][4]
+    assert '--log "$base/$log"' in script and "log=ovpn/private/openvpn.log" in script
+    assert '/bin/rm -f -- "$log"' in script
 
-    def run(script, prompt, timeout=30):
-        (tmp_path / "openvpn.log").write_text(
-            "TLS: Initial packet from [AF_INET]203.0.113.7:1194\nOpened utun device utun5\n")
-        return True, ""
-    result = ovpn.connect(str(cfg), run_as_root=run, sleep=lambda s: None)
-    assert result["success"] and result["device"] == "utun5"
-    assert not ovpn.log_file().exists()
-    assert ovpn.device_file().read_text() == "utun5"
-    assert "203.0.113.7" not in ovpn.device_file().read_text()
-    monkeypatch.setattr(ovpn, "is_running", lambda: True)
-    assert ovpn.tunnel_device() == "utun5"
 
-
-def test_a_failed_openvpn_start_is_explained_once_and_leaves_no_log(tmp_path, monkeypatch):
+def test_disconnecting_an_older_sentinels_openvpn_leaves_nothing_behind(tmp_path, monkeypatch):
     ovpn = _openvpn_in(tmp_path, monkeypatch)
-    cfg = tmp_path / "srv.ovpn"
-    cfg.write_text("client\nremote 203.0.113.7 1194\n")
-    slept = []
-
-    def run(script, prompt, timeout=30):
-        (tmp_path / "openvpn.log").write_text("Options error: Unrecognized option\n")
-        return True, ""
-    result = ovpn.connect(str(cfg), run_as_root=run, sleep=slept.append)
-    assert result["device"] is None
-    assert "Unrecognized option" in result["output"]
-    assert not ovpn.log_file().exists() and not ovpn.device_file().exists()
-    assert len(slept) == ovpn.DEVICE_WAIT_ATTEMPTS - 1
-
-
-def test_disconnecting_openvpn_forgets_the_device(tmp_path, monkeypatch):
-    ovpn = _openvpn_in(tmp_path, monkeypatch)
-    ovpn.device_file().write_text("utun5")
-    monkeypatch.setattr(ovpn, "_read_pid", lambda: 4242)
-    monkeypatch.setattr(ovpn, "_is_tracked_process", lambda pid: True)
+    legacy = tmp_path / "vpn"
+    legacy.mkdir()
+    ovpn.legacy_device_file().write_text("utun5")
+    ovpn.legacy_log_file().write_text("TLS: Initial packet from [AF_INET]203.0.113.7:1194\n")
+    ovpn.legacy_pid_file().write_text("4242")
+    monkeypatch.setattr(ovpn, "_tracked", lambda: (4242, legacy / "openvpn.pid"))
+    monkeypatch.setattr(ovpn, "_is_tracked_process", lambda pid, f=None: False)   # it exited
+    monkeypatch.setattr(ovpn, "_legacy_is_gone", lambda: True)
     result = ovpn.disconnect(run_as_root=lambda *a, **k: (True, ""))
-    assert result["success"] and not ovpn.device_file().exists()
+    assert result["success"] and list(legacy.iterdir()) == []
 
 
 def test_tor_deletes_its_start_up_log_once_it_has_bootstrapped(tmp_path, monkeypatch):
