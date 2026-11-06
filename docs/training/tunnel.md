@@ -104,10 +104,11 @@ caught yet (audit step S7).
 hook to the shell, so Tunnel only accepts commands that start with a full path
 (`/sbin/route …`) or with the plain name of a program in `/usr/bin`, `/bin`,
 `/usr/sbin` or `/sbin`, separated by `;`, `&&`, `||` or `&` if there is more
-than one. Only the network programs `route`, `ifconfig`, `networksetup`,
-`pfctl`, `scutil`, `killall`, `dscacheutil`, `wg`, `sysctl`, `ipconfig` and
-`logger` may be given ordinary words as arguments; any other program, your own
-scripts included, may only be given options, numbers, full paths and `%i`/`%I`.
+than one. Only the macOS network programs `route`, `ifconfig`, `networksetup`,
+`pfctl`, `scutil`, `killall`, `dscacheutil`, `sysctl`, `ipconfig` and `logger`
+(at their own system paths) and `wg` may be given ordinary words, numbers or
+`%i`/`%I` as arguments; any other program, your own scripts included, may only
+be given options (`-v`, `--up`) and full paths.
 A hook with `$`, quotes, a backslash, `* ? [ ] { } < > ( ) ! ~` or a pipe, a
 `NAME=value` in front of a command, a shell word such as `.`, `source`, `eval`,
 `exec`, `if` or `echo`, a relative path, or a program name found anywhere else

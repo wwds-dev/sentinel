@@ -49,10 +49,27 @@ separator, every DNS entry a server, DNS split on commas only, DNS wildcard not
 warned, `_items` strips Unicode spaces, search domains not shown). The
 reviewer's probe set (28 hooks) is now refused except `perl5.34 -e 1`, a no-op.
 
+### Sourcery review of PR #34 (e387e51)
+
+| Comment | Sev | Finding | Resolution |
+|---|---|---|---|
+| 4488194035 | Critical | `/bin/sh 1`: a number passed to an interpreter names a file (cwd, or PATH). | Numbers refused for any command off the allowlist. |
+| 4488194048 | Critical | `%I` given to a root-owned interpreter outside the system folders (e.g. MacPorts `/opt/local/bin/python3 %I`) runs a file named after the config. | `%i`/`%I` refused for any command off the allowlist; the system-folder exception is gone. |
+| 4488194058 | Critical | `_in_system_folder` compared case-sensitively, so `/USR/SBIN/dtrace -c %I` passed. | Removed with the exception above; the allowlist path compare is lowercased. |
+| 4488194065 | Critical | A root-owned wrapper named `route` elsewhere got unrestricted arguments. | Each macOS tool is trusted only at its own path (as written and where a link leads, any case); `wg` by name, also judged by where a link leads. |
+| 4488194070 | Critical | `/usr/sbin/dtrace -o /etc/hosts -c %I`: any full-path argument became "the program", so `%I` passed. | Gone with the exception above. |
+| 4488194079 | Medium | A wildcard DNS entry may expand (extglob is on); it was classified literally. | Listed as neither server nor search domain, with a warning; extglob `@( +( !(` included. |
+| 4488194087 | Medium | Thousands of bad Address/DNS tokens gave thousands of warnings in the dialog. | Config warnings deduplicated and capped at 20 plus a count. |
+
+Third round of hand mutants: 53 of 53 killed (adds numbers plain, placeholders
+plain, allowlist path not pinned, allowlist ignores the link target, allowlist
+path and name case-sensitive, DNS glob and extglob not detected, warnings not
+capped, warnings not deduplicated).
+
 ### Residual after the allowlist
 
 What a program does with its options is not interpreted: an option that takes a
-program name (`dtrace -c -x`, `sh -c 1`)
+program name (`dtrace -c -x`)
 still names a program found on wg-quick's PATH. The only folder on that
 PATH a normal user might write is wg-quick's own (`${SELF%/*}`), and a user who
 can write it can already replace `wg-quick` itself, which runs as root; both
