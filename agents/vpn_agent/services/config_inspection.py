@@ -58,6 +58,25 @@ def _is_dns_server(item: str) -> bool:
     return bool(re.fullmatch(r"[0-9.]+", item)) or ":" in item
 
 
+# wg-quick word-splits DNS unquoted, with extglob on, so an entry with a glob
+# character may expand to file names in its working directory. What it becomes
+# cannot be known here, so such an entry is listed as neither kind.
+_GLOB = re.compile(r"[*?\[]|[@+!]\(")
+
+# A 256 KiB config can hold tens of thousands of bad entries; the review lists
+# each kind of warning once and at most this many in all.
+WARNING_LIMIT = 20
+
+
+def _capped(warnings: list[str]) -> tuple[str, ...]:
+    """Each warning once, in order, and at most WARNING_LIMIT of them."""
+    unique = list(dict.fromkeys(warnings))
+    if len(unique) <= WARNING_LIMIT:
+        return tuple(unique)
+    return tuple(unique[:WARNING_LIMIT]) + (
+        f"… and {len(unique) - WARNING_LIMIT} more warnings about this file.",)
+
+
 def _endpoint_is_valid(value: str) -> bool:
     value = value.strip()
     if value.startswith("["):
@@ -164,10 +183,13 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
                 addresses.extend(_shell_items(value))
             elif normalized_key == "dns":
                 for item in _shell_items(value):
+                    if _GLOB.search(item):
+                        warnings.append("A DNS entry contains a wildcard, which wg-quick's "
+                                        "shell may expand to other entries; it is not "
+                                        "listed, and the DNS that applies cannot be "
+                                        "known in advance.")
+                        continue
                     (dns_servers if _is_dns_server(item) else dns_search).append(item)
-                    if any(ch in item for ch in "*?["):
-                        warnings.append(f"Line {line_number}: a DNS entry contains a "
-                                        "wildcard, which wg-quick's shell may expand.")
             elif normalized_key == "mtu":
                 mtu = value
         elif section == "peer":
@@ -205,5 +227,5 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
         route_mode=_route_mode(allowed_ips),
         secrets_discarded=secrets_discarded,
         invalid_endpoint_count=invalid_endpoints,
-        warnings=tuple(warnings),
+        warnings=_capped(warnings),
     )
