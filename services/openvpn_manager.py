@@ -43,6 +43,16 @@ except Exception:  # pragma: no cover
 RunAsRoot = Callable[..., tuple[bool, str]]
 
 
+def _absolute(path: str) -> str:
+    """``path`` from the current directory, left as written otherwise.
+
+    Not ``os.path.abspath``: that drops ``link/..`` without following ``link``,
+    so root would open a different file from the one this process (and the
+    review) opened through the link. Joining keeps the kernel's own walk.
+    """
+    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+
+
 def openvpn_binary() -> str | None:
     """Absolute path of the OpenVPN client, or None.
 
@@ -52,7 +62,7 @@ def openvpn_binary() -> str | None:
     """
     found = shutil.which("openvpn")
     if found:
-        return found
+        return _absolute(found)     # a relative PATH entry; root runs from /
     for candidate in ("/opt/homebrew/sbin/openvpn", "/usr/local/sbin/openvpn",
                       "/opt/homebrew/bin/openvpn", "/usr/local/bin/openvpn"):
         if Path(candidate).is_file():
@@ -68,7 +78,7 @@ def is_openvpn_available() -> bool:
 def _run_dir() -> Path:
     # Absolute: root runs openvpn from /, so a relative --log or --writepid would
     # land there, and the pid path must read the same in the command and in ps.
-    path = Path(os.path.abspath(user_data_base() / "vpn"))
+    path = Path(_absolute(str(user_data_base() / "vpn")))
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -200,9 +210,10 @@ def start_command(config_path: str) -> str:
     the review does not check a relative program. Its hooks get only the
     variables OpenVPN sets itself (``execve`` with its own list,
     ``run_command.c``), so they lose nothing here. Every path is made absolute
-    first; a relative file named inside the config now resolves from ``/``.
+    first, without collapsing ``..`` (``_absolute``); a relative file named
+inside the config now resolves from ``/``.
     """
-    cfg = os.path.abspath(os.path.expanduser(config_path))
+    cfg = _absolute(os.path.expanduser(config_path))
     return (
         f"cd / && /usr/bin/env -i HOME=/var/root PATH={_quote(SYSTEM_PATH)} "
         f"{_quote(openvpn_binary() or 'openvpn')} --config {_quote(cfg)} "

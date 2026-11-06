@@ -267,6 +267,43 @@ def test_the_scrubbed_openvpn_command_really_drops_the_environment_and_directory
     assert {line.split("=", 1)[0] for line in out[1:]} <= {"HOME", "PATH", "PWD", "OLDPWD", "SHLVL", "_"}
 
 
+def _config_word(command, flag):
+    import shlex
+    words = shlex.split(command.split(" && ", 1)[1])
+    return words[words.index(flag) + 1] if flag else words[-1]
+
+
+def test_a_relative_config_through_a_link_and_dotdot_stays_the_reviewed_file(monkeypatch, tmp_path):
+    """PR #36 review (Codex P1): abspath turned link/../x into x lexically, so root
+    could load a different file from the one the review opened and hashed."""
+    (tmp_path / "real" / "dir").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / "real" / "dir")
+    for name in ("client.ovpn", "wg0.conf"):
+        (tmp_path / "real" / name).write_text("reviewed")
+        (tmp_path / name).write_text("decoy")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: None)
+    ovpn = _config_word(openvpn_manager.start_command("link/../client.ovpn"), "--config")
+    wg = _config_word(vpn_connection.wg_quick_command("up", "link/../wg0.conf"), None)
+    for word, name in ((ovpn, "client.ovpn"), (wg, "wg0.conf")):
+        assert os.path.isabs(word) and "/link/../" in word
+        assert Path(word).read_text() == Path(f"link/../{name}").read_text() == "reviewed"
+
+
+def test_a_binary_found_through_a_relative_path_entry_is_made_absolute(monkeypatch, tmp_path):
+    """PR #36 review (Codex P2): which() can answer bin/openvpn; root runs from /."""
+    monkeypatch.chdir(tmp_path)
+    here = os.getcwd()
+    monkeypatch.setattr(openvpn_manager.shutil, "which", lambda name, *a, **k: f"bin/{name}")
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
+    assert openvpn_manager.openvpn_binary() == f"{here}/bin/openvpn"
+    assert f" '{here}/bin/openvpn' --config " in openvpn_manager.start_command("/x.ovpn")
+    command = vpn_connection.wg_quick_command("up", "/x.conf")
+    assert f"PATH='{here}/bin:/usr/bin:/bin:/usr/sbin:/sbin' '{here}/bin/wg-quick' up" in command
+
+
 def test_the_scrubbed_openvpn_is_still_recognised_as_sentinels(monkeypatch, tmp_path):
     """env execs openvpn, so ps shows openvpn's own argv: Disconnect must still
     verify the process the scrubbed line started (pid path with a space)."""
