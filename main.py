@@ -3689,6 +3689,9 @@ class GodAI(QWidget):
 
         auto = getattr(self, "auto_recommend_checkbox", None)
         if auto is not None and auto.isChecked():
+            # Auto-route picks the provider itself, so a Local only substitution
+            # notice from an earlier manual pick no longer describes this run.
+            self._set_route_notice("")
             prompt = self.input_box.toPlainText().strip() if hasattr(self, "input_box") else ""
             agent = self.agent_box.currentText() if hasattr(self, "agent_box") else "chat"
             tool = self.tool_box.currentText() if hasattr(self, "tool_box") else ""
