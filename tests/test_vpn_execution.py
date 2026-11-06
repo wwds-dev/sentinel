@@ -526,6 +526,201 @@ def test_openvpn_review_surfaces_hooks(tmp_path, monkeypatch):
     assert r.root_hooks == ("script-security: 2", "up: /x/y.sh")
 
 
+@pytest.mark.parametrize("line, program", [
+    ("up up.sh", "up.sh"),                              # TODO.md: never checked
+    ("down ./d.sh", "./d.sh"),
+    ('route-up "scripts/r.sh arg"', "scripts/r.sh"),
+    ("tls-verify 'v.sh'", "v.sh"),
+    ("plugin ./p.so", "./p.so"),                        # "./" loads from the cwd
+])
+def test_a_relative_openvpn_hook_program_is_refused(line, program):
+    """OpenVPN execve()s the word with no PATH lookup, from / since it runs
+    there: the review cannot check what a relative word reaches."""
+    blockers, soft, warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
+    assert blockers == [] and len(soft) == 1
+    assert f"runs {program}, a relative path" in soft[0] and "full path" in soft[0]
+
+
+@pytest.mark.parametrize("line", [
+    "plugin openvpn-plugin-down-root.so /etc/x",        # OpenVPN's plugin folder
+    "up /usr/bin/true",
+    "up",
+    "script-security 2",
+])
+def test_openvpn_hooks_that_are_not_relative_programs_are_not_refused_for_it(line):
+    _, soft, _ = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
+    assert not any("relative path" in item for item in soft)
+
+
+def test_a_relative_openvpn_hook_blocks_connect(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    path = tmp_path / "srv.ovpn"
+    path.write_text("client\nremote 203.0.113.7 1194\nscript-security 2\nup up.sh\n")
+    assert any("runs up.sh, a relative path" in b
+               for b in review("connect", profile_for(path)).blockers)
+
+
+def test_relative_openvpn_files_draw_one_warning():
+    text = ("client\nproto udp\nremote vpn.example.com 1194\n"
+            "ca ca.crt\nkey ~/k.key\ntls-auth ta.key 1\ncert /etc/c.crt\n"
+            "tls-crypt [inline]\nauth-user-pass stdin\nauth-user-pass\n"
+            "<ca>\nMIIBogus\n</ca>\n<tls-crypt>\nMIIBogus\n</tls-crypt>\n")
+    blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
+    assert blockers == [] and soft == []
+    found = [w for w in warnings if "looks for these files in /" in w]
+    assert len(found) == 1
+    assert "ca ca.crt, key ~/k.key, tls-auth ta.key." in found[0]
+    for absent in ("/etc/c.crt", "[inline]", "stdin", "MIIBogus", "udp", "vpn.example.com"):
+        assert absent not in found[0]
+    for key in ("ca", "capath", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth", "tls-crypt",
+                "tls-crypt-v2", "secret", "crl-verify", "auth-user-pass", "askpass",
+                "http-proxy-user-pass"):
+        one = vpn_execution._hook_findings(f"client\n{key} f.txt\n", "OpenVPN")[2]
+        assert any(f"{key} f.txt." in w for w in one), key
+
+
+@pytest.mark.parametrize("line, listed", [
+    # PR #37 review (Codex P2): a proxy's auth file is its third word.
+    ("http-proxy proxy.example 8080 creds.txt basic", "http-proxy creds.txt."),
+    ("socks-proxy socks.example 1080 sa.txt", "socks-proxy sa.txt."),
+    ("http-proxy proxy.example 8080 auto", None),
+    ("http-proxy proxy.example 8080 auto-nct", None),
+    ("http-proxy proxy.example 8080 AUTO-NCT", "http-proxy AUTO-NCT."),   # streq: exact
+    ("http-proxy proxy.example 8080 stdin", None),
+    ("http-proxy proxy.example 8080 /etc/creds.txt", None),
+    ("http-proxy proxy.example 8080", None),
+    ("socks-proxy socks.example 1080", None),
+    ("ca auto", "ca auto."),                            # "auto" is http-proxy's word only
+    ("socks-proxy socks.example 1080 stdin", None),
+    # PR #37 review (Codex P2): "stdin" is special only where OpenVPN reads
+    # credentials (get_user_pass); tls-auth stdin opens /stdin.
+    ("tls-auth stdin 1", "tls-auth stdin."),
+    ("ca STDIN", "ca STDIN."),
+    ("auth-user-pass STDIN", "auth-user-pass STDIN."),   # PR #37 review: streq, exact
+    ("auth-user-pass stdin", None),
+    ("askpass stdin", None),
+    ("http-proxy-user-pass stdin", None),
+    # PR #37 review (Codex P2): "[inline]" is no keyword in OpenVPN 2.6; it only
+    # works beside a <tag> block of the same directive, which replaces the name.
+    ("askpass [inline]", "askpass [inline]."),
+    ("tls-auth [inline] 1", "tls-auth [inline]."),
+    ("tls-auth [inline] 1\n<tls-auth>\nMIIBogus\n</tls-auth>", None),
+    ("tls-auth [inline] 1\n<ca>\nMIIBogus\n</ca>", "tls-auth [inline]."),
+    ("capath ca-certs", "capath ca-certs."),          # PR #37 review: a directory
+    ("tls-auth [inline] 1\n  <tls-auth>\nMIIBogus\n</tls-auth>", None),   # read like _scan
+    ("TLS-AUTH [inline] 1\n<TLS-AUTH>\nMIIBogus\n</TLS-AUTH>", None),    # keys are lowercased
+])
+def test_proxy_auth_files_are_warned_from_their_own_position(line, listed):
+    warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[2]
+    assert not any("not on the reviewed list" in w for w in warnings)
+    found = [w for w in warnings if "looks for these files in /" in w]
+    if listed is None:
+        assert found == []
+    else:
+        assert len(found) == 1 and listed in found[0]
+    many = "client\n" + "".join(f"ca c{i}.crt\n" for i in range(7))
+    listed = [w for w in vpn_execution._hook_findings(many, "OpenVPN")[2] if "looks for" in w][0]
+    assert "c5.crt …" in listed and "c6.crt" not in listed
+
+
+CONNECTIONS = ("client\n<connection>\nremote a.example 1194\ntls-auth ta.key 1\n"
+               "http-proxy proxy.example 8080 creds.txt\n<tls-crypt>\nMIIBogus\n</tls-crypt>\n"
+               "</connection>\n<connection>\nremote b.example 443 tcp\n</connection>\n")
+
+
+def test_connection_blocks_are_read_as_directives():
+    """PR #37 review (Codex P2): OpenVPN reads a <connection> block's lines as
+    directives, which can name files; the review skipped them as inline data."""
+    found, problems = vpn_execution._scan(CONNECTIONS, "OpenVPN")
+    assert problems == []                    # a nested inline block is fine
+    assert [f[1] for f in found] == ["client", "remote", "tls-auth", "http-proxy", "remote"]
+    warnings = vpn_execution._hook_findings(CONNECTIONS, "OpenVPN")[2]
+    assert any("tls-auth ta.key, http-proxy creds.txt." in w for w in warnings)
+
+
+def test_a_hook_in_a_connection_block_is_still_reviewed():
+    # OpenVPN refuses it there (OPT_P_CONNECTION only), but nothing hides from the review.
+    text = "client\n<connection>\nremote a.example 1194\nup up.sh\n</connection>\n"
+    assert vpn_execution.hooks_from_text(text, "OpenVPN") == ["up: up.sh"]
+    assert any("runs up.sh" in item for item in vpn_execution._hook_findings(text, "OpenVPN")[1])
+
+
+@pytest.mark.parametrize("text", [
+    "client\n<connection>\nremote a.example 1194\n",                     # never closed
+    "client\n<connection>\nremote a.example 1194\n </connection>\n",     # not exactly the tag
+    "client\n<connection>\nremote a.example 1194\n</connectionx>\n",
+    "client\n<connection>\nremote a\n<tls-auth>\nA\n</connection>\n",   # closes a nested block
+    "client\n<connection>\nremote a\n</tls-auth>\n</connection>\n",      # a stray closing tag
+    "client\n<connection>\nremote a\n<connection>\nremote b\n</connection>\n</connection>\n",
+])
+def test_an_ambiguous_connection_block_blocks(text):
+    assert vpn_execution._hook_findings(text, "OpenVPN")[0]
+
+
+# ── OpenVPN directives that load code or write as root (TODO, found for #37) ──
+
+@pytest.mark.parametrize("line", [
+    "replay-persist /var/tmp/replay",                   # root writes the file (options.c)
+    "replay-persist replay",
+    "engine /tmp/x.dylib",                              # loaded through the "dynamic" engine
+    "engine dynamic",
+    "engine",
+])
+def test_root_writes_and_engines_block(line):
+    blockers = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[0]
+    assert len(blockers) == 1 and f"'{line.split()[0]}'" in blockers[0]
+
+
+@pytest.mark.parametrize("line", ["providers legacy default", "providers default",
+                                  "providers fips base null"])
+def test_openssls_own_providers_are_accepted(line):
+    assert vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN") == ([], [], [])
+
+
+@pytest.mark.parametrize("line, named", [
+    ("providers /tmp/evil", "/tmp/evil"),               # OSSL_PROVIDER_load takes a path
+    ("providers evil", "evil"),                         # or a module from OpenSSL's folder
+    ("providers Legacy", "Legacy"),                     # matched exactly, as OpenSSL does
+    ("providers legacy ./x default", "./x"),
+])
+def test_any_other_provider_blocks(line, named):
+    blockers = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[0]
+    assert len(blockers) == 1 and f"names {named!r}" in blockers[0]
+
+
+def test_pkcs11_libraries_are_checked_like_hook_programs(monkeypatch):
+    unsafe = {"/Users/me/lib.dylib": "it is in a user's home directory"}
+    monkeypatch.setattr(vpn_execution, "_unsafe_executable_reason", lambda p: unsafe.get(str(p)))
+    monkeypatch.setattr(vpn_execution, "_exists", lambda p: True)
+    line = "pkcs11-providers /usr/local/lib/ok.dylib /Users/me/lib.dylib p11.dylib"
+    text = f"client\n{line}\n"
+    assert vpn_execution.hooks_from_text(text, "OpenVPN") == [
+        "pkcs11-providers: /usr/local/lib/ok.dylib /Users/me/lib.dylib p11.dylib"]
+    blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
+    assert blockers == [] and warnings == []
+    assert len(soft) == 2
+    assert "/Users/me/lib.dylib" in soft[0] and "user's home directory" in soft[0]
+    assert "loads p11.dylib, a relative path" in soft[1]
+    clean = "client\npkcs11-providers /usr/local/lib/ok.dylib\n"
+    assert vpn_execution._hook_findings(clean, "OpenVPN") == ([], [], [])
+
+
+def test_pkcs11_libraries_count_against_the_review_budget(monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_unsafe_executable_reason", lambda p: None)
+    monkeypatch.setattr(vpn_execution, "_exists", lambda p: True)
+    paths = " ".join(f"/l/p{i}" for i in range(vpn_execution.HOOK_CHECK_LIMIT + 1))
+    blockers = vpn_execution._hook_findings(f"client\npkcs11-providers {paths}\n", "OpenVPN")[0]
+    assert not any("longer than" in b for b in blockers)
+    assert any("more than" in b for b in blockers)
+
+
+def test_a_foreign_provider_blocks_connect(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    path = tmp_path / "srv.ovpn"
+    path.write_text("client\nremote 203.0.113.7 1194\nproviders legacy /tmp/evil\n")
+    assert any("names '/tmp/evil'" in b for b in review("connect", profile_for(path)).blockers)
+
+
 # test_disconnect_review_does_not_rescan_hooks pinned a gap (wg-quick down re-reads
 # the config and runs PreDown/PostDown as root, yet a disconnect was never scanned).
 # It is replaced by its inverse, test_disconnect_review_scans_predown_and_postdown

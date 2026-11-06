@@ -42,7 +42,8 @@ on its own (startup files, the working directory, the environment) is closed off
 by running wg-quick from / with only HOME=/var/root and PATH
 (``vpn_connection.wg_quick_command``); openvpn is started the same way
 (``openvpn_manager.start_command``), so a relative OpenVPN hook program
-resolves from /, not from the app's working directory. A DNS entry with a shell
+would resolve from /, not from the app's working directory; the review refuses
+one (``_openvpn_relative_program``) and warns about relative file names. A DNS entry with a shell
 wildcard is a blocker on Connect: wg-quick expands it, so the DNS that applies
 is unknown.
 """
@@ -87,7 +88,7 @@ _WG_HOOK_KEYS_LOWER = frozenset(k.lower() for k in WG_HOOK_KEYS)
 OPENVPN_HOOK_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                      "client-connect", "client-disconnect", "learn-address",
                      "tls-verify", "auth-user-pass-verify", "plugin",
-                     "script-security")
+                     "script-security", "pkcs11-providers")
 # A hook is shown whole: the model keeps every character. The dialog body
 # shortens each one to HOOK_DISPLAY_LIMIT (the full text goes in the dialog's
 # detail and in sections()); a single line over HOOK_LINE_LIMIT is refused
@@ -101,15 +102,39 @@ CONFIG_READ_LIMIT = 256 * 1024
 # local control socket (`management*`), or make root write or change directory
 # somewhere the review cannot see. Blockers, not warnings.
 OPENVPN_BLOCKER_KEYS = ("config", "log", "log-append", "writepid", "status",
-                        "tmp-dir", "cd", "chroot", "setenv")
+                        "tmp-dir", "cd", "chroot", "setenv", "replay-persist")
+# Directives that load a library into the root process with no hook line to
+# check: `engine x` loads x as a shared library when it is no built-in engine
+# (crypto_openssl.c, the "dynamic" engine's SO_PATH). Blockers.
+OPENVPN_CODE_KEYS = ("engine",)
+# `providers` hands each word to OSSL_PROVIDER_load (crypto_openssl.c), which
+# loads a path, or a name it does not know from OpenSSL's module folder. Only
+# OpenSSL's own providers are accepted, matched exactly as OpenSSL does.
+OPENVPN_PROVIDERS = frozenset(("default", "base", "legacy", "null", "fips"))
 # Directives whose value is a program or plugin that runs as root.
 OPENVPN_EXECUTABLE_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                            "client-connect", "client-disconnect", "learn-address",
                            "tls-verify", "auth-user-pass-verify", "plugin")
+# Directives that name a file OpenVPN reads, and which word it is (the first,
+# or a proxy's auth file after server and port). OpenVPN opens a relative name
+# from its working directory, which is / (openvpn_manager.start_command), not
+# the config's folder, and expands no ~. OpenVPN compares its special words
+# exactly (streq): http-proxy's "auto" and "auto-nct", and "stdin" only where it
+# reads credentials (get_user_pass, misc.c); anywhere else they are files.
+# "[inline]" is not special to OpenVPN 2.6: it only works because a <tag> block
+# of the same directive replaces the name, so it is exempt only beside one.
+OPENVPN_FILE_KEYS = ("ca", "capath", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth",
+                     "tls-crypt", "tls-crypt-v2", "secret", "crl-verify",
+                     "auth-user-pass", "askpass", "http-proxy-user-pass")
+OPENVPN_FILE_WORD = {**{key: 0 for key in OPENVPN_FILE_KEYS},
+                     "http-proxy": 2, "socks-proxy": 2}
+OPENVPN_STDIN_KEYS = ("auth-user-pass", "askpass", "http-proxy-user-pass", "http-proxy",
+                      "socks-proxy")
 # The reviewed client directive list. Anything else is still allowed (a real
 # profile must not break) but is named in one warning.
-OPENVPN_KNOWN_KEYS = frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KEYS) | frozenset((
-    "client", "dev", "dev-type", "dev-node", "proto", "remote", "remote-random",
+OPENVPN_KNOWN_KEYS = (frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KEYS)
+                      | frozenset(OPENVPN_CODE_KEYS)) | frozenset((
+    "client", "capath", "dev", "dev-type", "dev-node", "proto", "remote", "remote-random",
     "remote-random-hostname", "resolv-retry", "nobind", "persist-key", "persist-tun",
     "persist-local-ip", "persist-remote-ip", "ca", "cert", "key", "dh", "tls-client",
     "tls-version-min", "tls-version-max", "tls-cipher", "tls-ciphersuites", "tls-groups",
@@ -126,7 +151,7 @@ OPENVPN_KNOWN_KEYS = frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KE
     "connect-retry-max", "connect-timeout", "server-poll-timeout", "explicit-exit-notify",
     "ns-cert-type", "crl-verify", "extra-certs", "pkcs12", "lport", "rport", "local",
     "bind", "mark", "fast-io", "user", "group", "askpass", "setenv-safe",
-    "ignore-unknown-option", "engine", "inactive", "replay-window", "reneg-bytes",
+    "ignore-unknown-option", "inactive", "replay-window", "reneg-bytes",
     "reneg-pkts", "tcp-queue-limit", "tran-window", "hand-window", "tls-timeout",
     "tls-auth", "tls-crypt", "tls-crypt-v2", "secret", "providers", "show-net",
     "disable-dco", "dns", "register-dns", "windows-driver", "lladdr", "txqueuelen",
@@ -219,10 +244,17 @@ def _scan(text: str, protocol: str):
     whitespace). Problems are things the scanner refuses to guess about: a
     directive name written with quotes or backslashes, an unbalanced quote, or
     an inline block whose end is not exactly ``</tag>`` (OpenVPN may close such a
-    block early, and what follows would then be live directives)."""
+    block early, and what follows would then be live directives).
+
+    A ``<connection>`` block is not data: OpenVPN reads its lines as directives
+    (options.c, ``read_config_string`` with only ``OPT_P_CONNECTION`` allowed, so
+    a hook there is a fatal error), and they can name files (``tls-auth``,
+    ``http-proxy``). Its lines are scanned like the rest, inline blocks in it
+    included."""
     found: list[tuple[str, str, str, list[str]]] = []
     problems: list[str] = []
     block = ""
+    connection = False
     if protocol == "WireGuard":
         # bash's read (wg-quick) drops every NUL byte, so "Post\0Up = x" is a
         # PostUp to it: scan the text it sees. _hook_findings refuses NULs too.
@@ -259,13 +291,26 @@ def _scan(text: str, protocol: str):
             continue
         if not line or line[0] in "#;":
             continue
+        if connection and line.startswith("</"):
+            if line_.rstrip(_WS) != "</connection>":
+                problems.append(f"ambiguous inline block <connection> (line {number}): a line "
+                                "starting with </ is not exactly the closing tag")
+            connection = False
+            continue
         if line.startswith("<") and not line.startswith("</"):
             match = _OVPN_TAG.fullmatch(line)
             if not match:
                 problems.append(f"ambiguous inline block (line {number}): '{line[:40]}' is not a "
                                 "clean <tag> line")
                 continue
-            block = match.group(1).lower()
+            if match.group(1).lower() == "connection":
+                if connection:
+                    # OpenVPN ends the outer block at the first </connection>.
+                    problems.append(f"ambiguous inline block (line {number}): a <connection> "
+                                    "block inside another")
+                connection = True
+            else:
+                block = match.group(1).lower()
             continue
         first = re.split(f"[{re.escape(_WS)}]", line, 1)[0]
         if any(ch in first for ch in "'\"\\"):
@@ -280,8 +325,9 @@ def _scan(text: str, protocol: str):
             continue
         rest = line[len(first):].strip(_WS)
         found.append((first, first.lstrip("-").lower(), rest, tokens[1:]))
-    if block:
-        problems.append(f"ambiguous inline block <{block}>: it is never closed with exactly </{block}>")
+    if block or connection:
+        tag = block or "connection"
+        problems.append(f"ambiguous inline block <{tag}>: it is never closed with exactly </{tag}>")
     return found, problems
 
 
@@ -698,6 +744,21 @@ def _program_findings(raw: str, value: str, words: list[str], protocol: str,
     return unsafe, warnings
 
 
+def _openvpn_relative_program(key: str, words: list[str]) -> str | None:
+    """The program an OpenVPN executable directive names by a relative path, or
+    None. OpenVPN ``execve``s the word as written, with no PATH lookup, from its
+    working directory (/), so the review cannot check what a relative word
+    reaches. A ``plugin`` name without a leading "." is loaded from OpenVPN's
+    plugin folder instead (plugin.c), and is left to the earlier rules."""
+    segment = _segments(words)[0]
+    program = segment[0].strip("'\"") if segment else ""
+    if not program or program.startswith(("/", "~")):
+        return None
+    if key == "plugin" and not program.startswith("."):
+        return None
+    return program
+
+
 def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list[str]]:
     """(blockers, soft blockers, warnings). Soft blockers (a hook program a user
     could replace) are downgraded to risks on a Disconnect, which must never be
@@ -706,7 +767,10 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
     soft: list[str] = []
     warnings: list[str] = []
     unknown: list[str] = []
+    relative_files: list[str] = []
     found, problems = _scan(text, protocol)
+    inline_tags = {match.group(1).lower() for line in text.split("\n")
+                   if (match := _OVPN_TAG.fullmatch(line.strip(_WS)))}
     blockers.extend(f"{protocol} config: {item}." for item in problems)
     if "\x00" in text:
         # Never depend on agreeing with bash or OpenVPN byte for byte.
@@ -729,8 +793,40 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
             if key in OPENVPN_BLOCKER_KEYS or key.startswith("management"):
                 blockers.append(f"The OpenVPN directive '{key}' can hide commands or redirect "
                                 "what administrator rights write; remove it from the profile.")
+            elif key in OPENVPN_CODE_KEYS:
+                blockers.append(f"The OpenVPN directive '{key}' can load a library into "
+                                "OpenVPN as administrator; remove it from the profile.")
             elif key not in OPENVPN_KNOWN_KEYS and key not in unknown:
                 unknown.append(key)
+            other = [word for word in words if word not in OPENVPN_PROVIDERS]
+            if key == "providers" and other:
+                blockers.append(f"The OpenVPN providers line names {other[0]!r}, which is not "
+                                "one of OpenSSL's own providers (" + ", ".join(
+                                    sorted(OPENVPN_PROVIDERS)) + "); OpenSSL would load it "
+                                "as a module into OpenVPN as administrator. Remove it.")
+            if key == "pkcs11-providers" and not overlong:
+                for library in words:
+                    if not _spend(budget):
+                        break
+                    if not library.startswith("/"):
+                        soft.append(f"The {raw} line loads {library}, a relative path, into "
+                                    "OpenVPN as administrator; the system decides where it "
+                                    "is found, so Tunnel cannot check it. Write the full path.")
+                    else:
+                        _path_findings(raw, library, 0, True, protocol, soft, warnings)
+            index = OPENVPN_FILE_WORD.get(key)
+            name = words[index] if index is not None and len(words) > index else ""
+            not_files = ((("[inline]",) if key in inline_tags else ())
+                         + (("stdin",) if key in OPENVPN_STDIN_KEYS else ())
+                         + (("auto", "auto-nct") if key == "http-proxy" else ()))
+            if name and not name.startswith("/") and name not in not_files:
+                relative_files.append(f"{raw} {name}")
+            program = (_openvpn_relative_program(key, words)
+                       if key in OPENVPN_EXECUTABLE_KEYS else None)
+            if program:
+                soft.append(f"The {raw} hook runs {program}, a relative path. OpenVPN runs "
+                            "it from /, not from the config's folder, and Tunnel cannot "
+                            "check it; write the full path.")
         # An overlong hook is already refused; walking its paths could take long
         # enough (a 256 KiB line) to freeze the window before the refusal shows.
         if (key in hook_keys and not overlong and not budget["over"]
@@ -742,6 +838,12 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
         blockers.append(f"The {protocol} config's hooks name more than {HOOK_CHECK_LIMIT} "
                         "commands and paths; Tunnel will not run more than a person can "
                         "review.")
+    if relative_files:
+        warnings.append("OpenVPN looks for these files in / (it runs from there, not from "
+                        "the config's folder, and does not expand ~), so it will probably "
+                        "not find them: " + ", ".join(relative_files[:6])
+                        + (" …" if len(relative_files) > 6 else "")
+                        + ". Write full paths or put them inline (<ca>…</ca>).")
     if unknown:
         warnings.append("OpenVPN directives not on the reviewed list (allowed, but Tunnel "
                         "has not checked what they do): " + ", ".join(unknown[:12])

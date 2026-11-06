@@ -68,6 +68,21 @@ and the git log, and is not back-filled here.
   ran a `./up.sh` from there. A relative file name in an `.ovpn` (`ca ca.crt`)
   now means a file in `/`: use full paths or inline blocks. The review shows the
   exact command instead of an abbreviated one.
+- **An OpenVPN hook must name its program by full path.** `up up.sh`,
+  `down ./down.sh` or `plugin ./p.so` passed the review with no finding, and
+  OpenVPN runs such a word as written, from its working directory. They now
+  stop a Connect. Files named by a relative path (`ca ca.crt`,
+  `key ~/client.key`, a proxy's credentials file) draw a warning: OpenVPN
+  looks for them in `/`. The review now reads the directives inside a
+  `<connection>` block too, and accepts an inline key block nested in one,
+  which it used to refuse as ambiguous.
+- **OpenVPN directives that load code as administrator stop a Connect.**
+  `engine` (OpenSSL loads an unknown name as a library), `replay-persist`
+  (OpenVPN writes that file as administrator) and a `providers` line naming
+  anything but OpenSSL's own providers (`default`, `base`, `legacy`, `null`,
+  `fips`) are refused; `providers legacy default` still works. The libraries a
+  `pkcs11-providers` line names are listed with the hooks and checked like a
+  hook program: full path, owned by root all the way up.
 - **A wildcard in DNS stops a Connect.** wg-quick expands `DNS = 10.64.0.*`, so
   which DNS server applies could not be known; the review said "system DNS
   stays in use". Search domains without a server are marked as not applied,
