@@ -33,10 +33,15 @@ variable assignments, shell keywords and builtins (``.``, ``source``, ``eval``,
 ``exec``, ``if``...) and any other bare command make the hook a blocker on
 Connect and a risk on Disconnect. Only the allowlisted network programs (route,
 ifconfig, networksetup, pfctl, scutil, killall, dscacheutil, wg, sysctl,
-ipconfig, logger) may be given plain words; any other command gets only
-options, numbers, full paths (checked as code) and %i / %I. What a program does
-with its options is not interpreted: an option that takes a program name
-(``dtrace -c -x``) still names one found on wg-quick's PATH.
+ipconfig, logger; the macOS tools at their own paths, and wg wherever root
+installed it) may be given plain words; any other command gets only options and
+full paths (checked as code), not numbers or %i / %I. What a program does with
+its options is not interpreted: an option that takes a program name
+(``dtrace -c -x``) still names one found on wg-quick's PATH. What a program reads
+on its own (startup files, the working directory, the environment) is closed off
+by running wg-quick from / with only HOME=/var/root and PATH
+(``vpn_connection.wg_quick_command``). A DNS entry with a shell wildcard is a
+blocker on Connect: wg-quick expands it, so the DNS that applies is unknown.
 """
 
 from __future__ import annotations
@@ -330,6 +335,7 @@ def _read_config(path: Path) -> tuple[str | None, str, list[str], list[str]]:
 
 _stat = os.stat      # indirection so tests can describe a root-owned filesystem
 _lstat = os.lstat    # the link walk's view of a path; tests inject errors through it
+_realpath = os.path.realpath    # where the allowlist looks a tool up; tests pin a Mac's layout
 
 # A stat that fails with one of these (ENOENT, ENOTDIR) means the path is not
 # there (yet), which is judged by the folders that do exist. Any other failure
@@ -376,24 +382,24 @@ _PLAIN_NAME = re.compile(r"[A-Za-z0-9_.+-]+")
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 # Owner's allowlist (2026-11-06): network programs whose arguments are data.
 # They may be given any plain arguments. Any other command may be given only
-# option letters, long options, numbers, full paths (each checked as code, like
-# the command) and %i / %I. Many programs run a program named in their
-# arguments (xcrun, taskpolicy, dtrace -c, ssh -o ProxyCommand=, rsync -e...)
-# and no list of them is complete, so a bare word is refused for all of them.
-# Matched on the lowercased name (APFS is case-insensitive), both as written
-# and where a link leads.
-_DATA_ONLY_PROGRAMS = frozenset((
-    "route", "ifconfig", "networksetup", "pfctl", "scutil", "killall", "dscacheutil",
-    "wg", "sysctl", "ipconfig", "logger",
-))
-_PLAIN_ARGUMENT = re.compile(r"-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*|-?[0-9]+")
-# %i / %I become the tunnel device and the config's name. A program in a system
-# folder may be one that runs a program it is given by name (dtrace -c %I), and
-# that name would be looked up on wg-quick's PATH, whose last folder a user can
-# write; so outside the allowlist they may only be handed to a program that
-# lives elsewhere (a root-owned script such as /etc/wireguard/up.sh).
-_SYSTEM_FOLDERS = ("/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/libexec/",
-                   "/System/", "/Library/Apple/")
+# option letters, long options and full paths (each checked as code, like the
+# command). Many programs run a program or file named in their arguments
+# (xcrun, taskpolicy, dtrace -c, ssh -o ProxyCommand=, rsync -e, sh 1...) and no
+# list of them is complete, so every other word is refused for all of them:
+# numbers and %i / %I too (`/bin/sh 1` runs ./1, `dtrace -c %I` runs a program
+# named after the config; both found where a user may write).
+# Each listed tool is the macOS one at its own path, compared as written and
+# where a link leads, ignoring case (APFS is case-insensitive); a root-owned
+# program elsewhere that merely shares the name is not trusted. wg is not part
+# of macOS, so it is accepted by name wherever root installed it.
+_DATA_ONLY_PROGRAMS = {
+    "route": "/sbin/route", "ifconfig": "/sbin/ifconfig", "pfctl": "/sbin/pfctl",
+    "networksetup": "/usr/sbin/networksetup", "scutil": "/usr/sbin/scutil",
+    "sysctl": "/usr/sbin/sysctl", "ipconfig": "/usr/sbin/ipconfig",
+    "killall": "/usr/bin/killall", "dscacheutil": "/usr/bin/dscacheutil",
+    "logger": "/usr/bin/logger", "wg": None,
+}
+_PLAIN_ARGUMENT = re.compile(r"-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*")
 # Words bash runs itself instead of looking them up on PATH: its keywords and
 # builtins (bash 3.2 to 5.2) and the functions wg-quick (darwin.bash and
 # linux.bash) defines before it runs a hook. Each can run, source or redefine
@@ -581,18 +587,18 @@ def _path_findings(raw: str, path: str, position: int, runs_code: bool, protocol
         warnings.append(f"The {raw} hook hands {path} to a program; {reason}.")
 
 
-def _in_system_folder(path: str) -> bool:
-    """Whether a program is in a macOS system folder, as written or where it leads."""
-    return any(candidate.startswith(_SYSTEM_FOLDERS)
-               for candidate in (path, os.path.realpath(path)))
-
-
 def _data_only(program: str) -> bool:
-    """Whether a program is on the allowlist, by its name as written and by the
-    name of the file a link leads to."""
-    names = {program.rsplit("/", 1)[-1].lower(),
-             os.path.realpath(program).rsplit("/", 1)[-1].lower()}
-    return names <= _DATA_ONLY_PROGRAMS
+    """Whether a program is one of the allowlisted network tools: its name as
+    written and the file a link leads to are the same listed tool, at that
+    tool's own path (any case), or wg anywhere."""
+    for candidate in (program, _realpath(program)):
+        name = candidate.rsplit("/", 1)[-1].lower()
+        if name not in _DATA_ONLY_PROGRAMS:
+            return False
+        where = _DATA_ONLY_PROGRAMS[name]
+        if where is not None and candidate.lower() != where:
+            return False
+    return True
 
 
 def _wg_hook_findings(raw: str, value: str,
@@ -647,20 +653,11 @@ def _wg_hook_findings(raw: str, value: str,
             program = resolved
         data_only = _data_only(program)
         for position, word in enumerate(words):
-            if position and not data_only:
-                if word.startswith("/"):
-                    program = word              # the program or script it is handed
-                elif word in ("%i", "%I"):
-                    if _in_system_folder(program):
-                        return refuse(f"hands {word} to {program}, which could run a "
-                                      "program of that name")
-                    continue
-                elif _PLAIN_ARGUMENT.fullmatch(word):
-                    continue
-                else:
-                    return refuse(f"hands '{word}' to {words[0]}, which is not on the "
-                                  "list of network programs that may take plain words "
-                                  "(" + ", ".join(sorted(_DATA_ONLY_PROGRAMS)) + ")")
+            if (position and not data_only and not word.startswith("/")
+                    and not _PLAIN_ARGUMENT.fullmatch(word)):
+                return refuse(f"hands '{word}' to {words[0]}, which is not one of the "
+                              "network programs that may take plain words ("
+                              + ", ".join(sorted(_DATA_ONLY_PROGRAMS)) + ")")
             path = command if position == 0 else _path_word(word)
             if path is None or not path.startswith("/"):
                 continue                        # a bare command (judged above) or data
@@ -1028,12 +1025,24 @@ def review_execution(action: str, profile: dict | None, *,
                     config_lines = [
                         f"Routing: {summary.route_mode}",
                         "Endpoints: " + (", ".join(summary.endpoints) or "Not specified"),
-                        "DNS: " + (", ".join(summary.dns_servers) or "Not specified — system DNS stays in use"),
-                        *(["DNS search domains: " + ", ".join(summary.dns_search)]
+                        "DNS: " + (", ".join(summary.dns_servers)
+                                   or ("Unknown — an entry has a wildcard" if summary.dns_wildcards
+                                       else "Not specified — system DNS stays in use")),
+                        *(["DNS search domains: " + ", ".join(summary.dns_search)
+                           + ("" if summary.dns_servers else
+                              " (not applied: wg-quick sets them only with a DNS server)")]
                           if summary.dns_search else []),
                         f"Peers: {summary.peer_count}",
                     ]
                     warnings.extend(summary.warnings)
+                    if summary.dns_wildcards:
+                        # wg-quick expands DNS unquoted: what a wildcard becomes, and so
+                        # which DNS server applies, cannot be known before it runs.
+                        blockers.append("The DNS line has an entry with a wildcard ("
+                                        + ", ".join(summary.dns_wildcards[:5])
+                                        + "); wg-quick's shell may expand it to other "
+                                        "entries, so the DNS this tunnel uses cannot be "
+                                        "checked. Write each DNS server out in full.")
                     if summary.peer_count == 0 or not summary.endpoints:
                         blockers.append("The config has no peer endpoint to connect to.")
                     if route_mode == "Split tunnel":

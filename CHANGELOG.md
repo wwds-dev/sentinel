@@ -48,17 +48,30 @@ and the git log, and is not back-filled here.
   separated by `;`, `&&`, `||` or `&` are still allowed, and each one is checked.
   Only the network programs `route`, `ifconfig`, `networksetup`, `pfctl`,
   `scutil`, `killall`, `dscacheutil`, `wg`, `sysctl`, `ipconfig` and `logger` may
-  be given ordinary words as arguments. Any other program (a shell, `xcrun`,
-  `dtrace`, your own script…) may only be given options, numbers, full paths
-  (checked like the program itself) and `%i`/`%I`, so `sh -c id`,
-  `xcrun tool` or `SH -c tool` is refused. Program names are matched in any
+  be given ordinary words, numbers or `%i`/`%I` as arguments (the macOS tools
+  only at their own system paths). Any other program (a shell, `xcrun`,
+  `dtrace`, your own script…) may only be given options and full paths
+  (checked like the program itself), so `sh -c id`, `sh 1`, `xcrun tool`,
+  `dtrace -c %I` or `SH -c tool` is refused. Program names are matched in any
   case, since macOS treats `/bin/SH` as `/bin/sh`.
+- **wg-quick runs with nothing of yours around it.** Tunnel now starts
+  wg-quick from `/` with an empty environment apart from `HOME=/var/root` and
+  `PATH`. A hook such as `/bin/zsh /etc/wireguard/up.sh`, `/bin/bash -l`,
+  `/usr/bin/python3` or `/usr/bin/make` passed the review but, as
+  administrator, read your shell startup files, Python `.pth` files or a
+  `Makefile` in Sentinel's folder.
+- **A wildcard in DNS stops a Connect.** wg-quick expands `DNS = 10.64.0.*`, so
+  which DNS server applies could not be known; the review said "system DNS
+  stays in use". Search domains without a server are marked as not applied,
+  and keys wg-quick ignores (`DNS_`, `D-NS`) no longer count as DNS.
 - **The review's DNS line now matches what wg-quick sets.** `DNS # = 10.64.0.1`
   sets no DNS server (wg-quick cuts the line at `#` before it reads the key), but
   the review showed "DNS: 10.64.0.1". It now says system DNS stays in use and
   warns about the line; a comment after a value is no longer read as part of it.
   A name such as `DNS = corp.example` is a search domain to wg-quick, not a
-  server, and is now shown as one; entries separated by spaces are split.
+  server, and is now shown as one; entries separated by spaces are split. An
+  entry with a wildcard is listed as neither, with a warning, and a config full
+  of bad entries gives a short list of warnings instead of thousands.
 - **The hook review can no longer pause the window or skip a folder it cannot
   read.** A config packed with hook commands took about four seconds to review;
   more than 200 commands and paths in a config's hooks is now refused at once,

@@ -104,18 +104,23 @@ caught yet (audit step S7).
 hook to the shell, so Tunnel only accepts commands that start with a full path
 (`/sbin/route …`) or with the plain name of a program in `/usr/bin`, `/bin`,
 `/usr/sbin` or `/sbin`, separated by `;`, `&&`, `||` or `&` if there is more
-than one. Only the network programs `route`, `ifconfig`, `networksetup`,
-`pfctl`, `scutil`, `killall`, `dscacheutil`, `wg`, `sysctl`, `ipconfig` and
-`logger` may be given ordinary words as arguments; any other program, your own
-scripts included, may only be given options, numbers, full paths and `%i`/`%I`.
+than one. Only the macOS network programs `route`, `ifconfig`, `networksetup`,
+`pfctl`, `scutil`, `killall`, `dscacheutil`, `sysctl`, `ipconfig` and `logger`
+(at their own system paths) and `wg` may be given ordinary words, numbers or
+`%i`/`%I` as arguments; any other program, your own scripts included, may only
+be given options (`-v`, `--up`) and full paths.
 A hook with `$`, quotes, a backslash, `* ? [ ] { } < > ( ) ! ~` or a pipe, a
 `NAME=value` in front of a command, a shell word such as `.`, `source`, `eval`,
 `exec`, `if` or `echo`, a relative path, or a program name found anywhere else
 stops a Connect with "Tunnel cannot check what this hook runs; write plain
 commands with full paths." (Disconnect shows it as a risk). Write `/bin/echo`
 instead of `echo`, and put anything more complicated in a script owned by root,
-called by its full path. The DNS line shows only the entries wg-quick uses as
-servers; a name such as `corp.example` is listed as a search domain.
+called by its full path. Tunnel runs wg-quick from `/` with an empty
+environment, so a hook cannot pick up your shell startup files or a file in the
+folder Sentinel runs from. The DNS line shows only the entries wg-quick uses as
+servers; a name such as `corp.example` is listed as a search domain (and marked
+as not applied when there is no server), and a DNS entry with a wildcard such
+as `10.64.0.*` stops a Connect.
 
 ### Reading the result
 

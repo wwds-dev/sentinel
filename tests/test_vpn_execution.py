@@ -190,16 +190,44 @@ def test_wg_quick_command_uses_an_absolute_path_and_its_directory(monkeypatch):
     monkeypatch.setattr(vpn_connection.shutil, "which",
                         lambda name, *a, **k: "/opt/homebrew/bin/wg-quick")
     assert vpn_connection.wg_quick_command("up", "/Users/me/wg nl.conf") == (
-        "PATH='/opt/homebrew/bin':\"$PATH\" '/opt/homebrew/bin/wg-quick' "
+        "cd / && /usr/bin/env -i HOME=/var/root "
+        "PATH='/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin' '/opt/homebrew/bin/wg-quick' "
         "up '/Users/me/wg nl.conf'")
 
+
+def test_wg_quick_runs_from_root_with_nothing_of_the_users_environment(monkeypatch, tmp_path):
+    """PR #34 review P1-2: hooks read ~/.zshenv, Python .pth files, ./Makefile and
+    relative pfctl files; root must start in / with only HOME=/var/root and PATH."""
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    command = vpn_connection.wg_quick_command("up", "sub/wg0.conf")
+    assert command.startswith("cd / && /usr/bin/env -i HOME=/var/root PATH=")
+    assert f"'{tmp_path}/sub/wg0.conf'" in command or f"'{os.path.realpath(tmp_path)}/sub/wg0.conf'" in command
+    assert str(tmp_path) not in command.split(" up ")[0]
+    assert vpn_connection.wg_quick_command("up", "wg0").endswith(" up 'wg0'")   # a name stays a name
+
+
+@pytest.mark.allow_process
+def test_the_scrubbed_command_really_drops_the_environment_and_directory(tmp_path, monkeypatch):
+    """Run the command's own prefix unprivileged, with a shell in wg-quick's
+    place: it must start in / and see only HOME, PATH and what sh adds itself."""
+    import subprocess
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: None)
+    prefix = vpn_connection.wg_quick_command("up", "wg0").split(" 'wg-quick' ")[0]
+    out = subprocess.run(["/bin/sh", "-c", prefix + " /bin/sh -c 'pwd; /usr/bin/env'"],
+                         cwd=tmp_path, env={"SECRET": "x", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+                         capture_output=True, text=True, timeout=10).stdout.splitlines()
+    assert out[0] == "/"
+    assert "HOME=/var/root" in out and "PATH=/usr/bin:/bin:/usr/sbin:/sbin" in out
+    assert {line.split("=", 1)[0] for line in out[1:]} <= {"HOME", "PATH", "PWD", "OLDPWD", "SHLVL", "_"}
 
 def test_rollback_is_a_command_a_person_can_type(tmp_path, monkeypatch):
     monkeypatch.setattr(vpn_connection.shutil, "which",
                         lambda name, *a, **k: "/opt/homebrew/bin/wg-quick")
     path = write_conf(tmp_path)
     r = review("connect", profile_for(path))
-    assert r.command.startswith("PATH=")
+    assert r.command.startswith("cd / && /usr/bin/env -i ")
     assert r.rollback[0].endswith(f"sudo wg-quick down '{path}'")
 
 
@@ -229,7 +257,7 @@ def test_verified_full_tunnel_connect(tmp_path):
 
     outcome = execute("connect", profile_for(path), run_as_root=runner,
                                     probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
-    assert run.scripts == [f"wg-quick up '{path}'"]
+    assert run.scripts == [vpn_connection.wg_quick_command("up", str(path))]
     assert outcome.success and outcome.verified is True
     assert "utun7" in outcome.verification
     assert "not verified" in outcome.verification  # handshake/DNS honesty
@@ -367,16 +395,16 @@ def test_review_surfaces_hooks_in_sections_confirmation_and_warnings(tmp_path, m
     path.write_text(
         "[Interface]\n"
         f"PrivateKey = {PRIVATE_KEY}\nAddress = 10.8.0.2/32\n"
-        "PostUp = /opt/hook.sh %i\n"
+        "PostUp = /opt/hook.sh -v\n"
         "[Peer]\nPublicKey = c2VydmVyLXB1YmxpYy1rZXk=\n"
         "Endpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
     r = review("connect", profile_for(path))
-    assert r.root_hooks == ("PostUp: /opt/hook.sh %i",)
+    assert r.root_hooks == ("PostUp: /opt/hook.sh -v",)
     assert r.allowed                                        # a warning, not a blocker
     titles = [title for title, _, _ in r.sections()]
     assert "Runs commands as administrator" in titles
     assert "RUNS COMMANDS AS ADMINISTRATOR" in r.confirmation_text()
-    assert "/opt/hook.sh %i" in r.confirmation_text()
+    assert "/opt/hook.sh -v" in r.confirmation_text()
     assert any("as administrator" in w for w in r.warnings)
 
 

@@ -129,6 +129,22 @@ ForbiddenInTests = _isolation.ForbiddenInTests     # tests import it from here
 
 
 @pytest.fixture(autouse=True)
+def _macos_tool_layout(monkeypatch):
+    """The WireGuard hook allowlist trusts macOS tools only at their own paths
+    (/sbin/route, /usr/bin/killall...), judged also by where a link leads. On a
+    merged-/usr Linux runner /sbin is a link to /usr/sbin, which would move them;
+    the tests describe a Mac, so there the pinned paths resolve to themselves."""
+    import os
+    from services import vpn_execution
+    pinned = {path for path in vpn_execution._DATA_ONLY_PROGRAMS.values() if path}
+    real = vpn_execution._realpath
+    if all(real(path).lower() == path for path in pinned):
+        return                                   # a Mac: nothing to pin
+    monkeypatch.setattr(vpn_execution, "_realpath",
+                        lambda path: path if os.fspath(path).lower() in pinned else real(path))
+
+
+@pytest.fixture(autouse=True)
 def _deny_network_and_processes(request, monkeypatch):
     """Deny by default: a normal test may not leave this machine or run a program.
 
