@@ -110,13 +110,16 @@ OPENVPN_EXECUTABLE_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange
 # Directives that name a file OpenVPN reads, and which word it is (the first,
 # or a proxy's auth file after server and port). OpenVPN opens a relative name
 # from its working directory, which is / (openvpn_manager.start_command), not
-# the config's folder, and expands no ~. "[inline]" and "stdin" are not files,
-# nor are http-proxy's "auto" and "auto-nct".
+# the config's folder, and expands no ~. "[inline]" is not a file, nor are
+# http-proxy's "auto" and "auto-nct"; "stdin" is not one only where OpenVPN
+# reads credentials (get_user_pass, misc.c): anywhere else it opens /stdin.
 OPENVPN_FILE_KEYS = ("ca", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth",
                      "tls-crypt", "tls-crypt-v2", "secret", "crl-verify",
                      "auth-user-pass", "askpass", "http-proxy-user-pass")
 OPENVPN_FILE_WORD = {**{key: 0 for key in OPENVPN_FILE_KEYS},
                      "http-proxy": 2, "socks-proxy": 2}
+OPENVPN_STDIN_KEYS = ("auth-user-pass", "askpass", "http-proxy-user-pass", "http-proxy",
+                      "socks-proxy")
 # The reviewed client directive list. Anything else is still allowed (a real
 # profile must not break) but is named in one warning.
 OPENVPN_KNOWN_KEYS = frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KEYS) | frozenset((
@@ -781,8 +784,8 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
                 unknown.append(key)
             index = OPENVPN_FILE_WORD.get(key)
             name = words[index] if index is not None and len(words) > index else ""
-            not_files = ("[inline]", "stdin") + (("auto", "auto-nct") if key == "http-proxy"
-                                                  else ())
+            not_files = (("[inline]",) + (("stdin",) if key in OPENVPN_STDIN_KEYS else ())
+                         + (("auto", "auto-nct") if key == "http-proxy" else ()))
             if name and not name.startswith("/") and name.lower() not in not_files:
                 relative_files.append(f"{raw} {name}")
             program = (_openvpn_relative_program(key, words)

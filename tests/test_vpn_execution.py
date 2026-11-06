@@ -590,6 +590,14 @@ def test_relative_openvpn_files_draw_one_warning():
     ("http-proxy proxy.example 8080", None),
     ("socks-proxy socks.example 1080", None),
     ("ca auto", "ca auto."),                            # "auto" is http-proxy's word only
+    ("socks-proxy socks.example 1080 stdin", None),
+    # PR #37 review (Codex P2): "stdin" is special only where OpenVPN reads
+    # credentials (get_user_pass); tls-auth stdin opens /stdin.
+    ("tls-auth stdin 1", "tls-auth stdin."),
+    ("ca STDIN", "ca STDIN."),
+    ("auth-user-pass STDIN", None),
+    ("askpass stdin", None),
+    ("http-proxy-user-pass stdin", None),
 ])
 def test_proxy_auth_files_are_warned_from_their_own_position(line, listed):
     warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[2]
