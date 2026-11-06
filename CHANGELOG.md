@@ -72,7 +72,10 @@ and the git log, and is not back-filled here.
   `down ./down.sh` or `plugin ./p.so` passed the review with no finding, and
   OpenVPN runs such a word as written, from its working directory. They now
   stop a Connect. Files named by a relative path (`ca ca.crt`,
-  `key ~/client.key`) draw a warning: OpenVPN looks for them in `/`.
+  `key ~/client.key`, a proxy's credentials file) draw a warning: OpenVPN
+  looks for them in `/`. The review now reads the directives inside a
+  `<connection>` block too, and accepts an inline key block nested in one,
+  which it used to refuse as ambiguous.
 - **A wildcard in DNS stops a Connect.** wg-quick expands `DNS = 10.64.0.*`, so
   which DNS server applies could not be known; the review said "system DNS
   stays in use". Search domains without a server are marked as not applied,

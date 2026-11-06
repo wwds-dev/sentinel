@@ -603,6 +603,40 @@ def test_proxy_auth_files_are_warned_from_their_own_position(line, listed):
     assert "c5.crt …" in listed and "c6.crt" not in listed
 
 
+CONNECTIONS = ("client\n<connection>\nremote a.example 1194\ntls-auth ta.key 1\n"
+               "http-proxy proxy.example 8080 creds.txt\n<tls-crypt>\nMIIBogus\n</tls-crypt>\n"
+               "</connection>\n<connection>\nremote b.example 443 tcp\n</connection>\n")
+
+
+def test_connection_blocks_are_read_as_directives():
+    """PR #37 review (Codex P2): OpenVPN reads a <connection> block's lines as
+    directives, which can name files; the review skipped them as inline data."""
+    found, problems = vpn_execution._scan(CONNECTIONS, "OpenVPN")
+    assert problems == []                    # a nested inline block is fine
+    assert [f[1] for f in found] == ["client", "remote", "tls-auth", "http-proxy", "remote"]
+    warnings = vpn_execution._hook_findings(CONNECTIONS, "OpenVPN")[2]
+    assert any("tls-auth ta.key, http-proxy creds.txt." in w for w in warnings)
+
+
+def test_a_hook_in_a_connection_block_is_still_reviewed():
+    # OpenVPN refuses it there (OPT_P_CONNECTION only), but nothing hides from the review.
+    text = "client\n<connection>\nremote a.example 1194\nup up.sh\n</connection>\n"
+    assert vpn_execution.hooks_from_text(text, "OpenVPN") == ["up: up.sh"]
+    assert any("runs up.sh" in item for item in vpn_execution._hook_findings(text, "OpenVPN")[1])
+
+
+@pytest.mark.parametrize("text", [
+    "client\n<connection>\nremote a.example 1194\n",                     # never closed
+    "client\n<connection>\nremote a.example 1194\n </connection>\n",     # not exactly the tag
+    "client\n<connection>\nremote a.example 1194\n</connectionx>\n",
+    "client\n<connection>\nremote a\n<tls-auth>\nA\n</connection>\n",   # closes a nested block
+    "client\n<connection>\nremote a\n</tls-auth>\n</connection>\n",      # a stray closing tag
+    "client\n<connection>\nremote a\n<connection>\nremote b\n</connection>\n</connection>\n",
+])
+def test_an_ambiguous_connection_block_blocks(text):
+    assert vpn_execution._hook_findings(text, "OpenVPN")[0]
+
+
 # test_disconnect_review_does_not_rescan_hooks pinned a gap (wg-quick down re-reads
 # the config and runs PreDown/PostDown as root, yet a disconnect was never scanned).
 # It is replaced by its inverse, test_disconnect_review_scans_predown_and_postdown

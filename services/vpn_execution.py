@@ -230,10 +230,17 @@ def _scan(text: str, protocol: str):
     whitespace). Problems are things the scanner refuses to guess about: a
     directive name written with quotes or backslashes, an unbalanced quote, or
     an inline block whose end is not exactly ``</tag>`` (OpenVPN may close such a
-    block early, and what follows would then be live directives)."""
+    block early, and what follows would then be live directives).
+
+    A ``<connection>`` block is not data: OpenVPN reads its lines as directives
+    (options.c, ``read_config_string`` with only ``OPT_P_CONNECTION`` allowed, so
+    a hook there is a fatal error), and they can name files (``tls-auth``,
+    ``http-proxy``). Its lines are scanned like the rest, inline blocks in it
+    included."""
     found: list[tuple[str, str, str, list[str]]] = []
     problems: list[str] = []
     block = ""
+    connection = False
     if protocol == "WireGuard":
         # bash's read (wg-quick) drops every NUL byte, so "Post\0Up = x" is a
         # PostUp to it: scan the text it sees. _hook_findings refuses NULs too.
@@ -270,13 +277,26 @@ def _scan(text: str, protocol: str):
             continue
         if not line or line[0] in "#;":
             continue
+        if connection and line.startswith("</"):
+            if line_.rstrip(_WS) != "</connection>":
+                problems.append(f"ambiguous inline block <connection> (line {number}): a line "
+                                "starting with </ is not exactly the closing tag")
+            connection = False
+            continue
         if line.startswith("<") and not line.startswith("</"):
             match = _OVPN_TAG.fullmatch(line)
             if not match:
                 problems.append(f"ambiguous inline block (line {number}): '{line[:40]}' is not a "
                                 "clean <tag> line")
                 continue
-            block = match.group(1).lower()
+            if match.group(1).lower() == "connection":
+                if connection:
+                    # OpenVPN ends the outer block at the first </connection>.
+                    problems.append(f"ambiguous inline block (line {number}): a <connection> "
+                                    "block inside another")
+                connection = True
+            else:
+                block = match.group(1).lower()
             continue
         first = re.split(f"[{re.escape(_WS)}]", line, 1)[0]
         if any(ch in first for ch in "'\"\\"):
@@ -291,8 +311,9 @@ def _scan(text: str, protocol: str):
             continue
         rest = line[len(first):].strip(_WS)
         found.append((first, first.lstrip("-").lower(), rest, tokens[1:]))
-    if block:
-        problems.append(f"ambiguous inline block <{block}>: it is never closed with exactly </{block}>")
+    if block or connection:
+        tag = block or "connection"
+        problems.append(f"ambiguous inline block <{tag}>: it is never closed with exactly </{tag}>")
     return found, problems
 
 
