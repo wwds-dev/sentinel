@@ -3547,7 +3547,7 @@ class TestTunnelPanel:
 
     def test_a_long_hook_is_shown_whole_in_the_dialog_detail(self, tunnel, monkeypatch, tmp_path):
         from PySide6.QtWidgets import QMessageBox
-        command = "/usr/bin/curl -s http://203.0.113.9/" + "a" * 500
+        command = "/usr/bin/logger -t wireguard " + "a" * 500
         conf = tmp_path / "wgh.conf"
         conf.write_text(
             "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
@@ -3710,7 +3710,7 @@ class TestTunnelPanel:
         conf = tmp_path / "wgh.conf"
         conf.write_text(
             "[Interface]\nPrivateKey = x\nAddress = 10.8.0.2/32\n"
-            "PostUp = /usr/bin/curl -s http://203.0.113.9/x\n"
+            "PostUp = /sbin/route -n add -net 10.9.0.0/16 -interface %i\n"
             "[Peer]\nPublicKey = y\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
         prompts = []
         monkeypatch.setattr(QMessageBox, "question",

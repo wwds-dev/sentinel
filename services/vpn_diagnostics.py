@@ -182,6 +182,8 @@ class VpnConfigInspection:
             f"DNS: {', '.join(summary.dns_servers) or 'Not specified'}",
             f"Peers: {summary.peer_count}",
         ]
+        if summary.dns_search:
+            overview.insert(-1, f"DNS search domains: {', '.join(summary.dns_search)}")
         if summary.mtu:
             overview.append(f"MTU: {summary.mtu}")
         routing = [

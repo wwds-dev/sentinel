@@ -256,9 +256,9 @@ def test_a_root_owned_hook_script_is_allowed(monkeypatch, tmp_path):
         "/usr/local/sbin/hook.sh": (0, ROOT_FILE),
         "/usr/local/sbin": (0, ROOT_DIR), "/usr/local": (0, ROOT_DIR),
         "/usr": (0, ROOT_DIR), "/": (0, ROOT_DIR)}))
-    path = wg_conf(tmp_path, interface_extra="PostUp = /usr/local/sbin/hook.sh up\n")
+    path = wg_conf(tmp_path, interface_extra="PostUp = /usr/local/sbin/hook.sh %i -v 2\n")
     r = review("connect", profile_for(path))
-    assert r.allowed and r.root_hooks == ("PostUp: /usr/local/sbin/hook.sh up",)
+    assert r.allowed and r.root_hooks == ("PostUp: /usr/local/sbin/hook.sh %i -v 2",)
 
 
 def test_a_bare_hook_command_outside_the_system_folders_is_refused(tmp_path, monkeypatch):
@@ -448,10 +448,11 @@ def test_a_user_writable_data_argument_of_a_root_program_is_only_a_warning(monke
     data = tmp_path / "list.txt"
     data.write_text("x")
     monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
-        "/usr/bin/true": (0, ROOT_FILE), "/usr/bin": (0, ROOT_DIR), "/usr": (0, ROOT_DIR),
+        "/sbin/pfctl": (0, ROOT_FILE), "/sbin": (0, ROOT_DIR),
         "/": (0, ROOT_DIR), str(data): (501, stat.S_IFREG | 0o644),
         str(tmp_path): (501, stat.S_IFDIR | 0o755)}))
-    path = wg_conf(tmp_path, interface_extra=f"PostUp = /usr/bin/true {data}\n")
+    # pfctl is on the allowlist of network programs, so its arguments are data.
+    path = wg_conf(tmp_path, interface_extra=f"PostUp = /sbin/pfctl -f {data}\n")
     r = review("connect", profile_for(path))
     assert r.allowed and any(str(data) in w for w in r.warnings)
 
@@ -1033,7 +1034,7 @@ def test_a_script_given_to_a_shell_may_take_plain_arguments(tmp_path, monkeypatc
         "/etc": (0, ROOT_DIR), "/bin/sh": (0, ROOT_FILE), "/bin": (0, ROOT_DIR),
         "/": (0, ROOT_DIR)}))
     monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))   # no links anywhere
-    hook = "/bin/sh -e /etc/wireguard/up.sh %i up 2"
+    hook = "/bin/sh -e /etc/wireguard/up.sh %i 2"
     r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
     assert r.allowed, r.blockers
 
@@ -1086,14 +1087,26 @@ def test_the_review_does_not_look_up_wg_quick_per_command(tmp_path, monkeypatch)
 # ── P3-2: the hook check has a ceiling, and stays fast up to it ─────────────
 
 def test_a_config_full_of_tiny_commands_is_refused_quickly(tmp_path):
-    line = "PostUp = " + "a;" * 1990 + "\n"
+    line = "PostUp = " + "id;" * 1300 + "\n"
     path = wg_conf(tmp_path, interface_extra=line * 65)
     assert path.stat().st_size <= vpn_execution.CONFIG_READ_LIMIT
     start = time.monotonic()
     r = review("connect", profile_for(path))
     assert time.monotonic() - start < 1.0
     assert _blocked(r, f"more than {vpn_execution.HOOK_CHECK_LIMIT} commands and paths")
-    assert len(r.blockers) <= vpn_execution.HOOK_CHECK_LIMIT + 5
+
+
+def test_a_hook_of_thousands_of_bad_commands_is_one_finding(tmp_path):
+    """Second review, P3-3: 1990 refusals in one hook made a ~94,000-character dialog."""
+    line = "PostUp = " + "a;" * 1990 + "\n"
+    start = time.monotonic()
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=line * 65)))
+    assert time.monotonic() - start < 1.0
+    assert len([b for b in r.blockers if "The PostUp hook" in b]) == 65
+    script = _user_script(tmp_path)
+    r = review("connect", profile_for(wg_conf(
+        tmp_path, "wg2", interface_extra=f"PostUp = {script}; {script}; {script}\n")))
+    assert len([b for b in r.blockers if str(script) in b]) == 1
 
 
 def test_a_config_full_of_paths_is_refused_quickly(tmp_path):
@@ -1186,3 +1199,148 @@ def test_a_section_header_with_a_comment_still_counts_its_peer():
 def test_the_review_says_system_dns_stays_when_dns_is_cut_off(tmp_path):
     r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="DNS # = 10.64.0.1\n")))
     assert "DNS: Not specified — system DNS stays in use" in r.config_lines
+
+
+# ── independent review of #33: the allowlist (owner, 2026-11-06) ────────────
+
+@pytest.mark.parametrize("hook", [
+    # P0-1: interpreters named in another case or with a version (APFS ignores case)
+    "SH -c evilprog", "/bin/SH -c evilprog", "/usr/bin/ENV evilprog",
+    "/usr/bin/perl5.34 -eexec+evilprog", "/bin/Bash -c evilprog", "/usr/bin/tclsh8.5 x",
+    # P1-1: root-owned programs that run a program named in their arguments
+    "/usr/sbin/taskpolicy -b evilprog", "/usr/bin/xcrun evilprog",
+    "/usr/bin/ssh -oProxyCommand=evilprog x", "/usr/bin/ssh-agent evilprog",
+    "/usr/bin/screen -dm evilprog", "/usr/sbin/dtrace -c evilprog -n BEGIN",
+    "/usr/bin/rsync -e evilprog a b:c", "/usr/bin/lldb -o run evilprog",
+    "/usr/bin/tar --use-compress-program=evilprog -cf /dev/null /etc/hosts",
+    "/usr/bin/zip -T -TT=evilprog x", "/usr/bin/sandbox-exec -n no-network evilprog",
+    "/usr/sbin/installer -pkg /tmp/x.pkg -target /", "/usr/bin/lockf /usr/bin/x evilprog",
+    "/usr/bin/sqlite3 -init x.sql", "/usr/bin/make -f Makefile",
+    # %i / %I handed to a system program that could run a program of that name
+    "/usr/sbin/dtrace -c %I -n BEGIN", "/usr/bin/xcrun %i", "/bin/sh %I",
+])
+def test_a_program_off_the_allowlist_may_not_be_given_bare_words(tmp_path, hook):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+    assert not r.allowed and any(PLAIN_RULE in b for b in r.blockers), r.blockers
+
+
+@pytest.mark.parametrize("hook", [
+    "/bin/SH -c /tmp/evil.sh", "/bin/Bash /tmp/evil.sh", "/usr/bin/perl5.34 /tmp/evil.pl",
+    "/usr/bin/make -f /tmp/Makefile", "/usr/bin/sqlite3 /tmp/x.db",
+])
+def test_every_path_given_to_a_program_off_the_allowlist_is_checked_as_code(tmp_path, hook):
+    """/tmp is world-writable: as code, each of these is refused, not merely warned."""
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+    assert _blocked(r, "as administrator") and any("/tmp" in b for b in r.blockers)
+
+
+@pytest.mark.parametrize("hook", [
+    "/sbin/route -n add -net 10.0.0.0/8 -interface %i", "route -q -n delete 10.0.0.0/8",
+    "/sbin/ifconfig %i inet 10.8.0.2 10.8.0.2 alias", "/usr/sbin/networksetup -setdnsservers Wi-Fi 10.64.0.1",
+    "/usr/bin/killall -HUP mDNSResponder", "/usr/bin/dscacheutil -flushcache",
+    "/usr/sbin/sysctl -w net.inet.ip.forwarding=1", "/usr/sbin/ipconfig set en0 DHCP",
+    "/usr/bin/logger -t wireguard %I up", "/usr/sbin/scutil --nc list",
+    "/sbin/pfctl -E", "/usr/sbin/networksetup -setv6off Wi-Fi && /usr/bin/dscacheutil -flushcache",
+])
+def test_the_allowlisted_network_programs_take_plain_arguments(tmp_path, monkeypatch, hook):
+    # The real filesystem decides on a Mac; elsewhere these programs may not exist.
+    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: "/sbin/" + name)
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable())
+    monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+    assert r.allowed, r.blockers
+
+
+def test_wg_is_on_the_allowlist_wherever_root_installed_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable())
+    monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))
+    hook = "/usr/local/sbin/wg set %i peer abc allowed-ips 10.0.0.0/8"
+    assert review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n"))).allowed
+
+
+def test_the_allowlist_is_judged_by_where_a_link_leads(tmp_path):
+    (tmp_path / "xcrun").write_text("#!/bin/sh\n")
+    (tmp_path / "route").symlink_to(tmp_path / "xcrun")
+    assert not vpn_execution._data_only(str(tmp_path / "route"))
+    assert vpn_execution._data_only("/sbin/ROUTE")          # APFS: the same file as route
+
+
+def test_a_placeholder_may_be_handed_to_a_root_owned_script_outside_the_system(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable())
+    monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))
+    for hook in ("/etc/wireguard/up.sh %i", "/usr/bin/env /etc/wireguard/up.sh %I",
+                 "/bin/sh /etc/wireguard/up.sh %i 2"):
+        r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+        assert r.allowed, (hook, r.blockers)
+    r = review("connect", profile_for(wg_conf(
+        tmp_path, interface_extra="PostUp = /etc/wireguard/up.sh /usr/bin/xcrun %I\n")))
+    assert _blocked(r, "hands %I to /usr/bin/xcrun")
+
+
+def test_openvpn_recognises_interpreters_in_any_case_and_version():
+    for name in ("/bin/SH", "ENV", "perl5.34", "/usr/bin/tclsh8.5", "python3.12", "/usr/bin/xcrun"):
+        assert vpn_execution._runs_code(name), name
+    assert not vpn_execution._runs_code("/sbin/route")
+
+
+def test_an_openvpn_script_handed_to_an_uppercase_shell_is_checked_as_code(tmp_path):
+    script = _user_script(tmp_path)
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup /bin/SH {script}\n")))
+    assert _blocked(r, str(script))
+
+
+# ── independent review of #33: surviving mutants (P2-3) and P3-1 ───────────
+
+def test_a_hash_inside_a_word_is_not_a_comment(tmp_path):
+    script = _user_script(tmp_path)
+    r = review("connect", profile_for(wg_conf(
+        tmp_path, interface_extra=f"PostUp = /sbin/route a#b; {script}\n")))
+    assert _blocked(r, f"runs {script} as administrator")
+
+
+def test_a_command_after_a_single_ampersand_is_checked(tmp_path):
+    script = _user_script(tmp_path)
+    r = review("connect", profile_for(wg_conf(
+        tmp_path, interface_extra=f"PostUp = /sbin/route -n get 1.1.1.1 & {script}\n")))
+    assert _blocked(r, f"runs {script} as administrator")
+
+
+def test_a_comment_right_after_a_separator_ends_the_hook(tmp_path):
+    r = review("connect", profile_for(wg_conf(
+        tmp_path, interface_extra="PostUp = /usr/bin/true;# was: curl $URL | sh\n")))
+    assert r.allowed, r.blockers
+
+
+def test_a_non_ascii_space_in_allowed_ips_is_not_trimmed():
+    from agents.vpn_agent.services.config_inspection import inspect_wireguard_text
+    s = inspect_wireguard_text("[Interface]\nAddress = 10.8.0.2/32\n[Peer]\n"
+                               "AllowedIPs = 0.0.0.0/0 \n", Path("x.conf"))
+    assert any("AllowedIPs entry is not valid" in w for w in s.warnings)
+
+
+# ── independent review of #33: DNS servers and search domains (P2-2) ───────
+
+def test_a_name_in_dns_is_a_search_domain_not_a_server():
+    s = _inspect("DNS = corp.example\n")
+    assert s.dns_servers == () and s.dns_search == ("corp.example",)
+
+
+def test_dns_entries_are_split_and_sorted_as_wg_quick_does():
+    s = _inspect("DNS = 10.64.0.1 10.64.0.2, corp.example,fd00::53\n")
+    assert s.dns_servers == ("10.64.0.1", "10.64.0.2", "fd00::53")
+    assert s.dns_search == ("corp.example",)
+
+
+def test_a_non_ascii_space_makes_a_dns_entry_a_search_domain():
+    s = _inspect("DNS = 10.64.0.1 \n")
+    assert s.dns_servers == () and s.dns_search == ("10.64.0.1 ",)
+
+
+def test_a_wildcard_in_dns_is_warned_about():
+    assert any("wildcard" in w for w in _inspect("DNS = 10.64.0.*\n").warnings)
+
+
+def test_the_review_shows_search_domains_and_says_system_dns_stays(tmp_path):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="DNS = corp.example\n")))
+    assert "DNS: Not specified — system DNS stays in use" in r.config_lines
+    assert "DNS search domains: corp.example" in r.config_lines

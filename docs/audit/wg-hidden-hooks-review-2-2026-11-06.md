@@ -23,7 +23,40 @@ refused.
 
 ## Hand mutants (tests/test_vpn_review_gate.py, tests/test_vpn_execution.py)
 
-34 of 34 killed: each refused shell character removed on its own (`$`, `\`, `"`, `?`, `{`, `<`, `(`, `!`, `~`, `|`), `||` not exempted, control characters allowed, no comment cut, assignments allowed, shell words allowed, `.` dropped from the shell words, relative path allowed, any bare name plain, unresolved bare allowed, resolved bare not checked, interpreter arguments unchecked, `find` hands over, a nested interpreter hands over, `%I` a plain interpreter argument, ceiling off by one, ceiling not reported, wg-quick's folder searched, stat EACCES skipped, lstat EACCES skipped, placeholder check only at position 0, bare hook value empty, inspection not cut at `#`, no `#` warning, `splitlines()` restored.
+First round, 34 of 34 killed (the independent review below found that three
+other mutants survived; the second round adds them): each refused shell character removed on its own (`$`, `\`, `"`, `?`, `{`, `<`, `(`, `!`, `~`, `|`), `||` not exempted, control characters allowed, no comment cut, assignments allowed, shell words allowed, `.` dropped from the shell words, relative path allowed, any bare name plain, unresolved bare allowed, resolved bare not checked, interpreter arguments unchecked, `find` hands over, a nested interpreter hands over, `%I` a plain interpreter argument, ceiling off by one, ceiling not reported, wg-quick's folder searched, stat EACCES skipped, lstat EACCES skipped, placeholder check only at position 0, bare hook value empty, inspection not cut at `#`, no `#` warning, `splitlines()` restored.
+
+## Independent review of PR #33 (Opus code-reviewer, read-only, c4bb12f)
+
+| ID | Sev | Finding | Resolution |
+|---|---|---|---|
+| P0-1 | P0 | Interpreters matched by exact, case-sensitive name: on case-insensitive APFS `SH -c evilprog`, `/bin/SH -c evilprog`, `/usr/bin/ENV evilprog`, `/usr/bin/perl5.34 -eexec+evilprog` were allowed; bash 3.2 ran `evilprog`. | WireGuard: owner chose the allowlist route (below), so no interpreter list is consulted. OpenVPN: `_runs_code` matches the lowercased name with a version suffix. |
+| P1-1 | P1 | The interpreter list missed many root-owned programs that run a named program (taskpolicy, xcrun, ssh -oProxyCommand=, ssh-agent, screen, dtrace -c, rsync -e, lldb, tar --use-compress-program=, zip -TT=, sandbox-exec; installer, make -f, sqlite3 -init, lockf only warned). | Owner's allowlist: `route`, `ifconfig`, `networksetup`, `pfctl`, `scutil`, `killall`, `dscacheutil`, `wg`, `sysctl`, `ipconfig`, `logger` (name as written and where a link leads, lowercased) may take plain words; any other command gets only options, numbers, full paths (checked as code) and `%i`/`%I`. `%i`/`%I` only when the program receiving them is outside the system folders (deviation from the owner's wording, stated in the PR: `dtrace -c %I` would make root run a program named after the config). OpenVPN's list gained these names. |
+| P2-1 | P2 | Docs and docstring overclaimed ("exactly as the shell will"). | Rewritten; the limit is stated (options are not interpreted). |
+| P2-2 | P2 | DNS still differed: wg-quick keeps an entry as a server only for `^[0-9.]+$` or one containing `:`, others are search domains; it splits on blanks. | `dns_search` added to the summary, shown as "DNS search domains"; split on commas and blanks; a wildcard in a DNS entry is warned about. |
+| P2-3 | P2 | Mutants survived: `_WG_COMMENT = "#"`, `&` removed from the separators, `_items` back to `str.strip()`. | Tests for a `#` inside a word, a command after `&`, a non-ASCII space in AllowedIPs; all three now killed. |
+| P3-1 | P3 | `/usr/bin/true;# note` refused although bash reads a comment. | A `#` after a blank, `;` or `&` ends the hook. |
+| P3-2 | P3 | CHANGELOG wording about options before the script. | Rewritten for the allowlist. |
+| P3-3 | P3 | A hook of 1990 bad commands produced 200 refusals (~94,000 characters) in the dialog. | One unsafe finding per hook. |
+
+Second round of hand mutants: 48 of 48 killed (the 30 still applicable from the
+first round, plus: allowlist always true, allowlist ignores the link target,
+allowlist case-sensitive, `%i` to a system program allowed, program not updated
+by a full-path argument, any argument plain, paths off the allowlist treated as
+data, many findings per hook, OpenVPN case-sensitive, OpenVPN without version
+suffix, comment cut only after a blank, comment cut anywhere, `&` not a
+separator, every DNS entry a server, DNS split on commas only, DNS wildcard not
+warned, `_items` strips Unicode spaces, search domains not shown). The
+reviewer's probe set (28 hooks) is now refused except `perl5.34 -e 1`, a no-op.
+
+### Residual after the allowlist
+
+What a program does with its options is not interpreted: an option that takes a
+program name (`dtrace -c -x`, `sh -c 1`)
+still names a program found on wg-quick's PATH. The only folder on that
+PATH a normal user might write is wg-quick's own (`${SELF%/*}`), and a user who
+can write it can already replace `wg-quick` itself, which runs as root; both
+are closed by the root-owned copy (audit step S7, TODO.md).
 
 ## Not verified
 

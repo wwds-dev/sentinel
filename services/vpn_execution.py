@@ -26,12 +26,17 @@ root-owned verified copy (audit step S7). The contents of a hook script are not
 covered by the config hash either; only programs that root owns are accepted.
 
 wg-quick runs a WireGuard hook through bash's ``eval``, so the review only
-accepts a hook it can read exactly as bash will: plain commands with full paths
-(or plain names of programs in /usr/bin, /bin, /usr/sbin, /sbin), separated by
-``;``, ``&&``, ``||`` or ``&``. Shell syntax ($, quotes, backslashes, globs,
-braces, redirects, subshells, ~, !, pipes), variable assignments, shell keywords
-and builtins (``.``, ``source``, ``eval``, ``exec``, ``if``...) and any other bare
-command make the hook a blocker on Connect and a risk on Disconnect.
+accepts plain commands with full paths (or plain names of programs in /usr/bin,
+/bin, /usr/sbin, /sbin), separated by ``;``, ``&&``, ``||`` or ``&``. Shell syntax
+($, quotes, backslashes, globs, braces, redirects, subshells, ~, !, pipes),
+variable assignments, shell keywords and builtins (``.``, ``source``, ``eval``,
+``exec``, ``if``...) and any other bare command make the hook a blocker on
+Connect and a risk on Disconnect. Only the allowlisted network programs (route,
+ifconfig, networksetup, pfctl, scutil, killall, dscacheutil, wg, sysctl,
+ipconfig, logger) may be given plain words; any other command gets only
+options, numbers, full paths (checked as code) and %i / %I. What a program does
+with its options is not interpreted: an option that takes a program name
+(``dtrace -c -x``) still names one found on wg-quick's PATH.
 """
 
 from __future__ import annotations
@@ -332,12 +337,22 @@ _lstat = os.lstat    # the link walk's view of a path; tests inject errors throu
 _MISSING = (FileNotFoundError, NotADirectoryError)
 
 
-# Commands that run another program or script named in their arguments: any
-# path they are given is code that root will run.
+# OpenVPN: commands that run another program or script named in their
+# arguments, so any path they are given is code that root will run. Matched on
+# the lowercased name with any version suffix: APFS is case-insensitive, so
+# /bin/SH is /bin/sh, and perl5.34 or tclsh8.5 are perl and tclsh. A list like
+# this cannot be complete; WireGuard hooks use the allowlist below instead.
 _INTERPRETER = re.compile(
-    r"(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|python[0-9.]*|perl|ruby|node|php|lua|awk|"
-    r"osascript|expect|tclsh|swift|env|sudo|exec|command|nohup|nice|time|xargs|open|"
-    r"find|arch|caffeinate|timeout|stdbuf|chroot|su|doas|script|watch|flock|parallel)")
+    r"(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|python|perl|ruby|irb|node|php|lua|awk|"
+    r"osascript|expect|tclsh|wish|swift|env|sudo|exec|command|nohup|nice|time|xargs|"
+    r"open|find|arch|caffeinate|timeout|stdbuf|chroot|su|doas|script|watch|flock|"
+    r"parallel|taskpolicy|xcrun|ssh|ssh-agent|screen|tmux|dtrace|rsync|lldb|gdb|tar|"
+    r"zip|sandbox-exec|installer|make|sqlite3|lockf|launchctl)[0-9.]*")
+
+
+def _runs_code(command: str) -> bool:
+    """Whether an OpenVPN command word names a known interpreter or wrapper."""
+    return bool(_INTERPRETER.fullmatch(command.strip("'\"").rsplit("/", 1)[-1].lower()))
 
 # The most commands and paths the hooks of one config may name. A config is at
 # most CONFIG_READ_LIMIT bytes, which is room for ~130,000 one-letter commands;
@@ -351,20 +366,34 @@ HOOK_CHECK_LIMIT = 200
 # words bash runs: no shell syntax at all, every command a full path or a plain
 # program name found in the system folders. Commands may be separated by ;, &&,
 # || or & (each one is checked); a pipe is refused, because what it feeds a
-# shell or interpreter is code nobody checked. A " #" ends the hook, as bash's
-# comment does.
+# shell or interpreter is code nobody checked. A "#" that starts a word (after a
+# blank, ; or &) ends the hook, as bash's comment does.
 _WG_SHELL_CHARS = "$`\\'\"*?[]{}<>()!~|"
 _WG_SEPARATOR = re.compile(r"[ \t]*(?:;|&&|\|\||&)[ \t]*")
-_WG_COMMENT = re.compile(r"(?:^|[ \t])#")
+_WG_COMMENT = re.compile(r"(?:^|[ \t;&])#")
 _WG_WORDS = re.compile(r"[ \t]+")       # bash splits on blanks only, not \v or U+2028
 _PLAIN_NAME = re.compile(r"[A-Za-z0-9_.+-]+")
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-# What a shell, interpreter or wrapper may be given before the full path of the
-# script or program it runs: a bare option letter or long option, or a number.
-# Anything else there (inline code, a module or program name looked up later,
-# %I, which is the config's name) is code nobody checked. Once that program is
-# named, the words after it are its arguments (data); paths stay checked as code.
+# Owner's allowlist (2026-11-06): network programs whose arguments are data.
+# They may be given any plain arguments. Any other command may be given only
+# option letters, long options, numbers, full paths (each checked as code, like
+# the command) and %i / %I. Many programs run a program named in their
+# arguments (xcrun, taskpolicy, dtrace -c, ssh -o ProxyCommand=, rsync -e...)
+# and no list of them is complete, so a bare word is refused for all of them.
+# Matched on the lowercased name (APFS is case-insensitive), both as written
+# and where a link leads.
+_DATA_ONLY_PROGRAMS = frozenset((
+    "route", "ifconfig", "networksetup", "pfctl", "scutil", "killall", "dscacheutil",
+    "wg", "sysctl", "ipconfig", "logger",
+))
 _PLAIN_ARGUMENT = re.compile(r"-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*|-?[0-9]+")
+# %i / %I become the tunnel device and the config's name. A program in a system
+# folder may be one that runs a program it is given by name (dtrace -c %I), and
+# that name would be looked up on wg-quick's PATH, whose last folder a user can
+# write; so outside the allowlist they may only be handed to a program that
+# lives elsewhere (a root-owned script such as /etc/wireguard/up.sh).
+_SYSTEM_FOLDERS = ("/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/libexec/",
+                   "/System/", "/Library/Apple/")
 # Words bash runs itself instead of looking them up on PATH: its keywords and
 # builtins (bash 3.2 to 5.2) and the functions wg-quick (darwin.bash and
 # linux.bash) defines before it runs a hook. Each can run, source or redefine
@@ -528,7 +557,9 @@ def _spend(budget: dict | None) -> bool:
 def _path_findings(raw: str, path: str, position: int, runs_code: bool, protocol: str,
                    unsafe: list[str], warnings: list[str]) -> None:
     """Judge one path word of a hook command. The command itself (position 0)
-    and every path given to an interpreter or wrapper are code root runs."""
+    is code root runs, and so is every path given to it when ``runs_code``
+    (WireGuard: any program not on the allowlist; OpenVPN: an interpreter or
+    wrapper). Otherwise an unsafe path only draws a warning."""
     if protocol == "WireGuard" and ("%i" in path or "%I" in path):
         # wg-quick puts the tunnel device (%i, unknown until it is up) or
         # the interface (%I) there: the literal path is not what runs.
@@ -550,26 +581,40 @@ def _path_findings(raw: str, path: str, position: int, runs_code: bool, protocol
         warnings.append(f"The {raw} hook hands {path} to a program; {reason}.")
 
 
+def _in_system_folder(path: str) -> bool:
+    """Whether a program is in a macOS system folder, as written or where it leads."""
+    return any(candidate.startswith(_SYSTEM_FOLDERS)
+               for candidate in (path, os.path.realpath(path)))
+
+
+def _data_only(program: str) -> bool:
+    """Whether a program is on the allowlist, by its name as written and by the
+    name of the file a link leads to."""
+    names = {program.rsplit("/", 1)[-1].lower(),
+             os.path.realpath(program).rsplit("/", 1)[-1].lower()}
+    return names <= _DATA_ONLY_PROGRAMS
+
+
 def _wg_hook_findings(raw: str, value: str,
                       budget: dict | None = None) -> tuple[list[str], list[str]]:
     """(unsafe findings, warnings) for one WireGuard hook under the plain-commands
-    rule above. Every finding names the hook, so a refusal can be traced."""
+    rule above. A hook gets at most one unsafe finding (the first), so a hook of
+    thousands of bad commands is one line in the dialog, not thousands."""
     unsafe: list[str] = []
     warnings: list[str] = []
     shown = value if len(value) <= HOOK_DISPLAY_LIMIT else value[:HOOK_DISPLAY_LIMIT] + "…"
 
-    def refuse(problem: str) -> None:
+    def refuse(problem: str) -> tuple[list[str], list[str]]:
         unsafe.append(f"The {raw} hook ({shown}) {problem}. Tunnel cannot check what "
                       "this hook runs; write plain commands with full paths.")
+        return unsafe, warnings
 
     command_text = _WG_COMMENT.split(value, 1)[0]
     if any((ord(c) < 32 and c != "\t") or ord(c) == 127 for c in command_text):
-        refuse("contains a control character")
-        return unsafe, warnings
+        return refuse("contains a control character")
     syntax = next((c for c in command_text.replace("||", "") if c in _WG_SHELL_CHARS), None)
     if syntax is not None:
-        refuse(f"uses the shell character '{syntax}'")
-        return unsafe, warnings
+        return refuse(f"uses the shell character '{syntax}'")
     for text in _WG_SEPARATOR.split(command_text):
         words = [w for w in _WG_WORDS.split(text) if w]
         if not words:
@@ -578,51 +623,53 @@ def _wg_hook_findings(raw: str, value: str,
             return unsafe, warnings
         command = words[0]
         if _ASSIGNMENT.match(command):
-            refuse(f"sets {command.split('=', 1)[0]} for its command, which changes what runs")
-            continue
+            return refuse(f"sets {command.split('=', 1)[0]} for its command, which "
+                          "changes what runs")
         if command in _SHELL_WORDS:
-            refuse(f"uses '{command}', which bash runs itself rather than a program")
-            continue
+            return refuse(f"uses '{command}', which bash runs itself rather than a program")
         if "/" in command:
             if not command.startswith("/"):
-                refuse(f"runs {command}, which is not a full path")
-                continue
+                return refuse(f"runs {command}, which is not a full path")
+            program = command
         elif not _PLAIN_NAME.fullmatch(command):
-            refuse(f"runs '{command}', which is not a plain program name")
-            continue
+            return refuse(f"runs '{command}', which is not a plain program name")
         else:
             resolved = _which_privileged(command)
             if resolved is None:
-                refuse(f"runs '{command}', which is not a program in "
-                       + ", ".join(_PRIVILEGED_PATH))
-                continue
+                return refuse(f"runs '{command}', which is not a program in "
+                              + ", ".join(_PRIVILEGED_PATH))
             reason = _unsafe_executable_reason(Path(resolved))
             if reason:
                 unsafe.append(f"The {raw} hook runs '{command}' as administrator, which "
                               f"resolves to {resolved}, and {reason}, so a normal user "
                               "could replace it.")
-                continue
-        base = command.rsplit("/", 1)[-1]
-        runs_code = bool(_INTERPRETER.fullmatch(base))
-        handed = False          # an interpreter or wrapper has been given its program
+                return unsafe, warnings
+            program = resolved
+        data_only = _data_only(program)
         for position, word in enumerate(words):
+            if position and not data_only:
+                if word.startswith("/"):
+                    program = word              # the program or script it is handed
+                elif word in ("%i", "%I"):
+                    if _in_system_folder(program):
+                        return refuse(f"hands {word} to {program}, which could run a "
+                                      "program of that name")
+                    continue
+                elif _PLAIN_ARGUMENT.fullmatch(word):
+                    continue
+                else:
+                    return refuse(f"hands '{word}' to {words[0]}, which is not on the "
+                                  "list of network programs that may take plain words "
+                                  "(" + ", ".join(sorted(_DATA_ONLY_PROGRAMS)) + ")")
             path = command if position == 0 else _path_word(word)
-            if path is None:
-                if runs_code and not handed and not _PLAIN_ARGUMENT.fullmatch(word):
-                    refuse(f"hands '{word}' to {command}, which can run it as code")
-                    break
-                continue
-            if not path.startswith("/"):                # a bare command: judged above
-                continue
+            if path is None or not path.startswith("/"):
+                continue                        # a bare command (judged above) or data
             if not _spend(budget):
                 return unsafe, warnings
-            _path_findings(raw, path, position, runs_code, "WireGuard", unsafe, warnings)
-            # `sh /x.sh up`: "up" is the script's argument. `env /bin/sh -c x`: the
-            # program is a shell, so what follows is still code. find's paths are
-            # where it searches, and its -exec takes a program name: never data.
-            if (position > 0 and runs_code and word.startswith("/") and base != "find"
-                    and not _INTERPRETER.fullmatch(word.rsplit("/", 1)[-1])):
-                handed = True
+            _path_findings(raw, path, position, not data_only, "WireGuard",
+                           unsafe, warnings)
+            if unsafe:
+                return unsafe, warnings
     return unsafe, warnings
 
 
@@ -640,8 +687,7 @@ def _program_findings(raw: str, value: str, words: list[str], protocol: str,
     unsafe: list[str] = []
     warnings: list[str] = []
     for segment in _segments(words):
-        command = segment[0] if segment else ""
-        runs_code = bool(_INTERPRETER.fullmatch(command.strip("'\"").rsplit("/", 1)[-1]))
+        runs_code = _runs_code(segment[0] if segment else "")
         for position, word in enumerate(segment):
             path = _path_word(word)
             if path is None:
@@ -983,6 +1029,8 @@ def review_execution(action: str, profile: dict | None, *,
                         f"Routing: {summary.route_mode}",
                         "Endpoints: " + (", ".join(summary.endpoints) or "Not specified"),
                         "DNS: " + (", ".join(summary.dns_servers) or "Not specified — system DNS stays in use"),
+                        *(["DNS search domains: " + ", ".join(summary.dns_search)]
+                          if summary.dns_search else []),
                         f"Peers: {summary.peer_count}",
                     ]
                     warnings.extend(summary.warnings)

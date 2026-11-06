@@ -35,6 +35,8 @@ class WireGuardConfigSummary:
     secrets_discarded: int
     invalid_endpoint_count: int
     warnings: tuple[str, ...]
+    # DNS entries wg-quick passes on as search domains, not as servers.
+    dns_search: tuple[str, ...] = ()
 
 
 # The whitespace wg-quick's bash trims; str.strip() also removes U+00A0 and others.
@@ -43,6 +45,17 @@ _ASCII_SPACE = " \t\r\v\f"
 
 def _items(value: str) -> list[str]:
     return [item.strip(_ASCII_SPACE) for item in value.split(",") if item.strip(_ASCII_SPACE)]
+
+
+def _shell_items(value: str) -> list[str]:
+    """wg-quick's ``${value//,/ }``, word-split by bash: commas and blanks."""
+    return [item for item in re.split(r"[, \t]+", value) if item]
+
+
+# wg-quick (darwin.bash) keeps a DNS entry as a server only when it matches
+# (^[0-9.]+$)|(^.*:.*$); every other entry becomes a search domain.
+def _is_dns_server(item: str) -> bool:
+    return bool(re.fullmatch(r"[0-9.]+", item)) or ":" in item
 
 
 def _endpoint_is_valid(value: str) -> bool:
@@ -109,6 +122,7 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
     section = ""
     addresses: list[str] = []
     dns_servers: list[str] = []
+    dns_search: list[str] = []
     endpoints: list[str] = []
     allowed_ips: list[str] = []
     mtu = ""
@@ -147,9 +161,13 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
             continue
         if section == "interface":
             if normalized_key == "address":
-                addresses.extend(_items(value))
+                addresses.extend(_shell_items(value))
             elif normalized_key == "dns":
-                dns_servers.extend(_items(value))
+                for item in _shell_items(value):
+                    (dns_servers if _is_dns_server(item) else dns_search).append(item)
+                    if any(ch in item for ch in "*?["):
+                        warnings.append(f"Line {line_number}: a DNS entry contains a "
+                                        "wildcard, which wg-quick's shell may expand.")
             elif normalized_key == "mtu":
                 mtu = value
         elif section == "peer":
@@ -179,6 +197,7 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
         interface_name=source.stem,
         addresses=tuple(addresses),
         dns_servers=tuple(dns_servers),
+        dns_search=tuple(dns_search),
         mtu=mtu,
         peer_count=peer_count,
         endpoints=tuple(endpoints),
