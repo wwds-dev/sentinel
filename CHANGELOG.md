@@ -34,7 +34,47 @@ and the git log, and is not back-filled here.
   it erases, so a request or check that finishes late writes nothing into the
   folder being erased.
 
+### Security
+- **WireGuard: administrator rights run a checked copy, never your file.**
+  Connect and Disconnect used to check your `.conf` when the password prompt
+  opened and then let `wg-quick` read the file itself as root, so anything that
+  changed the file in between chose what ran as administrator. Now Sentinel
+  copies the file into a root-only folder, checks the copy against the hash you
+  confirmed, and runs only the copy; a changed file is refused and nothing runs.
+  While the tunnel is up, Disconnect uses the copy you connected with, and its
+  confirmation says so. Root also starts with an empty environment now. What the
+  copy does **not** protect: the `wg-quick` program and its neighbours, which on
+  Apple silicon live in Homebrew's folder that your account owns; Tunnel warns when
+  that is the case. OpenVPN still reads your `.ovpn` after the check; that part is
+  planned, not built.
+- **The administrator dialog gets nothing of Sentinel's environment.** macOS
+  runs the approved command through a shell that read settings such as
+  `SHELLOPTS` and `PS4` from Sentinel's environment, which another program
+  running as you can set, and could run code as administrator before the
+  command started. The dialog now gets only a fixed `PATH`. This covers every
+  administrator action: VPN, kill switch and MAC address.
+- **The `wg-quick` you reviewed is the one that runs.** If a different
+  `wg-quick` appears first on the search path after you confirm, nothing runs
+  and you are asked to review again.
+- **A WireGuard file Tunnel cannot read as text no longer reaches root as
+  "checked".** Disconnect then runs only the copy kept since Connect, or
+  refuses.
+- **One Connect or Disconnect per tunnel at a time.** A second one waits for the
+  first, then reports that the tunnel is already up, instead of removing the copy
+  the running tunnel needs to disconnect.
+
 ### Fixed
+- **A tunnel record left behind by a crash no longer blocks WireGuard.** wg-quick's
+  record without its tunnel used to make Connect say "already up" and kept the
+  copy holding your private key; now Connect goes ahead and Disconnect removes
+  the copy.
+- **A WireGuard profile whose file is not named `<interface>.conf` is refused in
+  the review**, including a bare name such as `wgnl`. It used to pass the review
+  and fail after the dialog, every time.
+- **Disconnect says what will run.** With no copy kept since Connect and a file
+  that is missing or cannot be read, the confirmation now says nothing runs,
+  instead of promising to check the file; for a relative or `~` path it says the
+  file is checked and run.
 - **A WireGuard hook must now be plain commands with full paths.** wg-quick runs
   each hook through the shell as administrator, and the shell expands what the
   review read literally: `echo $(/tmp/x.sh)`, `/tm"p"/x.sh`, `/tm?/x.sh`,

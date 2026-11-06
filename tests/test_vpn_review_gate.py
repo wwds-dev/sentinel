@@ -16,7 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from services import vpn_connection, vpn_execution
+from services import vpn_connection, vpn_execution, vpn_rootscript
+
+# An absolute wg-quick, so the root command is the same on every machine (S7:
+# root never runs a bare name).
+FAKE_WG_QUICK = "/opt/test/bin/wg-quick"
 
 PRIVATE_KEY = "cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWsxMjM0NTY3OA=="
 
@@ -46,7 +50,7 @@ def tools_installed(monkeypatch):
     monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: None if name == "wg-quick" else real_which(name, *a, **k))
+                        lambda name, *a, **k: FAKE_WG_QUICK if name == "wg-quick" else real_which(name, *a, **k))
 
 
 def wg_conf(tmp_path, name="wgnl", interface_extra="", mode=0o600):
@@ -587,15 +591,22 @@ def test_disconnect_still_fails_closed_on_a_fingerprint_mismatch(tmp_path):
 # ── honest hash wording and the dead unguarded wg-quick path ────────────────
 
 def test_the_hash_line_says_when_it_was_checked(tmp_path):
+    # WireGuard (S7): root re-checks the hash on its own copy, which is what runs.
     r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = echo hi\n")))
-    wording = "verified when the password prompt opened, not when it ran"
+    wording = "checked again by root on its own copy, which is what runs"
     assert wording in r.confirmation_detail()
     assert any(wording in body for _, body, _ in r.sections())
+    # OpenVPN (S8 deferred): only at the prompt, and the line says so.
+    ovpn = vpn_execution.ExecutionReview("connect", "OpenVPN", "x", "/c.ovpn", "", "cmd",
+                                         config_sha256="a" * 64)
+    assert "verified when the password prompt opened, not when it ran" in ovpn._hash_line()
 
 
 def test_the_module_and_execute_docstrings_do_not_overclaim():
     for doc in (vpn_execution.__doc__, vpn_execution.execute.__doc__):
-        assert "not when root reads" in doc
+        assert "not when root reads" in doc       # still true for OpenVPN
+        assert "S8" in doc and "OpenVPN" in doc
+        assert "S7" in doc and "copy" in doc
 
 
 def test_the_unguarded_wireguard_manager_wg_quick_helpers_refuse():
@@ -1437,3 +1448,171 @@ def test_the_review_shows_search_domains_and_says_system_dns_stays(tmp_path):
     r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="DNS = corp.example\n")))
     assert "DNS: Not specified — system DNS stays in use" in r.config_lines
     assert any(line.startswith("DNS search domains: corp.example") for line in r.config_lines)
+
+
+# ── S7 review follow-ups (docs/audit/s7-wireguard-root-copy-*-2026-11-05.md) ──
+
+def test_a_wg_quick_the_user_can_replace_draws_a_warning_not_a_blocker(tmp_path, monkeypatch):
+    # Owner decision 2026-11-05: warn, do not block (Homebrew's bin is the user's).
+    exe = tmp_path / "bin" / "wg-quick"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/bash\n")
+    real_which = vpn_connection.shutil.which
+    monkeypatch.setattr(vpn_connection.shutil, "which",
+                        lambda name, *a, **k: str(exe) if name == "wg-quick" else real_which(name, *a, **k))
+    for action, probe in (("connect", Probe()), ("disconnect", Probe(up={"wgnl"}))):
+        r = review(action, profile_for(wg_conf(tmp_path)), probe)
+        assert r.allowed, r.blockers
+        found = [w for w in r.warnings if w.startswith(f"wg-quick runs as administrator from {exe}")]
+        assert found and "not owned by root" in found[0]
+        assert "protects the config file, not these tools" in found[0]
+
+
+def test_a_root_owned_wg_quick_draws_no_such_warning(tmp_path, monkeypatch):
+    real_which = vpn_connection.shutil.which
+    monkeypatch.setattr(vpn_connection.shutil, "which",
+                        lambda name, *a, **k: "/bin/ls" if name == "wg-quick" else real_which(name, *a, **k))
+    r = review("connect", profile_for(wg_conf(tmp_path)))
+    assert not [w for w in r.warnings if w.startswith("wg-quick runs as administrator")]
+
+
+def test_a_wireguard_disconnect_says_the_kept_copy_may_be_what_runs(tmp_path):
+    p = profile_for(wg_conf(tmp_path, interface_extra="PostDown = echo bye\n"))
+    r = review("disconnect", p, Probe(up={"wgnl"}))
+    text = r.confirmation_text()
+    assert "only if Sentinel kept no copy at Connect" in text
+    assert "copy you connected with runs" in text
+    assert "this config executes:" not in text
+    assert "SHA-256 of your config file now" in r.confirmation_detail()
+    assert any(title == "Runs commands as administrator (your file now)"
+               for title, _, _ in r.sections())
+    assert any("Disconnect runs that copy" in w for w in r.warnings)
+    # Connect is unchanged: what is shown is what runs.
+    c = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = echo hi\n")))
+    assert "RUNS COMMANDS AS ADMINISTRATOR — this config executes:" in c.confirmation_text()
+    assert not any("Disconnect runs that copy" in w for w in c.warnings)
+
+
+def test_a_config_not_named_interface_conf_is_refused_before_the_prompt(tmp_path):
+    path = tmp_path / "wg0.txt"
+    path.write_text(wg_conf(tmp_path).read_text())
+    p = {**profile_for(wg_conf(tmp_path)), "config_path": str(path)}
+    r = review("connect", p)
+    assert any("is not named <interface>.conf" in b for b in r.blockers)
+    runner = Recorder()
+    outcome = run("connect", p, runner, r)
+    assert outcome.ran is False and runner.scripts == []
+
+
+def test_an_interface_only_disconnect_with_no_file_says_nothing_else_runs():
+    r = review("disconnect", {"name": "Bare", "protocol": "WireGuard",
+                              "endpoint": "203.0.113.7", "interface": "wgzz"},
+               Probe(up={"wgzz"}))
+    assert r.command.endswith("(the copy kept since Connect; without one, nothing runs)")
+
+
+def test_a_non_utf8_config_never_reaches_root_as_verified_on_disconnect(tmp_path, monkeypatch):
+    """c1c5178 review P1-2, ported: hidden hooks in bytes the review could not
+    decode were hashed anyway, so a Disconnect with no copy kept since Connect
+    had root copy those bytes and run their PostDown. Now no hash travels: root
+    uses its kept copy, or refuses (exit 96) when there is none (both pinned in
+    tests/test_vpn_rootscript.py)."""
+    real_which = vpn_connection.shutil.which
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k:
+                        "/bin/ls" if name == "wg-quick" else real_which(name, *a, **k))
+    path = wg_conf(tmp_path)
+    path.write_bytes(path.read_bytes() + b"PostDown = /tmp/evil \xff\n")
+    r = review("disconnect", profile_for(path), Probe(up={"wgnl"}))
+    assert r.config_sha256 == ""
+    # S7 rebase review P3-1: the dialog does not promise a verified fallback.
+    assert r.command.endswith("(the copy kept since Connect; without one, nothing runs)")
+    assert r.allowed and any("not readable UTF-8" in risk for risk in r.risks)
+    runner = Recorder()
+    outcome = run("disconnect", profile_for(path), runner, r, Probe(up={"wgnl"}))
+    assert outcome.ran is True
+    # The same command either way: root alone knows whether a copy is kept.
+    assert runner.scripts == [vpn_rootscript.wireguard_command("down", "", "", "wgnl", "/bin/ls")]
+    assert "\xff" not in runner.scripts[0] and str(path) not in runner.scripts[0]
+
+
+def test_a_missing_config_on_disconnect_promises_no_verified_fallback(tmp_path):
+    path = wg_conf(tmp_path)
+    path.unlink()
+    r = review("disconnect", profile_for(path), Probe(up={"wgnl"}))
+    assert r.config_sha256 == ""
+    assert r.command.endswith("(the copy kept since Connect; without one, nothing runs)")
+
+
+@pytest.mark.parametrize("target", ["sub/wgnl.conf", "~/wgnl.conf", "/Users/me/wgnl.conf"])
+def test_a_disconnect_of_any_config_path_says_root_verifies_the_file(target):
+    """S7 rebase review P3-2: a relative or ~ path is sent to root with its hash,
+    so the summary must not say nothing runs."""
+    assert "check its SHA-256 first" in vpn_connection.wg_root_summary("down", target)
+    assert "nothing runs" in vpn_connection.wg_root_summary("down", "wgnl")
+
+
+def test_root_runs_the_wg_quick_the_review_judged(tmp_path, monkeypatch):
+    """S7 security review P2-A: a wg-quick put earlier on PATH after the dialog
+    changes the review, so nothing runs; unchanged, root gets the judged path."""
+    real_which = vpn_connection.shutil.which
+    found = {"wg-quick": "/bin/ls"}
+    which = lambda name, *a, **k: found.get(name) or real_which(name, *a, **k)
+    monkeypatch.setattr(vpn_connection.shutil, "which", which)
+    monkeypatch.setattr(vpn_execution.shutil, "which", which)
+    p = profile_for(wg_conf(tmp_path))
+    confirmed = review("connect", p)
+    assert confirmed.wg_quick == "/bin/ls"
+    found["wg-quick"] = str(tmp_path / "planted" / "wg-quick")
+    runner = Recorder()
+    outcome = run("connect", p, runner, confirmed)
+    assert outcome.ran is False and runner.scripts == []
+    found["wg-quick"] = "/bin/ls"
+    outcome = run("connect", p, runner, confirmed)
+    assert outcome.ran is True
+    assert runner.scripts == [vpn_rootscript.wireguard_command(
+        "up", p["config_path"], confirmed.config_sha256, "wgnl", "/bin/ls")]
+
+
+def test_the_runner_uses_the_wg_quick_it_is_given_not_a_fresh_lookup(monkeypatch):
+    monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: "/tmp/planted/wg-quick")
+    runner = Recorder()
+    vpn_connection.connect({"protocol": "WireGuard", "endpoint": "203.0.113.7",
+                            "config_path": "/Users/me/wg0.conf"},
+                           run_as_root=runner, config_sha256="a" * 64, wg_quick="/bin/ls")
+    assert runner.scripts == [vpn_rootscript.wireguard_command(
+        "up", "/Users/me/wg0.conf", "a" * 64, "wg0", "/bin/ls")]
+    runner = Recorder()
+    vpn_connection.connect({"protocol": "WireGuard", "endpoint": "203.0.113.7",
+                            "config_path": "/Users/me/wg0.conf"},
+                           run_as_root=runner, config_sha256="a" * 64, wg_quick="")
+    assert runner.scripts == []          # no wg-quick was reviewed: nothing runs
+
+
+@pytest.mark.parametrize("action, probe", [("connect", Probe()), ("disconnect", Probe(up={"wgnl"}))])
+def test_execute_hands_the_runner_the_reviewed_wg_quick(tmp_path, monkeypatch, action, probe):
+    """A lookup between the fresh review and the run (P2-A's window) must not
+    matter: execute passes the judged path, the runner does no lookup of its own."""
+    real_which = vpn_connection.shutil.which
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k:
+                        "/bin/ls" if name == "wg-quick" else real_which(name, *a, **k))
+    seen = {}
+    monkeypatch.setattr(vpn_connection, action, lambda profile, **kw: seen.update(kw)
+                        or {"success": True, "output": ""})
+    p = profile_for(wg_conf(tmp_path))
+    confirmed = review(action, p, probe)
+    assert run(action, p, Recorder(), confirmed, probe).ran is True
+    assert seen["wg_quick"] == "/bin/ls" == confirmed.wg_quick
+
+
+@pytest.mark.parametrize("config_path", ["wgnl", "wgnl.txt", "sub/wgnl"])
+def test_a_config_path_not_named_interface_conf_is_blocked_even_without_a_folder(
+        tmp_path, monkeypatch, config_path):
+    """S7 Opus audit P3-5: "wgnl" passed as a bare interface name, then the
+    runner made it a path and refused after the dialog, forever."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / config_path).write_text(wg_conf(tmp_path).read_text())
+    p = {**profile_for(wg_conf(tmp_path)), "config_path": config_path}
+    r = review("connect", p)
+    assert any("is not named <interface>.conf" in b for b in r.blockers)

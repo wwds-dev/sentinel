@@ -96,9 +96,10 @@ path or `SaveConfig = true` is shown as a risk and you can still go ahead after 
 extra confirmation; an OpenVPN Disconnect only shows a note. On Connect, a hook
 that starts with an absolute path is refused unless root owns the program and
 every folder above it and none of them can be written by a group or by everyone,
-and a profile with `SaveConfig = true` is refused. If the file changes after you
-confirm and before the password prompt, nothing runs; a change after that is not
-caught yet (audit step S7).
+and a profile with `SaveConfig = true` is refused. If a WireGuard file changes
+after you confirm, nothing runs: administrator rights only ever run a copy that
+root has checked against the hash you confirmed. For OpenVPN a change after the
+password prompt opens is not caught yet (audit step S8).
 
 **WireGuard hooks must be plain commands with full paths.** wg-quick hands each
 hook to the shell, so Tunnel only accepts commands that start with a full path
@@ -121,6 +122,19 @@ folder Sentinel runs from. The DNS line shows only the entries wg-quick uses as
 servers; a name such as `corp.example` is listed as a search domain (and marked
 as not applied when there is no server), and a DNS entry with a wildcard such
 as `10.64.0.*` stops a Connect.
+
+### What actually runs (WireGuard)
+
+Administrator rights never run your own WireGuard file. Sentinel copies it into a
+folder only root can read, checks that the copy is exactly what the review
+showed, and runs the copy. If you edit the file after answering Yes, nothing runs
+and Tunnel says the config changed. While the tunnel is up, Disconnect uses the
+copy you connected with, so edits made in the meantime do not change what
+Disconnect runs; the Disconnect confirmation says so. The copy protects the config
+file, not the `wg-quick` program: if Homebrew installed it in a folder your account
+owns, Tunnel warns that another program running as you could replace it. OpenVPN
+does not have this protection yet: `openvpn` still reads your `.ovpn` and its files
+after the review.
 
 ### Reading the result
 

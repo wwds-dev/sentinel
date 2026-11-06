@@ -23,7 +23,7 @@ from typing import Callable
 
 from agents.vpn_agent.server import paths as vpn_paths
 from agents.vpn_agent.services import wireguard_manager
-from services import openvpn_manager, vpn_apps
+from services import openvpn_manager, vpn_apps, vpn_rootscript
 from services.vpn_diagnostics import PROFILE_SEED, _profile_protocol
 
 
@@ -90,36 +90,53 @@ def _absolute(path: str) -> str:
     return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
 
 
-# The PATH root's wg-quick gets, after its own folder; wg-quick puts these
-# first itself (darwin.bash), so nothing of the caller's PATH is kept.
-SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+# The PATH root's wg-quick gets, after its own folder (``vpn_rootscript``);
+# openvpn gets the same (``openvpn_manager``).
+SYSTEM_PATH = ":".join(vpn_rootscript.SYSTEM_PATH)
 
 
-def wg_quick_command(verb: str, target: str) -> str:
-    """The shell line for ``wg-quick <verb> <target>``, runnable as root.
+def wg_root_summary(verb: str, target: str) -> str:
+    """What root does for a WireGuard Connect or Disconnect, in words the review
+    shows (``vpn_rootscript`` builds the script itself): it runs a verified
+    root-owned copy, never the user's file (ADR 0004)."""
+    interface = vpn_rootscript.interface_for(target) or "<interface>"
+    copy = f"{vpn_rootscript.BASE_DIR}/wg/{interface}/{interface}.conf"
+    if verb == "up":
+        return (f"copy {_quote(target)} to {copy}, check that the copy's SHA-256 is the "
+                f"one below, then wg-quick up {copy}")
+    if vpn_rootscript.interface_for(target) == target:      # a bare name: no file goes to root
+        return f"wg-quick down {copy} (the copy kept since Connect; without one, nothing runs)"
+    return (f"wg-quick down {copy} (the copy kept since Connect; without one, copy "
+            f"{_quote(target)} and check its SHA-256 first)")
 
-    The macOS authorisation dialog (``do shell script``) and ``sudo``'s
-    secure_path both drop Homebrew's bin directory, so a bare ``wg-quick`` is not
-    found there — and wg-quick itself shells out to ``wg`` and ``wireguard-go``.
-    Use the absolute path and put its directory first on PATH for that one call.
 
-    wg-quick and the hooks it runs inherit nothing from the user: the working
-    directory is ``/`` and the environment is only ``HOME=/var/root`` and that
-    PATH (``env -i``). Otherwise a hook's program could read code the review
-    never saw from the user's home (~/.zshenv, ~/.bash_profile, Python .pth
-    files), from the working directory, which the app sets to its checkout (a
-    Makefile, a relative ``pfctl -f`` file, files a ``DNS`` wildcard expands
-    to), or from the environment. A relative config path, and a wg-quick found
-through a relative PATH entry, are made absolute first, keeping ``..`` for
-the kernel to resolve through any link.
-    """
-    if "/" in target and not os.path.isabs(target):
-        target = _absolute(target)
-    exe = shutil.which("wg-quick")
-    exe = _absolute(exe) if exe else None       # a relative PATH entry; root runs from /
-    program, path = (exe, f"{os.path.dirname(exe)}:{SYSTEM_PATH}") if exe else ("wg-quick", SYSTEM_PATH)
-    return (f"cd / && /usr/bin/env -i HOME=/var/root PATH={_quote(path)} "
-            f"{_quote(program)} {verb} {_quote(target)}")
+def _wg_root_run(verb: str, profile: dict, config_sha256: str,
+                 run_as_root: RunAsRoot, prompt: str, wg_quick: str | None = None) -> dict:
+    """Run wg-quick as root on a verified copy of the profile's config.
+    ``wg_quick`` is the one the review judged; None looks it up now."""
+    protocol = "WireGuard"
+    config_path = resolve_config_path(profile)
+    interface = str(profile.get("interface") or "").strip()
+    target = config_path if config_path else interface
+    if not target:
+        return {"success": False, "protocol": protocol, "output": "",
+                "error": "This WireGuard profile has no interface or config file."}
+    # Root runs from /, so a relative config path or a wg-quick found through a
+    # relative PATH entry is made absolute here, keeping ``..`` for the kernel.
+    source = _absolute(str(Path(config_path).expanduser())) if config_path else ""
+    name = vpn_rootscript.interface_for(source or target)
+    exe = shutil.which("wg-quick") if wg_quick is None else wg_quick
+    exe = _absolute(exe) if exe else None
+    try:
+        command = vpn_rootscript.wireguard_command(
+            verb, source if config_sha256 else "", config_sha256 if source else "",
+            name or "", exe or "")
+    except ValueError as exc:
+        return {"success": False, "protocol": protocol, "output": "",
+                "error": f"Nothing was run: {exc}. Review the profile again."}
+    ok, output = run_as_root(command, prompt)
+    return {"success": ok, "protocol": protocol, "output": output,
+            "error": None if ok else (output or f"wg-quick {verb} failed.")}
 
 
 def _placeholder_result(action: str, profile: dict) -> dict:
@@ -136,8 +153,13 @@ def _placeholder_result(action: str, profile: dict) -> dict:
     }
 
 
-def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
-    """Bring the profile's tunnel up. Reports what the tool actually returned."""
+def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root,
+            config_sha256: str = "", wg_quick: str | None = None) -> dict:
+    """Bring the profile's tunnel up. Reports what the tool actually returned.
+
+    For WireGuard, ``config_sha256`` is the hash of the config the user
+    confirmed; root runs only a copy with that hash, and nothing runs without it.
+    ``wg_quick`` is the wg-quick the review judged (``vpn_execution.execute``)."""
     protocol = resolve_protocol(profile)
     if is_placeholder(profile):
         return _placeholder_result("connect", profile)
@@ -160,21 +182,15 @@ def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) -> 
         return {"success": False, "protocol": protocol, "output": "",
                 "error": "wg-quick not found — install wireguard-tools "
                          "(`brew install wireguard-tools`)."}
-    config_path = resolve_config_path(profile)
-    interface = str(profile.get("interface") or "").strip()
-    target = config_path if config_path else interface
-    if not target:
-        return {"success": False, "protocol": protocol, "output": "",
-                "error": "This WireGuard profile has no interface or config file."}
-    ok, output = run_as_root(
-        wg_quick_command("up", target),
-        "Sentinel needs administrator access to start the VPN.")
-    return {"success": ok, "protocol": protocol, "output": output,
-            "error": None if ok else (output or "wg-quick up failed.")}
+    return _wg_root_run("up", profile, config_sha256, run_as_root,
+                        "Sentinel needs administrator access to start the VPN.", wg_quick)
 
 
-def disconnect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
-    """Bring the profile's tunnel down."""
+def disconnect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root,
+               config_sha256: str = "", wg_quick: str | None = None) -> dict:
+    """Bring the profile's tunnel down. WireGuard uses the copy kept since
+    Connect, else a verified copy of the config (``config_sha256``), else
+    refuses: root never runs the user's file."""
     protocol = resolve_protocol(profile)
     if protocol == "OpenVPN":
         return {**openvpn_manager.disconnect(run_as_root=run_as_root),
@@ -182,17 +198,8 @@ def disconnect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root) 
     if protocol != "WireGuard":
         return {"success": False, "protocol": protocol, "output": "",
                 "error": f"Unsupported protocol '{profile.get('protocol')}'."}
-    config_path = resolve_config_path(profile)
-    interface = str(profile.get("interface") or "").strip()
-    target = config_path if config_path else interface
-    if not target:
-        return {"success": False, "protocol": protocol, "output": "",
-                "error": "This WireGuard profile has no interface or config file."}
-    ok, output = run_as_root(
-        wg_quick_command("down", target),
-        "Sentinel needs administrator access to stop the VPN.")
-    return {"success": ok, "protocol": protocol, "output": output,
-            "error": None if ok else (output or "wg-quick down failed.")}
+    return _wg_root_run("down", profile, config_sha256, run_as_root,
+                        "Sentinel needs administrator access to stop the VPN.", wg_quick)
 
 
 def connection_status() -> dict:

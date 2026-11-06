@@ -19,11 +19,14 @@
 6. **Rollback guidance** travels with every review and every outcome.
 
 The review is re-run inside ``execute`` so a file changed between the dialog and
-the worker is still caught. That check, and the SHA-256 shown in the dialog, are
-made when the privileged prompt opens, not when root reads the file: wg-quick and
-openvpn still read the user's file afterwards, and that gap stays open until the
-root-owned verified copy (audit step S7). The contents of a hook script are not
-covered by the config hash either; only programs that root owns are accepted.
+the worker is still caught. For WireGuard, root then copies the file into a
+root-owned directory and runs the copy only if its SHA-256 is the one shown in the
+dialog (audit step S7, ``services/vpn_rootscript.py``, ADR 0004): root never runs
+the user's file. For OpenVPN the check is made when the privileged prompt opens,
+not when root reads the file: openvpn still reads the user's .ovpn and the files
+it names afterwards, a gap that stays open until step S8 (deferred). The contents
+of a hook script are not covered by the config hash either; only programs that
+root owns are accepted.
 
 wg-quick runs a WireGuard hook through bash's ``eval``, so the review only
 accepts plain commands with full paths (or plain names of programs in /usr/bin,
@@ -40,7 +43,7 @@ its options is not interpreted: an option that takes a program name
 (``dtrace -c -x``) still names one found on wg-quick's PATH. What a program reads
 on its own (startup files, the working directory, the environment) is closed off
 by running wg-quick from / with only HOME=/var/root and PATH
-(``vpn_connection.wg_quick_command``); openvpn is started the same way
+(``vpn_rootscript.ROOT_SCRIPT``); openvpn is started the same way
 (``openvpn_manager.start_command``), so a relative OpenVPN hook program
 would resolve from /, not from the app's working directory; the review refuses
 one (``_openvpn_relative_program``) and warns about relative file names. A DNS entry with a shell
@@ -69,7 +72,7 @@ from typing import Callable
 from agents.vpn_agent.services.config_inspection import (
     inspect_wireguard_text as inspect_config_text,
 )
-from services import openvpn_manager, vpn_apps, vpn_connection
+from services import openvpn_manager, vpn_apps, vpn_connection, vpn_rootscript
 
 # wg-quick's own interface-name rule (wg-quick(8)); a config file whose stem
 # fails it is refused by wg-quick, so refuse before the password prompt instead.
@@ -922,6 +925,10 @@ class ExecutionReview:
     rollback: tuple[str, ...] = ()
     root_hooks: tuple[str, ...] = ()
     config_sha256: str = ""
+    # WireGuard: the wg-quick the review judged, by absolute path. Root runs
+    # exactly this one, so a wg-quick put earlier on PATH after the dialog is
+    # not picked up (S7 security review P2-A).
+    wg_quick: str = ""
     # Disconnect only: findings that would block a Connect but must not make a
     # Disconnect impossible. They need a second, explicit "Disconnect anyway".
     risks: tuple[str, ...] = ()
@@ -936,12 +943,12 @@ class ExecutionReview:
 
     def fingerprint(self) -> str:
         """Identity of what administrator rights would run: action, protocol,
-        target, interface, command, every hook in full, and the hash of the
-        config bytes. Warnings and blockers are left out on purpose (probe
+        target, interface, command, every hook in full, the hash of the
+        config bytes and the wg-quick that runs. Warnings and blockers are left out on purpose (probe
         state may legitimately change between the dialog and the worker)."""
         payload = json.dumps([self.action, self.protocol, self.target, self.interface,
                               self.command, list(self.root_hooks), self.config_sha256,
-                              list(self.risks)],
+                              list(self.risks), self.wg_quick],
                              ensure_ascii=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -963,9 +970,29 @@ class ExecutionReview:
             lines += ["", self._hash_line()]
         return "\n".join(lines)
 
+    @property
+    def _may_run_kept_copy(self) -> bool:
+        """A WireGuard Disconnect: root runs the copy kept since Connect when there
+        is one, and Sentinel cannot see into root's folder to know which."""
+        return self.protocol == "WireGuard" and self.action == "disconnect"
+
     def _hash_line(self) -> str:
+        if self._may_run_kept_copy:
+            return (f"SHA-256 of your config file now: {self.config_sha256} (root checks "
+                    "it on its own copy only if it kept no copy at Connect; otherwise the "
+                    "copy you connected with runs)")
+        if self.protocol == "WireGuard":
+            return (f"Config SHA-256: {self.config_sha256} (checked again by root on its "
+                    "own copy, which is what runs)")
         return (f"Config SHA-256: {self.config_sha256} (verified when the password prompt "
                 "opened, not when it ran)")
+
+    def _hooks_heading(self) -> str:
+        if self._may_run_kept_copy:
+            return ("RUNS COMMANDS AS ADMINISTRATOR — your config file now executes these, "
+                    "but only if Sentinel kept no copy at Connect; otherwise the copy you "
+                    "connected with runs, with its hooks as they were then:")
+        return "RUNS COMMANDS AS ADMINISTRATOR — this config executes:"
 
     def confirmation_text(self) -> str:
         verb = "Start" if self.action == "connect" else "Stop"
@@ -978,7 +1005,7 @@ class ExecutionReview:
         if self.config_lines:
             lines += [""] + list(self.config_lines)
         if self.root_hooks:
-            lines += ["", "RUNS COMMANDS AS ADMINISTRATOR — this config executes:"]
+            lines += ["", self._hooks_heading()]
             lines += [f"• {self._shown_hook(item)}" for item in self.root_hooks]
         if self.risks:
             lines += ["", "Not reviewable (Disconnect asks once more before it goes ahead):"]
@@ -1007,7 +1034,8 @@ class ExecutionReview:
             sections.append(("Configuration intent (keys discarded)",
                              "\n".join(self.config_lines), True))
         if self.root_hooks:
-            sections.append(("Runs commands as administrator",
+            sections.append(("Runs commands as administrator" + (
+                                 " (your file now)" if self._may_run_kept_copy else ""),
                              "\n".join(f"• {item}" for item in self.root_hooks), True))
         if self.risks:
             sections.append(("Risks — Disconnect anyway?",
@@ -1072,6 +1100,7 @@ def review_execution(action: str, profile: dict | None, *,
     risks: list[str] = []
     route_mode = ""
     config_sha256 = ""
+    wg_quick = ""
     ks_armed = killswitch_armed()
 
     if action == "connect" and vpn_connection.is_placeholder(profile):
@@ -1080,7 +1109,7 @@ def review_execution(action: str, profile: dict | None, *,
 
     if protocol == "WireGuard":
         target, interface = _wg_interface_for(profile)
-        command = (vpn_connection.wg_quick_command("up" if action == "connect" else "down", target)
+        command = (vpn_connection.wg_root_summary("up" if action == "connect" else "down", target)
                    if target else "")
         if not vpn_connection.wireguard_manager.is_wg_quick_available():
             blockers.append("wg-quick not found — install wireguard-tools "
@@ -1092,6 +1121,15 @@ def review_execution(action: str, profile: dict | None, *,
                 f"'{interface}' is not a valid WireGuard interface name (letters, digits "
                 "and _=+.- only, at most 15 characters). wg-quick names the interface "
                 "after the config file, so rename the file and import it again.")
+        elif (vpn_connection.resolve_config_path(profile)
+              and not vpn_rootscript.CONFIG_NAME_RE.fullmatch(
+                  Path(vpn_connection.resolve_config_path(profile)).name)):
+            # Any config_path is a file to root (made absolute by the runner),
+            # even one with no folder and no .conf (S7 Opus audit P3-5).
+            blockers.append(
+                f"'{Path(target).name}' is not named <interface>.conf. wg-quick only loads a "
+                "config named after its interface (letters, digits and _=+.- only, at most "
+                "15 characters, then .conf), so rename the file and import it again.")
         config_path = vpn_connection.resolve_config_path(profile)
         source = Path(config_path).expanduser() if config_path else None
         if source is None and interface and WG_INTERFACE_NAME.fullmatch(interface):
@@ -1104,7 +1142,7 @@ def review_execution(action: str, profile: dict | None, *,
                 # lets wg-quick search its own directory list (which differs between
                 # builds), so it could load a different <interface>.conf as root.
                 target = str(source)
-                command = vpn_connection.wg_quick_command(
+                command = vpn_connection.wg_root_summary(
                     "up" if action == "connect" else "down", target)
         if source is not None:
             # Both actions read the file: wg-quick down re-reads it and runs
@@ -1112,6 +1150,10 @@ def review_execution(action: str, profile: dict | None, *,
             text, config_sha256, read_blockers, read_warnings = _read_config(source)
             warnings.extend(read_warnings)
             if text is None:
+                # Bytes that could not be scanned must never reach root as a
+                # verified config: without a hash a WireGuard Disconnect can only
+                # use the copy kept since Connect, or refuses (S7).
+                config_sha256 = ""
                 if action == "connect":
                     blockers.extend(read_blockers)
                 elif source.exists():
@@ -1166,6 +1208,26 @@ def review_execution(action: str, profile: dict | None, *,
                 f"No config for '{interface}' was found in {', '.join(WG_CONFIG_DIRS)}. "
                 "wg-quick would fail, and Tunnel cannot review what it cannot read; "
                 "import the .conf file instead.")
+        if action == "disconnect" and target and not config_sha256:
+            # No hash travels (the file is missing or could not be scanned):
+            # root can only use the copy kept since Connect, so say just that.
+            command = vpn_connection.wg_root_summary(
+                "down", vpn_rootscript.interface_for(target) or interface)
+        exe = shutil.which("wg-quick")
+        exe = wg_quick = vpn_connection._absolute(exe) if exe else ""
+        reason = _unsafe_executable_reason(Path(exe)) if exe else None
+        if reason:
+            # Owner decision 2026-11-05: warn, do not block (it would stop every
+            # Homebrew install). The verified copy protects the config, not the tools.
+            warnings.append(
+                f"wg-quick runs as administrator from {exe}, and {reason}: a program "
+                "running as you could replace it (or wg and wireguard-go beside it). "
+                "Sentinel's verified copy protects the config file, not these tools.")
+        if action == "disconnect" and source is not None:
+            warnings.append(
+                "If Sentinel kept a copy of the config at Connect, Disconnect runs that "
+                "copy (its PreDown/PostDown as they were when you connected), not your "
+                "file as it is now.")
         if interface and WG_INTERFACE_NAME.fullmatch(interface):
             state = probe["wireguard"](interface)
             if action == "connect" and state.get("up"):
@@ -1243,7 +1305,7 @@ def review_execution(action: str, profile: dict | None, *,
         config_lines=tuple(config_lines), blockers=tuple(blockers),
         warnings=tuple(warnings), rollback=tuple(rollback),
         root_hooks=tuple(root_hooks), config_sha256=config_sha256,
-        risks=tuple(risks),
+        wg_quick=wg_quick, risks=tuple(risks),
     )
 
 
@@ -1387,9 +1449,11 @@ def execute(action: str, profile: dict, *,
     fresh review's fingerprint differs, nothing runs and no administrator
     prompt appears (fail closed).
 
-    The hash is checked as the privileged prompt opens, not when root reads the
-    config; that later read is closed only by the root-owned verified copy
-    (audit step S7)."""
+    For WireGuard, root copies the config into a root-owned directory and runs
+    the copy only if its hash is the confirmed one (audit step S7, ADR 0004).
+    For OpenVPN the hash is checked as the privileged prompt opens, and
+    not when root reads the config: openvpn still reads the user's .ovpn and its
+    files afterwards (step S8, deferred)."""
     probe = probe or _default_probe()
     review = review_execution(action, profile, probe=probe, killswitch_armed=killswitch_armed)
     kwargs = {"run_as_root": run_as_root} if run_as_root is not None else {}
@@ -1408,7 +1472,9 @@ def execute(action: str, profile: dict, *,
                 and os.path.isabs(review.target)):
             # An interface-only profile: run the reviewed file, not a bare name.
             run_profile = {**profile, "config_path": review.target}
-        result = runner(run_profile, **kwargs)
+        if review.protocol == "WireGuard":
+            kwargs["wg_quick"] = review.wg_quick       # the one the review judged
+        result = runner(run_profile, config_sha256=review.config_sha256, **kwargs)
         outcome = ExecutionOutcome(
             review, ran=True, success=bool(result.get("success")),
             output=redact_secrets(str(result.get("output") or ""))[:OUTPUT_LIMIT],
