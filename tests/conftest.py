@@ -133,10 +133,13 @@ def _macos_tool_layout(monkeypatch):
     """The WireGuard hook allowlist trusts macOS tools only at their own paths
     (/sbin/route, /usr/bin/killall...), judged also by where a link leads. On a
     merged-/usr Linux runner /sbin is a link to /usr/sbin, which would move them;
-    the tests describe a Mac, so there the pinned paths resolve to themselves."""
+    the tests describe a Mac, so there the pinned paths resolve to themselves.
+    The same goes for the two system programs an OpenVPN hook may name
+    (/usr/bin/true and /usr/bin/false, links into coreutils on some runners)."""
     import os
     from services import vpn_execution
     pinned = {path for path in vpn_execution._DATA_ONLY_PROGRAMS.values() if path}
+    pinned |= vpn_execution._ALLOWED_SYSTEM_PROGRAMS
     real = vpn_execution._realpath
     if all(real(path).lower() == path for path in pinned):
         return                                   # a Mac: nothing to pin

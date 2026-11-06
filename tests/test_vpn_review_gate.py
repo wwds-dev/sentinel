@@ -2602,11 +2602,13 @@ def test_a_user_owned_interpreter_is_refused(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("first_line, interpreter", [
     ("#!/bin/sh", "/bin/sh"), ("#! /bin/sh -e", "/bin/sh"),
-    ("#!/usr/bin/env -S sh", "/bin/sh"), ("not a script", None),
+    ("#!/usr/bin/env -S sh", "sh"), ("not a script", None),
 ])
 def test_a_root_owned_interpreter_is_accepted_and_rechecked_by_root(tmp_path, monkeypatch,
                                                                     first_line, interpreter):
     prog = _script_with(tmp_path, monkeypatch, first_line)
+    if interpreter == "sh":            # env looks it up in the system folders, in order
+        interpreter = vpn_execution._which_privileged("sh")
     r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup {prog}\n")))
     assert r.allowed, r.blockers
     assert r.programs == ((str(prog), interpreter) if interpreter else (str(prog),))
