@@ -148,9 +148,12 @@ start-up log is handled the same way.
 Disconnect stops only the process Sentinel started and can identify as its own.
 If it cannot, it refuses, stops nothing, and tells you to use the client that
 started the connection — that refusal comes after you answer Yes and is shown
-as a failure. Tunnel never stops OpenVPN by process name. The review shows an
-abbreviated command and no routing or DNS lines for OpenVPN, and configs that
-ask for a username and password, pushed DNS and live status are not supported.
+as a failure. Tunnel never stops OpenVPN by process name. OpenVPN starts from
+`/` with nothing of your environment, so a relative file name in an `.ovpn`
+(`ca ca.crt`) means a file in `/`: use full paths or inline blocks. The review
+shows the exact command and no routing or DNS lines for OpenVPN, and configs
+that ask for a username and password, pushed DNS and live status are not
+supported.
 
 ### If you close Sentinel mid-connection
 

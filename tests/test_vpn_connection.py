@@ -23,7 +23,9 @@ class Recorder:
         return self.ok, self.output
 
 
-# wg-quick with no PATH lookup of its own: run from / with only HOME and PATH.
+# The privileged tools run from / with only HOME and PATH.
+SCRUBBED = "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' "
+# wg-quick with no PATH lookup of its own.
 BARE = "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' 'wg-quick'"
 
 
@@ -140,7 +142,7 @@ def test_openvpn_connect_launches_daemon(monkeypatch, tmp_path):
     assert result["success"] is True
     assert result["protocol"] == "OpenVPN"
     assert len(run.scripts) == 1
-    assert run.scripts[0].startswith("'/opt/homebrew/sbin/openvpn' --config")
+    assert run.scripts[0].startswith(SCRUBBED + "'/opt/homebrew/sbin/openvpn' --config")
     assert str(cfg) in run.scripts[0]
     assert "--daemon" in run.scripts[0]
 
@@ -243,7 +245,7 @@ def test_openvpn_connect_names_the_binary_by_absolute_path(monkeypatch, tmp_path
     monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
     rec = Recorder()
     openvpn_manager.connect(str(cfg), run_as_root=rec)
-    assert rec.scripts and rec.scripts[0].startswith("'/opt/homebrew/sbin/openvpn' --config")
+    assert rec.scripts and rec.scripts[0].startswith(SCRUBBED + "'/opt/homebrew/sbin/openvpn' --config")
 
 
 # ── Protocol dispatch ───────────────────────────────────────────────────────

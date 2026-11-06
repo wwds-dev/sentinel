@@ -40,8 +40,11 @@ its options is not interpreted: an option that takes a program name
 (``dtrace -c -x``) still names one found on wg-quick's PATH. What a program reads
 on its own (startup files, the working directory, the environment) is closed off
 by running wg-quick from / with only HOME=/var/root and PATH
-(``vpn_connection.wg_quick_command``). A DNS entry with a shell wildcard is a
-blocker on Connect: wg-quick expands it, so the DNS that applies is unknown.
+(``vpn_connection.wg_quick_command``); openvpn is started the same way
+(``openvpn_manager.start_command``), so a relative OpenVPN hook program
+resolves from /, not from the app's working directory. A DNS entry with a shell
+wildcard is a blocker on Connect: wg-quick expands it, so the DNS that applies
+is unknown.
 """
 
 from __future__ import annotations
@@ -1079,8 +1082,11 @@ def review_execution(action: str, profile: dict | None, *,
     elif protocol == "OpenVPN":
         interface = ""
         target = vpn_connection.resolve_config_path(profile) or ""
-        command = (f"openvpn --config {vpn_connection._quote(target)} --daemon sentinel-ovpn …"
-                   if action == "connect" else "kill -TERM <pid of Sentinel's tracked openvpn>")
+        # The line root runs, as for wg-quick: from /, with an empty environment.
+        if action == "connect":
+            command = openvpn_manager.start_command(target) if target else ""
+        else:
+            command = "kill -TERM <pid of Sentinel's tracked openvpn>"
         if action == "connect":
             if not openvpn_manager.is_openvpn_available():
                 blockers.append("openvpn client not found — install it, e.g. "

@@ -60,6 +60,14 @@ and the git log, and is not back-filled here.
   `/usr/bin/python3` or `/usr/bin/make` passed the review but, as
   administrator, read your shell startup files, Python `.pth` files or a
   `Makefile` in Sentinel's folder.
+- **OpenVPN runs with nothing of yours around it either.** Tunnel starts
+  OpenVPN the same way: from `/`, with an empty environment apart from
+  `HOME=/var/root` and a fixed `PATH`, and with every path made absolute. As
+  administrator it used to see your environment (`OPENSSL_CONF` can load a
+  library into it) and start its scripts in Sentinel's folder, so `up up.sh`
+  ran a `./up.sh` from there. A relative file name in an `.ovpn` (`ca ca.crt`)
+  now means a file in `/`: use full paths or inline blocks. The review shows the
+  exact command instead of an abbreviated one.
 - **A wildcard in DNS stops a Connect.** wg-quick expands `DNS = 10.64.0.*`, so
   which DNS server applies could not be known; the review said "system DNS
   stays in use". Search domains without a server are marked as not applied,

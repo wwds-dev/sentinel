@@ -18,6 +18,7 @@ returned, and ``is_running``/``status`` read the real pid file and process table
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import shlex
@@ -42,6 +43,16 @@ except Exception:  # pragma: no cover
 RunAsRoot = Callable[..., tuple[bool, str]]
 
 
+def _absolute(path: str) -> str:
+    """``path`` from the current directory, left as written otherwise.
+
+    Not ``os.path.abspath``: that drops ``link/..`` without following ``link``,
+    so root would open a different file from the one this process (and the
+    review) opened through the link. Joining keeps the kernel's own walk.
+    """
+    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+
+
 def openvpn_binary() -> str | None:
     """Absolute path of the OpenVPN client, or None.
 
@@ -51,7 +62,7 @@ def openvpn_binary() -> str | None:
     """
     found = shutil.which("openvpn")
     if found:
-        return found
+        return _absolute(found)     # a relative PATH entry; root runs from /
     for candidate in ("/opt/homebrew/sbin/openvpn", "/usr/local/sbin/openvpn",
                       "/opt/homebrew/bin/openvpn", "/usr/local/bin/openvpn"):
         if Path(candidate).is_file():
@@ -65,7 +76,9 @@ def is_openvpn_available() -> bool:
 
 
 def _run_dir() -> Path:
-    path = user_data_base() / "vpn"
+    # Absolute: root runs openvpn from /, so a relative --log or --writepid would
+    # land there, and the pid path must read the same in the command and in ps.
+    path = Path(_absolute(str(user_data_base() / "vpn")))
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -178,6 +191,39 @@ def _quote(text: str) -> str:
     return "'" + str(text).replace("'", "'\\''") + "'"
 
 
+# The PATH root's openvpn gets. Nothing of the caller's PATH is kept.
+SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def start_command(config_path: str) -> str:
+    """The shell line that starts Sentinel's OpenVPN client, runnable as root.
+
+    openvpn inherits nothing from the user: the working directory is ``/`` and
+    the environment is only ``HOME=/var/root`` and a fixed system PATH
+    (``env -i``), as for wg-quick (``vpn_connection.wg_quick_command``). The
+    macOS dialog runs the line with the user's environment and the app's
+    working directory, which the launcher sets to the user-owned checkout.
+    openvpn itself reads its environment (``OPENSSL_CONF`` and
+    ``OPENSSL_MODULES`` can load a library into the root process), and with
+    ``--daemon`` it keeps its starting directory (``daemon(1, ...)``), which
+    its hooks inherit: ``up up.sh`` ran ./up.sh from the checkout as root, and
+    the review does not check a relative program. Its hooks get only the
+    variables OpenVPN sets itself (``execve`` with its own list,
+    ``run_command.c``), so they lose nothing here. Every path is made absolute
+    first, without collapsing ``..`` (``_absolute``); a relative file named
+inside the config now resolves from ``/``.
+    """
+    cfg = _absolute(os.path.expanduser(config_path))
+    return (
+        f"cd / && /usr/bin/env -i HOME=/var/root PATH={_quote(SYSTEM_PATH)} "
+        f"{_quote(openvpn_binary() or 'openvpn')} --config {_quote(cfg)} "
+        f"--daemon sentinel-ovpn "
+        f"--log {_quote(str(log_file()))} "
+        f"--writepid {_quote(str(pid_file()))} "
+        f"--verb 3"
+    )
+
+
 def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root,
             sleep: Callable[[float], None] = time.sleep) -> dict:
     """Start an OpenVPN client from a .ovpn file, daemonised, as root.
@@ -200,17 +246,9 @@ def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root,
         result["error"] = "An OpenVPN process is already running. Disconnect first."
         return result
 
-    log = log_file()
-    pid = pid_file()
-    _forget(log)
+    _forget(log_file())
     _forget(device_file())
-    script = (
-        f"{_quote(openvpn_binary() or 'openvpn')} --config {_quote(str(cfg))} "
-        f"--daemon sentinel-ovpn "
-        f"--log {_quote(str(log))} "
-        f"--writepid {_quote(str(pid))} "
-        f"--verb 3"
-    )
+    script = start_command(str(cfg))
     ok, output = run_as_root(script, "Sentinel needs administrator access to start the VPN.")
     result["output"] = output
     result["success"] = ok
