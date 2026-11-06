@@ -28,12 +28,10 @@ class Recorder:
 
 # The privileged tools run from / with only HOME and PATH.
 SCRUBBED = "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' "
-# wg-quick with no PATH lookup of its own.
-BARE = "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' 'wg-quick'"
 
 
 @pytest.fixture(autouse=True)
-def bare_wg_quick_command(monkeypatch):
+def fixed_wg_quick(monkeypatch):
     """Pin the command shape: without this the expected strings depend on
     whether (and where) this Mac has wireguard-tools installed."""
     real_which = vpn_connection.shutil.which

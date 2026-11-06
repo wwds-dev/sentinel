@@ -201,32 +201,28 @@ def test_hook_commands_resolve_in_the_order_root_uses():
             in vpn_rootscript.ROOT_SCRIPT)
 
 
-def test_wg_quick_runs_from_root_with_nothing_of_the_users_environment(monkeypatch, tmp_path):
-    """PR #34 review P1-2: hooks read ~/.zshenv, Python .pth files, ./Makefile and
-    relative pfctl files; root must start in / with only HOME=/var/root and PATH."""
-    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: None)
+def _wg_root_argv(monkeypatch, config_path, which=FAKE_WG_QUICK):
+    """The argv root gets for a WireGuard Connect of ``config_path``."""
+    import shlex
+    monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: which)
+    seen = []
+    vpn_connection.connect({"protocol": "WireGuard", "endpoint": "203.0.113.7",
+                            "config_path": config_path},
+                           run_as_root=lambda script, prompt: seen.append(script) or (True, ""),
+                           config_sha256="a" * 64)
+    return shlex.split(seen[0]) if seen else []
+
+
+def test_a_relative_wireguard_config_reaches_root_as_an_absolute_path(monkeypatch, tmp_path):
+    """PR #34 review P1-2 under S7: root starts in /, so the file it copies must
+    be named absolutely; the user's home and working directory are not passed."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    command = vpn_connection.wg_quick_command("up", "sub/wg0.conf")
-    assert command.startswith("cd / && /usr/bin/env -i HOME=/var/root PATH=")
-    assert f"'{tmp_path}/sub/wg0.conf'" in command or f"'{os.path.realpath(tmp_path)}/sub/wg0.conf'" in command
-    assert str(tmp_path) not in command.split(" up ")[0]
-    assert vpn_connection.wg_quick_command("up", "wg0").endswith(" up 'wg0'")   # a name stays a name
-
-
-@pytest.mark.allow_process
-def test_the_scrubbed_command_really_drops_the_environment_and_directory(tmp_path, monkeypatch):
-    """Run the command's own prefix unprivileged, with a shell in wg-quick's
-    place: it must start in / and see only HOME, PATH and what sh adds itself."""
-    import subprocess
-    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: None)
-    prefix = vpn_connection.wg_quick_command("up", "wg0").split(" 'wg-quick' ")[0]
-    out = subprocess.run(["/bin/sh", "-c", prefix + " /bin/sh -c 'pwd; /usr/bin/env'"],
-                         cwd=tmp_path, env={"SECRET": "x", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-                         capture_output=True, text=True, timeout=10).stdout.splitlines()
-    assert out[0] == "/"
-    assert "HOME=/var/root" in out and "PATH=/usr/bin:/bin:/usr/sbin:/sbin" in out
-    assert {line.split("=", 1)[0] for line in out[1:]} <= {"HOME", "PATH", "PWD", "OLDPWD", "SHLVL", "_"}
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    argv = _wg_root_argv(monkeypatch, "sub/wg0.conf")
+    assert argv == vpn_rootscript.wireguard_argv(
+        "up", f"{os.getcwd()}/sub/wg0.conf", "a" * 64, "wg0", FAKE_WG_QUICK)
+    assert _wg_root_argv(monkeypatch, "~/wg0.conf")[7] == f"{tmp_path}/home/wg0.conf"
 
 def test_openvpn_start_command_is_scrubbed_and_absolute(monkeypatch, tmp_path):
     monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
@@ -235,7 +231,8 @@ def test_openvpn_start_command_is_scrubbed_and_absolute(monkeypatch, tmp_path):
         "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' "
         "'/opt/homebrew/sbin/openvpn' --config '/Users/me/my nl.ovpn' --daemon sentinel-ovpn "
         f"--log '{tmp_path}/vpn/openvpn.log' --writepid '{tmp_path}/vpn/openvpn.pid' --verb 3")
-    assert openvpn_manager.SYSTEM_PATH == vpn_connection.SYSTEM_PATH
+    assert openvpn_manager.SYSTEM_PATH == vpn_connection.SYSTEM_PATH == ":".join(
+        vpn_rootscript.SYSTEM_PATH)
 
 
 def test_openvpn_runs_from_root_with_nothing_of_the_users_environment(monkeypatch, tmp_path):
@@ -289,9 +286,8 @@ def test_a_relative_config_through_a_link_and_dotdot_stays_the_reviewed_file(mon
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
-    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: None)
     ovpn = _config_word(openvpn_manager.start_command("link/../client.ovpn"), "--config")
-    wg = _config_word(vpn_connection.wg_quick_command("up", "link/../wg0.conf"), None)
+    wg = _wg_root_argv(monkeypatch, "link/../wg0.conf")[7]          # the source root copies
     for word, name in ((ovpn, "client.ovpn"), (wg, "wg0.conf")):
         assert os.path.isabs(word) and "/link/../" in word
         assert Path(word).read_text() == Path(f"link/../{name}").read_text() == "reviewed"
@@ -305,8 +301,7 @@ def test_a_binary_found_through_a_relative_path_entry_is_made_absolute(monkeypat
     monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
     assert openvpn_manager.openvpn_binary() == f"{here}/bin/openvpn"
     assert f" '{here}/bin/openvpn' --config " in openvpn_manager.start_command("/x.ovpn")
-    command = vpn_connection.wg_quick_command("up", "/x.conf")
-    assert f"PATH='{here}/bin:/usr/bin:/bin:/usr/sbin:/sbin' '{here}/bin/wg-quick' up" in command
+    assert _wg_root_argv(monkeypatch, "/x/wg0.conf", which="bin/wg-quick")[10] == f"{here}/bin/wg-quick"
 
 
 def test_the_scrubbed_openvpn_is_still_recognised_as_sentinels(monkeypatch, tmp_path):

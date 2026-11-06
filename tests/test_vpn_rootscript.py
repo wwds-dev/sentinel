@@ -14,11 +14,15 @@ Real ownership, /private/var/run and wg-quick behaviour are the owner checklist
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shlex
+import signal
 import subprocess
 import sys
+import threading
+import time
 import types
 
 import pytest
@@ -96,6 +100,70 @@ def test_interface_for_follows_wg_quicks_own_rule(target, expected):
 
 # ── the script itself, under real bash ──────────────────────────────────────
 
+def run_group(argv, *, timeout, **kwargs):
+    """subprocess.run that kills the script's whole process group on a timeout,
+    so a blocked ``head`` or ``sleep`` cannot outlive the test (S7 Opus audit P3-3)."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True, **kwargs)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+# A refused FIFO is refused at once; this only bounds a broken guard's wait.
+FIFO_TIMEOUT = 10
+UNREAD = b"never read"
+
+
+@contextlib.contextmanager
+def writer_held(fifo):
+    """Keep a writer, with marker bytes, on a FIFO the script must refuse to read.
+
+    If a broken ``[ -f ]`` guard lets ``head`` open it, the read ends at EOF when
+    this closes (or pytest dies) instead of blocking forever with no writer.
+    Yields a check that the marker is still unread; it reads the marker, so call
+    it once."""
+    fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        os.write(fd, UNREAD)
+
+        def unread() -> bool:
+            try:
+                return os.read(fd, len(UNREAD) + 1) == UNREAD
+            except BlockingIOError:                    # emptied: something read it
+                return False
+        yield unread
+    finally:
+        os.close(fd)
+
+
+def refused_without_reading(call):
+    """Run ``call``; a timeout means the script blocked reading a FIFO it must refuse."""
+    try:
+        return call()
+    except subprocess.TimeoutExpired:
+        pytest.fail("the script blocked reading the FIFO: a [ -f ] guard is broken")
+
+
+def test_writer_held_tells_whether_the_fifo_was_read(tmp_path):
+    fifo = tmp_path / "pipe"
+    for read_it in (False, True):
+        os.mkfifo(fifo)
+        with writer_held(fifo) as unread:
+            if read_it:
+                reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+                try:
+                    assert os.read(reader, 64) == UNREAD
+                finally:
+                    os.close(reader)
+            assert unread() is not read_it
+        fifo.unlink()
+
+
 @pytest.fixture
 def root(tmp_path):
     """A fake wg-quick that logs PATH, its verb, its file and that file's
@@ -105,14 +173,19 @@ def root(tmp_path):
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     log = tmp_path / "wgquick.log"
+    envlog = tmp_path / "wgquick.env"
     rc_file = tmp_path / "rc"
     rc_file.write_text("0")
+    delay_file = tmp_path / "delay"
+    delay_file.write_text("0")
     wgrun = tmp_path / "wireguard"
     wgrun.mkdir()
     fake = stubs / "wg-quick"
     fake.write_text(f"""#!/bin/bash
 printf 'PATH=%s\\n%s %s\\n' "$PATH" "$1" "$2" >> '{log}'
+{{ /bin/pwd; /usr/bin/env; }} > '{envlog}'
 /bin/cat -- "$2" >> '{log}'
+/bin/sleep "$(/bin/cat '{delay_file}')"
 rc=$(/bin/cat '{rc_file}')
 if [ "$rc" = 0 ]; then
   name=${{2##*/}}; name=${{name%.conf}}
@@ -130,18 +203,19 @@ exit "$rc"
     owner = f"{os.getuid()}:{os.getgid()}"
 
     def run(verb, source=None, sha=None, *, iface="wgt", rc=0, owner=owner, env=None,
-            base=base, timeout=20):
+            base=base, timeout=20, script=None):
         source = str(conf) if source is None else source
         sha = (hashlib.sha256(conf.read_bytes()).hexdigest() if source and conf.exists()
                else "") if sha is None else sha
         rc_file.write_text(str(rc))
         argv = rs.wireguard_argv(verb, source, sha, iface, str(fake), base=str(base),
                                  owner=owner, wg_run=str(wgrun))
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                              env={**os.environ, **(env or {})})
+        if script is not None:
+            argv[4] = script
+        return run_group(argv, timeout=timeout, env={**os.environ, **(env or {})})
 
     return types.SimpleNamespace(
-        run=run, log=log, conf=conf, base=base, stubs=stubs, wgrun=wgrun, owner=owner,
+        run=run, log=log, envlog=envlog, conf=conf, delay=delay_file, base=base, stubs=stubs, wgrun=wgrun, owner=owner,
         copy=base / "wg" / "wgt" / "wgt.conf",
         mark_up=lambda: (wgrun / "wgt.name").touch(),
         is_up=lambda: (wgrun / "wgt.name").exists(),
@@ -187,6 +261,29 @@ def test_root_ignores_an_inherited_environment(root, tmp_path):
 
 
 @harness
+@pytest.mark.parametrize("verb", ["up", "down"])
+def test_wg_quick_runs_from_root_with_only_home_and_path(root, tmp_path, verb):
+    """PR #34 review P1-2, kept under S7: wg-quick and its hooks start in / (not
+    the base, not Sentinel's working directory) and see only HOME=/var/root and
+    PATH, whatever the caller had."""
+    if verb == "down":
+        assert root.run("up").returncode == 0
+    proc = subprocess.run(
+        rs.wireguard_argv(verb, str(root.conf),
+                          hashlib.sha256(root.conf.read_bytes()).hexdigest(), "wgt",
+                          str(root.stubs / "wg-quick"), base=str(root.base),
+                          owner=root.owner, wg_run=str(root.wgrun)),
+        cwd=tmp_path, capture_output=True, text=True, timeout=20,
+        env={"SECRET": "x", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"})
+    assert proc.returncode == 0, proc.stderr
+    out = root.envlog.read_text().splitlines()
+    assert out[0] == "/"
+    assert "HOME=/var/root" in out
+    assert f"PATH={root.stubs}:/usr/bin:/bin:/usr/sbin:/sbin" in out
+    assert {line.split("=", 1)[0] for line in out[1:]} <= {"HOME", "PATH", "PWD", "OLDPWD", "SHLVL", "_"}
+
+
+@harness
 def test_a_config_changed_after_confirming_is_refused_and_nothing_runs(root):
     sha = hashlib.sha256(root.conf.read_bytes()).hexdigest()       # what the user confirmed
     root.conf.write_text("[Interface]\nPostUp = echo EVIL\n")    # swapped in the window
@@ -227,7 +324,9 @@ def test_a_fifo_is_refused_at_once_and_never_runs_later(root):
     sha = hashlib.sha256(root.conf.read_bytes()).hexdigest()
     root.conf.unlink()
     os.mkfifo(root.conf)
-    proc = root.run("up", sha=sha, timeout=10)                     # would block in head
+    with writer_held(root.conf) as unread:
+        proc = refused_without_reading(lambda: root.run("up", sha=sha, timeout=FIFO_TIMEOUT))
+        assert unread(), "the script read the FIFO"
     assert proc.returncode == rs.EXIT_CHANGED and root.ran() == ""
 
 
@@ -284,6 +383,25 @@ def test_disconnect_without_a_copy_or_a_verified_file_runs_nothing(root):
     proc = root.run("down", source="", sha="")
     assert proc.returncode == rs.EXIT_UNVERIFIED
     assert "nothing was run" in proc.stderr and root.ran() == ""
+
+
+@harness
+def test_a_kept_copy_that_is_a_symlink_is_never_followed(root, tmp_path):
+    """S7 rebase review P3-4: only a regular file root kept counts as the copy."""
+    assert root.run("up").returncode == 0
+    evil = tmp_path / "evil.conf"
+    evil.write_text("[Interface]\nPostDown = echo EVIL\n")
+    root.copy.unlink()
+    root.copy.symlink_to(evil)
+    root.log.unlink()
+    proc = root.run("down", source="", sha="")           # nothing to verify instead
+    assert proc.returncode == rs.EXIT_UNVERIFIED and root.ran() == ""
+    root.copy.unlink()
+    root.copy.symlink_to(evil)
+    proc = root.run("down")                               # the reviewed file is verified
+    assert proc.returncode == 0, proc.stderr
+    assert "verified your config file" in proc.stdout
+    assert root.ran() == logged(root, "down", root.copy, GOOD) and "EVIL" not in root.ran()
 
 
 @harness
@@ -361,3 +479,98 @@ def test_the_script_itself_refuses_a_path_as_interface(root, iface):
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=20)
     assert proc.returncode == rs.EXIT_REFUSED_DIR
     assert not root.base.exists()
+
+
+# ── S7 Opus audit follow-ups (docs/audit/s7-opus-audit-2026-11-06.md) ───────
+
+def test_runs_for_one_interface_are_serialised_by_a_lock_no_copy_can_collide_with():
+    assert '/usr/bin/lockf -k -t 30 "wg/lock@$iface"' in rs.ROOT_SCRIPT
+    assert '"$BASH_EXECUTION_STRING"' in rs.ROOT_SCRIPT
+    assert not rs.INTERFACE_RE.fullmatch("lock@wg0")    # never the name of a copy's folder
+
+
+@harness
+def test_a_second_connect_during_the_first_cannot_remove_its_kept_copy(root):
+    """P3-1: B starts while A is inside wg-quick up. Before the lock, B passed the
+    up check, replaced the copy, failed, and removed it: A's tunnel was left
+    with nothing to disconnect from."""
+    root.delay.write_text("1")
+    results = {}
+    a = threading.Thread(target=lambda: results.update(a=root.run("up")))
+    a.start()
+    time.sleep(0.3)
+    results["b"] = root.run("up")
+    a.join()
+    assert results["a"].returncode == 0, results["a"].stderr
+    assert results["b"].returncode == rs.EXIT_STATE        # waited, then saw it up
+    assert "already up" in results["b"].stderr
+    assert root.copy.read_bytes() == root.conf.read_bytes()
+    root.delay.write_text("0")
+    root.conf.write_text("[Interface]\nPostDown = echo EVIL\n")
+    proc = root.run("down", source="", sha="")
+    assert proc.returncode == 0 and "copy kept since Connect" in proc.stdout
+
+
+@harness
+def test_a_stale_name_without_its_socket_is_not_up(root):
+    """P3-C: wg-quick's .name survives a crash; without the device's socket the
+    review calls it not up, and root must agree."""
+    (root.wgrun / "wgt.name").write_text("utun9\n")
+    assert vpn_execution.wireguard_interface_state("wgt", root.wgrun)["up"] is False
+    proc = root.run("down", source="", sha="")
+    assert proc.returncode == rs.EXIT_STATE and "is not up" in proc.stderr
+    (root.wgrun / "wgt.name").write_text("utun9\n")
+    proc = root.run("up")
+    assert proc.returncode == 0, proc.stderr
+    assert root.copy.exists()
+
+
+@harness
+def test_a_name_with_its_socket_is_up(root):
+    (root.wgrun / "wgt.name").write_text("utun9\n")
+    (root.wgrun / "utun9.sock").touch()
+    assert vpn_execution.wireguard_interface_state("wgt", root.wgrun)["up"] is True
+    proc = root.run("up")
+    assert proc.returncode == rs.EXIT_STATE and root.ran() == ""
+
+
+@harness
+def test_existing_folders_are_reset_to_their_modes(root):
+    """P3-4 (G): ADR 0004 says an existing base and wg folder are normalised."""
+    (root.base / "wg").mkdir(parents=True)
+    root.base.chmod(0o777)
+    (root.base / "wg").chmod(0o777)
+    assert root.run("up").returncode == 0
+    assert oct(root.base.stat().st_mode & 0o777) == "0o755"
+    assert oct((root.base / "wg").stat().st_mode & 0o777) == "0o700"
+
+
+@harness
+def test_a_read_that_never_ends_is_cut_off_and_refused(root):
+    """P3-4 (F, I): a source that delivers the reviewed bytes and then holds the
+    read open is killed at the cut-off, and the non-zero ``wait`` refuses the
+    copy even though it hashes equal. The cut-off is shortened from 200 ticks
+    and the [ -f ] guard removed, which is the only way to reach this code;
+    ``cat`` stands in for ``head``, whose buffered output a kill would discard
+    (leaving a copy that fails the hash anyway), so only ``wait`` can refuse."""
+    sha = hashlib.sha256(root.conf.read_bytes()).hexdigest()
+    good = root.conf.read_bytes()
+    root.conf.unlink()
+    os.mkfifo(root.conf)
+    script = rs.ROOT_SCRIPT
+    for old, new in (('[ "$i" -ge 200 ]', '[ "$i" -ge 10 ]'),
+                     ('  [ -f "$src" ] || refused\n', ""),
+                     ("/usr/bin/head -c 262145 --", "/bin/cat --")):
+        assert script.count(old) == 1, old
+        script = script.replace(old, new)
+    fd = os.open(root.conf, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        os.write(fd, good)                                  # all of it, and no EOF
+        started = time.monotonic()
+        proc = root.run("up", sha=sha, script=script, timeout=15)
+        elapsed = time.monotonic() - started
+    finally:
+        os.close(fd)
+    assert proc.returncode == rs.EXIT_CHANGED, proc.stderr
+    assert root.ran() == "" and not root.copy.parent.exists()
+    assert elapsed < 10

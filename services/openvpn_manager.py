@@ -200,7 +200,7 @@ def start_command(config_path: str) -> str:
 
     openvpn inherits nothing from the user: the working directory is ``/`` and
     the environment is only ``HOME=/var/root`` and a fixed system PATH
-    (``env -i``), as for wg-quick (``vpn_connection.wg_quick_command``). The
+    (``env -i``), as for wg-quick (``vpn_rootscript.ROOT_SCRIPT``). The
     macOS dialog runs the line with the user's environment and the app's
     working directory, which the launcher sets to the user-owned checkout.
     openvpn itself reads its environment (``OPENSSL_CONF`` and

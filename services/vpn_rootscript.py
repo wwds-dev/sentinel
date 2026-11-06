@@ -10,7 +10,11 @@ path, base, owner and wg-quick's run directory arrive as ``$1``-``$8`` (the
 same shape as ``macaddr.ROOT_SCRIPT``), so nothing a caller passes is ever
 parsed as shell. The words are quoted by ``shlex.join`` here, never by the
 caller. Root starts with an empty environment (``env -i``): ``BASH_ENV`` and
-the like would otherwise run code as root before the hash check.
+the like would otherwise run code as root before the hash check. wg-quick and
+its hooks then run from ``/`` with only ``HOME=/var/root`` and ``PATH``, so a
+hook's program reads nothing of the user's (startup files in their home, a
+Makefile or relative file in Sentinel's working directory, files a ``DNS``
+wildcard expands to).
 
 What the copy does NOT protect: ``wg-quick`` itself, ``wg``/``wireguard-go``
 beside it and Sentinel's own checkout. Homebrew's bin folder is usually the
@@ -20,8 +24,9 @@ Exit codes of the script (nothing ran for any of them): 94 the tunnel is
 already up (Connect) or not up (Disconnect; a stale copy is removed), 96 no
 verified config to run, 97 a directory Sentinel owns is not what it should be,
 98 the config changed after it was confirmed or could not be read (one message
-for both, so the exit status says nothing about other files). Anything else is
-wg-quick's own.
+for both, so the exit status says nothing about other files), 75 another run
+for the same interface held its lock for 30 seconds (``lockf``). Anything else
+is wg-quick's own.
 """
 
 from __future__ import annotations
@@ -59,6 +64,7 @@ ROOT_SCRIPT = """\
 verb=$1; src=$2; want=$3; iface=$4; wgq=$5; base=$6; owner=$7; wgrun=$8
 umask 077
 PATH="${wgq%/*}:/usr/bin:/bin:/usr/sbin:/sbin"; export PATH
+HOME=/var/root; export HOME
 case $iface in ''|.|..|*/*) echo "refusing: bad interface name" >&2; exit 97;; esac
 uid=${owner%%:*}
 # A directory Sentinel owns: a real directory (never a link), owned by root.
@@ -79,8 +85,25 @@ make_dir "$base" 755
 cd -P -- "$base" && [ "$(/bin/pwd -P)" = "$base" ] || {
   echo "refusing: $base moved" >&2; exit 97; }
 make_dir wg 700
+# One Connect or Disconnect per interface at a time: a second run that passed
+# the "is it up" check while the first was still inside wg-quick up would
+# replace, then remove, the copy the live tunnel needs for its Disconnect. The
+# script runs again from the top under lockf (the lock dies with its holder);
+# '@' is not allowed in an interface name, so no lock is ever a copy's folder.
+if [ "$9" != locked ]; then
+  exec /usr/bin/lockf -k -t 30 "wg/lock@$iface" /bin/bash -c "$BASH_EXECUTION_STRING" \
+    "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" locked
+fi
 d="wg/$iface"; copy="$d/$iface.conf"; run="$base/$copy"
-up_now() { [ -e "$wgrun/$iface.name" ]; }
+# Up as Sentinel's review decides it (vpn_execution.wireguard_interface_state):
+# wg-quick's <iface>.name, and the socket of the device it names. A .name left
+# without its socket (a crash) is stale: not up.
+up_now() {
+  [ -e "$wgrun/$iface.name" ] || return 1
+  n=$(/bin/cat -- "$wgrun/$iface.name" 2>/dev/null) || return 0
+  case $n in ''|*/*) return 0;; esac
+  [ -e "$wgrun/$n.sock" ]
+}
 refused() {
   /bin/rm -rf -- "$d"
   echo "refused: the config changed after you confirmed it, or could not be read; nothing was run." >&2
@@ -108,7 +131,7 @@ case $verb in
 up)
   if up_now; then echo "refused: $iface is already up; nothing was run." >&2; exit 94; fi
   copy_verified
-  "$wgq" up "$run" || { rc=$?; /bin/rm -rf -- "$d"; exit "$rc"; }
+  (cd / && exec "$wgq" up "$run") || { rc=$?; /bin/rm -rf -- "$d"; exit "$rc"; }
   ;;
 down)
   if ! up_now; then
@@ -123,7 +146,7 @@ down)
   else
     echo "Disconnect ran the copy kept since Connect, not your file as it is now."
   fi
-  "$wgq" down "$run" || exit
+  (cd / && exec "$wgq" down "$run") || exit
   /bin/rm -rf -- "$d"
   ;;
 *) echo "refusing: unknown action" >&2; exit 97;;
