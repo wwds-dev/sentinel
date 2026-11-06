@@ -28,6 +28,7 @@ covered by the config hash either; only programs that root owns are accepted.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -360,9 +361,10 @@ def _which_privileged(name: str) -> str | None:
 def _paths_touched(path: Path) -> list[Path]:
     """``path`` and its folders as written, then every path the kernel goes
     through to resolve it: one component at a time, each link resolved before
-    any ".." after it (as the kernel does), each link and its folders added, and
-    the final file and its folders. Bounded: after 40 links the rest is left to
-    the final ``realpath``. ValueError (a NUL byte) propagates to the caller."""
+    any ".." after it (as the kernel does), every folder passed through added
+    (even one a later ".." leaves), each link and its folders, and the final
+    file. More than 40 links raises OSError (ELOOP), as the kernel would refuse
+    the path; ValueError (a NUL byte) propagates. The caller treats both as unsafe."""
     seen: list[Path] = []
 
     def add(item: Path) -> None:
@@ -372,7 +374,9 @@ def _paths_touched(path: Path) -> list[Path]:
 
     add(path)
     current = Path(path.anchor or os.sep)
-    parts = list(Path(os.path.abspath(path) if not path.is_absolute() else path).parts[1:])
+    # Never normalise before walking: a ".." after a link is applied to where
+    # the link leads, not to the text of the path.
+    parts = list((path if path.is_absolute() else Path(os.getcwd()) / path).parts[1:])
     links = 0
     while parts:
         part = parts.pop(0)
@@ -382,9 +386,11 @@ def _paths_touched(path: Path) -> list[Path]:
             current = current.parent
             continue
         step = current / part
-        if links < 40 and os.path.islink(step):
+        add(step)                                    # every folder passed through
+        if os.path.islink(step):
             links += 1
-            add(step)                                # the link itself and its folders
+            if links > 40:
+                raise OSError(errno.ELOOP, "too many links", str(path))
             target = os.readlink(step)
             if os.path.isabs(target):
                 current = Path(os.sep)

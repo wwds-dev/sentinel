@@ -790,13 +790,70 @@ def test_a_link_before_dotdot_is_followed_first(tmp_path, monkeypatch):
     assert reason is not None and str(W) in reason
 
 
-def test_a_link_loop_ends(tmp_path):
+def test_a_link_loop_ends_and_is_refused(tmp_path):
     (tmp_path / "a").symlink_to(tmp_path / "b")
     (tmp_path / "b").symlink_to(tmp_path / "a")
-    assert isinstance(vpn_execution._paths_touched(tmp_path / "a"), list)
+    with pytest.raises(OSError):
+        vpn_execution._paths_touched(tmp_path / "a")
+    assert "too many links" in vpn_execution._unsafe_executable_reason(tmp_path / "a")
+
+
+def test_forty_links_resolve_and_forty_one_are_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable())
+    (tmp_path / "tool").write_text("#!/bin/sh\n")
+    previous = tmp_path / "tool"
+    for n in range(41):
+        link = tmp_path / f"l{n}"
+        link.symlink_to(previous)
+        previous = link
+    touched = vpn_execution._paths_touched(tmp_path / "l39")    # 40 links
+    assert tmp_path / "l0" in touched and tmp_path / "tool" in touched
+    assert vpn_execution._unsafe_executable_reason(tmp_path / "l39") is None
+    assert "too many links" in vpn_execution._unsafe_executable_reason(tmp_path / "l40")
+
+
+def test_a_folder_a_link_target_passes_through_before_dotdot_is_checked(tmp_path, monkeypatch):
+    """S/prog -> W/sub/../../R2/y: the kernel walks into W (writable) before the
+    two ".." bring it back; a user could swap W/sub for a link meanwhile."""
+    S, W, R2 = tmp_path / "S", tmp_path / "W", tmp_path / "R2"
+    for d in (S, W, W / "sub", R2):
+        d.mkdir()
+    (R2 / "y").write_text("#!/bin/sh\n")
+    (S / "prog").symlink_to(str(W / "sub") + "/../../R2/y")
+    assert os.path.realpath(S / "prog") == os.path.realpath(R2 / "y")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(W))
+    reason = vpn_execution._unsafe_executable_reason(S / "prog")
+    assert reason is not None and str(W) in reason
+
+
+def test_a_link_that_cannot_be_read_is_refused(tmp_path, monkeypatch):
+    (tmp_path / "tool").write_text("#!/bin/sh\n")
+    (tmp_path / "link").symlink_to(tmp_path / "tool")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable())
+
+    def no_read(*a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(vpn_execution.os, "readlink", no_read)
+    reason = vpn_execution._unsafe_executable_reason(tmp_path / "link")
+    assert reason is not None and "could not be resolved" in reason
 
 
 def test_a_nul_byte_in_a_hook_path_is_refused_not_raised(tmp_path):
     assert "not a usable path" in vpn_execution._unsafe_executable_reason(Path("/bin/ech\x00o"))
     r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = /bin/ech\x00o hi\n")))
     assert not r.allowed
+
+
+def test_a_relative_path_is_not_normalised_before_its_links(tmp_path, monkeypatch):
+    """"S/x/../y" from tmp_path: the kernel follows S/x (-> W/hop -> R2/d) before
+    the "..", landing on R2/y; normalising first would look at S/y instead."""
+    S, W, R2 = tmp_path / "S", tmp_path / "W", tmp_path / "R2"
+    for d in (S, W, R2, R2 / "d"):
+        d.mkdir()
+    (R2 / "y").write_text("#!/bin/sh\n")
+    (W / "hop").symlink_to(R2 / "d")
+    (S / "x").symlink_to(W / "hop")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(W))
+    reason = vpn_execution._unsafe_executable_reason(Path("S/x/../y"))
+    assert reason is not None and str(W) in reason
