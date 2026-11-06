@@ -642,14 +642,14 @@ class TestConnectDisconnect:
 
     def test_denied_root_hooks_get_their_own_prompt_and_declining_it_runs_nothing(
             self, tunnel, gate, dialogs, tmp_path, monkeypatch):
-        conf = write_conf(tmp_path, "wgh", extra_interface="PostUp = /usr/bin/curl -s http://203.0.113.9/x\n")
+        conf = write_conf(tmp_path, "wgh", extra_interface="PostUp = /sbin/route -n add -net 10.9.0.0/16 -interface %i\n")
         warned = []
         monkeypatch.setattr(QMessageBox, "warning",
                             staticmethod(lambda *a, **k: warned.append(a[2]) or QMessageBox.No))
         pick(tunnel, wg_profile(conf, "Hooked"))
         tunnel.connect_vpn()
         assert len(dialogs.questions) == 1 and len(warned) == 1
-        assert "curl" in warned[0] and "administrator" in warned[0]
+        assert "/sbin/route" in warned[0] and "administrator" in warned[0]
         assert gate.run.scripts == [] and gate.workers == []
         assert gate.entries() == []
 

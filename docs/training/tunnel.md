@@ -101,16 +101,21 @@ confirm and before the password prompt, nothing runs; a change after that is not
 caught yet (audit step S7).
 
 **WireGuard hooks must be plain commands with full paths.** wg-quick hands each
-hook to the shell, so Tunnel only accepts what it can read exactly as the shell
-will: commands that start with a full path (`/sbin/route …`) or with the plain
-name of a program in `/usr/bin`, `/bin`, `/usr/sbin` or `/sbin`, separated by
-`;`, `&&`, `||` or `&` if there is more than one. A hook with `$`, quotes, a
-backslash, `* ? [ ] { } < > ( ) ! ~` or a pipe, a `NAME=value` in front of a
-command, a shell word such as `.`, `source`, `eval`, `exec`, `if` or `echo`, a
-relative path, or a program name found anywhere else stops a Connect with
-"Tunnel cannot check what this hook runs; write plain commands with full paths."
-(Disconnect shows it as a risk). Write `/bin/echo` instead of `echo`, and put
-anything more complicated in a script owned by root, called by its full path.
+hook to the shell, so Tunnel only accepts commands that start with a full path
+(`/sbin/route …`) or with the plain name of a program in `/usr/bin`, `/bin`,
+`/usr/sbin` or `/sbin`, separated by `;`, `&&`, `||` or `&` if there is more
+than one. Only the network programs `route`, `ifconfig`, `networksetup`,
+`pfctl`, `scutil`, `killall`, `dscacheutil`, `wg`, `sysctl`, `ipconfig` and
+`logger` may be given ordinary words as arguments; any other program, your own
+scripts included, may only be given options, numbers, full paths and `%i`/`%I`.
+A hook with `$`, quotes, a backslash, `* ? [ ] { } < > ( ) ! ~` or a pipe, a
+`NAME=value` in front of a command, a shell word such as `.`, `source`, `eval`,
+`exec`, `if` or `echo`, a relative path, or a program name found anywhere else
+stops a Connect with "Tunnel cannot check what this hook runs; write plain
+commands with full paths." (Disconnect shows it as a risk). Write `/bin/echo`
+instead of `echo`, and put anything more complicated in a script owned by root,
+called by its full path. The DNS line shows only the entries wg-quick uses as
+servers; a name such as `corp.example` is listed as a search domain.
 
 ### Reading the result
 

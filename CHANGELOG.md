@@ -46,17 +46,26 @@ and the git log, and is not back-filled here.
   stops a Connect with "Tunnel cannot check what this hook runs; write plain
   commands with full paths." (on Disconnect it is a risk you confirm). Commands
   separated by `;`, `&&`, `||` or `&` are still allowed, and each one is checked.
-  A shell or interpreter must be given the full path of its script before any
-  other word, so `sh -c id` or `python3 -m x` is refused.
+  Only the network programs `route`, `ifconfig`, `networksetup`, `pfctl`,
+  `scutil`, `killall`, `dscacheutil`, `wg`, `sysctl`, `ipconfig` and `logger` may
+  be given ordinary words as arguments. Any other program (a shell, `xcrun`,
+  `dtrace`, your own script…) may only be given options, numbers, full paths
+  (checked like the program itself) and `%i`/`%I`, so `sh -c id`,
+  `xcrun tool` or `SH -c tool` is refused. Program names are matched in any
+  case, since macOS treats `/bin/SH` as `/bin/sh`.
 - **The review's DNS line now matches what wg-quick sets.** `DNS # = 10.64.0.1`
   sets no DNS server (wg-quick cuts the line at `#` before it reads the key), but
   the review showed "DNS: 10.64.0.1". It now says system DNS stays in use and
   warns about the line; a comment after a value is no longer read as part of it.
+  A name such as `DNS = corp.example` is a search domain to wg-quick, not a
+  server, and is now shown as one; entries separated by spaces are split.
 - **The hook review can no longer pause the window or skip a folder it cannot
   read.** A config packed with hook commands took about four seconds to review;
-  more than 200 commands and paths in a config's hooks is now refused at once. A
-  folder on a hook program's path that cannot be read (permission denied) now
-  makes the program unsafe instead of being skipped.
+  more than 200 commands and paths in a config's hooks is now refused at once,
+  and a hook gets one refusal in the dialog, not one per command. A folder on a
+  hook program's path that cannot be read (permission denied) now makes the
+  program unsafe instead of being skipped. OpenVPN scripts handed to `/bin/SH`,
+  `perl5.34` and similar are now checked like those handed to `sh` and `perl`.
 - **A WireGuard hook hidden from the review is now shown and refused.** wg-quick
   runs `PostUp # = command`, a bare `PreUp` line, and a line with a NUL byte in it
   (`Post\0Up = …`) as administrator, but the review read them as comments or

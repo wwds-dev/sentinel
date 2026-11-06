@@ -367,16 +367,16 @@ def test_review_surfaces_hooks_in_sections_confirmation_and_warnings(tmp_path, m
     path.write_text(
         "[Interface]\n"
         f"PrivateKey = {PRIVATE_KEY}\nAddress = 10.8.0.2/32\n"
-        "PostUp = /opt/hook.sh up\n"
+        "PostUp = /opt/hook.sh %i\n"
         "[Peer]\nPublicKey = c2VydmVyLXB1YmxpYy1rZXk=\n"
         "Endpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
     r = review("connect", profile_for(path))
-    assert r.root_hooks == ("PostUp: /opt/hook.sh up",)
+    assert r.root_hooks == ("PostUp: /opt/hook.sh %i",)
     assert r.allowed                                        # a warning, not a blocker
     titles = [title for title, _, _ in r.sections()]
     assert "Runs commands as administrator" in titles
     assert "RUNS COMMANDS AS ADMINISTRATOR" in r.confirmation_text()
-    assert "/opt/hook.sh up" in r.confirmation_text()
+    assert "/opt/hook.sh %i" in r.confirmation_text()
     assert any("as administrator" in w for w in r.warnings)
 
 
