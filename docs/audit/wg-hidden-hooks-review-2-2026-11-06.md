@@ -96,8 +96,15 @@ program name (`dtrace -c -x`)
 still names a program found on wg-quick's PATH. The only folder on that
 PATH a normal user might write is wg-quick's own (`${SELF%/*}`), and a user who
 can write it can already replace `wg-quick` itself, which runs as root; both
-are closed by the root-owned copy (audit step S7, TODO.md). OpenVPN is not run
-with a scrubbed environment or `cd /` yet; its scripts keep the earlier rules.
+are closed by the root-owned copy (audit step S7, TODO.md). OpenVPN is run the
+same way since `fix/openvpn-env-scrub` (`openvpn_manager.start_command`: `cd / &&
+/usr/bin/env -i HOME=/var/root PATH=…`, every path absolute). OpenVPN `execve`s its
+scripts with only its own variables (`run_command.c`, `make_env_array`), so the
+scrub reaches openvpn itself (`OPENSSL_CONF`/`OPENSSL_MODULES`) and the working
+directory its scripts inherit (`daemon(1, …)` keeps it): a bare `up up.sh` now
+resolves to `/up.sh`, which only root can create, not to the checkout. Its scripts
+otherwise keep the earlier rules; the review still does not check a relative
+OpenVPN program (TODO.md).
 
 ## Not verified
 

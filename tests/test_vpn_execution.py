@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
-from services import vpn_connection, vpn_execution
+from services import openvpn_manager, vpn_connection, vpn_execution
 
 PRIVATE_KEY = "cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWsxMjM0NTY3OA=="
 
@@ -221,6 +222,78 @@ def test_the_scrubbed_command_really_drops_the_environment_and_directory(tmp_pat
     assert out[0] == "/"
     assert "HOME=/var/root" in out and "PATH=/usr/bin:/bin:/usr/sbin:/sbin" in out
     assert {line.split("=", 1)[0] for line in out[1:]} <= {"HOME", "PATH", "PWD", "OLDPWD", "SHLVL", "_"}
+
+def test_openvpn_start_command_is_scrubbed_and_absolute(monkeypatch, tmp_path):
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path / "vpn")
+    assert openvpn_manager.start_command("/Users/me/my nl.ovpn") == (
+        "cd / && /usr/bin/env -i HOME=/var/root PATH='/usr/bin:/bin:/usr/sbin:/sbin' "
+        "'/opt/homebrew/sbin/openvpn' --config '/Users/me/my nl.ovpn' --daemon sentinel-ovpn "
+        f"--log '{tmp_path}/vpn/openvpn.log' --writepid '{tmp_path}/vpn/openvpn.pid' --verb 3")
+    assert openvpn_manager.SYSTEM_PATH == vpn_connection.SYSTEM_PATH
+
+
+def test_openvpn_runs_from_root_with_nothing_of_the_users_environment(monkeypatch, tmp_path):
+    """The same isolation as wg-quick: openvpn keeps its starting directory
+    under --daemon and its hooks inherit it (`up up.sh` ran ./up.sh from the
+    checkout), and openvpn reads OPENSSL_CONF and friends from its environment."""
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(openvpn_manager, "user_data_base", lambda: Path("data"))
+    command = openvpn_manager.start_command("sub/srv.ovpn")
+    assert command.startswith("cd / && /usr/bin/env -i HOME=/var/root PATH=")
+    here = os.getcwd()
+    assert f"--config '{here}/sub/srv.ovpn'" in command
+    assert f"--log '{here}/data/vpn/openvpn.log'" in command      # never relative to /
+    assert f"--writepid '{here}/data/vpn/openvpn.pid'" in command
+    assert str(tmp_path) not in command.split(" 'openvpn' ")[0]
+    assert f"--config '{tmp_path}/home/srv.ovpn'" in openvpn_manager.start_command("~/srv.ovpn")
+
+
+@pytest.mark.allow_process
+def test_the_scrubbed_openvpn_command_really_drops_the_environment_and_directory(tmp_path, monkeypatch):
+    """Run the command's own prefix unprivileged, with a shell in openvpn's place."""
+    import subprocess
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: None)
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
+    prefix = openvpn_manager.start_command("/x.ovpn").split(" 'openvpn' ")[0]
+    out = subprocess.run(["/bin/sh", "-c", prefix + " /bin/sh -c 'pwd; /usr/bin/env'"],
+                         cwd=tmp_path, env={"OPENSSL_CONF": str(tmp_path / "evil.cnf"),
+                                            "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+                         capture_output=True, text=True, timeout=10).stdout.splitlines()
+    assert out[0] == "/"
+    assert "HOME=/var/root" in out and "PATH=/usr/bin:/bin:/usr/sbin:/sbin" in out
+    assert {line.split("=", 1)[0] for line in out[1:]} <= {"HOME", "PATH", "PWD", "OLDPWD", "SHLVL", "_"}
+
+
+def test_the_scrubbed_openvpn_is_still_recognised_as_sentinels(monkeypatch, tmp_path):
+    """env execs openvpn, so ps shows openvpn's own argv: Disconnect must still
+    verify the process the scrubbed line started (pid path with a space)."""
+    import shlex
+    from types import SimpleNamespace
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path / "Sentinel Data")
+    argv = shlex.split(openvpn_manager.start_command(str(tmp_path / "s.ovpn")).split(" && ", 1)[1])
+    argv = argv[argv.index("PATH=/usr/bin:/bin:/usr/sbin:/sbin") + 1:]
+    assert argv[0] == "/opt/homebrew/sbin/openvpn"
+    monkeypatch.setattr(openvpn_manager.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout=" ".join(argv) + "\n"))
+    assert openvpn_manager._is_tracked_process(4242) is True
+
+
+def test_openvpn_review_shows_the_line_root_runs(monkeypatch, tmp_path):
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    monkeypatch.setattr(openvpn_manager, "_run_dir", lambda: tmp_path)
+    cfg = tmp_path / "srv.ovpn"
+    cfg.write_text("client\nremote 203.0.113.7 1194\n")
+    profile = {"name": "O", "protocol": "OpenVPN", "endpoint": "203.0.113.7",
+               "config_path": str(cfg)}
+    r = review("connect", profile)
+    assert r.command == openvpn_manager.start_command(str(cfg))
+    assert r.command.startswith("cd / && /usr/bin/env -i ")
+    assert review("disconnect", profile).command.startswith("kill -TERM")
+
 
 def test_rollback_is_a_command_a_person_can_type(tmp_path, monkeypatch):
     monkeypatch.setattr(vpn_connection.shutil, "which",
