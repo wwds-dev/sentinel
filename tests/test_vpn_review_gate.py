@@ -857,3 +857,17 @@ def test_a_relative_path_is_not_normalised_before_its_links(tmp_path, monkeypatc
     monkeypatch.setattr(vpn_execution, "_stat", _only_writable(W))
     reason = vpn_execution._unsafe_executable_reason(Path("S/x/../y"))
     assert reason is not None and str(W) in reason
+
+
+def test_a_hook_with_a_huge_path_is_reviewed_quickly(tmp_path):
+    """Codex on #32: a 256 KiB config can hold a path of ~100,000 components. An
+    overlong hook is refused without walking it, and the longest hook that is
+    walked (under 4000 characters) stays fast."""
+    import time
+    huge = "/" + "/".join(["a"] * 100_000)
+    longest = "/" + "/".join(["a"] * 1_990)                   # just under the limit
+    start = time.monotonic()
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {huge}\n")))
+    assert not r.allowed and any("4000" in b for b in r.blockers)
+    review("connect", profile_for(wg_conf(tmp_path, "wg2", interface_extra=f"PostUp = {longest}\n")))
+    assert time.monotonic() - start < 5

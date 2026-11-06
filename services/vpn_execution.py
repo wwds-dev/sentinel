@@ -38,6 +38,7 @@ import shutil
 import stat
 import subprocess
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -365,21 +366,24 @@ def _paths_touched(path: Path) -> list[Path]:
     (even one a later ".." leaves), each link and its folders, and the final
     file. More than 40 links raises OSError (ELOOP), as the kernel would refuse
     the path; ValueError (a NUL byte) propagates. The caller treats both as unsafe."""
-    seen: list[Path] = []
+    seen: dict[Path, None] = {}                     # ordered set: linear, not quadratic
 
     def add(item: Path) -> None:
-        for each in (item, *item.parents):
-            if each not in seen:
-                seen.append(each)
+        each = item
+        while each not in seen:                     # climbs only to the first known folder
+            seen[each] = None
+            if each.parent == each:
+                break
+            each = each.parent
 
     add(path)
     current = Path(path.anchor or os.sep)
     # Never normalise before walking: a ".." after a link is applied to where
     # the link leads, not to the text of the path.
-    parts = list((path if path.is_absolute() else Path(os.getcwd()) / path).parts[1:])
+    parts = deque((path if path.is_absolute() else Path(os.getcwd()) / path).parts[1:])
     links = 0
     while parts:
-        part = parts.pop(0)
+        part = parts.popleft()
         if part in ("", "."):
             continue
         if part == "..":
@@ -394,12 +398,12 @@ def _paths_touched(path: Path) -> list[Path]:
             target = os.readlink(step)
             if os.path.isabs(target):
                 current = Path(os.sep)
-            parts = list(Path(target).parts[1 if os.path.isabs(target) else 0:]) + parts
+            parts.extendleft(reversed(Path(target).parts[1 if os.path.isabs(target) else 0:]))
             continue
         current = step
     add(current)
     add(Path(os.path.realpath(path)))
-    return seen
+    return list(seen)
 
 
 def _unsafe_executable_reason(path: Path) -> str | None:
@@ -429,6 +433,15 @@ def _unsafe_executable_reason(path: Path) -> str | None:
         if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             return f"{candidate} is writable by group or others"
     return None
+
+
+def _exists(path: str) -> bool:
+    """Path.exists() raises for a name the system cannot hold (ENAMETOOLONG on a
+    path over PATH_MAX, ValueError for a NUL); such a path is simply not there."""
+    try:
+        return os.path.exists(path)
+    except (OSError, ValueError):
+        return False
 
 
 def _program_findings(raw: str, value: str, words: list[str],
@@ -464,7 +477,7 @@ def _program_findings(raw: str, value: str, words: list[str],
                 continue
             reason = _unsafe_executable_reason(Path(path))
             if reason is None:
-                if position == 0 and not Path(path).exists():
+                if position == 0 and not _exists(path):
                     warnings.append(f"The {raw} hook names {path}, which does not exist.")
                 continue
             message = (f"The {raw} hook runs {path} as administrator, and {reason}, "
@@ -489,7 +502,8 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
     hook_keys = ({k.lower() for k in WG_HOOK_KEYS} if protocol == "WireGuard"
                  else set(OPENVPN_HOOK_KEYS))
     for raw, key, value, words in found:
-        if len(raw) + len(value) > HOOK_LINE_LIMIT and key in hook_keys:
+        overlong = len(raw) + len(value) > HOOK_LINE_LIMIT and key in hook_keys
+        if overlong:
             blockers.append(f"The {raw} line is longer than {HOOK_LINE_LIMIT} characters; "
                             "Tunnel will not run what a person cannot review.")
         # wg-quick drops everything from the first "#" before it reads a value.
@@ -503,7 +517,10 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
                                 "what administrator rights write; remove it from the profile.")
             elif key not in OPENVPN_KNOWN_KEYS and key not in unknown:
                 unknown.append(key)
-        if key in hook_keys and (protocol == "WireGuard" or key in OPENVPN_EXECUTABLE_KEYS):
+        # An overlong hook is already refused; walking its paths could take long
+        # enough (a 256 KiB line) to freeze the window before the refusal shows.
+        if (key in hook_keys and not overlong
+                and (protocol == "WireGuard" or key in OPENVPN_EXECUTABLE_KEYS)):
             more_soft, more_warn = _program_findings(raw, value, words, protocol)
             soft.extend(more_soft)
             warnings.extend(more_warn)
