@@ -84,6 +84,12 @@ def _quote(text: str) -> str:
     return "'" + str(text).replace("'", "'\\''") + "'"
 
 
+def _absolute(path: str) -> str:
+    """``path`` from the current directory, without ``os.path.abspath``'s
+    lexical ``..``: ``link/../x.conf`` must stay the file the review opened."""
+    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+
+
 # The PATH root's wg-quick gets, after its own folder; wg-quick puts these
 # first itself (darwin.bash), so nothing of the caller's PATH is kept.
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
@@ -103,11 +109,14 @@ def wg_quick_command(verb: str, target: str) -> str:
     never saw from the user's home (~/.zshenv, ~/.bash_profile, Python .pth
     files), from the working directory, which the app sets to its checkout (a
     Makefile, a relative ``pfctl -f`` file, files a ``DNS`` wildcard expands
-    to), or from the environment. A relative config path is made absolute first.
+    to), or from the environment. A relative config path, and a wg-quick found
+through a relative PATH entry, are made absolute first, keeping ``..`` for
+the kernel to resolve through any link.
     """
     if "/" in target and not os.path.isabs(target):
-        target = os.path.abspath(target)
+        target = _absolute(target)
     exe = shutil.which("wg-quick")
+    exe = _absolute(exe) if exe else None       # a relative PATH entry; root runs from /
     program, path = (exe, f"{os.path.dirname(exe)}:{SYSTEM_PATH}") if exe else ("wg-quick", SYSTEM_PATH)
     return (f"cd / && /usr/bin/env -i HOME=/var/root PATH={_quote(path)} "
             f"{_quote(program)} {verb} {_quote(target)}")
