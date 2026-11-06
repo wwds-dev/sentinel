@@ -90,8 +90,8 @@ def _absolute(path: str) -> str:
     return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
 
 
-# The PATH root's wg-quick gets, after its own folder (``vpn_rootscript``);
-# openvpn gets the same (``openvpn_manager``).
+# The PATH root's wg-quick gets, after its own folder; openvpn gets it alone
+# (both in ``vpn_rootscript``).
 SYSTEM_PATH = ":".join(vpn_rootscript.SYSTEM_PATH)
 
 
@@ -154,12 +154,16 @@ def _placeholder_result(action: str, profile: dict) -> dict:
 
 
 def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root,
-            config_sha256: str = "", wg_quick: str | None = None) -> dict:
+            config_sha256: str = "", wg_quick: str | None = None,
+            includes: tuple[tuple[str, str], ...] = (), openvpn: str = "",
+            programs: tuple[str, ...] = ()) -> dict:
     """Bring the profile's tunnel up. Reports what the tool actually returned.
 
-    For WireGuard, ``config_sha256`` is the hash of the config the user
-    confirmed; root runs only a copy with that hash, and nothing runs without it.
-    ``wg_quick`` is the wg-quick the review judged (``vpn_execution.execute``)."""
+    ``config_sha256`` is the hash of the config the user confirmed; root runs
+    only a copy with that hash, and nothing runs without it. ``wg_quick`` is the
+    wg-quick the review judged (``vpn_execution.execute``). OpenVPN also takes
+    the review's manifest of data files (``includes``), the openvpn program it
+    resolved and the hook programs root re-checks (``openvpn_manager.connect``)."""
     protocol = resolve_protocol(profile)
     if is_placeholder(profile):
         return _placeholder_result("connect", profile)
@@ -170,7 +174,9 @@ def connect(profile: dict, *, run_as_root: RunAsRoot = _default_run_as_root,
             return {"success": False, "protocol": protocol, "output": "",
                     "error": "This OpenVPN profile has no config file. Set its "
                              "config_path to a .ovpn file."}
-        return {**openvpn_manager.connect(config_path, run_as_root=run_as_root),
+        return {**openvpn_manager.connect(config_path, config_sha256=config_sha256,
+                                          includes=includes, openvpn=openvpn,
+                                          programs=programs, run_as_root=run_as_root),
                 "protocol": protocol}
 
     if protocol != "WireGuard":

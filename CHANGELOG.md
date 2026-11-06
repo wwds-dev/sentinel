@@ -45,8 +45,46 @@ and the git log, and is not back-filled here.
   confirmation says so. Root also starts with an empty environment now. What the
   copy does **not** protect: the `wg-quick` program and its neighbours, which on
   Apple silicon live in Homebrew's folder that your account owns; Tunnel warns when
-  that is the case. OpenVPN still reads your `.ovpn` after the check; that part is
-  planned, not built.
+  that is the case.
+- **OpenVPN: administrator rights run checked copies of your profile and its
+  files.** Connect used to check your `.ovpn` when the password prompt opened
+  and then let `openvpn` read it, and the certificates, keys and password files
+  it names, as root. Now Sentinel copies the profile and every file it names
+  beside it into a root-only folder, checks each copy against the hash the
+  review read, and starts `openvpn` on the copies in that folder; a changed file
+  is refused and nothing runs. A file named by absolute path is accepted only if
+  root owns it and every folder above it, and is checked in place just before
+  start; one only root can read (a key in `/etc/openvpn`) is checked by
+  ownership instead. The review lists each file (not its hash). Hook programs
+  must be named by absolute path, owned by root all the way up, and not be a
+  macOS system program, an interpreter or a wrapper, and a hook script's `#!`
+  interpreter must be root-owned too; root checks the ownership of all of them
+  again just before start. A profile line of 250 bytes or more is refused
+  (OpenVPN would split it and could read hidden directives), and so is
+  `show-pkcs11-ids`. Server profiles, `daemon`, `syslog` and directives that make
+  root write files (`genkey`, `ifconfig-pool-persist`, `tls-export-cert`,
+  `client-config-dir`, `auth-gen-token-secret`) are refused, `dev` must be a
+  tun, tap or utun device and `dev-node` a utun device. **Behaviour change:** a
+  relative file name in a profile now means the file beside the profile (it
+  used to mean a file in `/`, so such profiles may start working); a hook that
+  names a plugin by bare name, or runs `/bin/sh` or another system program, is
+  now refused: name your own root-owned script or plugin by absolute path. A
+  `capath` folder, or `crl-verify … dir`, is refused: put the certificates in
+  one file or inline.
+- **OpenVPN's pid, device and start-up log live in a root-only folder.**
+  Anything running as you could edit the pid file in Sentinel's data folder
+  and point Disconnect's `kill` at another process. Now root writes them under
+  `/private/var/run/sentinel-vpn/ovpn/`, Sentinel only reads them and believes
+  them only if root owns them, and root checks the process is Sentinel's
+  openvpn again before it signals it. The tunnel device is taken only from a
+  whole log line, so a server cannot name another device through a certificate
+  or a pushed option. A tunnel an older Sentinel started is still found and
+  stopped; its leftover files in your data folder are deleted by Connect or
+  Disconnect once that process has gone. One OpenVPN Connect or Disconnect runs
+  at a time.
+- **A hook path with a hidden macOS prefix is refused, for WireGuard too.** A
+  path starting with `/.` (`/.vol/…`, `/.nofollow/…`) can reach any file under
+  another name, so a WireGuard or OpenVPN hook naming one is refused.
 - **The administrator dialog gets nothing of Sentinel's environment.** macOS
   runs the approved command through a shell that read settings such as
   `SHELLOPTS` and `PS4` from Sentinel's environment, which another program

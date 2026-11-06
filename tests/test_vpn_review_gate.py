@@ -47,7 +47,7 @@ class Probe(dict):
 @pytest.fixture(autouse=True)
 def tools_installed(monkeypatch):
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
-    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
                         lambda name, *a, **k: FAKE_WG_QUICK if name == "wg-quick" else real_which(name, *a, **k))
@@ -402,10 +402,10 @@ def test_an_indented_close_tag_is_ambiguous(tmp_path):
 
 def test_a_properly_closed_block_with_crlf_is_fine(tmp_path):
     path = tmp_path / "crlf.ovpn"
-    path.write_bytes(b"client\r\nremote 203.0.113.7 1194\r\n<ca>\r\nabc\r\n</ca>\r\nup /nonexistent-dir/x.sh\r\n")
+    path.write_bytes(b"client\r\nremote 203.0.113.7 1194\r\n<ca>\r\nabc\r\n</ca>\r\nup /usr/bin/true\r\n")
     r = review("connect", profile_for(path))
     assert r.allowed
-    assert r.root_hooks == ("up: /nonexistent-dir/x.sh",)        # no stray \r in the value
+    assert r.root_hooks == ("up: /usr/bin/true",)        # no stray \r in the value
 
 
 def test_crlf_does_not_hide_a_blocker(tmp_path):
@@ -596,17 +596,18 @@ def test_the_hash_line_says_when_it_was_checked(tmp_path):
     wording = "checked again by root on its own copy, which is what runs"
     assert wording in r.confirmation_detail()
     assert any(wording in body for _, body, _ in r.sections())
-    # OpenVPN (S8 deferred): only at the prompt, and the line says so.
+    # OpenVPN (S8b): the same, since root copies and checks the .ovpn too.
     ovpn = vpn_execution.ExecutionReview("connect", "OpenVPN", "x", "/c.ovpn", "", "cmd",
                                          config_sha256="a" * 64)
-    assert "verified when the password prompt opened, not when it ran" in ovpn._hash_line()
+    assert wording in ovpn._hash_line()
+    assert "password prompt" not in ovpn._hash_line()
 
 
 def test_the_module_and_execute_docstrings_do_not_overclaim():
     for doc in (vpn_execution.__doc__, vpn_execution.execute.__doc__):
-        assert "not when root reads" in doc       # still true for OpenVPN
-        assert "S8" in doc and "OpenVPN" in doc
-        assert "S7" in doc and "copy" in doc
+        assert "not when root reads" not in doc   # S8b closed it for OpenVPN
+        assert "S7" in doc and "S8b" in doc and "copy" in doc
+        assert "absolute path" in doc             # residual D2 stays named
 
 
 def test_the_unguarded_wireguard_manager_wg_quick_helpers_refuse():
@@ -1616,3 +1617,998 @@ def test_a_config_path_not_named_interface_conf_is_blocked_even_without_a_folder
     p = {**profile_for(wg_conf(tmp_path)), "config_path": config_path}
     r = review("connect", p)
     assert any("is not named <interface>.conf" in b for b in r.blockers)
+
+
+# ── S8b: OpenVPN data files, hook programs and directives (ported) ──
+# Ported from the S8b branch (a4997c8) onto the rewritten S8b code. WireGuard
+# cases are left out: the owner's allowlist (2026-11-06) above supersedes them.
+
+def ovpn_files(tmp_path, body, files, name="home"):
+    """An .ovpn plus the data files it names, written beside it."""
+    for rel, data in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return ovpn(tmp_path, body, name)
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _root_owned_tree(monkeypatch, root: Path, files=()):
+    """Everything under `root` (and its parents) reads as root-owned."""
+    real_stat = os.stat
+
+    def stat_(path, *a, **k):
+        text = str(path)
+        if text == str(root) or text.startswith(str(root) + "/") or str(root).startswith(text):
+            if not os.path.lexists(path) and text not in files:
+                raise FileNotFoundError(path)
+            kind = stat.S_IFREG if (os.path.isfile(path) or text in files) else stat.S_IFDIR
+            return types.SimpleNamespace(st_uid=0, st_mode=kind | 0o755)
+        return real_stat(path, *a, **k)
+    monkeypatch.setattr(vpn_execution, "_stat", stat_)
+
+
+def _root_program(tmp_path, monkeypatch, name="hook"):
+    """A real file under a folder that reads as root-owned, and a user-owned
+    evil.sh beside that folder. The ported tests named /opt/sentinel-test/...,
+    which does not exist, and a missing hook program is now a blocker of its own."""
+    prog = tmp_path / "root" / name
+    prog.parent.mkdir()
+    prog.write_text("x")
+    user = tmp_path / "user" / "evil.sh"
+    user.parent.mkdir()
+    user.write_text("x")
+    _root_owned_tree(monkeypatch, tmp_path / "root")
+    return prog, user
+
+
+# ── every file the OpenVPN config reads is in the reviewed manifest ──
+
+def test_relative_data_files_are_named_with_their_hash(tmp_path):
+    body = ("ca certs/ca.crt\ncert ./certs/me.crt\nkey 'my keys/me.key'\n"
+            "tls-auth ta.key 1\nauth-user-pass creds.txt\n")
+    files = {"certs/ca.crt": b"CA", "certs/me.crt": b"ME", "my keys/me.key": b"K",
+             "ta.key": b"TA", "creds.txt": b"u\np\n"}
+    r = review("connect", profile_for(ovpn_files(tmp_path, body, files)))
+    assert r.allowed, r.blockers
+    assert r.includes == (("certs/ca.crt", digest(b"CA")), ("certs/me.crt", digest(b"ME")),
+                          ("my keys/me.key", digest(b"K")), ("ta.key", digest(b"TA")),
+                          ("creds.txt", digest(b"u\np\n")))
+
+
+@pytest.mark.parametrize("line", [
+    "dh certs/dh.pem", "tls-crypt certs/ta.key", "tls-crypt-v2 certs/ta.key", "pkcs12 certs/p.p12",
+    "crl-verify certs/crl.pem", "extra-certs certs/x.pem", "askpass certs/pw.txt",
+    "secret certs/static.key 0", "http-proxy-user-pass certs/proxy.txt",
+    "http-proxy proxy.example 8080 certs/proxy.txt basic", "--CA certs/x.pem",
+])
+def test_each_file_directive_is_in_the_manifest(tmp_path, line):
+    ref = next(word for word in line.split() if word.startswith("certs/"))
+    r = review("connect", profile_for(ovpn_files(tmp_path, line + "\n", {ref: b"x"})))
+    assert r.allowed, r.blockers
+    assert [p for p, _ in r.includes] == [ref]
+
+
+@pytest.mark.parametrize("body", [
+    "<ca>\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n</ca>\n",
+    "auth-user-pass\n", "askpass\n",
+    # "[inline]" only beside its block: on its own OpenVPN 2.6 opens a file of that name.
+    "ca [inline]\n<ca>\nMIIB\n</ca>\n",
+    "http-proxy proxy.example 8080 auto\n", "http-proxy proxy.example 8080\n",
+    "dh none\n",                                        # ECDH only: no file
+])
+def test_inline_blocks_and_promptless_directives_name_no_file(tmp_path, body):
+    r = review("connect", profile_for(ovpn(tmp_path, body)))
+    assert r.includes == () and r.allowed, r.blockers
+
+
+def test_a_file_named_twice_is_listed_once(tmp_path):
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, "ca ca.crt\nextra-certs ./ca.crt\n", {"ca.crt": b"CA"})))
+    assert r.includes == (("ca.crt", digest(b"CA")),)
+
+
+def test_an_absolute_file_root_owns_is_named_and_checked_in_place(tmp_path, monkeypatch):
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "ta.key").write_bytes(b"TA")
+    monkeypatch.setattr(vpn_execution, "_stat", lambda p, *a, **k: types.SimpleNamespace(
+        st_uid=0, st_mode=stat.S_IFREG | 0o644))
+    r = review("connect", profile_for(ovpn(tmp_path, f"tls-auth {other / 'ta.key'} 1\n")))
+    assert r.allowed, r.blockers
+    assert r.includes == ((str(other / "ta.key"), digest(b"TA")),)
+    assert any("absolute path" in w and "checked in place" in w for w in r.warnings)
+
+
+@pytest.mark.parametrize("line", ["tls-auth {f} 1", "auth-user-pass {f}",
+                                  "http-proxy 127.0.0.1 8080 {f} basic"])
+def test_an_absolute_file_the_user_could_swap_is_a_blocker(tmp_path, line):
+    # Security P2-2: after root's check, a user-owned file could become a link to
+    # any root-only file, which openvpn would read and send on. Only files beside
+    # the config (copied) or owned by root (cannot be swapped) are accepted.
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "f").write_bytes(b"u\np\n")
+    r = review("connect", profile_for(ovpn(tmp_path, line.format(f=other / "f") + "\n")))
+    assert not r.allowed
+    assert any(str(other / "f") in b and "beside the config" in b for b in r.blockers), r.blockers
+
+
+@pytest.mark.parametrize("ref", ["../ca.crt", "certs/../../ca.crt", "./../ca.crt", ".."])
+def test_a_relative_file_outside_the_config_folder_is_a_blocker(tmp_path, ref):
+    inner = tmp_path / "profile"
+    inner.mkdir()
+    (tmp_path / "ca.crt").write_bytes(b"CA")
+    r = review("connect", profile_for(ovpn(inner, f"ca {ref}\n")))
+    assert not r.allowed
+    assert any("outside the folder" in b for b in r.blockers), r.blockers
+
+
+def test_a_symlinked_data_file_is_a_blocker(tmp_path):
+    (tmp_path / "real.crt").write_bytes(b"CA")
+    (tmp_path / "ca.crt").symlink_to(tmp_path / "real.crt")
+    r = review("connect", profile_for(ovpn(tmp_path, "ca ca.crt\n")))
+    assert any("symbolic link" in b and "ca.crt" in b for b in r.blockers), r.blockers
+
+
+def test_a_symlinked_folder_that_leaves_the_config_folder_is_a_blocker(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "ca.crt").write_bytes(b"CA")
+    inner = tmp_path / "profile"
+    inner.mkdir()
+    (inner / "certs").symlink_to(outside)
+    r = review("connect", profile_for(ovpn(inner, "ca certs/ca.crt\n")))
+    assert any("outside the folder" in b for b in r.blockers), r.blockers
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "fifo", "oversize"])
+def test_a_data_file_that_is_not_a_small_regular_file_is_a_blocker(tmp_path, kind):
+    target = tmp_path / "ca.crt"
+    if kind == "directory":
+        target.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(target)
+    elif kind == "oversize":
+        target.write_bytes(b"#" * (vpn_execution.vpn_rootscript.INCLUDE_LIMIT + 1))
+    r = review("connect", profile_for(ovpn(tmp_path, "ca ca.crt\n")))
+    assert not r.allowed
+    expected = {"missing": "does not exist", "directory": "is a folder",
+                "fifo": "not a regular file", "oversize": "larger than"}[kind]
+    assert any("ca.crt" in b and expected in b for b in r.blockers), r.blockers
+    assert r.includes == ()
+
+
+def test_seventeen_data_files_are_a_blocker(tmp_path):
+    limit = vpn_execution.vpn_rootscript.MAX_INCLUDES
+    files = {f"f{i}.pem": b"%d" % i for i in range(limit + 1)}
+    body = "".join(f"extra-certs f{i}.pem\n" for i in range(limit + 1))
+    r = review("connect", profile_for(ovpn_files(tmp_path, body, files)))
+    assert not r.allowed
+    assert any(f"at most {limit}" in b for b in r.blockers), r.blockers
+    ok = review("connect", profile_for(ovpn_files(
+        tmp_path, "".join(f"extra-certs f{i}.pem\n" for i in range(limit)), {}, name="ok")))
+    assert ok.allowed, ok.blockers
+    assert len(ok.includes) == limit
+
+
+def test_the_manifest_is_in_the_fingerprint(tmp_path):
+    import dataclasses
+    path = ovpn_files(tmp_path, "ca ca.crt\n", {"ca.crt": b"CA"})
+    r = review("connect", profile_for(path))
+    assert dataclasses.replace(r, includes=(("ca.crt", "0" * 64),)).fingerprint() != r.fingerprint()
+    assert dataclasses.replace(r, includes=()).fingerprint() != r.fingerprint()
+    (tmp_path / "ca.crt").write_bytes(b"OTHER CA")
+    assert review("connect", profile_for(path)).fingerprint() != r.fingerprint()
+
+
+def test_the_dialog_and_sections_list_each_data_file_but_not_its_hash(tmp_path):
+    # Review P3-4: the hash of a password file can be guessed offline, so no
+    # file's hash is shown; it is still in the fingerprint and handed to root.
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, "ca ca.crt\nauth-user-pass creds.txt\n", {"ca.crt": b"CA", "creds.txt": b"u\np\n"})))
+    shown = r.confirmation_detail() + r.confirmation_text() + "".join(
+        body for _, body, _ in r.sections())
+    assert "ca.crt" in r.confirmation_detail() and "creds.txt" in r.confirmation_detail()
+    assert any("ca.crt" in body for _, body, _ in r.sections())
+    assert digest(b"CA") not in shown and digest(b"u\np\n") not in shown
+
+
+def test_a_data_file_changed_after_confirmation_runs_nothing(tmp_path):
+    path = ovpn_files(tmp_path, "ca ca.crt\n", {"ca.crt": b"CA"})
+    p = profile_for(path)
+    confirmed = review("connect", p)
+    (tmp_path / "ca.crt").write_bytes(b"EVIL")
+    runner = Recorder()
+    outcome = run("connect", p, runner, confirmed)
+    assert outcome.ran is False and runner.scripts == []
+
+
+def test_execute_hands_root_the_confirmed_hash_and_manifest(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_running", lambda: False)
+    path = ovpn_files(tmp_path, "ca certs/ca.crt\n", {"certs/ca.crt": b"CA"})
+    p = profile_for(path)
+    confirmed = review("connect", p)
+    runner = Recorder(output="")
+    outcome = run("connect", p, runner, confirmed)
+    assert outcome.ran is True
+    # The whole line root runs: the config, its confirmed hash, the reviewed
+    # openvpn and the manifest (the old test picked these out by position).
+    assert runner.scripts == [vpn_rootscript.openvpn_command(
+        "up", config=str(path), sha256=confirmed.config_sha256,
+        openvpn="/opt/homebrew/sbin/openvpn", includes=(("certs/ca.crt", digest(b"CA")),))]
+
+
+# ── libraries: engine, providers, pkcs11-providers ──
+# The port blocks `engine` outright and accepts only OpenSSL's own names in
+# `providers`; a pkcs11-providers library must be absolute and root-owned.
+
+def test_a_library_in_a_user_folder_is_a_blocker(tmp_path):
+    # Review P1-1: providers, engine and pkcs11-providers load code as root.
+    lib = tmp_path / "evil.dylib"
+    lib.write_bytes(b"\xcf\xfa\xed\xfe")
+    r = review("connect", profile_for(ovpn(tmp_path, f"providers {lib}\n")))
+    assert _blocked(r, repr(str(lib))) and _blocked(r, "OpenSSL would load it"), r.blockers
+    r = review("connect", profile_for(ovpn(tmp_path, f"engine {lib}\n", "engine")))
+    assert _blocked(r, "'engine' can load a library"), r.blockers
+    r = review("connect", profile_for(ovpn(tmp_path, f"pkcs11-providers /usr/lib/ok.so {lib}\n", "p11")))
+    assert not r.allowed
+    assert any(str(lib) in b and "not owned by root" in b for b in r.blockers), r.blockers
+    assert f"pkcs11-providers: /usr/lib/ok.so {lib}" in r.root_hooks
+
+
+@pytest.mark.parametrize("line", ["engine dynamic", "engine pkcs11", "engine"])
+def test_engine_is_a_blocker_whatever_it_names(tmp_path, line):
+    assert _blocked(review("connect", profile_for(ovpn(tmp_path, line + "\n"))), "'engine'")
+
+
+def test_openssls_own_providers_and_a_root_owned_pkcs11_library_are_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", lambda p, *a, **k: types.SimpleNamespace(
+        st_uid=0, st_mode=stat.S_IFREG | 0o755))
+    library = tmp_path / "ok.so"        # exists; the faked _stat makes it root-owned
+    library.write_text("")
+    r = review("connect", profile_for(ovpn(
+        tmp_path, f"providers legacy default\npkcs11-providers {library}\n")))
+    assert r.allowed, r.blockers
+    assert r.root_hooks == (f"pkcs11-providers: {library}",)
+    assert r.programs == (str(library),)        # root re-checks it before start
+
+
+@pytest.mark.parametrize("line", ["providers legacy mymod", "providers ./mods/legacy.dylib",
+                                  "providers Legacy"])
+def test_a_provider_that_is_not_openssls_own_is_a_blocker(tmp_path, line):
+    r = review("connect", profile_for(ovpn(tmp_path, line + "\n")))
+    assert _blocked(r, "not one of OpenSSL's own providers"), r.blockers
+
+
+def test_a_relative_library_path_is_a_blocker(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "pkcs11-providers ./mods/p11.dylib\n")))
+    assert _blocked(r, "a relative path"), r.blockers
+
+
+# ── <connection> blocks, capath, replay-persist, two spellings ──
+
+def test_files_inside_a_connection_block_are_reviewed(tmp_path):
+    # Review P2-1: lines inside <connection> are live directives, not an inline blob.
+    body = ("<connection>\nremote 198.51.100.4 443 tcp\n"
+            "http-proxy proxy.example 8080 certs/proxy.txt basic\n</connection>\n")
+    r = review("connect", profile_for(ovpn_files(tmp_path, body, {"certs/proxy.txt": b"u\np\n"})))
+    assert r.allowed, r.blockers
+    assert r.includes == (("certs/proxy.txt", digest(b"u\np\n")),)
+
+
+def test_a_hook_inside_a_connection_block_is_seen(tmp_path):
+    script = tmp_path / "x.sh"
+    script.write_text("#!/bin/sh\n")
+    r = review("connect", profile_for(ovpn(
+        tmp_path, f"<connection>\nremote 198.51.100.4 443\nup {script}\n</connection>\n")))
+    assert f"up: {script}" in r.root_hooks and not r.allowed
+
+
+def test_socks_proxy_password_file_is_in_the_manifest(tmp_path):
+    ref = "certs/socks.txt"
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, f"socks-proxy 127.0.0.1 1080 {ref}\n", {ref: b"u\np\n"})))
+    assert r.allowed, r.blockers
+    assert [p for p, _ in r.includes] == [ref]
+
+
+def test_capath_is_refused_because_a_folder_cannot_be_checked(tmp_path):
+    (tmp_path / "cas").mkdir()
+    r = review("connect", profile_for(ovpn(tmp_path, "capath cas\n")))
+    assert not r.allowed
+    assert any("cas" in b and "is a folder" in b for b in r.blockers), r.blockers
+
+
+def test_replay_persist_is_a_blocker(tmp_path):
+    # Review P2-2: root would create or overwrite the named file.
+    r = review("connect", profile_for(ovpn(tmp_path, "replay-persist /etc/x\n")))
+    assert not r.allowed
+    assert any("replay-persist" in b for b in r.blockers), r.blockers
+
+
+def test_two_spellings_of_one_file_name_are_a_blocker(tmp_path):
+    # Review P3-1: the default macOS volume does not tell ca.crt from CA.crt.
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, "ca ca.crt\nextra-certs CA.crt\n", {"ca.crt": b"CA"})))
+    assert not r.allowed
+    assert any("differ only in case" in b for b in r.blockers), r.blockers
+
+
+def test_two_unicode_spellings_of_one_file_name_are_a_blocker(tmp_path):
+    # Security P3-5: APFS treats NFC and NFD spellings as one name.
+    import unicodedata
+    nfc, nfd = unicodedata.normalize("NFC", "café.crt"), unicodedata.normalize("NFD", "café.crt")
+    assert nfc != nfd
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, f"ca {nfc}\nextra-certs {nfd}\n", {nfc: b"CA"})))
+    assert not r.allowed
+    assert any("differ only" in b for b in r.blockers), r.blockers
+
+
+def test_too_many_files_are_refused_before_any_is_read(tmp_path, monkeypatch):
+    # Review P3-2: the count is checked first.
+    opened = []
+    real_open = vpn_execution.os.open
+    monkeypatch.setattr(vpn_execution.os, "open",
+                        lambda path, *a, **k: opened.append(path) or real_open(path, *a, **k))
+    limit = vpn_execution.vpn_rootscript.MAX_INCLUDES
+    files = {f"f{i}.pem": b"x" for i in range(limit + 1)}
+    body = "".join(f"extra-certs f{i}.pem\n" for i in range(limit + 1))
+    r = review("connect", profile_for(ovpn_files(tmp_path, body, files)))
+    assert not r.allowed and not [p for p in opened if str(p).endswith(".pem")]
+
+
+# ── the line as OpenVPN reads it: BOM, directive names, quotes, backslashes ──
+
+def ovpn_bytes(tmp_path, data: bytes, name="home"):
+    path = tmp_path / f"{name}.ovpn"
+    path.write_bytes(data)
+    return path
+
+
+@pytest.mark.parametrize("first, needle", [
+    ("config /Users/as/other.ovpn", "config"), ("management 127.0.0.1 7505", "management"),
+    ("replay-persist /etc/x", "replay-persist"),
+])
+def test_a_byte_order_mark_does_not_hide_the_first_directive(tmp_path, first, needle):
+    # Security P1-1: OpenVPN skips a leading UTF-8 BOM, so the review must too.
+    path = ovpn_bytes(tmp_path, b"\xef\xbb\xbf" + first.encode() + b"\nclient\nremote 203.0.113.7 1194\n")
+    r = review("connect", profile_for(path))
+    assert _blocked(r, needle)
+
+
+def test_a_byte_order_mark_does_not_hide_a_hook(tmp_path):
+    script = tmp_path / "x.sh"
+    script.write_text("#!/bin/sh\n")
+    path = ovpn_bytes(tmp_path, b"\xef\xbb\xbfup " + str(script).encode() + b"\nclient\n")
+    r = review("connect", profile_for(path))
+    assert r.root_hooks == (f"up: {script}",) and not r.allowed
+
+
+@pytest.mark.parametrize("line", ["con​fig other.ovpn", "﻿config other.ovpn",
+                                  "upа /x", "config_x 1", "-config x"])
+def test_a_directive_name_with_unusual_characters_is_a_blocker(tmp_path, line):
+    # Second line, so the BOM here is not at the start of the file.
+    r = review("connect", profile_for(ovpn(tmp_path, line + "\n")))
+    assert not r.allowed, line
+
+
+@pytest.mark.parametrize("line", [
+    'pkcs11-providers "/usr/lib/ssh-keychain.dylib"/Users/as/evil.dylib',
+    "up '\"/bin/sh\"/Users/as/evil.sh'",
+    'http-proxy "127.0.0.1"8080 /Users/as/creds basic',
+    'ca "a"b', 'remote 203.0.113.7"1194"', "ca x'y'",
+])
+def test_a_quote_touching_other_text_is_a_blocker(tmp_path, line):
+    # Security P1-2: OpenVPN ends a token at its closing quote and opens one only
+    # at a token's start; Sentinel refuses any line where the two could differ.
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\n" + line + "\n")))
+    assert _blocked(r, "quote"), line
+
+
+def test_quotes_at_token_boundaries_are_still_fine(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, 'verify-x509-name "CN=vpn example" name\n')))
+    assert r.allowed, r.blockers
+
+
+@pytest.mark.parametrize("line", ["up /usr/bin/true \\#x", "verify-x509-name my\\qname name",
+                                  "verify-x509-name name\\",
+                                  'verify-x509-name "a\\qb" name', "up \"/usr/bin/true \\\\q\""])
+def test_a_backslash_openvpn_would_read_differently_is_a_blocker(tmp_path, line):
+    # Re-review R-P3-4: only \\, \" and backslash-space are escapes both agree on.
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\n" + line + "\n")))
+    assert not r.allowed, line
+
+
+@pytest.mark.parametrize("line, words", [
+    ("verify-x509-name \"CN=a \\\"b\\\"\" name", ['CN=a "b"', "name"]),
+    ("ca my\\ keys/ca.crt", ["my keys/ca.crt"]),
+    ("verify-x509-name a\\\\b name", ["a\\b", "name"]),
+])
+def test_the_escapes_both_parsers_agree_on_still_work(line, words):
+    assert vpn_execution._ovpn_tokens(line)[1:] == words
+
+
+def test_a_refused_backslash_is_called_a_backslash(tmp_path):
+    # R5-P3-2: the message must name what is wrong.
+    r = review("connect", profile_for(ovpn(tmp_path, "verify-x509-name my\\qname name\n")))
+    assert _blocked(r, "backslash")
+    assert not any("quote" in b for b in r.blockers), r.blockers
+    r2 = review("connect", profile_for(ovpn(tmp_path, "script-security 2\nup \"/usr/bin/true \\\\q\"\n", "two")))
+    assert _blocked(r2, "backslash")
+
+
+# ── directives a client profile must not carry ──
+
+@pytest.mark.parametrize("line", ["mode server", "server 10.8.0.0 255.255.255.0", "server-bridge",
+                                  "tls-server", "server-ipv6 fd00::/64"])
+def test_server_mode_is_a_blocker(tmp_path, line):
+    r = review("connect", profile_for(ovpn(tmp_path, line + "\n")))
+    assert _blocked(r, "client"), line
+
+
+@pytest.mark.parametrize("line", ["genkey secret /etc/sudoers.d/x", "ifconfig-pool-persist /etc/x",
+                                  "tls-export-cert /etc", "client-config-dir /etc",
+                                  "auth-gen-token-secret /etc/x"])
+def test_directives_that_make_root_write_files_are_blockers(tmp_path, line):
+    # Security P2-1.
+    r = review("connect", profile_for(ovpn(tmp_path, line + "\n")))
+    assert _blocked(r, line.split()[0]), line
+
+
+@pytest.mark.parametrize("value, ok", [("utun", True), ("utun3", True), ("utun123", True),
+                                       ("/etc/sudoers", False), ("/dev/tun0", False),
+                                       ("utun1234", False), ("tun0", False)])
+def test_dev_node_is_only_a_utun_name(tmp_path, value, ok):
+    # Security P2-1: any other dev-node makes root open that path read-write.
+    r = review("connect", profile_for(ovpn(tmp_path, f"dev tun\ndev-node {value}\n")))
+    assert r.allowed is ok, r.blockers
+    if not ok:
+        assert _blocked(r, "dev-node")
+
+
+@pytest.mark.parametrize("value, ok", [("tun", True), ("tap", True), ("utun", True), ("tun0", True),
+                                       ("utun12", True), ("../../Users/as/x", False),
+                                       ("/etc/sudoers", False), ("tun1234", False), ("eth0", False)])
+def test_dev_is_only_a_tunnel_device_name(tmp_path, value, ok):
+    r = review("connect", profile_for(ovpn(tmp_path, f"dev {value}\n")))
+    assert r.allowed is ok, r.blockers
+    if not ok:
+        assert _blocked(r, "'dev'")
+
+
+# ── the openvpn program root runs ──
+
+def test_the_review_names_the_openvpn_it_will_run(tmp_path, monkeypatch):
+    # Security P3-1: the program is resolved once, shown, and in the fingerprint.
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary",
+                        lambda: "/usr/local/sbin/openvpn")
+    r = review("connect", profile_for(ovpn(tmp_path, "")))
+    assert "/usr/local/sbin/openvpn --cd " in r.command
+    assert r.program == "/usr/local/sbin/openvpn"
+    import dataclasses
+    assert dataclasses.replace(r, program="/opt/homebrew/sbin/openvpn").fingerprint() != r.fingerprint()
+
+
+def test_an_openvpn_planted_after_confirmation_runs_nothing(tmp_path, monkeypatch):
+    found = {"path": "/usr/local/sbin/openvpn"}
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: found["path"])
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_running", lambda: False)
+    p = profile_for(ovpn(tmp_path, ""))
+    confirmed = review("connect", p)
+    found["path"] = "/opt/homebrew/sbin/openvpn"          # earlier in the search order now
+    runner = Recorder(output="")
+    outcome = run("connect", p, runner, confirmed)
+    assert outcome.ran is False and runner.scripts == []
+
+
+def test_root_is_given_the_reviewed_openvpn(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def binary():
+        calls["n"] += 1                                    # reviews see one path, a later lookup another
+        return "/usr/local/sbin/openvpn" if calls["n"] <= 2 else "/opt/homebrew/sbin/openvpn"
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", binary)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_running", lambda: False)
+    p = profile_for(ovpn(tmp_path, ""))
+    confirmed = review("connect", p)
+    runner = Recorder(output="")
+    outcome = run("connect", p, runner, confirmed)
+    assert outcome.ran is True
+    assert runner.scripts == [vpn_rootscript.openvpn_command(
+        "up", config=p["config_path"], sha256=confirmed.config_sha256,
+        openvpn="/usr/local/sbin/openvpn")]
+
+
+def test_the_review_blocks_when_it_cannot_name_the_openvpn_it_would_run(tmp_path, monkeypatch):
+    # Re-review R-P3-5: no second lookup decides "installed".
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: None)
+    r = review("connect", profile_for(ovpn(tmp_path, "")))
+    assert _blocked(r, "openvpn client not found")
+
+
+# ── hook programs: absolute, existing, root-owned, no system program or interpreter ──
+
+@pytest.mark.parametrize("line", ["up /nonexistent-dir/x.sh", "plugin /nonexistent/p.so",
+                                  "pkcs11-providers /nonexistent/p.so"])
+def test_a_program_or_library_that_does_not_exist_is_a_blocker(tmp_path, line):
+    # Security P1-2: a missing path is how a parse mismatch looks; it would fail anyway.
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\n" + line + "\n")))
+    assert not r.allowed
+    assert any("does not exist" in b for b in r.blockers), r.blockers
+
+
+@pytest.mark.parametrize("key", ["dns-updown", "tls-crypt-v2-verify", "client-crresponse"])
+def test_newer_program_directives_are_hooks_with_the_ownership_check(tmp_path, key):
+    # Security P1-3.
+    script = tmp_path / "evil.sh"
+    script.write_text("#!/bin/sh\n")
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\n{key} {script}\n")))
+    assert f"{key}: {script}" in r.root_hooks
+    assert any(str(script) in b and "not owned by root" in b for b in r.blockers), r.blockers
+
+
+@pytest.mark.parametrize("value", ["disable", "force"])
+def test_dns_updown_keywords_are_listed_but_not_blocked(tmp_path, value):
+    r = review("connect", profile_for(ovpn(tmp_path, f"dns-updown {value}\n")))
+    assert r.allowed, r.blockers
+    assert f"dns-updown: {value}" in r.root_hooks
+
+
+@pytest.mark.parametrize("hook", ["up ./run.sh", "up run.sh"])
+def test_a_hook_that_runs_a_copied_file_is_refused_as_a_relative_program(tmp_path, hook):
+    # Security P3-3: under --cd, a relative name in a hook is root's copy of a
+    # file the review showed only by name. The port refuses any relative program.
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, f"askpass run.sh\nscript-security 2\n{hook}\n", {"run.sh": b"#!/bin/sh\nid\n"})))
+    assert _blocked(r, "not an absolute path"), r.blockers
+
+
+@pytest.mark.parametrize("hook, needle", [
+    ('up "/bin/sh run.sh"', "system program"),
+    ('up "/bin/sh ./sub/../run.sh"', "a relative path"),
+    ('up "/usr/bin/env RUN.sh"', "system program"),
+])
+def test_a_copied_file_handed_to_a_system_program_is_refused(tmp_path, hook, needle):
+    # The rest of the old P3-3 cases: the program is a system interpreter or
+    # wrapper, and a relative path argument is refused on its own as well.
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, f"askpass run.sh\nscript-security 2\n{hook}\n", {"run.sh": b"#!/bin/sh\nid\n"})))
+    assert _blocked(r, needle), r.blockers
+
+
+def test_a_hook_with_ordinary_arguments_is_not_mistaken_for_a_copied_file(tmp_path):
+    r = review("connect", profile_for(ovpn_files(
+        tmp_path, 'askpass run.sh\nscript-security 2\nup "/usr/bin/true up"\n', {"run.sh": b"x"})))
+    assert r.allowed, r.blockers
+
+
+@pytest.mark.parametrize("line", [
+    'up "/bin/sh ../../../../../../../../Users/as/evil.sh"',      # interpreter, relative escape
+    'up "../../../../../../../../Users/as/evil.sh"',              # relative program
+    'up evil.sh', "up ./evil.sh",
+    'up "/usr/bin/env ../../x.sh"', "plugin ../../evil.dylib", "dns-updown ../../x.sh",
+    'up "/bin/sh -c \'cd /Users/as && ./evil.sh\'"',             # inline shell code (R-P1-2)
+    "up \"/bin/sh -c '. ~/x'\"", 'up "/usr/bin/env -S \'sh x.sh\'"',
+    'up "/usr/bin/python3 -c \'import os\'"', 'up "/usr/bin/perl -e 1"',
+    'up "/usr/bin/nohup /usr/bin/true"', "up ../cfg/x.sh", "up ../config.ovpn",
+])
+def test_an_openvpn_hook_must_name_a_program_directly_by_absolute_path(tmp_path, line):
+    # Under --cd a relative name resolves inside root's copies, and '../' leaves
+    # them; an interpreter or wrapper runs code the review cannot see. OpenVPN
+    # hooks are a program and its arguments, not a shell line.
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\n" + line + "\n")))
+    assert not r.allowed, line
+    assert any("absolute path" in b or "interpreter or wrapper" in b for b in r.blockers), r.blockers
+
+
+def test_a_root_owned_program_with_plain_arguments_is_still_accepted(tmp_path):
+    r = review("connect", profile_for(ovpn(
+        tmp_path, 'script-security 2\nup "/usr/bin/true --flag value"\nroute-up /usr/bin/true\n')))
+    assert r.allowed, r.blockers
+
+
+@pytest.mark.parametrize("line", [
+    # case and case-fold spellings of interpreters (R5-P1-1)
+    "up \"/bin/SH -c 'cd /Users/as && ./evil.sh'\"", "up \"/bin/Bash -c './x'\"", 'up "/BIN/SH -c x"',
+    'up "/bin/ſh -c x"', "up \"/usr/bin/PERL -e 'exec q(../x)'\"", "up \"/usr/bin/Python3 -c 'import os'\"",
+    "up \"/usr/bin/ENV -S 'sh x'\"",
+    # versioned names and links
+    "up \"/usr/bin/perl5.34 -e 1\"", 'up "/usr/bin/tclsh8.5 x"', 'up "/usr/bin/wish8.5 x"',
+    "up \"/usr/bin/vim -es -c q\"",
+    # system programs that run an argument
+    'up "/usr/bin/arch -arm64 /usr/bin/true"', 'up "/usr/bin/caffeinate -i /usr/bin/true"',
+    'up "/usr/bin/script -q /dev/null"', 'up "/usr/bin/lockf -t 0 /tmp/l /usr/bin/true"',
+    'up "/usr/bin/xcrun x"', 'up "/usr/bin/find /tmp -maxdepth 0 -exec x {} +"',
+    'up "/usr/sbin/chroot / x"', "up \"/usr/bin/sqlite3 :memory: .shell\"", 'up /usr/libexec/x',
+])
+def test_an_openvpn_hook_through_a_system_program_or_any_spelling_of_an_interpreter_is_a_blocker(
+        tmp_path, line):
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\n" + line + "\n")))
+    assert not r.allowed, line
+
+
+@pytest.mark.parametrize("line", [
+    'up "{prog} ../../../../../../../../Users/as/evil.sh"', 'up "{prog} -o ProxyCommand=../x h"',
+    'up "{prog} ./x"', 'up "{prog} ~/x"', 'up "{prog} {user}"',
+])
+def test_a_path_argument_of_an_openvpn_hook_must_be_absolute_and_root_owned(tmp_path, monkeypatch, line):
+    # R5-P1-1 point 3: any word that names a path is a path the program may run.
+    prog, user = _root_program(tmp_path, monkeypatch)
+    text = "script-security 2\n" + line.format(prog=prog, user=user) + "\n"
+    r = review("connect", profile_for(ovpn(tmp_path, text)))
+    assert not r.allowed, line
+    ok = review("connect", profile_for(ovpn(tmp_path, f'script-security 2\nup "{prog} --verbose"\n', "ok")))
+    assert ok.allowed, ok.blockers
+
+
+@pytest.mark.parametrize("args", ['"../../../../../../../Users/as/evil.sh"', '"/bin/sh -c ./x"',
+                                  '"/usr/bin/caffeinate -i x"', "{user}"])
+def test_down_root_plugin_arguments_are_a_hook_command(tmp_path, monkeypatch, args):
+    # R5-P2-1: down-root runs its arguments as a command, as root.
+    module, user = _root_program(tmp_path, monkeypatch, "openvpn-plugin-down-root.so")
+    r = review("connect", profile_for(ovpn(
+        tmp_path, f"script-security 2\nplugin {module} {args.format(user=user)}\n")))
+    assert not r.allowed, args
+    assert not any(str(module) in b for b in r.blockers), r.blockers   # the arguments, not the module
+
+
+def test_other_plugin_arguments_must_not_name_paths(tmp_path, monkeypatch):
+    module, _user = _root_program(tmp_path, monkeypatch, "openvpn-plugin-auth-pam.so")
+    bad = review("connect", profile_for(ovpn(tmp_path, f"plugin {module} ../../x\n")))
+    good = review("connect", profile_for(ovpn(tmp_path, f"plugin {module} login\n", "ok")))
+    assert not bad.allowed and good.allowed, (bad.blockers, good.blockers)
+
+
+def test_an_interpreter_outside_the_system_folders_is_found_by_its_name(tmp_path, monkeypatch):
+    # Only the identity rule catches this: not a system folder, root-owned.
+    prog = tmp_path / "bin" / "Bash5.2"
+    prog.parent.mkdir()
+    prog.write_text("x")
+    _root_owned_tree(monkeypatch, tmp_path)
+    r = review("connect", profile_for(ovpn(tmp_path, f'script-security 2\nup "{prog} -c true"\n')))
+    assert _blocked(r, "interpreter or wrapper")
+    assert not any("system program" in b for b in r.blockers)
+
+
+def test_an_interpreter_behind_an_innocent_link_name_is_found(tmp_path, monkeypatch):
+    real = tmp_path / "bin" / "python3"
+    real.parent.mkdir()
+    real.write_text("x")
+    (tmp_path / "bin" / "vpn-hook").symlink_to(real)
+    _root_owned_tree(monkeypatch, tmp_path)
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup {tmp_path / 'bin' / 'vpn-hook'}\n")))
+    assert _blocked(r, "interpreter or wrapper")
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/say"), reason="macOS system program")
+def test_a_system_program_that_is_not_an_interpreter_is_still_refused(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\nup /usr/bin/say\n")))
+    assert _blocked(r, "system program")
+    assert review("connect", profile_for(ovpn(tmp_path, "script-security 2\nup /usr/bin/true\n", "ok"))).allowed
+
+
+def test_a_tilde_argument_without_a_slash_is_refused(tmp_path, monkeypatch):
+    prog = tmp_path / "hook"
+    prog.write_text("x")
+    _root_owned_tree(monkeypatch, tmp_path)
+    r = review("connect", profile_for(ovpn(tmp_path, f'script-security 2\nup "{prog} ~evil"\n')))
+    assert _blocked(r, "home directory")
+
+
+@pytest.mark.parametrize("line, needle", [
+    ("up \"/.vol/16777232/1152921500312607361 -c 'cd ~as;sh evil.sh'\"", "hidden macOS path"),
+    ('up "/.nofollow/usr/bin/git -c alias.x=x x"', "hidden macOS path"),
+    ("up /.nofollow/usr/bin/say", "hidden macOS path"),
+    ("up \"/.resolve/1/bin/sh -c x\"", "hidden macOS path"),
+    ('up "/usr/bin/true /.nofollow/Users/as/x"', "hidden macOS path"),
+    ("plugin /.nofollow/opt/x/dr.so arg", "hidden macOS path"),
+    # A data file is refused by the manifest's plain-path rule, with its own wording.
+    ("ca /.resolve/1/Users/as/ca.crt", "hidden '/.' prefix"),
+])
+def test_a_hidden_macos_path_prefix_is_refused(tmp_path, line, needle):
+    # R7-P1-1: /.vol, /.nofollow, /.resolve reach any file under another spelling.
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\n" + line + "\n")))
+    assert _blocked(r, needle), (line, r.blockers)
+
+
+def test_down_root_is_recognised_by_its_real_name(tmp_path, monkeypatch):
+    real = tmp_path / "openvpn-plugin-down-root.so"
+    real.write_text("x")
+    (tmp_path / "dr.so").symlink_to(real)
+    _root_owned_tree(monkeypatch, tmp_path)
+    r = review("connect", profile_for(ovpn(
+        tmp_path, f"script-security 2\nplugin {tmp_path / 'dr.so'} \"/bin/sh -c x\"\n")))
+    assert _blocked(r, "system program") or _blocked(r, "interpreter or wrapper"), r.blockers
+
+
+@pytest.mark.parametrize("program, system", [
+    ("/Library/Developer/CommandLineTools/usr/bin/git", True), ("/USR/LIBEXEC/x", True),
+    ("/usr/bin/../libexec/x", True), ("/bin/ſh", True), ("/opt/x/hook", False),
+    ("/usr/local/bin/hook", False), ("/usr/bin/true", False),
+])
+def test_system_program_detection_by_location(program, system):
+    # R7-P2-1, R7-P3-2: the location rule on its own, without the file existing.
+    assert vpn_execution._system_program(program) is system
+
+
+@pytest.mark.parametrize("line", ["up /USR/BIN/SAY", "up /usr/libexec/PlistBuddy",
+                                  'up "/usr/bin/sandbox-exec -n x y"', 'up "/usr/bin/stdbuf -o0 y"',
+                                  'up "/usr/bin/m4 y"', 'up "/usr/bin/su root"'])
+def test_existing_system_programs_are_refused_as_system_programs(tmp_path, line):
+    if not os.path.exists(line.split()[1].strip('"').lower()):
+        pytest.skip("macOS system program")
+    r = review("connect", profile_for(ovpn(tmp_path, "script-security 2\n" + line + "\n")))
+    assert _blocked(r, "system program"), r.blockers
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/say"), reason="macOS system program")
+def test_a_link_outside_the_system_folders_to_a_system_program_is_refused(tmp_path, monkeypatch):
+    (tmp_path / "hook").symlink_to("/usr/bin/say")
+    _root_owned_tree(monkeypatch, tmp_path)
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup {tmp_path / 'hook'}\n")))
+    assert _blocked(r, "system program")
+
+
+def test_an_openvpn_argument_that_does_not_exist_is_refused(tmp_path):
+    r = review("connect", profile_for(ovpn(
+        tmp_path, 'script-security 2\nup "/usr/bin/true /Volumes/sentinel-none-a1b2/x"\n')))
+    assert _blocked(r, "does not exist")
+
+
+def test_an_openvpn_option_with_a_root_owned_value_is_accepted(tmp_path):
+    if not os.path.exists("/etc/hosts"):
+        pytest.skip("needs /etc/hosts")
+    r = review("connect", profile_for(ovpn(tmp_path, 'script-security 2\nup "/usr/bin/true --conf=/etc/hosts"\n')))
+    assert r.allowed, r.blockers
+
+
+def test_dev_null_as_an_openvpn_argument_is_accepted(tmp_path):
+    # /dev/null is world-writable by design; it is not a file anyone can plant code in.
+    r = review("connect", profile_for(ovpn(tmp_path, 'script-security 2\nup "/usr/bin/true /dev/null"\n')))
+    assert r.allowed, r.blockers
+
+
+def test_an_openvpn_cidr_argument_is_not_a_path(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, 'script-security 2\nup "/usr/bin/true 10.0.0.0/8 fd00::/64"\n')))
+    assert r.allowed, r.blockers
+
+
+# ── ownership along links, for hook programs and absolute data files ──
+
+def _linked_tree(tmp_path, monkeypatch):
+    """rootdir/link -> home/sub, where only `home` is user-owned (R-P3-2)."""
+    home, rootdir = tmp_path / "home", tmp_path / "rootdir"
+    (home / "sub").mkdir(parents=True)
+    rootdir.mkdir()
+    (home / "sub" / "prog").write_text("x")
+    (rootdir / "link").symlink_to(home / "sub")
+
+    def stat_(path, *a, **k):
+        if str(path) == str(home):
+            return types.SimpleNamespace(st_uid=501, st_mode=stat.S_IFDIR | 0o755)
+        if not os.path.lexists(path) and str(path) != "/":
+            raise FileNotFoundError(path)
+        kind = stat.S_IFREG if os.path.isfile(path) else stat.S_IFDIR
+        return types.SimpleNamespace(st_uid=0, st_mode=kind | 0o755)
+    monkeypatch.setattr(vpn_execution, "_stat", stat_)
+    return home, rootdir
+
+
+def test_ownership_is_checked_along_the_real_path_too(tmp_path, monkeypatch):
+    home, rootdir = _linked_tree(tmp_path, monkeypatch)
+    assert vpn_execution._unsafe_executable_reason(home / "sub" / "prog")       # direct: caught
+    reason = vpn_execution._unsafe_executable_reason(rootdir / "link" / "prog")
+    assert reason and str(home) in reason                                         # through the link
+
+
+def test_an_absolute_data_file_behind_a_linked_folder_is_a_blocker(tmp_path, monkeypatch):
+    home, rootdir = _linked_tree(tmp_path, monkeypatch)
+    r = review("connect", profile_for(ovpn(tmp_path, f"ca {rootdir / 'link' / 'prog'}\n")))
+    assert not r.allowed
+    assert any(str(home) in b for b in r.blockers), r.blockers
+
+
+def test_a_link_reached_through_a_second_link_is_checked(tmp_path, monkeypatch):
+    # R5-P3-1: rootdir/l1 -> home/l2 -> rootdir2/sub; only `home` is user-owned.
+    home, rootdir, rootdir2 = tmp_path / "home", tmp_path / "rootdir", tmp_path / "rootdir2"
+    (rootdir2 / "sub").mkdir(parents=True)
+    (rootdir2 / "sub" / "prog").write_text("x")
+    home.mkdir()
+    rootdir.mkdir()
+    (home / "l2").symlink_to(rootdir2 / "sub")
+    (rootdir / "l1").symlink_to(home / "l2")
+
+    def stat_(path, *a, **k):
+        if str(path) == str(home):
+            return types.SimpleNamespace(st_uid=501, st_mode=stat.S_IFDIR | 0o755)
+        if not os.path.lexists(path) and str(path) != "/":
+            raise FileNotFoundError(path)
+        kind = stat.S_IFREG if os.path.isfile(path) else stat.S_IFDIR
+        return types.SimpleNamespace(st_uid=0, st_mode=kind | 0o755)
+    monkeypatch.setattr(vpn_execution, "_stat", stat_)
+    reason = vpn_execution._unsafe_executable_reason(rootdir / "l1" / "prog")
+    assert reason and str(home) in reason
+
+
+def test_a_user_folder_in_the_middle_of_a_link_chain_is_checked(tmp_path, monkeypatch):
+    # rootdir/l1 -> rootdir3/l2 -> home/l3 -> rootdir2/sub: `home` is only on the third step.
+    home, r1, r2, r3 = (tmp_path / n for n in ("home", "rootdir", "rootdir2", "rootdir3"))
+    for d in (home, r1, r3, r2 / "sub"):
+        d.mkdir(parents=True)
+    (r2 / "sub" / "prog").write_text("x")
+    (home / "l3").symlink_to(r2 / "sub")
+    (r3 / "l2").symlink_to(home / "l3")
+    (r1 / "l1").symlink_to(r3 / "l2")
+
+    def stat_(path, *a, **k):
+        if str(path) == str(home):
+            return types.SimpleNamespace(st_uid=501, st_mode=stat.S_IFDIR | 0o755)
+        if not os.path.lexists(path) and str(path) != "/":
+            raise FileNotFoundError(path)
+        kind = stat.S_IFREG if os.path.isfile(path) else stat.S_IFDIR
+        return types.SimpleNamespace(st_uid=0, st_mode=kind | 0o755)
+    monkeypatch.setattr(vpn_execution, "_stat", stat_)
+    reason = vpn_execution._unsafe_executable_reason(r1 / "l1" / "prog")
+    assert reason and str(home) in reason
+
+
+def test_a_down_root_plugin_behind_a_link_hands_root_its_command_to_recheck(tmp_path):
+    """Root re-checks the down-root command's program before start; the plugin is
+    recognised by the name its link leads to, as the review does."""
+    real = tmp_path / "openvpn-plugin-down-root.so"
+    real.write_text("")
+    link = tmp_path / "helper.so"
+    link.symlink_to(real)
+    text = f"client\nplugin {link} /usr/local/libexec/down.sh\n"
+    assert vpn_execution._openvpn_programs(text) == [str(link), "/usr/local/libexec/down.sh"]
+    assert vpn_execution._openvpn_programs(
+        "client\nplugin /x/other-plugin.so /usr/local/libexec/arg\n") == ["/x/other-plugin.so"]
+
+
+# ── closing the S8 port's mutation survivors ──
+
+@pytest.mark.parametrize("line", ["daemon", "daemon myname", "syslog", "syslog vpn"])
+def test_daemon_and_syslog_are_blockers(tmp_path, line):
+    """Spec 1.3: both would take the start-up log the root script reads the
+    tunnel device from (and `daemon` renames the process root later checks)."""
+    r = review("connect", profile_for(ovpn(tmp_path, line + "\n")))
+    assert _blocked(r, f"'{line.split()[0]}'"), r.blockers
+
+
+def test_execute_hands_root_the_hook_programs_to_recheck(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_running", lambda: False)
+    prog, _ = _root_program(tmp_path, monkeypatch, "up.sh")
+    p = profile_for(ovpn(tmp_path, f"script-security 2\nup {prog}\n"))
+    confirmed = review("connect", p)
+    assert confirmed.allowed, confirmed.blockers
+    assert confirmed.programs == (str(prog),)
+    runner = Recorder(output="")
+    assert run("connect", p, runner, confirmed).ran is True
+    assert runner.scripts[0].endswith(f" 0 {prog}")       # no files, then the program
+
+
+def test_the_hook_programs_are_in_the_fingerprint():
+    base = vpn_execution.ExecutionReview("connect", "OpenVPN", "x", "/c.ovpn", "", "cmd",
+                                         config_sha256="a" * 64)
+    assert (vpn_execution.replace(base, programs=("/x/up.sh",)).fingerprint()
+            != base.fingerprint())
+
+
+def test_a_user_writable_openvpn_is_warned_about_not_blocked(tmp_path, monkeypatch):
+    exe = tmp_path / "homebrew" / "openvpn"
+    exe.parent.mkdir()
+    exe.write_text("")
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: str(exe))
+    r = review("connect", profile_for(ovpn(tmp_path, "")))
+    assert r.allowed, r.blockers
+    assert any(w.startswith(f"openvpn runs as administrator from {exe}") and
+               "protect the config and its files, not the tool" in w for w in r.warnings)
+
+
+# ── S8 port: fixes after the independent code and security reviews ──
+
+def test_a_root_only_absolute_file_is_checked_by_ownership_not_blocked(tmp_path, monkeypatch):
+    """Code review P2-1: a key in /etc/openvpn readable only by root is the
+    secure layout; root owns it all the way up, so root re-checks ownership."""
+    key = tmp_path / "etc" / "client.key"
+    key.parent.mkdir()
+    key.write_text("secret")
+    monkeypatch.setattr(vpn_execution, "_stat", lambda p, *a, **k: types.SimpleNamespace(
+        st_uid=0, st_mode=stat.S_IFREG | 0o600))
+    real_open = os.open
+
+    def denied(path, *a, **k):
+        if str(path) == str(key):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **k)
+    monkeypatch.setattr(vpn_execution.os, "open", denied)
+    r = review("connect", profile_for(ovpn(tmp_path, f"key {key}\n")))
+    assert r.allowed, r.blockers
+    assert r.includes == () and r.programs == (str(key),)
+    assert any("can be read only by root" in w and str(key) in w for w in r.warnings)
+
+
+def test_a_relative_file_root_only_can_read_still_blocks(tmp_path, monkeypatch):
+    path = ovpn_files(tmp_path, "key k.key\n", {"k.key": b"K"})
+    real_open = os.open
+    monkeypatch.setattr(vpn_execution.os, "open", lambda p, *a, **k: (
+        (_ for _ in ()).throw(PermissionError(13, "denied")) if str(p).endswith("k.key")
+        else real_open(p, *a, **k)))
+    r = review("connect", profile_for(path))
+    assert _blocked(r, "cannot be read"), r.blockers
+
+
+def test_an_openvpn_path_with_a_space_is_refused_at_review(tmp_path, monkeypatch):
+    # Code review P3-3: root and the builder refuse it; say so before the prompt.
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary",
+                        lambda: "/Applications/My VPN/openvpn")
+    r = review("connect", profile_for(ovpn(tmp_path, "")))
+    assert _blocked(r, "a path with a space"), r.blockers
+
+
+def test_a_line_longer_than_openvpns_buffer_is_a_blocker(tmp_path):
+    """Security review P1-1: OpenVPN reads 256 bytes at a time, so a long line
+    inside <ca> ends the block early and what follows becomes directives."""
+    body = ("<ca>\n" + "A" * 255 + "</ca>\nscript-security 2\nup /Users/me/evil.sh\n"
+            "MIIB\n</ca>\n")
+    r = review("connect", profile_for(ovpn(tmp_path, body)))
+    assert _blocked(r, "OpenVPN would read it as more than one line"), r.blockers
+    ok = "<ca>\n" + "A" * (vpn_execution.OPENVPN_LINE_LIMIT - 1) + "\n</ca>\n"
+    assert not _blocked(review("connect", profile_for(ovpn(tmp_path, ok, "ok"))),
+                        "more than one line")
+    wide = "remote vpn.example 1194 # " + "é" * 120 + "\n"            # bytes, not characters
+    assert _blocked(review("connect", profile_for(ovpn(tmp_path, wide, "wide"))),
+                    "more than one line")
+
+
+def test_show_pkcs11_ids_is_a_blocker(tmp_path):
+    # Security review P1-2: it loads its library while the config is read.
+    r = review("connect", profile_for(ovpn(tmp_path, "show-pkcs11-ids /tmp/x.dylib\n")))
+    assert _blocked(r, "'show-pkcs11-ids' can load a library"), r.blockers
+
+
+def _script_with(tmp_path, monkeypatch, first_line):
+    prog, _ = _root_program(tmp_path, monkeypatch, "up.sh")
+    prog.write_text(first_line + "\nexit 0\n")
+    return prog
+
+
+@pytest.mark.parametrize("first_line, needle", [
+    ("#!/nonexistent-interp/python3", "/nonexistent-interp/python3 does not exist"),
+    ("#!/usr/bin/env nosuchinterpreter", "names no program"),
+    ("#!python3", "names no program"),
+    ("#!", "names no program"),
+])
+def test_a_hook_scripts_interpreter_must_be_root_owned(tmp_path, monkeypatch, first_line, needle):
+    """Security review P2-1: a root-owned script is only as safe as its #! line."""
+    prog = _script_with(tmp_path, monkeypatch, first_line)
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup {prog}\n")))
+    assert _blocked(r, needle), r.blockers
+
+
+def test_a_user_owned_interpreter_is_refused(tmp_path, monkeypatch):
+    prog = _script_with(tmp_path, monkeypatch, "#!/bin/sh")
+    interp = tmp_path / "user" / "python3"                  # beside the user's evil.sh
+    interp.write_text("")
+    prog.write_text(f"#!{interp}\nexit 0\n")
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup {prog}\n")))
+    assert _blocked(r, f"with {interp} as administrator"), r.blockers
+
+
+@pytest.mark.parametrize("first_line, interpreter", [
+    ("#!/bin/sh", "/bin/sh"), ("#! /bin/sh -e", "/bin/sh"),
+    ("#!/usr/bin/env -S sh", "sh"), ("not a script", None),
+])
+def test_a_root_owned_interpreter_is_accepted_and_rechecked_by_root(tmp_path, monkeypatch,
+                                                                    first_line, interpreter):
+    prog = _script_with(tmp_path, monkeypatch, first_line)
+    if interpreter == "sh":            # env looks it up in the system folders, in order
+        interpreter = vpn_execution._which_privileged("sh")
+    r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup {prog}\n")))
+    assert r.allowed, r.blockers
+    assert r.programs == ((str(prog), interpreter) if interpreter else (str(prog),))

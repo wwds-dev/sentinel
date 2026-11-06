@@ -6,11 +6,25 @@ device, so every state change goes through an injected ``run_as_root`` (the real
 one raises the macOS authorisation dialog). The client is started daemonised with
 a pid file so the GUI stays responsive and can report real status.
 
+Root runs only its own copy of the reviewed config and of every data file the
+config names beside it, and starts openvpn in the copies' folder (audit tier-2
+step S8b, ``vpn_rootscript.OVPN_SCRIPT``). The pid file, the device name and
+the start-up log live in root's run directory too, so nothing running as the
+user can point Disconnect's ``kill`` at another process (S8a). Sentinel only
+reads them, and believes a file only if root owns it; root re-checks the
+process before it signals it.
+
 Sentinel keeps no connection log. OpenVPN has to write one for a few seconds,
 because the tunnel device it opens ("utun4") is only reported there and the kill
-switch needs that name. ``connect`` reads the device from it, stores just the
-device name, and deletes the log; OpenVPN keeps writing to the unlinked file,
-which no longer has a name on disk.
+switch needs that name. The root script reads the device from it, stores just
+the device name, and deletes the log; OpenVPN keeps writing to the unlinked
+file, which no longer has a name on disk.
+
+A tunnel started by a Sentinel from before S8a keeps its pid in the user's data
+folder. It is still found there and stopped (root checks its identity the same
+way) while its pid file is the one that process wrote at start. Its pid, device
+and log files there are deleted by Connect or Disconnect once that process has
+positively gone, never by a status read. Nothing else writes that folder.
 
 Nothing here fabricates a connection: ``connect`` reports what OpenVPN actually
 returned, and ``is_running``/``status`` read the real pid file and process table.
@@ -21,12 +35,12 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import shlex
 import subprocess
 import time
 from pathlib import Path
 from typing import Callable
 
+from services import vpn_rootscript
 from services.runtime_paths import user_data_base
 
 # Injected in tests; the default raises the real admin prompt.
@@ -75,26 +89,26 @@ def is_openvpn_available() -> bool:
     return openvpn_binary() is not None
 
 
-def _run_dir() -> Path:
-    # Absolute: root runs openvpn from /, so a relative --log or --writepid would
-    # land there, and the pid path must read the same in the command and in ps.
-    path = Path(_absolute(str(user_data_base() / "vpn")))
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def pid_file() -> Path:
-    return _run_dir() / "openvpn.pid"
+    """Root's pid file, as openvpn's command line names it (``--writepid``)."""
+    return Path(vpn_rootscript.ovpn_path(vpn_rootscript.OVPN_PID))
 
 
-def log_file() -> Path:
-    """Where OpenVPN writes while it starts; deleted as soon as the device is known."""
-    return _run_dir() / "openvpn.log"
+def _legacy_dir() -> Path:
+    """Where a Sentinel from before S8a kept the pid, device and log. Read only."""
+    return Path(_absolute(str(user_data_base() / "vpn")))
 
 
-def device_file() -> Path:
-    """The tunnel device name ("utun4") of the tracked process; no log content."""
-    return _run_dir() / "openvpn.device"
+def legacy_pid_file() -> Path:
+    return _legacy_dir() / "openvpn.pid"
+
+
+def legacy_log_file() -> Path:
+    return _legacy_dir() / "openvpn.log"
+
+
+def legacy_device_file() -> Path:
+    return _legacy_dir() / "openvpn.device"
 
 
 def _forget(path: Path) -> None:
@@ -104,133 +118,162 @@ def _forget(path: Path) -> None:
         pass
 
 
+def _parse_pid(text: str) -> int | None:
+    text = text.strip()
+    return int(text) if text.isdigit() and len(text) <= 10 else None
+
+
 def _read_pid() -> int | None:
+    """The pid root recorded; a file root does not own is not believed."""
+    return _parse_pid(vpn_rootscript.read_root_file(vpn_rootscript.OVPN_PID))
+
+
+def _read_legacy_pid() -> int | None:
     try:
-        text = pid_file().read_text(encoding="utf-8").strip()
-        return int(text) if text else None
+        return _parse_pid(legacy_pid_file().read_text(encoding="utf-8")[:16])
     except (OSError, ValueError):
         return None
 
 
+LEGACY_PID_SLACK = 60     # s between an older Sentinel's openvpn starting and writing its pid
+
+
+def _process_age(pid: int) -> int | None:
+    """Seconds since ``pid`` started (``ps -o etime``: [[dd-]hh:]mm:ss), or None."""
+    try:
+        proc = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "etime="],
+                              capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    match = re.fullmatch(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", (proc.stdout or "").strip())
+    if proc.returncode != 0 or not match:
+        return None
+    days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+
+
+def _legacy_pid_is_its_own(pid: int) -> bool:
+    """The legacy pid file was written when that process started, as openvpn
+    --writepid does. The file is in the user's folder: a pid written into it
+    later, naming some other openvpn that happens to look like Sentinel's, is
+    not believed (S8a review P3-2). A tunnel that predates S8a still passes."""
+    age = _process_age(pid)
+    try:
+        written = legacy_pid_file().stat().st_mtime
+    except OSError:
+        return False
+    return age is not None and abs((time.time() - age) - written) <= LEGACY_PID_SLACK
+
+
+def _forget_legacy() -> None:
+    """An older Sentinel's leftovers once its process is gone. The start-up log
+    can name the server, so it must not outlive the tunnel (S8a review P2-1)."""
+    for path in (legacy_log_file(), legacy_device_file(), legacy_pid_file()):
+        _forget(path)
+
+
+def _legacy_is_gone() -> bool:
+    """Whether the process an older Sentinel's pid file names has positively
+    gone: no such process, or ``ps`` answers and shows something that is not
+    Sentinel's openvpn. A ``ps`` that times out or fails proves nothing, so the
+    files that track a running tunnel are never dropped on it (code review P2-2)."""
+    pid = _read_legacy_pid()
+    if pid is None or pid <= 1:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass                                       # EPERM: alive, and root's
+    try:
+        proc = subprocess.run(["/bin/ps", "-ww", "-p", str(pid), "-o", "command="],
+                              capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return False
+    return not _is_tracked_process(pid, legacy_pid_file())
+
+
+def _sweep_legacy() -> None:
+    if legacy_pid_file().exists() and _legacy_is_gone():
+        _forget_legacy()
+
+
+def _tracked() -> tuple[int, Path | None] | None:
+    """``(pid, legacy pid file or None)`` of Sentinel's running openvpn, or None.
+    Read only: the UI polls it, so it never deletes anything."""
+    pid = _read_pid()
+    if pid is not None and _is_tracked_process(pid):
+        return pid, None
+    legacy = _read_legacy_pid()
+    if (legacy is not None and _is_tracked_process(legacy, legacy_pid_file())
+            and _legacy_pid_is_its_own(legacy)):
+        return legacy, legacy_pid_file()
+    return None
+
+
 def is_running() -> bool:
     """Whether the tracked Sentinel process exists; not a tunnel-health check."""
-    pid = _read_pid()
-    return pid is not None and _is_tracked_process(pid)
+    return _tracked() is not None
 
 
 _DEVICE_LINE = re.compile(
     r"(?:Opened utun device|TUN/TAP device)\s+(utun\d+|tun\d+)\b")
 _DEVICE_NAME = re.compile(r"(?:utun|tun)\d+")
-DEVICE_WAIT_ATTEMPTS = 30      # x 0.5 s: how long connect() waits for the device line
+
+
+def _root_device() -> str | None:
+    stored = vpn_rootscript.read_root_file(vpn_rootscript.OVPN_DEVICE)
+    return stored if _DEVICE_NAME.fullmatch(stored) else None
 
 
 def tunnel_device() -> str | None:
     """The utun/tun device of the tracked OpenVPN tunnel, or None.
 
-    ``connect`` stored the device OpenVPN reported ("Opened utun device utun4",
-    or "TUN/TAP device tun0 opened"). The kill switch must pass traffic on
-    exactly that device; the name is validated so nothing else can reach a pf
-    rule. A log that is still present (an older Sentinel's) is read as a
-    fallback.
+    The root script stored the device OpenVPN reported ("Opened utun device
+    utun4", or "TUN/TAP device tun0 opened"). The kill switch must pass traffic
+    on exactly that device; the name is validated so nothing else can reach a
+    pf rule. A tunnel an older Sentinel started is read from its own files.
     """
-    if not is_running():
+    tracked = _tracked()
+    if tracked is None:
         return None
+    if tracked[1] is None:
+        return _root_device()
     try:
-        stored = device_file().read_text(encoding="utf-8").strip()
+        stored = legacy_device_file().read_text(encoding="utf-8").strip()
     except OSError:
         stored = ""
     if _DEVICE_NAME.fullmatch(stored):
         return stored
     try:
-        text = log_file().read_text(encoding="utf-8", errors="replace")
+        text = legacy_log_file().read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     matches = _DEVICE_LINE.findall(text)
     return matches[-1] if matches else None
 
 
-def _settle_log(sleep: Callable[[float], None], attempts: int) -> tuple[str | None, str]:
-    """Learn the tunnel device from OpenVPN's start-up log, then delete the log.
-
-    Returns ``(device, tail)``: the device name (None if it never appeared) and,
-    only when it did not, the last lines of the log so a failed start can still
-    be explained once. The log is deleted either way, and so is any stale device
-    file, before the new one is written.
-    """
-    log = log_file()
-    device, tail = None, ""
-    try:
-        if log.exists():
-            text = ""
-            for attempt in range(max(1, attempts)):
-                try:
-                    text = log.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    text = ""
-                found = _DEVICE_LINE.findall(text)
-                if found:
-                    device = found[-1]
-                    break
-                if attempt + 1 < attempts:
-                    sleep(0.5)
-            if device is None:
-                tail = "\n".join(text.strip().splitlines()[-6:])
-    finally:
-        _forget(log)
-    if device:
-        try:
-            target = device_file()
-            target.write_text(device, encoding="utf-8")
-            target.chmod(0o600)
-        except OSError:
-            pass
-    return device, tail
-
-
-def _quote(text: str) -> str:
-    return "'" + str(text).replace("'", "'\\''") + "'"
-
-
-# The PATH root's openvpn gets. Nothing of the caller's PATH is kept.
-SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-
-
-def start_command(config_path: str) -> str:
-    """The shell line that starts Sentinel's OpenVPN client, runnable as root.
-
-    openvpn inherits nothing from the user: the working directory is ``/`` and
-    the environment is only ``HOME=/var/root`` and a fixed system PATH
-    (``env -i``), as for wg-quick (``vpn_rootscript.ROOT_SCRIPT``). The
-    macOS dialog runs the line with the user's environment and the app's
-    working directory, which the launcher sets to the user-owned checkout.
-    openvpn itself reads its environment (``OPENSSL_CONF`` and
-    ``OPENSSL_MODULES`` can load a library into the root process), and with
-    ``--daemon`` it keeps its starting directory (``daemon(1, ...)``), which
-    its hooks inherit: ``up up.sh`` ran ./up.sh from the checkout as root, and
-    the review does not check a relative program. Its hooks get only the
-    variables OpenVPN sets itself (``execve`` with its own list,
-    ``run_command.c``), so they lose nothing here. Every path is made absolute
-    first, without collapsing ``..`` (``_absolute``); a relative file named
-inside the config now resolves from ``/``.
-    """
-    cfg = _absolute(os.path.expanduser(config_path))
-    return (
-        f"cd / && /usr/bin/env -i HOME=/var/root PATH={_quote(SYSTEM_PATH)} "
-        f"{_quote(openvpn_binary() or 'openvpn')} --config {_quote(cfg)} "
-        f"--daemon sentinel-ovpn "
-        f"--log {_quote(str(log_file()))} "
-        f"--writepid {_quote(str(pid_file()))} "
-        f"--verb 3"
-    )
-
-
-def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root,
-            sleep: Callable[[float], None] = time.sleep) -> dict:
+def connect(config_path: str, *, config_sha256: str = "",
+            includes: tuple[tuple[str, str], ...] = (), openvpn: str = "",
+            programs: tuple[str, ...] = (),
+            run_as_root: RunAsRoot = _default_run_as_root) -> dict:
     """Start an OpenVPN client from a .ovpn file, daemonised, as root.
+
+    Root runs only its own copy of the config, hashing to ``config_sha256``
+    (the confirmed review's), and of each file in ``includes`` (path, SHA-256)
+    that the review named, and re-checks that each of ``programs`` (the hook
+    programs and libraries the review accepted) is still root-owned; without a
+    valid hash nothing runs. ``openvpn`` is the program the review resolved;
+    root runs that path, and without it nothing runs.
 
     Returns a structured result; ``success`` means OpenVPN launched, not that the
     tunnel finished negotiating — callers poll ``is_running``. ``device`` is the
-    tunnel device OpenVPN reported, when it did within about fifteen seconds.
+    tunnel device OpenVPN reported, when it did within about fifteen seconds
+    (the root script waits for it and prints the log's last lines if it never
+    came).
     """
     result = {"success": False, "output": "", "error": None,
               "device": None, "protocol": "OpenVPN"}
@@ -245,35 +288,39 @@ def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root,
     if is_running():
         result["error"] = "An OpenVPN process is already running. Disconnect first."
         return result
+    _sweep_legacy()
 
-    _forget(log_file())
-    _forget(device_file())
-    script = start_command(str(cfg))
+    try:
+        if not openvpn:
+            # Root runs the program the review named, never a fresh lookup.
+            raise ValueError("no reviewed openvpn program.")
+        script = vpn_rootscript.openvpn_command(
+            "up", config=_absolute(str(cfg)), sha256=config_sha256, openvpn=openvpn,
+            includes=includes, programs=programs)
+    except ValueError as exc:
+        result["error"] = f"Nothing was run: {exc}"
+        return result
     ok, output = run_as_root(script, "Sentinel needs administrator access to start the VPN.")
     result["output"] = output
     result["success"] = ok
-    device, tail = _settle_log(sleep, DEVICE_WAIT_ATTEMPTS)
-    result["device"] = device
-    if not ok:
+    if ok:
+        result["device"] = _root_device()
+    else:
         result["error"] = output or "OpenVPN failed to start."
-    if tail and not device:
-        # Shown once, with the result. Nothing is kept: the log is already gone.
-        result["output"] = (output + "\n" if output else "") + "OpenVPN start-up output:\n" + tail
-        if not ok:
-            result["error"] = result["output"]
     return result
 
 
-def _is_tracked_process(pid: int) -> bool:
+def _is_tracked_process(pid: int, pidfile: Path | None = None) -> bool:
     """Fail closed unless this PID names Sentinel's own OpenVPN command.
 
     A PID file alone is not identity: PIDs can be stale or reused. The command
     line is compared as the raw string ``ps`` prints (``-ww`` so it is never
     truncated) rather than re-tokenised: ``ps`` does not quote arguments, so a
-    pid-file path containing a space — every packaged build keeps it under
-    ``~/Library/Application Support`` and every portable one under
+    pid-file path containing a space — every packaged build kept the legacy one
+    under ``~/Library/Application Support`` and every portable one under
     ``Sentinel Data`` — would split into two tokens and the real process would
-    be refused forever (D2).
+    be refused forever (D2). ``pidfile`` is the ``--writepid`` path to expect:
+    root's own by default, the user-side one for an older Sentinel's tunnel.
     """
     if pid <= 1:
         return False
@@ -292,28 +339,46 @@ def _is_tracked_process(pid: int) -> bool:
         return False
     return (
         " --daemon sentinel-ovpn " in f"{command} "
-        and f" --writepid {pid_file()} " in f"{command} "
+        and f" --writepid {pidfile or pid_file()} " in f"{command} "
     )
 
 
 def disconnect(*, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
-    """Request termination only for a verified Sentinel OpenVPN process."""
+    """Request termination only for a verified Sentinel OpenVPN process.
+
+    Root checks the process identity again before it sends SIGTERM, waits up to
+    ten seconds for it to exit, and then removes the copies, pid and device."""
     result = {"success": False, "output": "", "error": None, "protocol": "OpenVPN"}
-    pid = _read_pid()
-    if pid is None or not _is_tracked_process(pid):
+    tracked = _tracked()
+    if tracked is None:
+        _sweep_legacy()
+        stale = _read_pid()
+        if stale is not None and stale > 1:
+            # Root still records a pid, but no Sentinel openvpn holds it (it
+            # exited on its own): let root remove the copies of the keys it kept
+            # for that tunnel. Root re-checks and signals nothing (code review P3-1).
+            ok, output = run_as_root(vpn_rootscript.openvpn_command("down", pid=stale),
+                                     "Sentinel needs administrator access to remove the "
+                                     "files of a VPN connection that has ended.")
+            result["output"] = output
         result["error"] = (
             "Cannot verify a Sentinel-owned OpenVPN process. Nothing was stopped. "
             "Use the VPN client that started the connection to disconnect it."
         )
         return result
-    ok, output = run_as_root(
-        f"kill -TERM {pid}",
-        "Sentinel needs administrator access to stop the VPN.")
+    pid, legacy = tracked
+    try:
+        script = vpn_rootscript.openvpn_command("down", pid=pid,
+                                                legacy_pid_file=str(legacy or ""))
+    except ValueError as exc:
+        result["error"] = f"Nothing was stopped: {exc}"
+        return result
+    ok, output = run_as_root(script, "Sentinel needs administrator access to stop the VPN.")
     result["success"] = ok
     result["output"] = output
     # Keep tracking until exit is observed; sending a signal does not prove exit.
     if not ok:
         result["error"] = output or "Could not stop OpenVPN."
-    else:
-        _forget(device_file())
+    elif legacy is not None:
+        _sweep_legacy()
     return result

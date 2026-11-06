@@ -98,8 +98,9 @@ that starts with an absolute path is refused unless root owns the program and
 every folder above it and none of them can be written by a group or by everyone,
 and a profile with `SaveConfig = true` is refused. If a WireGuard file changes
 after you confirm, nothing runs: administrator rights only ever run a copy that
-root has checked against the hash you confirmed. For OpenVPN a change after the
-password prompt opens is not caught yet (audit step S8).
+root has checked against the hash you confirmed. The same goes for an OpenVPN
+profile and every file it names beside it (certificates, keys, password files):
+root copies them, checks each copy and starts OpenVPN on the copies.
 
 **WireGuard hooks must be plain commands with full paths.** wg-quick hands each
 hook to the shell, so Tunnel only accepts commands that start with a full path

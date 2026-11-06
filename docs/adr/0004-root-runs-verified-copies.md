@@ -27,8 +27,8 @@ on-disk contract.
    - `wg/<iface>/<iface>.conf` — the WireGuard copy (S7). `<iface>` must match
      `WG_INTERFACE_NAME` (`^[a-zA-Z0-9_=+.-]{1,15}$`), so it is safe in a path and
      wg-quick names the interface exactly as before.
-   - `ovpn/` — the OpenVPN config and data copies, pid and device file (S8; laid out
-     in the spec §1.3 and §5, not built now).
+   - `ovpn/` — the OpenVPN config and data copies, pid and device file (S8; built
+     2026-11-06, see the "S8a and S8b" amendment).
 3. **The root script owns every check.** Inside the one administrator prompt, with
    `umask 077`: create the directories with `install -d -o root -g wheel`; refuse
    (exit 97) if the base or a subdirectory exists and is a symlink, is not a
@@ -86,7 +86,7 @@ on-disk contract.
   interface; the owner checklist (spec §9, S7 line) checks it.
 - Moving the base later means every build must also look in the old place until no
   tunnel from an older build can still be up.
-- S8 reuses this layout; deferring S8 does not change this ADR.
+- S8 reuses this layout (amendment "S8a and S8b", 2026-11-06).
 
 ## Amendment 2026-11-05 (after the independent code and security reviews)
 Reports: `docs/audit/s7-wireguard-root-copy-code-review-2026-11-05.md`,
@@ -141,3 +141,49 @@ Reports: `docs/audit/s7-rebase-code-review-2026-11-06.md`,
   check does not catch a re-created name), and wg-quick reads the copy by its absolute
   path under the base; a source on a stalling filesystem can delay the run before the
   20 s cut-off starts (the regular-file check runs first).
+
+## Amendment 2026-11-06 (S8a and S8b: OpenVPN)
+S8 was built and reviewed eight times on an older line (`claude/intelligent-archimedes-e15a0e`,
+reports `docs/audit/audit-tier2-s8a-review-2026-10-31.md` and
+`docs/audit/audit-tier2-s8b-*-2026-11-05.md`) against that line's own ADR, then ported onto
+this ADR's layout and rules. Details and deviations in spec §15.
+- **Layout under the base:** `ovpn/` (`root:wheel 0755`) holds `openvpn.pid` and `device`
+  (`0644`: Sentinel reads them, and believes them only when root owns them) and `lock`
+  (`lockf`, one OpenVPN Connect or Disconnect at a time, as `wg/lock@<iface>` for
+  WireGuard). `ovpn/private/` (`0700`) holds the config copy `config.ovpn`, `cfg/` with the
+  copies of the files the config names by relative path (their layout kept, folders `0700`,
+  files `0600`), and openvpn's start-up log, which the script deletes as soon as it has read
+  the device from it. The config copy sits beside `cfg/`, not inside, so no data file name
+  can collide with it.
+- **`OVPN_SCRIPT`** keeps every `ROOT_SCRIPT` rule (empty environment, own PATH and HOME,
+  `cd -P` into the base, ownership checks and `chown`/`chmod` of existing folders, umask 077,
+  regular-file check, 20 s read cut-off, `/sbin/sha256` of the copy, one exit 98 for changed
+  or unreadable) and adds exit 99 for a value root rejects (the builder rejects it first).
+  It copies the config and each relative file, keeps a copy only within its size cap
+  (256 KiB, 1 MiB) and with the reviewed SHA-256, hashes each absolute file in place last,
+  re-checks that each hook program and library is owned by root and not group- or
+  other-writable along its path as written and its real path (spec §1.3), and only then
+  runs `openvpn --cd <base>/ovpn/private/cfg --config <base>/ovpn/private/config.ovpn
+  --daemon sentinel-ovpn --log … --writepid <base>/ovpn/openvpn.pid` from `/`.
+- **Absolute data files are not copied** (decision 3 for them): the review accepts one only
+  if root owns it and every folder above it, and root hashes it in place just before start;
+  one only root can read cannot be hashed by Sentinel and joins the ownership re-check
+  instead.
+  Residual (D2): swapping it in between needs root or `daemon`-group rights.
+- **Process identity (S8a):** Disconnect signals a pid only if it equals root's pid file (or,
+  for a tunnel an older Sentinel started, the user-side pid file Sentinel names, believed
+  only if written within 60 s of that process starting) and `ps` shows a program named
+  `openvpn` with `--daemon sentinel-ovpn` and `--writepid <that file>`. Then `kill -TERM`,
+  up to 10 s wait, and the copies, pid and device are removed once it has exited (kept while
+  it still runs); a `kill` that fails because
+  the process has just exited counts as stopped. A recorded pid that is no longer
+  Sentinel's openvpn: nothing is signalled, the copies are removed, exit 94.
+- **Stale state:** the next OpenVPN Connect removes copies, pid and device left by a crash
+  once no tracked process holds them, and Disconnect asks root to when openvpn has exited on
+  its own. The device is read from whole log lines only (`--suppress-timestamps`). The old line's boot-session stamp was not ported;
+  whether `/var/run` is emptied at boot stays UNVERIFIED, as for WireGuard.
+- **Still open:** pid reuse between root's identity check and `kill` (R4); the `openvpn`
+  program itself in a user-owned Homebrew folder (warned, as for `wg-quick`); openvpn reads
+  the copies by absolute path under the base (as S7 P3-A); `--cd` ordering, `--config` after
+  `--cd` and a SIGUSR1 restart re-reading files from `cfg/` are NOT VERIFIED against a real
+  openvpn (not installed on the dev Mac).
