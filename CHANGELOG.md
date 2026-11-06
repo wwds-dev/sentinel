@@ -35,6 +35,28 @@ and the git log, and is not back-filled here.
   folder being erased.
 
 ### Fixed
+- **A WireGuard hook must now be plain commands with full paths.** wg-quick runs
+  each hook through the shell as administrator, and the shell expands what the
+  review read literally: `echo $(/tmp/x.sh)`, `/tm"p"/x.sh`, `/tm?/x.sh`,
+  `. /tmp/x.sh`, `sh</tmp/x.sh` and similar ran a program nobody checked. A hook
+  with shell syntax (`$`, a backtick, `\`, quotes, `* ? [ ]`, `{ }`, `< >`,
+  `( )`, `!`, `~`, a pipe), a variable assignment, a shell keyword or builtin
+  (`.`, `source`, `eval`, `exec`, `if`, `echo`…), a relative path, or a bare
+  program name that is not in `/usr/bin`, `/bin`, `/usr/sbin` or `/sbin` now
+  stops a Connect with "Tunnel cannot check what this hook runs; write plain
+  commands with full paths." (on Disconnect it is a risk you confirm). Commands
+  separated by `;`, `&&`, `||` or `&` are still allowed, and each one is checked.
+  A shell or interpreter must be given the full path of its script before any
+  other word, so `sh -c id` or `python3 -m x` is refused.
+- **The review's DNS line now matches what wg-quick sets.** `DNS # = 10.64.0.1`
+  sets no DNS server (wg-quick cuts the line at `#` before it reads the key), but
+  the review showed "DNS: 10.64.0.1". It now says system DNS stays in use and
+  warns about the line; a comment after a value is no longer read as part of it.
+- **The hook review can no longer pause the window or skip a folder it cannot
+  read.** A config packed with hook commands took about four seconds to review;
+  more than 200 commands and paths in a config's hooks is now refused at once. A
+  folder on a hook program's path that cannot be read (permission denied) now
+  makes the program unsafe instead of being skipped.
 - **A WireGuard hook hidden from the review is now shown and refused.** wg-quick
   runs `PostUp # = command`, a bare `PreUp` line, and a line with a NUL byte in it
   (`Post\0Up = …`) as administrator, but the review read them as comments or
@@ -45,7 +67,8 @@ and the git log, and is not back-filled here.
   links is followed one step at a time, as the system does, checking every folder
   on the way; more than 40 links, an unreadable link, a path with a NUL byte or a
   path too long for the system is refused or skipped instead of stopping the
-  review with an error, and a very long hook no longer freezes the window.
+  review with an error, and a hook line over 4000 characters is refused without
+  its paths being walked.
 - **Hook review sees through two more tricks.** A WireGuard `SaveConfig = true`
   followed by a `# comment` is now refused like a plain one, and a hook program
   reached through a link (or a chain of links) is judged by where it really

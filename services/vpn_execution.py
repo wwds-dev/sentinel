@@ -24,6 +24,14 @@ made when the privileged prompt opens, not when root reads the file: wg-quick an
 openvpn still read the user's file afterwards, and that gap stays open until the
 root-owned verified copy (audit step S7). The contents of a hook script are not
 covered by the config hash either; only programs that root owns are accepted.
+
+wg-quick runs a WireGuard hook through bash's ``eval``, so the review only
+accepts a hook it can read exactly as bash will: plain commands with full paths
+(or plain names of programs in /usr/bin, /bin, /usr/sbin, /sbin), separated by
+``;``, ``&&``, ``||`` or ``&``. Shell syntax ($, quotes, backslashes, globs,
+braces, redirects, subshells, ~, !, pipes), variable assignments, shell keywords
+and builtins (``.``, ``source``, ``eval``, ``exec``, ``if``...) and any other bare
+command make the hook a blocker on Connect and a risk on Disconnect.
 """
 
 from __future__ import annotations
@@ -316,25 +324,77 @@ def _read_config(path: Path) -> tuple[str | None, str, list[str], list[str]]:
 
 
 _stat = os.stat      # indirection so tests can describe a root-owned filesystem
+_lstat = os.lstat    # the link walk's view of a path; tests inject errors through it
+
+# A stat that fails with one of these (ENOENT, ENOTDIR) means the path is not
+# there (yet), which is judged by the folders that do exist. Any other failure
+# (EACCES, ELOOP, ENAMETOOLONG, EIO...) means it could not be checked: unsafe.
+_MISSING = (FileNotFoundError, NotADirectoryError)
 
 
 # Commands that run another program or script named in their arguments: any
 # path they are given is code that root will run.
 _INTERPRETER = re.compile(
     r"(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|python[0-9.]*|perl|ruby|node|php|lua|awk|"
-    r"osascript|expect|tclsh|swift|env|sudo|exec|command|nohup|nice|time|xargs|open)")
-_SHELL_SPLIT = re.compile(r"\s*(?:;|&&|\|\||\||&|\n)\s*")
+    r"osascript|expect|tclsh|swift|env|sudo|exec|command|nohup|nice|time|xargs|open|"
+    r"find|arch|caffeinate|timeout|stdbuf|chroot|su|doas|script|watch|flock|parallel)")
+
+# The most commands and paths the hooks of one config may name. A config is at
+# most CONFIG_READ_LIMIT bytes, which is room for ~130,000 one-letter commands;
+# checking each took seconds on the UI thread. Above this the config is refused.
+HOOK_CHECK_LIMIT = 200
+
+# ── WireGuard hooks: plain commands with full paths (owner's rule, 2026-11-06) ──
+# wg-quick runs each hook as root through bash's `eval`, so bash expands,
+# quotes, redirects and substitutes it before anything runs. The review checks
+# words literally, so a hook is accepted only when the words it checks are the
+# words bash runs: no shell syntax at all, every command a full path or a plain
+# program name found in the system folders. Commands may be separated by ;, &&,
+# || or & (each one is checked); a pipe is refused, because what it feeds a
+# shell or interpreter is code nobody checked. A " #" ends the hook, as bash's
+# comment does.
+_WG_SHELL_CHARS = "$`\\'\"*?[]{}<>()!~|"
+_WG_SEPARATOR = re.compile(r"[ \t]*(?:;|&&|\|\||&)[ \t]*")
+_WG_COMMENT = re.compile(r"(?:^|[ \t])#")
+_WG_WORDS = re.compile(r"[ \t]+")       # bash splits on blanks only, not \v or U+2028
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9_.+-]+")
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# What a shell, interpreter or wrapper may be given before the full path of the
+# script or program it runs: a bare option letter or long option, or a number.
+# Anything else there (inline code, a module or program name looked up later,
+# %I, which is the config's name) is code nobody checked. Once that program is
+# named, the words after it are its arguments (data); paths stay checked as code.
+_PLAIN_ARGUMENT = re.compile(r"-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*|-?[0-9]+")
+# Words bash runs itself instead of looking them up on PATH: its keywords and
+# builtins (bash 3.2 to 5.2) and the functions wg-quick (darwin.bash and
+# linux.bash) defines before it runs a hook. Each can run, source or redefine
+# code that no path names.
+_SHELL_WORDS = frozenset((
+    "!", "[[", "]]", "{", "}", "case", "coproc", "do", "done", "elif", "else", "esac",
+    "fi", "for", "function", "if", "in", "select", "then", "time", "until", "while",
+    ".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command",
+    "compgen", "complete", "compopt", "continue", "declare", "dirs", "disown", "echo",
+    "enable", "eval", "exec", "exit", "export", "false", "fc", "fg", "getopts", "hash",
+    "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd",
+    "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift",
+    "shopt", "source", "suspend", "test", "times", "trap", "true", "type", "typeset",
+    "ulimit", "umask", "unalias", "unset", "wait",
+    "cmd", "die", "parse_options", "detect_launchd", "read_bool", "auto_su",
+    "get_real_interface", "add_if", "del_routes", "del_if", "up_if", "add_addr", "set_mtu",
+    "set_mtu_up", "collect_gateways", "collect_endpoints", "collect_new_service_dns",
+    "set_endpoint_direct_route", "set_dns", "del_dns", "unset_dns", "monitor_daemon",
+    "add_route", "add_default", "get_fwmark", "remove_firewall", "resolvconf_iface_prefix",
+    "set_config", "save_config", "execute_hooks", "cmd_usage", "cmd_up", "cmd_down",
+    "cmd_save", "cmd_strip",
+))
 
 
-def _segments(value: str, words: list[str], protocol: str) -> list[list[str]]:
-    """Commands in a hook: a WireGuard hook is a shell line (split at ; && || | &),
-    an OpenVPN executable directive is one program and its arguments."""
-    if protocol == "OpenVPN":
-        flat: list[str] = []
-        for word in words:
-            flat.extend(word.split())
-        return [flat]
-    return [seg.split() for seg in _SHELL_SPLIT.split(value) if seg.strip()]
+def _segments(words: list[str]) -> list[list[str]]:
+    """Commands in an OpenVPN executable directive: one program and its arguments."""
+    flat: list[str] = []
+    for word in words:
+        flat.extend(word.split())
+    return [flat]
 
 
 def _path_word(word: str) -> str | None:
@@ -345,18 +405,18 @@ def _path_word(word: str) -> str | None:
     return word if word.startswith(("/", "~")) else None
 
 
-# The PATH the privileged shell runs a hook with: the authorisation dialog's
-# default, with wg-quick's own directory put first (vpn_connection.wg_quick_command).
+# The system folders wg-quick puts first on its PATH, in its order
+# (darwin.bash: PATH=/usr/bin:/bin:/usr/sbin:/sbin:<its own folder>:$PATH).
 _PRIVILEGED_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
 
 def _which_privileged(name: str) -> str | None:
-    """Where a bare command word resolves for the privileged shell, or None
-    (a shell builtin, or not installed). Looks in the same directories, in the
-    same order, that ``wg_quick_command`` gives root."""
-    exe = shutil.which("wg-quick")
-    dirs = ((os.path.dirname(exe),) if exe else ()) + _PRIVILEGED_PATH
-    for directory in dirs:
+    """Where a bare command word resolves among the system folders wg-quick
+    searches first, in its order, or None. A program found only further along
+    wg-quick's PATH (its own, often user-writable, Homebrew folder, or the PATH
+    it inherits) is not accepted: a user could create it there after the
+    review, so the hook must name it by full path instead."""
+    for directory in _PRIVILEGED_PATH:
         candidate = os.path.join(directory, name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
@@ -369,7 +429,9 @@ def _paths_touched(path: Path) -> list[Path]:
     any ".." after it (as the kernel does), every folder passed through added
     (even one a later ".." leaves), each link and its folders, and the final
     file. More than 40 links raises OSError (ELOOP), as the kernel would refuse
-    the path; ValueError (a NUL byte) propagates. The caller treats both as unsafe."""
+    the path; a component that cannot be looked at for any reason but "it is
+    not there" raises its OSError; ValueError (a NUL byte) propagates. The
+    caller treats all of these as unsafe."""
     seen: dict[Path, None] = {}                     # ordered set: linear, not quadratic
 
     def add(item: Path) -> None:
@@ -395,7 +457,11 @@ def _paths_touched(path: Path) -> list[Path]:
             continue
         step = current / part
         add(step)                                    # every folder passed through
-        if os.path.islink(step):
+        try:
+            is_link = stat.S_ISLNK(_lstat(step).st_mode)
+        except _MISSING:
+            is_link = False                          # EACCES and the rest propagate
+        if is_link:
             links += 1
             if links > 40:
                 raise OSError(errno.ELOOP, "too many links", str(path))
@@ -423,13 +489,15 @@ def _unsafe_executable_reason(path: Path) -> str | None:
         chain = _paths_touched(path)
     except ValueError:                            # a NUL byte: no file has that name
         return f"{path!r} is not a usable path"
-    except OSError as exc:                        # a link that cannot be read
+    except OSError as exc:                        # a link or folder that cannot be read
         return f"{path} could not be resolved ({exc.strerror or 'read error'})"
     for candidate in chain:
         try:
             info = _stat(candidate)
-        except OSError:
+        except _MISSING:
             continue                              # not there yet: judged by what exists
+        except OSError as exc:                    # EACCES, ELOOP...: cannot tell
+            return f"{candidate} could not be checked ({exc.strerror or 'error'})"
         if info.st_uid != 0:
             return f"{candidate} is not owned by root"
         if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
@@ -446,56 +514,141 @@ def _exists(path: str) -> bool:
         return False
 
 
-def _program_findings(raw: str, value: str, words: list[str],
-                      protocol: str) -> tuple[list[str], list[str]]:
-    """(unsafe findings, warnings) for the programs a hook runs. The contents of a
-    script are NOT covered by the config hash: only a program that root owns,
-    in directories only root can write, is accepted. Every absolute or ~ path in
-    the command is looked at; the command word, and every path given to an
-    interpreter or wrapper (sh, python, env, ...), must be safe, while a data
-    argument of a root-owned program only draws a warning."""
+def _spend(budget: dict | None) -> bool:
+    """Take one check from the config's budget; False once it is used up."""
+    if budget is None:
+        return True
+    budget["left"] -= 1
+    if budget["left"] < 0:
+        budget["over"] = True
+        return False
+    return True
+
+
+def _path_findings(raw: str, path: str, position: int, runs_code: bool, protocol: str,
+                   unsafe: list[str], warnings: list[str]) -> None:
+    """Judge one path word of a hook command. The command itself (position 0)
+    and every path given to an interpreter or wrapper are code root runs."""
+    if protocol == "WireGuard" and ("%i" in path or "%I" in path):
+        # wg-quick puts the tunnel device (%i, unknown until it is up) or
+        # the interface (%I) there: the literal path is not what runs.
+        reason = "its path contains %i or %I"
+        message = (f"The {raw} hook names {path}; wg-quick fills in %i and %I "
+                   "when the tunnel starts, so the program that runs as "
+                   "administrator cannot be checked. Write the path out in full.")
+    else:
+        reason = _unsafe_executable_reason(Path(path))
+        message = (f"The {raw} hook runs {path} as administrator, and {reason}, "
+                   "so a normal user could replace it.")
+    if reason is None:
+        if position == 0 and not _exists(path):
+            warnings.append(f"The {raw} hook names {path}, which does not exist.")
+        return
+    if position == 0 or runs_code:
+        unsafe.append(message)
+    else:
+        warnings.append(f"The {raw} hook hands {path} to a program; {reason}.")
+
+
+def _wg_hook_findings(raw: str, value: str,
+                      budget: dict | None = None) -> tuple[list[str], list[str]]:
+    """(unsafe findings, warnings) for one WireGuard hook under the plain-commands
+    rule above. Every finding names the hook, so a refusal can be traced."""
     unsafe: list[str] = []
     warnings: list[str] = []
-    for segment in _segments(value, words, protocol):
-        index = 0
-        while index < len(segment) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[index]):
-            index += 1                              # leading VAR=value assignments
-        command = segment[index] if index < len(segment) else ""
-        base = command.strip("'\"").rsplit("/", 1)[-1]
-        runs_code = bool(_INTERPRETER.fullmatch(base))
-        bare = command.strip("'\"")
-        if protocol == "WireGuard" and re.fullmatch(r"[A-Za-z0-9_.+-]+", bare):
-            # A bare command word is found through PATH, which includes wg-quick's
-            # (often user-writable) Homebrew bin directory: judge what it resolves to.
-            resolved = _which_privileged(bare)
-            reason = _unsafe_executable_reason(Path(resolved)) if resolved else None
+    shown = value if len(value) <= HOOK_DISPLAY_LIMIT else value[:HOOK_DISPLAY_LIMIT] + "…"
+
+    def refuse(problem: str) -> None:
+        unsafe.append(f"The {raw} hook ({shown}) {problem}. Tunnel cannot check what "
+                      "this hook runs; write plain commands with full paths.")
+
+    command_text = _WG_COMMENT.split(value, 1)[0]
+    if any((ord(c) < 32 and c != "\t") or ord(c) == 127 for c in command_text):
+        refuse("contains a control character")
+        return unsafe, warnings
+    syntax = next((c for c in command_text.replace("||", "") if c in _WG_SHELL_CHARS), None)
+    if syntax is not None:
+        refuse(f"uses the shell character '{syntax}'")
+        return unsafe, warnings
+    for text in _WG_SEPARATOR.split(command_text):
+        words = [w for w in _WG_WORDS.split(text) if w]
+        if not words:
+            continue
+        if not _spend(budget):
+            return unsafe, warnings
+        command = words[0]
+        if _ASSIGNMENT.match(command):
+            refuse(f"sets {command.split('=', 1)[0]} for its command, which changes what runs")
+            continue
+        if command in _SHELL_WORDS:
+            refuse(f"uses '{command}', which bash runs itself rather than a program")
+            continue
+        if "/" in command:
+            if not command.startswith("/"):
+                refuse(f"runs {command}, which is not a full path")
+                continue
+        elif not _PLAIN_NAME.fullmatch(command):
+            refuse(f"runs '{command}', which is not a plain program name")
+            continue
+        else:
+            resolved = _which_privileged(command)
+            if resolved is None:
+                refuse(f"runs '{command}', which is not a program in "
+                       + ", ".join(_PRIVILEGED_PATH))
+                continue
+            reason = _unsafe_executable_reason(Path(resolved))
             if reason:
-                unsafe.append(f"The {raw} hook runs '{bare}' as administrator, which "
+                unsafe.append(f"The {raw} hook runs '{command}' as administrator, which "
                               f"resolves to {resolved}, and {reason}, so a normal user "
                               "could replace it.")
-        for position, word in enumerate(segment[index:]):
+                continue
+        base = command.rsplit("/", 1)[-1]
+        runs_code = bool(_INTERPRETER.fullmatch(base))
+        handed = False          # an interpreter or wrapper has been given its program
+        for position, word in enumerate(words):
+            path = command if position == 0 else _path_word(word)
+            if path is None:
+                if runs_code and not handed and not _PLAIN_ARGUMENT.fullmatch(word):
+                    refuse(f"hands '{word}' to {command}, which can run it as code")
+                    break
+                continue
+            if not path.startswith("/"):                # a bare command: judged above
+                continue
+            if not _spend(budget):
+                return unsafe, warnings
+            _path_findings(raw, path, position, runs_code, "WireGuard", unsafe, warnings)
+            # `sh /x.sh up`: "up" is the script's argument. `env /bin/sh -c x`: the
+            # program is a shell, so what follows is still code. find's paths are
+            # where it searches, and its -exec takes a program name: never data.
+            if (position > 0 and runs_code and word.startswith("/") and base != "find"
+                    and not _INTERPRETER.fullmatch(word.rsplit("/", 1)[-1])):
+                handed = True
+    return unsafe, warnings
+
+
+def _program_findings(raw: str, value: str, words: list[str], protocol: str,
+                      budget: dict | None = None) -> tuple[list[str], list[str]]:
+    """(unsafe findings, warnings) for the programs a hook runs. The contents of a
+    script are NOT covered by the config hash: only a program that root owns,
+    in directories only root can write, is accepted. A WireGuard hook must be
+    plain commands with full paths (``_wg_hook_findings``). An OpenVPN
+    executable directive is one program and its arguments: the program, and
+    every path given to an interpreter or wrapper (sh, python, env, ...), must
+    be safe, while a data argument of a root-owned program only draws a warning."""
+    if protocol == "WireGuard":
+        return _wg_hook_findings(raw, value, budget)
+    unsafe: list[str] = []
+    warnings: list[str] = []
+    for segment in _segments(words):
+        command = segment[0] if segment else ""
+        runs_code = bool(_INTERPRETER.fullmatch(command.strip("'\"").rsplit("/", 1)[-1]))
+        for position, word in enumerate(segment):
             path = _path_word(word)
             if path is None:
                 continue
-            if protocol == "WireGuard" and ("%i" in path or "%I" in path):
-                # wg-quick puts the tunnel device (%i, unknown until it is up) or
-                # the interface (%I) there: the literal path is not what runs.
-                reason = "its path contains %i or %I"
-                message = (f"The {raw} hook names {path}; wg-quick fills in %i and %I "
-                           "when the tunnel starts, so the program that runs as "
-                           "administrator cannot be checked. Write the path out in full.")
-            else:
-                reason = _unsafe_executable_reason(Path(path))
-                message = (f"The {raw} hook runs {path} as administrator, and {reason}, "
-                           "so a normal user could replace it.")
-            if reason is None:
-                if position == 0 and not _exists(path):
-                    warnings.append(f"The {raw} hook names {path}, which does not exist.")
-                continue
-            if position == 0 or runs_code:
-                unsafe.append(message)
-            else:
-                warnings.append(f"The {raw} hook hands {path} to a program; {reason}.")
+            if not _spend(budget):
+                return unsafe, warnings
+            _path_findings(raw, path, position, runs_code, protocol, unsafe, warnings)
     return unsafe, warnings
 
 
@@ -515,6 +668,7 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
                         "directive from this review; remove it.")
     hook_keys = ({k.lower() for k in WG_HOOK_KEYS} if protocol == "WireGuard"
                  else set(OPENVPN_HOOK_KEYS))
+    budget = {"left": HOOK_CHECK_LIMIT, "over": False}
     for raw, key, value, words in found:
         overlong = len(raw) + len(value) > HOOK_LINE_LIMIT and key in hook_keys
         if overlong:
@@ -533,11 +687,15 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
                 unknown.append(key)
         # An overlong hook is already refused; walking its paths could take long
         # enough (a 256 KiB line) to freeze the window before the refusal shows.
-        if (key in hook_keys and not overlong
+        if (key in hook_keys and not overlong and not budget["over"]
                 and (protocol == "WireGuard" or key in OPENVPN_EXECUTABLE_KEYS)):
-            more_soft, more_warn = _program_findings(raw, value, words, protocol)
+            more_soft, more_warn = _program_findings(raw, value, words, protocol, budget)
             soft.extend(more_soft)
             warnings.extend(more_warn)
+    if budget["over"]:
+        blockers.append(f"The {protocol} config's hooks name more than {HOOK_CHECK_LIMIT} "
+                        "commands and paths; Tunnel will not run more than a person can "
+                        "review.")
     if unknown:
         warnings.append("OpenVPN directives not on the reviewed list (allowed, but Tunnel "
                         "has not checked what they do): " + ", ".join(unknown[:12])

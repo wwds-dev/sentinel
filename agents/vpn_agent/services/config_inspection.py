@@ -37,8 +37,12 @@ class WireGuardConfigSummary:
     warnings: tuple[str, ...]
 
 
+# The whitespace wg-quick's bash trims; str.strip() also removes U+00A0 and others.
+_ASCII_SPACE = " \t\r\v\f"
+
+
 def _items(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
+    return [item.strip(_ASCII_SPACE) for item in value.split(",") if item.strip(_ASCII_SPACE)]
 
 
 def _endpoint_is_valid(value: str) -> bool:
@@ -112,9 +116,14 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
     secrets_discarded = 0
     warnings: list[str] = []
 
-    for line_number, raw_line in enumerate(text.splitlines(), 1):
-        line = raw_line.strip()
-        if not line or line.startswith(("#", ";")):
+    # Read lines as wg-quick does: split at "\n" only (splitlines() also splits
+    # at U+2028 and friends, which would show an entry wg-quick never reads),
+    # and drop everything from the first "#" before reading a key or a value,
+    # so "DNS # = 10.64.0.1" sets no DNS server and is not shown as one.
+    for line_number, raw_line in enumerate(text.split("\n"), 1):
+        full = raw_line.strip(_ASCII_SPACE)
+        line = full.split("#", 1)[0].strip(_ASCII_SPACE)
+        if not line or line.startswith(";"):
             continue
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1].strip().lower()
@@ -125,10 +134,14 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
             continue
         key, separator, value = line.partition("=")
         if not separator:
-            warnings.append(f"Line {line_number}: entry has no '=' and was ignored.")
+            if "=" in full:
+                warnings.append(f"Line {line_number}: the '=' comes after a '#', so "
+                                "wg-quick reads no value from this entry; it was ignored.")
+            else:
+                warnings.append(f"Line {line_number}: entry has no '=' and was ignored.")
             continue
         normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
-        value = value.strip()
+        value = value.strip(_ASCII_SPACE)
         if normalized_key in _SECRET_FIELDS:
             secrets_discarded += 1
             continue
