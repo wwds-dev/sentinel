@@ -174,7 +174,11 @@ def test_join_or_park_cancels_all_shares_one_deadline_and_parks_the_stuck(monkey
     elapsed = time.monotonic() - start
     assert all(w.cancelled for w in (stuck_a, stuck_b, quick))
     assert parked == [stuck_a, stuck_b] and result == [stuck_a, stuck_b]
-    assert elapsed < 0.45                      # one deadline, not 0.3 s per worker
+    # One deadline, not 0.3 s per worker: per-worker waits would sleep >= 0.6 s, so
+    # 0.58 still catches that while leaving CI's slow macOS runners room (they
+    # measured 0.451 and 0.455 against the old 0.45). The waited check below is
+    # the exact one.
+    assert elapsed < 0.58
     assert stuck_b.waited[0] <= 50             # the second only gets what is left
 
 

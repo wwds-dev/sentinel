@@ -11,6 +11,7 @@ import hashlib
 import os
 import stat
 import types
+from pathlib import Path
 
 import pytest
 
@@ -709,3 +710,219 @@ def test_a_link_chain_through_a_user_writable_folder_is_unsafe(tmp_path, monkeyp
     monkeypatch.setattr(vpn_execution, "_stat", stat_)
     reason = vpn_execution._unsafe_executable_reason(safe / "tool")
     assert reason is not None and str(loose) in reason
+
+
+# ── review of #30: lines wg-quick reads differently, link walks, NUL bytes ──
+
+@pytest.mark.parametrize("line, runs", [
+    ("PostUp # = /tmp/evil.sh arg", "/tmp/evil.sh arg"),     # key cut at "#", value after "="
+    ("PostUp#=/tmp/evil.sh", "/tmp/evil.sh"),
+    ("postdown # note = /tmp/evil.sh", "/tmp/evil.sh"),
+    ("PreUp", "PreUp"),                                       # no "=": the line itself runs
+])
+def test_a_hook_wg_quick_reads_past_a_comment_is_shown_and_refused(tmp_path, line, runs):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=line + "\n")))
+    assert any(runs in hook for hook in r.root_hooks)
+    assert _blocked(r, "WireGuard config:") and any("administrator" in b for b in r.blockers)
+
+
+def test_a_hidden_hook_on_disconnect_is_a_risk_not_a_blocker(tmp_path):
+    path = wg_conf(tmp_path, "wgh", interface_extra="PostDown # = /tmp/evil.sh\n")
+    r = review("disconnect", profile_for(path), Probe(up={"wgh"}))
+    assert r.allowed and any("/tmp/evil.sh" in item for item in r.risks)
+
+
+def test_a_comment_after_a_hook_value_is_not_a_hidden_hook(tmp_path):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = echo hi # note\n")))
+    assert not any("WireGuard config:" in b for b in r.blockers)
+    assert r.root_hooks == ("PostUp: echo hi # note",)        # wg-quick runs the unstripped value
+
+
+def _only_writable(*folders):
+    names = {str(f) for f in folders}
+
+    def stat_(path, *a, **k):
+        mode = (stat.S_IFDIR | 0o777) if str(path) in names else ROOT_DIR
+        return types.SimpleNamespace(st_uid=0, st_mode=mode)
+    return stat_
+
+
+def test_every_link_of_a_three_link_chain_is_checked(tmp_path, monkeypatch):
+    """safe/tool -> safe3/hop1 -> loose/hop2 -> safe2/tool: only the second link
+    sits in a folder a user can write."""
+    safe, safe3, loose, safe2 = (tmp_path / n for n in ("safe", "safe3", "loose", "safe2"))
+    for d in (safe, safe3, loose, safe2):
+        d.mkdir()
+    (safe2 / "tool").write_text("#!/bin/sh\n")
+    (loose / "hop2").symlink_to(safe2 / "tool")
+    (safe3 / "hop1").symlink_to(loose / "hop2")
+    (safe / "tool").symlink_to(safe3 / "hop1")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(loose))
+    reason = vpn_execution._unsafe_executable_reason(safe / "tool")
+    assert reason is not None and str(loose) in reason
+
+
+def test_a_relative_link_is_resolved_from_its_own_folder(tmp_path, monkeypatch):
+    safe, loose = tmp_path / "safe", tmp_path / "loose"
+    safe.mkdir()
+    loose.mkdir()
+    (loose / "x").write_text("#!/bin/sh\n")
+    (safe / "tool").symlink_to("../loose/x")
+    monkeypatch.chdir("/")                       # a cwd-relative resolve would miss loose
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(loose))
+    reason = vpn_execution._unsafe_executable_reason(safe / "tool")
+    assert reason is not None and str(loose) in reason
+
+
+def test_a_link_before_dotdot_is_followed_first(tmp_path, monkeypatch):
+    """S/prog -> "x/../y", S/x -> W/hop, W/hop -> R2/d: the kernel goes through
+    W/hop (in a writable folder) and lands on R2/y; a text-only normpath skips it."""
+    S, W, R2 = tmp_path / "S", tmp_path / "W", tmp_path / "R2"
+    for d in (S, W, R2, R2 / "d"):
+        d.mkdir()
+    (R2 / "y").write_text("#!/bin/sh\n")
+    (W / "hop").symlink_to(R2 / "d")
+    (S / "x").symlink_to(W / "hop")
+    (S / "prog").symlink_to("x/../y")
+    assert os.path.realpath(S / "prog") == os.path.realpath(R2 / "y")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(W))
+    reason = vpn_execution._unsafe_executable_reason(S / "prog")
+    assert reason is not None and str(W) in reason
+
+
+def test_a_link_loop_ends_and_is_refused(tmp_path):
+    (tmp_path / "a").symlink_to(tmp_path / "b")
+    (tmp_path / "b").symlink_to(tmp_path / "a")
+    with pytest.raises(OSError):
+        vpn_execution._paths_touched(tmp_path / "a")
+    assert "too many links" in vpn_execution._unsafe_executable_reason(tmp_path / "a")
+
+
+def test_forty_links_resolve_and_forty_one_are_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable())
+    (tmp_path / "tool").write_text("#!/bin/sh\n")
+    previous = tmp_path / "tool"
+    for n in range(41):
+        link = tmp_path / f"l{n}"
+        link.symlink_to(previous)
+        previous = link
+    touched = vpn_execution._paths_touched(tmp_path / "l39")    # 40 links
+    assert tmp_path / "l0" in touched and tmp_path / "tool" in touched
+    assert vpn_execution._unsafe_executable_reason(tmp_path / "l39") is None
+    assert "too many links" in vpn_execution._unsafe_executable_reason(tmp_path / "l40")
+
+
+def test_a_folder_a_link_target_passes_through_before_dotdot_is_checked(tmp_path, monkeypatch):
+    """S/prog -> W/sub/../../R2/y: the kernel walks into W (writable) before the
+    two ".." bring it back; a user could swap W/sub for a link meanwhile."""
+    S, W, R2 = tmp_path / "S", tmp_path / "W", tmp_path / "R2"
+    for d in (S, W, W / "sub", R2):
+        d.mkdir()
+    (R2 / "y").write_text("#!/bin/sh\n")
+    (S / "prog").symlink_to(str(W / "sub") + "/../../R2/y")
+    assert os.path.realpath(S / "prog") == os.path.realpath(R2 / "y")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(W))
+    reason = vpn_execution._unsafe_executable_reason(S / "prog")
+    assert reason is not None and str(W) in reason
+
+
+def test_a_link_that_cannot_be_read_is_refused(tmp_path, monkeypatch):
+    (tmp_path / "tool").write_text("#!/bin/sh\n")
+    (tmp_path / "link").symlink_to(tmp_path / "tool")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable())
+
+    def no_read(*a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(vpn_execution.os, "readlink", no_read)
+    reason = vpn_execution._unsafe_executable_reason(tmp_path / "link")
+    assert reason is not None and "could not be resolved" in reason
+
+
+def test_a_nul_byte_in_a_hook_path_is_refused_not_raised(tmp_path):
+    assert "not a usable path" in vpn_execution._unsafe_executable_reason(Path("/bin/ech\x00o"))
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = /bin/ech\x00o hi\n")))
+    assert not r.allowed
+
+
+def test_a_relative_path_is_not_normalised_before_its_links(tmp_path, monkeypatch):
+    """"S/x/../y" from tmp_path: the kernel follows S/x (-> W/hop -> R2/d) before
+    the "..", landing on R2/y; normalising first would look at S/y instead."""
+    S, W, R2 = tmp_path / "S", tmp_path / "W", tmp_path / "R2"
+    for d in (S, W, R2, R2 / "d"):
+        d.mkdir()
+    (R2 / "y").write_text("#!/bin/sh\n")
+    (W / "hop").symlink_to(R2 / "d")
+    (S / "x").symlink_to(W / "hop")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(W))
+    reason = vpn_execution._unsafe_executable_reason(Path("S/x/../y"))
+    assert reason is not None and str(W) in reason
+
+
+def test_a_hook_with_a_huge_path_is_reviewed_quickly(tmp_path):
+    """Codex on #32: a 256 KiB config can hold a path of ~100,000 components. An
+    overlong hook is refused without walking it, and the longest hook that is
+    walked (under 4000 characters) stays fast."""
+    import time
+    huge = "/" + "/".join(["a"] * 100_000)
+    longest = "/" + "/".join(["a"] * 1_990)                   # just under the limit
+    start = time.monotonic()
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {huge}\n")))
+    assert not r.allowed and any("4000" in b for b in r.blockers)
+    review("connect", profile_for(wg_conf(tmp_path, "wg2", interface_extra=f"PostUp = {longest}\n")))
+    assert time.monotonic() - start < 5
+
+
+# ── review of #32: NUL bytes, %i/%I, a link reached after ".." ──
+
+@pytest.mark.parametrize("line, runs", [
+    ("Post\x00Up = /tmp/evil.sh", "/tmp/evil.sh"),            # bash drops the NUL
+    ("PostUp = \x00/tmp/evil.sh", "/tmp/evil.sh"),            # program word hidden by a NUL
+])
+@pytest.mark.parametrize("action", ["connect", "disconnect"])
+def test_a_nul_byte_cannot_hide_a_hook(tmp_path, line, runs, action):
+    path = wg_conf(tmp_path, "wgn", interface_extra=line + "\n")
+    r = review(action, profile_for(path), Probe(up={"wgn"}) if action == "disconnect" else None)
+    assert any(runs in hook for hook in r.root_hooks)
+    found = r.blockers if action == "connect" else r.risks
+    assert any("NUL byte" in item for item in found)
+    if action == "connect":
+        assert not r.allowed
+
+
+def test_a_nul_byte_cannot_hide_saveconfig(tmp_path):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="Save\x00Config = true\n")))
+    assert _blocked(r, "SaveConfig = true")
+
+
+def test_a_nul_byte_in_an_openvpn_profile_is_refused(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "dev tun\nu\x00p /tmp/evil.sh\n")))
+    assert _blocked(r, "NUL byte")
+
+
+@pytest.mark.parametrize("word", ["/opt/vpn/%i/up.sh", "/etc/wireguard/%I.up"])
+def test_a_hook_path_with_a_wg_quick_placeholder_is_refused(tmp_path, word):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {word}\n")))
+    assert not r.allowed and any("%i and %I" in b and word in b for b in r.blockers)
+
+
+def test_a_placeholder_outside_a_path_is_fine(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
+        "/usr/local/sbin/hook.sh": (0, ROOT_FILE), "/usr/local/sbin": (0, ROOT_DIR),
+        "/usr/local": (0, ROOT_DIR), "/usr": (0, ROOT_DIR), "/": (0, ROOT_DIR)}))
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = /usr/local/sbin/hook.sh %i\n")))
+    assert not any("%i and %I" in b for b in r.blockers)
+
+
+def test_a_link_reached_only_after_dotdot_is_checked(tmp_path, monkeypatch):
+    """S/p -> "../T/l", T/l -> R/x: T is writable, and the walk reaches it only by
+    applying the ".."; ignoring ".." would look for S/T/l and never see T."""
+    S, T, R = tmp_path / "S", tmp_path / "T", tmp_path / "R"
+    for d in (S, T, R):
+        d.mkdir()
+    (R / "x").write_text("#!/bin/sh\n")
+    (T / "l").symlink_to(R / "x")
+    (S / "p").symlink_to("../T/l")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(T))
+    reason = vpn_execution._unsafe_executable_reason(S / "p")
+    assert reason is not None and str(T) in reason
