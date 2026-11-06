@@ -202,6 +202,10 @@ def _scan(text: str, protocol: str):
     found: list[tuple[str, str, str, list[str]]] = []
     problems: list[str] = []
     block = ""
+    if protocol == "WireGuard":
+        # bash's read (wg-quick) drops every NUL byte, so "Post\0Up = x" is a
+        # PostUp to it: scan the text it sees. _hook_findings refuses NULs too.
+        text = text.replace("\x00", "")
     for number, line_ in enumerate(text.split("\n"), 1):
         line = line_.strip(_WS)
         if protocol == "WireGuard":
@@ -424,8 +428,6 @@ def _unsafe_executable_reason(path: Path) -> str | None:
     for candidate in chain:
         try:
             info = _stat(candidate)
-        except ValueError:
-            return f"{candidate!r} is not a usable path"
         except OSError:
             continue                              # not there yet: judged by what exists
         if info.st_uid != 0:
@@ -475,13 +477,21 @@ def _program_findings(raw: str, value: str, words: list[str],
             path = _path_word(word)
             if path is None:
                 continue
-            reason = _unsafe_executable_reason(Path(path))
+            if protocol == "WireGuard" and ("%i" in path or "%I" in path):
+                # wg-quick puts the tunnel device (%i, unknown until it is up) or
+                # the interface (%I) there: the literal path is not what runs.
+                reason = "its path contains %i or %I"
+                message = (f"The {raw} hook names {path}; wg-quick fills in %i and %I "
+                           "when the tunnel starts, so the program that runs as "
+                           "administrator cannot be checked. Write the path out in full.")
+            else:
+                reason = _unsafe_executable_reason(Path(path))
+                message = (f"The {raw} hook runs {path} as administrator, and {reason}, "
+                           "so a normal user could replace it.")
             if reason is None:
                 if position == 0 and not _exists(path):
                     warnings.append(f"The {raw} hook names {path}, which does not exist.")
                 continue
-            message = (f"The {raw} hook runs {path} as administrator, and {reason}, "
-                       "so a normal user could replace it.")
             if position == 0 or runs_code:
                 unsafe.append(message)
             else:
@@ -499,6 +509,10 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
     unknown: list[str] = []
     found, problems = _scan(text, protocol)
     blockers.extend(f"{protocol} config: {item}." for item in problems)
+    if "\x00" in text:
+        # Never depend on agreeing with bash or OpenVPN byte for byte.
+        blockers.append(f"{protocol} config: it contains a NUL byte, which can hide a "
+                        "directive from this review; remove it.")
     hook_keys = ({k.lower() for k in WG_HOOK_KEYS} if protocol == "WireGuard"
                  else set(OPENVPN_HOOK_KEYS))
     for raw, key, value, words in found:

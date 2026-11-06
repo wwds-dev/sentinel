@@ -871,3 +871,58 @@ def test_a_hook_with_a_huge_path_is_reviewed_quickly(tmp_path):
     assert not r.allowed and any("4000" in b for b in r.blockers)
     review("connect", profile_for(wg_conf(tmp_path, "wg2", interface_extra=f"PostUp = {longest}\n")))
     assert time.monotonic() - start < 5
+
+
+# ── review of #32: NUL bytes, %i/%I, a link reached after ".." ──
+
+@pytest.mark.parametrize("line, runs", [
+    ("Post\x00Up = /tmp/evil.sh", "/tmp/evil.sh"),            # bash drops the NUL
+    ("PostUp = \x00/tmp/evil.sh", "/tmp/evil.sh"),            # program word hidden by a NUL
+])
+@pytest.mark.parametrize("action", ["connect", "disconnect"])
+def test_a_nul_byte_cannot_hide_a_hook(tmp_path, line, runs, action):
+    path = wg_conf(tmp_path, "wgn", interface_extra=line + "\n")
+    r = review(action, profile_for(path), Probe(up={"wgn"}) if action == "disconnect" else None)
+    assert any(runs in hook for hook in r.root_hooks)
+    found = r.blockers if action == "connect" else r.risks
+    assert any("NUL byte" in item for item in found)
+    if action == "connect":
+        assert not r.allowed
+
+
+def test_a_nul_byte_cannot_hide_saveconfig(tmp_path):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="Save\x00Config = true\n")))
+    assert _blocked(r, "SaveConfig = true")
+
+
+def test_a_nul_byte_in_an_openvpn_profile_is_refused(tmp_path):
+    r = review("connect", profile_for(ovpn(tmp_path, "dev tun\nu\x00p /tmp/evil.sh\n")))
+    assert _blocked(r, "NUL byte")
+
+
+@pytest.mark.parametrize("word", ["/opt/vpn/%i/up.sh", "/etc/wireguard/%I.up"])
+def test_a_hook_path_with_a_wg_quick_placeholder_is_refused(tmp_path, word):
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra=f"PostUp = {word}\n")))
+    assert not r.allowed and any("%i and %I" in b and word in b for b in r.blockers)
+
+
+def test_a_placeholder_outside_a_path_is_fine(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
+        "/usr/local/sbin/hook.sh": (0, ROOT_FILE), "/usr/local/sbin": (0, ROOT_DIR),
+        "/usr/local": (0, ROOT_DIR), "/usr": (0, ROOT_DIR), "/": (0, ROOT_DIR)}))
+    r = review("connect", profile_for(wg_conf(tmp_path, interface_extra="PostUp = /usr/local/sbin/hook.sh %i\n")))
+    assert not any("%i and %I" in b for b in r.blockers)
+
+
+def test_a_link_reached_only_after_dotdot_is_checked(tmp_path, monkeypatch):
+    """S/p -> "../T/l", T/l -> R/x: T is writable, and the walk reaches it only by
+    applying the ".."; ignoring ".." would look for S/T/l and never see T."""
+    S, T, R = tmp_path / "S", tmp_path / "T", tmp_path / "R"
+    for d in (S, T, R):
+        d.mkdir()
+    (R / "x").write_text("#!/bin/sh\n")
+    (T / "l").symlink_to(R / "x")
+    (S / "p").symlink_to("../T/l")
+    monkeypatch.setattr(vpn_execution, "_stat", _only_writable(T))
+    reason = vpn_execution._unsafe_executable_reason(S / "p")
+    assert reason is not None and str(T) in reason
