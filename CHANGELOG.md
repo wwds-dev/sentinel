@@ -68,6 +68,11 @@ and the git log, and is not back-filled here.
   ran a `./up.sh` from there. A relative file name in an `.ovpn` (`ca ca.crt`)
   now means a file in `/`: use full paths or inline blocks. The review shows the
   exact command instead of an abbreviated one.
+- **An OpenVPN hook must name its program by full path.** `up up.sh`,
+  `down ./down.sh` or `plugin ./p.so` passed the review with no finding, and
+  OpenVPN runs such a word as written, from its working directory. They now
+  stop a Connect. Files named by a relative path (`ca ca.crt`,
+  `key ~/client.key`) draw a warning: OpenVPN looks for them in `/`.
 - **A wildcard in DNS stops a Connect.** wg-quick expands `DNS = 10.64.0.*`, so
   which DNS server applies could not be known; the review said "system DNS
   stays in use". Search domains without a server are marked as not applied,

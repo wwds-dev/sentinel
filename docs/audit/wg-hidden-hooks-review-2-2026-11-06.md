@@ -103,8 +103,11 @@ scripts with only its own variables (`run_command.c`, `make_env_array`), so the
 scrub reaches openvpn itself (`OPENSSL_CONF`/`OPENSSL_MODULES`) and the working
 directory its scripts inherit (`daemon(1, …)` keeps it): a bare `up up.sh` now
 resolves to `/up.sh`, which only root can create, not to the checkout. Its scripts
-otherwise keep the earlier rules; the review still does not check a relative
-OpenVPN program (TODO.md).
+otherwise keep the earlier rules. Since `fix/openvpn-relative-paths` the review
+refuses a relative OpenVPN hook program (a `plugin` without `./` excepted: OpenVPN
+loads it from its plugin folder, `plugin.c`) and warns about relative file
+directives. A relative *argument* to an OpenVPN interpreter (`/bin/sh up.sh`) is
+still not checked; it resolves from `/`, which only root can write.
 
 ## Not verified
 

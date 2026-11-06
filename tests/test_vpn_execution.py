@@ -489,6 +489,61 @@ def test_openvpn_review_surfaces_hooks(tmp_path, monkeypatch):
     assert r.root_hooks == ("script-security: 2", "up: /x/y.sh")
 
 
+@pytest.mark.parametrize("line, program", [
+    ("up up.sh", "up.sh"),                              # TODO.md: never checked
+    ("down ./d.sh", "./d.sh"),
+    ('route-up "scripts/r.sh arg"', "scripts/r.sh"),
+    ("tls-verify 'v.sh'", "v.sh"),
+    ("plugin ./p.so", "./p.so"),                        # "./" loads from the cwd
+])
+def test_a_relative_openvpn_hook_program_is_refused(line, program):
+    """OpenVPN execve()s the word with no PATH lookup, from / since it runs
+    there: the review cannot check what a relative word reaches."""
+    blockers, soft, warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
+    assert blockers == [] and len(soft) == 1
+    assert f"runs {program}, a relative path" in soft[0] and "full path" in soft[0]
+
+
+@pytest.mark.parametrize("line", [
+    "plugin openvpn-plugin-down-root.so /etc/x",        # OpenVPN's plugin folder
+    "up /usr/bin/true",
+    "up",
+    "script-security 2",
+])
+def test_openvpn_hooks_that_are_not_relative_programs_are_not_refused_for_it(line):
+    _, soft, _ = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
+    assert not any("relative path" in item for item in soft)
+
+
+def test_a_relative_openvpn_hook_blocks_connect(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    path = tmp_path / "srv.ovpn"
+    path.write_text("client\nremote 203.0.113.7 1194\nscript-security 2\nup up.sh\n")
+    assert any("runs up.sh, a relative path" in b
+               for b in review("connect", profile_for(path)).blockers)
+
+
+def test_relative_openvpn_files_draw_one_warning():
+    text = ("client\nproto udp\nremote vpn.example.com 1194\n"
+            "ca ca.crt\nkey ~/k.key\ntls-auth ta.key 1\ncert /etc/c.crt\n"
+            "tls-crypt [inline]\nauth-user-pass stdin\nauth-user-pass\n"
+            "<ca>\nMIIBogus\n</ca>\n")
+    blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
+    assert blockers == [] and soft == []
+    found = [w for w in warnings if "looks for these files in /" in w]
+    assert len(found) == 1
+    assert "ca ca.crt, key ~/k.key, tls-auth ta.key." in found[0]
+    for absent in ("/etc/c.crt", "[inline]", "stdin", "MIIBogus", "udp", "vpn.example.com"):
+        assert absent not in found[0]
+    for key in ("ca", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth", "tls-crypt",
+                "tls-crypt-v2", "secret", "crl-verify", "auth-user-pass", "askpass"):
+        one = vpn_execution._hook_findings(f"client\n{key} f.txt\n", "OpenVPN")[2]
+        assert any(f"{key} f.txt." in w for w in one), key
+    many = "client\n" + "".join(f"ca c{i}.crt\n" for i in range(7))
+    listed = [w for w in vpn_execution._hook_findings(many, "OpenVPN")[2] if "looks for" in w][0]
+    assert "c5.crt …" in listed and "c6.crt" not in listed
+
+
 # test_disconnect_review_does_not_rescan_hooks pinned a gap (wg-quick down re-reads
 # the config and runs PreDown/PostDown as root, yet a disconnect was never scanned).
 # It is replaced by its inverse, test_disconnect_review_scans_predown_and_postdown

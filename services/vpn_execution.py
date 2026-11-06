@@ -42,7 +42,8 @@ on its own (startup files, the working directory, the environment) is closed off
 by running wg-quick from / with only HOME=/var/root and PATH
 (``vpn_connection.wg_quick_command``); openvpn is started the same way
 (``openvpn_manager.start_command``), so a relative OpenVPN hook program
-resolves from /, not from the app's working directory. A DNS entry with a shell
+would resolve from /, not from the app's working directory; the review refuses
+one (``_openvpn_relative_program``) and warns about relative file names. A DNS entry with a shell
 wildcard is a blocker on Connect: wg-quick expands it, so the DNS that applies
 is unknown.
 """
@@ -106,6 +107,12 @@ OPENVPN_BLOCKER_KEYS = ("config", "log", "log-append", "writepid", "status",
 OPENVPN_EXECUTABLE_KEYS = ("up", "down", "route-up", "route-pre-down", "ipchange",
                            "client-connect", "client-disconnect", "learn-address",
                            "tls-verify", "auth-user-pass-verify", "plugin")
+# Directives whose first word is a file OpenVPN reads. It opens a relative
+# name from its working directory, which is / (openvpn_manager.start_command),
+# not the config's folder, and expands no ~. "[inline]" and "stdin" are not files.
+OPENVPN_FILE_KEYS = ("ca", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth",
+                     "tls-crypt", "tls-crypt-v2", "secret", "crl-verify",
+                     "auth-user-pass", "askpass")
 # The reviewed client directive list. Anything else is still allowed (a real
 # profile must not break) but is named in one warning.
 OPENVPN_KNOWN_KEYS = frozenset(OPENVPN_HOOK_KEYS) | frozenset(OPENVPN_BLOCKER_KEYS) | frozenset((
@@ -698,6 +705,21 @@ def _program_findings(raw: str, value: str, words: list[str], protocol: str,
     return unsafe, warnings
 
 
+def _openvpn_relative_program(key: str, words: list[str]) -> str | None:
+    """The program an OpenVPN executable directive names by a relative path, or
+    None. OpenVPN ``execve``s the word as written, with no PATH lookup, from its
+    working directory (/), so the review cannot check what a relative word
+    reaches. A ``plugin`` name without a leading "." is loaded from OpenVPN's
+    plugin folder instead (plugin.c), and is left to the earlier rules."""
+    segment = _segments(words)[0]
+    program = segment[0].strip("'\"") if segment else ""
+    if not program or program.startswith(("/", "~")):
+        return None
+    if key == "plugin" and not program.startswith("."):
+        return None
+    return program
+
+
 def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list[str]]:
     """(blockers, soft blockers, warnings). Soft blockers (a hook program a user
     could replace) are downgraded to risks on a Disconnect, which must never be
@@ -706,6 +728,7 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
     soft: list[str] = []
     warnings: list[str] = []
     unknown: list[str] = []
+    relative_files: list[str] = []
     found, problems = _scan(text, protocol)
     blockers.extend(f"{protocol} config: {item}." for item in problems)
     if "\x00" in text:
@@ -731,6 +754,15 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
                                 "what administrator rights write; remove it from the profile.")
             elif key not in OPENVPN_KNOWN_KEYS and key not in unknown:
                 unknown.append(key)
+            if (key in OPENVPN_FILE_KEYS and words and not words[0].startswith("/")
+                    and words[0].lower() not in ("[inline]", "stdin")):
+                relative_files.append(f"{raw} {words[0]}")
+            program = (_openvpn_relative_program(key, words)
+                       if key in OPENVPN_EXECUTABLE_KEYS else None)
+            if program:
+                soft.append(f"The {raw} hook runs {program}, a relative path. OpenVPN runs "
+                            "it from /, not from the config's folder, and Tunnel cannot "
+                            "check it; write the full path.")
         # An overlong hook is already refused; walking its paths could take long
         # enough (a 256 KiB line) to freeze the window before the refusal shows.
         if (key in hook_keys and not overlong and not budget["over"]
@@ -742,6 +774,12 @@ def _hook_findings(text: str, protocol: str) -> tuple[list[str], list[str], list
         blockers.append(f"The {protocol} config's hooks name more than {HOOK_CHECK_LIMIT} "
                         "commands and paths; Tunnel will not run more than a person can "
                         "review.")
+    if relative_files:
+        warnings.append("OpenVPN looks for these files in / (it runs from there, not from "
+                        "the config's folder, and does not expand ~), so it will probably "
+                        "not find them: " + ", ".join(relative_files[:6])
+                        + (" …" if len(relative_files) > 6 else "")
+                        + ". Write full paths or put them inline (<ca>…</ca>).")
     if unknown:
         warnings.append("OpenVPN directives not on the reviewed list (allowed, but Tunnel "
                         "has not checked what they do): " + ", ".join(unknown[:12])

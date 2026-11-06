@@ -151,6 +151,8 @@ started the connection — that refusal comes after you answer Yes and is shown
 as a failure. Tunnel never stops OpenVPN by process name. OpenVPN starts from
 `/` with nothing of your environment, so a relative file name in an `.ovpn`
 (`ca ca.crt`) means a file in `/`: use full paths or inline blocks. The review
+warns about such files, and a hook script named without its full path
+(`up up.sh`) stops a Connect. The review
 shows the exact command and no routing or DNS lines for OpenVPN, and configs
 that ask for a username and password, pushed DNS and live status are not
 supported.
