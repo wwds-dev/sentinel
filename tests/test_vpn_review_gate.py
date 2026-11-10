@@ -1063,8 +1063,12 @@ def test_a_bare_hook_key_shows_the_line_itself_as_its_command(tmp_path):
     assert r.root_hooks == ("PreUp: PreUp",)
 
 
-def test_a_normal_config_with_plain_full_path_hooks_is_still_allowed(tmp_path):
+def test_a_normal_config_with_plain_full_path_hooks_is_still_allowed(tmp_path, monkeypatch):
     """False-positive check: Interface, Peer, DNS and plain system-program hooks."""
+    # The allowlist pins a Mac's layout. A merged-usr Linux runner links
+    # /sbin to /usr/sbin, so with net-tools installed /sbin/route would resolve
+    # elsewhere; keep paths as written so the test does not depend on the host.
+    monkeypatch.setattr(vpn_execution, "_realpath", lambda p: p)
     extra = ("DNS = 10.64.0.1, 10.64.0.2 # resolver\n"
              "PostUp = /usr/sbin/networksetup -setdnsservers Wi-Fi 10.64.0.1\n"
              "PostDown = /sbin/route -n delete -inet 10.0.0.0/8 -interface %i\n")
