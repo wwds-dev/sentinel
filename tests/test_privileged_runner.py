@@ -3,6 +3,7 @@ a cached sudo ticket, and a command that already ran is never run twice."""
 
 from __future__ import annotations
 
+import subprocess
 from functools import partial
 
 import pytest
@@ -14,7 +15,7 @@ from agents.vpn_agent.services import privileged
 def calls(monkeypatch):
     seen = []
 
-    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT):
+    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT, **kw):
         seen.append(command)
         if command[0] == "sudo":
             return False, "sudo: a password is required"
@@ -44,7 +45,7 @@ def test_companion_default_still_tries_cached_sudo_first(calls):
 def test_a_command_that_ran_and_failed_is_never_rerun_through_the_dialog(monkeypatch, output):
     seen = []
 
-    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT):
+    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT, **kw):
         seen.append(command[0])
         return (False, output) if command[0] == "sudo" else (True, "")
     monkeypatch.setattr(privileged, "run", fake_run)
@@ -62,7 +63,7 @@ def test_a_command_that_ran_and_failed_is_never_rerun_through_the_dialog(monkeyp
 def test_sudo_s_own_refusal_falls_back_to_the_dialog(monkeypatch, refusal):
     seen = []
 
-    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT):
+    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT, **kw):
         seen.append(command[0])
         return (False, refusal) if command[0] == "sudo" else (True, "done")
     monkeypatch.setattr(privileged, "run", fake_run)
@@ -95,7 +96,7 @@ def test_killswitch_goes_through_the_shared_runner(monkeypatch):
 def test_the_dialog_path_gives_the_person_time_to_type_the_password(monkeypatch):
     seen = {}
 
-    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT):
+    def fake_run(command, timeout=privileged.DEFAULT_TIMEOUT, **kw):
         seen["timeout"] = timeout
         return True, "ok"
     monkeypatch.setattr(privileged, "run", fake_run)
@@ -104,7 +105,7 @@ def test_the_dialog_path_gives_the_person_time_to_type_the_password(monkeypatch)
 
 
 def test_a_dialog_timeout_does_not_claim_nothing_happened(monkeypatch):
-    monkeypatch.setattr(privileged, "run", lambda command, timeout=0: (False, "Timed out."))
+    monkeypatch.setattr(privileged, "run", lambda command, timeout=0, **kw: (False, "Timed out."))
     ok, message = privileged.run_with_dialog("wg-quick up wg0", "Test", 30)
     assert ok is False and "may still have happened" in message
 
@@ -115,7 +116,7 @@ def test_a_dialog_timeout_does_not_claim_nothing_happened(monkeypatch):
 def as_root(monkeypatch):
     seen = []
     monkeypatch.setattr(privileged, "run",
-                        lambda command, timeout=privileged.DEFAULT_TIMEOUT: seen.append(command)
+                        lambda command, timeout=privileged.DEFAULT_TIMEOUT, **kw: seen.append(command)
                         or (True, ""))
     monkeypatch.setattr(privileged.os, "geteuid", lambda: 0)
     return seen
@@ -183,3 +184,29 @@ def test_a_native_deploy_is_refused_as_root_before_the_installer_is_written(
     assert not result.success and result.error == privileged.ROOT_REFUSAL
     assert streamed == [] and lines == []
     assert not any((tmp_path / "st").rglob("install-*"))
+
+
+def test_the_dialog_path_passes_none_of_sentinels_environment(monkeypatch):
+    """S7 review (c1c5178 re-review N1): ``do shell script`` runs /bin/sh, which
+    honours SHELLOPTS=xtrace with PS4='$(...)' before the command starts. Root's
+    shell must get only a fixed PATH, whatever Sentinel itself inherited."""
+    seen = {}
+    monkeypatch.setenv("SHELLOPTS", "xtrace")
+    monkeypatch.setenv("PS4", "$(/tmp/x)")
+    monkeypatch.setenv("BASH_ENV", "/tmp/x")
+
+    def fake_subprocess_run(command, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(privileged.subprocess, "run", fake_subprocess_run)
+    assert privileged.run_with_dialog("true", "p") == (True, "")
+    assert seen["env"] == {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+
+
+def test_run_keeps_the_environment_unless_told_otherwise(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(privileged.subprocess, "run", lambda command, **kwargs: seen.update(kwargs)
+                        or subprocess.CompletedProcess(command, 0, "", ""))
+    privileged.run(["true"])
+    assert seen["env"] is None

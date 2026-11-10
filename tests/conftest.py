@@ -129,6 +129,34 @@ ForbiddenInTests = _isolation.ForbiddenInTests     # tests import it from here
 
 
 @pytest.fixture(autouse=True)
+def _macos_tool_layout(monkeypatch):
+    """The WireGuard hook allowlist trusts macOS tools only at their own paths
+    (/sbin/route, /usr/bin/killall...), judged also by where a link leads. On a
+    merged-/usr Linux runner /sbin is a link to /usr/sbin, which would move them;
+    the tests describe a Mac, so there the pinned paths resolve to themselves.
+    The same goes for the two system programs an OpenVPN hook may name
+    (/usr/bin/true and /usr/bin/false, links into coreutils on some runners)."""
+    import os
+    from services import vpn_execution
+    pinned = {path for path in vpn_execution._DATA_ONLY_PROGRAMS.values() if path}
+    pinned |= vpn_execution._ALLOWED_SYSTEM_PROGRAMS
+    real = vpn_execution._realpath
+    if all(real(path).lower() == path for path in pinned):
+        return                                   # a Mac: nothing to pin
+    monkeypatch.setattr(vpn_execution, "_realpath",
+                        lambda path: path if os.fspath(path).lower() in pinned else real(path))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_tunnel_run_dir(monkeypatch, tmp_path):
+    """Tunnel reads root's files under /private/var/run/sentinel-vpn (OpenVPN's
+    pid and device); a real tunnel on this Mac must not change a test's outcome.
+    Point it at an empty temp directory."""
+    monkeypatch.setattr("services.vpn_rootscript._READ_BASE",
+                        str(tmp_path / "no-sentinel-vpn"))       # fails loudly on a rename
+
+
+@pytest.fixture(autouse=True)
 def _deny_network_and_processes(request, monkeypatch):
     """Deny by default: a normal test may not leave this machine or run a program.
 

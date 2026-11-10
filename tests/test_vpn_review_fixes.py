@@ -98,7 +98,7 @@ def test_hostile_backup_is_refused_on_import(state, mutate):
 # ── 2. AppleScript injection through the dialog prompt ──
 def test_dialog_prompt_and_script_are_both_escaped(monkeypatch):
     seen = {}
-    monkeypatch.setattr(privileged, "run", lambda argv, t: seen.update(argv=argv) or (True, ""))
+    monkeypatch.setattr(privileged, "run", lambda argv, t, **kw: seen.update(argv=argv) or (True, ""))
     privileged.run_with_dialog('echo "hi" \\ there',
                                'Set up VPN" & (do shell script "id > /tmp/pwn") & "')
     expr = seen["argv"][2]

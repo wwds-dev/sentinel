@@ -469,9 +469,41 @@ class AgentPanel(QWidget):
         if on_error is not None:
             worker.error_signal.connect(on_error)
         worker.usage_signal.connect(self.note_usage)
+        self._watch_for_late_cost(worker)
         self.worker = worker
         worker.start()
         return worker
+
+    def _watch_for_late_cost(self, worker) -> None:
+        """Bill this request if it is stopped and the provider answers anyway.
+
+        Stop cancels the worker, but the paid call cannot be interrupted, so
+        the reply (and its cost) can still arrive. The worker reports it once
+        on stopped_usage_signal; the host records it as one cancelled usage row
+        against the run this request opened. The context is read now because
+        Stop abandons the pending request before the report comes. A host
+        without the hook, or a worker without the signal (test doubles), is
+        left alone.
+        """
+        signal = getattr(worker, "stopped_usage_signal", None)
+        context = getattr(self.host, "stopped_request_context", None)
+        if signal is None or context is None:
+            return
+        run = context(self.agent_key, self._request_id)
+        if run is None:
+            return
+        worker._sentinel_run = run
+        signal.connect(self._record_stopped_cost)
+
+    def _record_stopped_cost(self, payload) -> None:
+        sender = self.sender()
+        run = getattr(sender, "_sentinel_run", None) if sender is not None else None
+        if not run or getattr(sender, "_sentinel_fenced", False):
+            return
+        if getattr(sender, "_sentinel_cost_recorded", False):
+            return
+        sender._sentinel_cost_recorded = True
+        self.host.record_stopped_request(run, payload)
 
     def is_running(self) -> bool:
         """Whether this panel currently has a request in flight."""

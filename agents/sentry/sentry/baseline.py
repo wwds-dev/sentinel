@@ -19,6 +19,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Callable
 
 try:
     import fcntl
@@ -28,6 +29,16 @@ except ImportError:  # non-POSIX; the app targets macOS, so this is a safe no-op
 from .models import Finding, Snapshot
 
 MAX_FINDINGS = 500
+
+# Asked before every write to the baseline or the findings log. The host app
+# sets it to a function that returns False while its data folder must not be
+# written (Sentinel: an Emergency Reset in progress). None means always allowed.
+# A hook, not an import: the launchd watcher runs without Sentinel's services.
+WRITE_GUARD: Callable[[], bool] | None = None
+
+
+def _writes_allowed() -> bool:
+    return WRITE_GUARD is None or bool(WRITE_GUARD())
 
 
 class BaselineBusy(RuntimeError):
@@ -155,7 +166,11 @@ class BaselineStore:
             return None
 
     def save_baseline(self, snapshot: Snapshot) -> None:
+        if not _writes_allowed():       # before the lock: taking it creates a .lock file
+            return
         with _file_lock(self.baseline_path):
+            if not _writes_allowed():
+                return
             _atomic_write_text(
                 self.baseline_path, json.dumps(snapshot.as_dict(), indent=2)
             )
@@ -175,12 +190,16 @@ class BaselineStore:
     def append_findings(self, findings: list[Finding]) -> list[dict]:
         if not findings:
             return self.load_findings()
+        if not _writes_allowed():       # before the lock: taking it creates a .lock file
+            return self.load_findings()
         stamp = datetime.now(UTC).isoformat(timespec="seconds")
         # Hold the lock across the whole read-modify-write so a concurrent pass
         # (the in-app worker vs. the launchd watcher) cannot clobber the other's
         # appended findings.
         with _file_lock(self.findings_path):
             records = self.load_findings()
+            if not _writes_allowed():
+                return records
             for finding in findings:
                 record = finding.as_dict()
                 record["observed_at"] = stamp

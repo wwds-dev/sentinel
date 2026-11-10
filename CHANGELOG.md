@@ -34,7 +34,168 @@ and the git log, and is not back-filled here.
   it erases, so a request or check that finishes late writes nothing into the
   folder being erased.
 
+### Security
+- **WireGuard: administrator rights run a checked copy, never your file.**
+  Connect and Disconnect used to check your `.conf` when the password prompt
+  opened and then let `wg-quick` read the file itself as root, so anything that
+  changed the file in between chose what ran as administrator. Now Sentinel
+  copies the file into a root-only folder, checks the copy against the hash you
+  confirmed, and runs only the copy; a changed file is refused and nothing runs.
+  While the tunnel is up, Disconnect uses the copy you connected with, and its
+  confirmation says so. Root also starts with an empty environment now. What the
+  copy does **not** protect: the `wg-quick` program and its neighbours, which on
+  Apple silicon live in Homebrew's folder that your account owns; Tunnel warns when
+  that is the case.
+- **OpenVPN: administrator rights run checked copies of your profile and its
+  files.** Connect used to check your `.ovpn` when the password prompt opened
+  and then let `openvpn` read it, and the certificates, keys and password files
+  it names, as root. Now Sentinel copies the profile and every file it names
+  beside it into a root-only folder, checks each copy against the hash the
+  review read, and starts `openvpn` on the copies in that folder; a changed file
+  is refused and nothing runs. A file named by absolute path is accepted only if
+  root owns it and every folder above it, and is checked in place just before
+  start; one only root can read (a key in `/etc/openvpn`) is checked by
+  ownership instead. The review lists each file (not its hash). Hook programs
+  must be named by absolute path, owned by root all the way up, and not be a
+  macOS system program, an interpreter or a wrapper, and a hook script's `#!`
+  interpreter must be root-owned too; root checks the ownership of all of them
+  again just before start. A profile line of 250 bytes or more is refused
+  (OpenVPN would split it and could read hidden directives), and so is
+  `show-pkcs11-ids`. Server profiles, `daemon`, `syslog` and directives that make
+  root write files (`genkey`, `ifconfig-pool-persist`, `tls-export-cert`,
+  `client-config-dir`, `auth-gen-token-secret`) are refused, `dev` must be a
+  tun, tap or utun device and `dev-node` a utun device. **Behaviour change:** a
+  relative file name in a profile now means the file beside the profile (it
+  used to mean a file in `/`, so such profiles may start working); a hook that
+  names a plugin by bare name, or runs `/bin/sh` or another system program, is
+  now refused: name your own root-owned script or plugin by absolute path. A
+  `capath` folder, or `crl-verify … dir`, is refused: put the certificates in
+  one file or inline.
+- **OpenVPN's pid, device and start-up log live in a root-only folder.**
+  Anything running as you could edit the pid file in Sentinel's data folder
+  and point Disconnect's `kill` at another process. Now root writes them under
+  `/private/var/run/sentinel-vpn/ovpn/`, Sentinel only reads them and believes
+  them only if root owns them, and root checks the process is Sentinel's
+  openvpn again before it signals it. The tunnel device is taken only from a
+  whole log line, so a server cannot name another device through a certificate
+  or a pushed option. A tunnel an older Sentinel started is still found and
+  stopped; its leftover files in your data folder are deleted by Connect or
+  Disconnect once that process has gone. One OpenVPN Connect or Disconnect runs
+  at a time.
+- **A hook path with a hidden macOS prefix is refused, for WireGuard too.** A
+  path starting with `/.` (`/.vol/…`, `/.nofollow/…`) can reach any file under
+  another name, so a WireGuard or OpenVPN hook naming one is refused.
+- **The administrator dialog gets nothing of Sentinel's environment.** macOS
+  runs the approved command through a shell that read settings such as
+  `SHELLOPTS` and `PS4` from Sentinel's environment, which another program
+  running as you can set, and could run code as administrator before the
+  command started. The dialog now gets only a fixed `PATH`. This covers every
+  administrator action: VPN, kill switch and MAC address.
+- **The `wg-quick` you reviewed is the one that runs.** If a different
+  `wg-quick` appears first on the search path after you confirm, nothing runs
+  and you are asked to review again.
+- **A WireGuard file Tunnel cannot read as text no longer reaches root as
+  "checked".** Disconnect then runs only the copy kept since Connect, or
+  refuses.
+- **One Connect or Disconnect per tunnel at a time.** A second one waits for the
+  first, then reports that the tunnel is already up, instead of removing the copy
+  the running tunnel needs to disconnect.
+
 ### Fixed
+- **A tunnel record left behind by a crash no longer blocks WireGuard.** wg-quick's
+  record without its tunnel used to make Connect say "already up" and kept the
+  copy holding your private key; now Connect goes ahead and Disconnect removes
+  the copy.
+- **A WireGuard profile whose file is not named `<interface>.conf` is refused in
+  the review**, including a bare name such as `wgnl`. It used to pass the review
+  and fail after the dialog, every time.
+- **Disconnect says what will run.** With no copy kept since Connect and a file
+  that is missing or cannot be read, the confirmation now says nothing runs,
+  instead of promising to check the file; for a relative or `~` path it says the
+  file is checked and run.
+- **A WireGuard hook must now be plain commands with full paths.** wg-quick runs
+  each hook through the shell as administrator, and the shell expands what the
+  review read literally: `echo $(/tmp/x.sh)`, `/tm"p"/x.sh`, `/tm?/x.sh`,
+  `. /tmp/x.sh`, `sh</tmp/x.sh` and similar ran a program nobody checked. A hook
+  with shell syntax (`$`, a backtick, `\`, quotes, `* ? [ ]`, `{ }`, `< >`,
+  `( )`, `!`, `~`, a pipe), a variable assignment, a shell keyword or builtin
+  (`.`, `source`, `eval`, `exec`, `if`, `echo`…), a relative path, or a bare
+  program name that is not in `/usr/bin`, `/bin`, `/usr/sbin` or `/sbin` now
+  stops a Connect with "Tunnel cannot check what this hook runs; write plain
+  commands with full paths." (on Disconnect it is a risk you confirm). Commands
+  separated by `;`, `&&`, `||` or `&` are still allowed, and each one is checked.
+  Only the network programs `route`, `ifconfig`, `networksetup`, `pfctl`,
+  `scutil`, `killall`, `dscacheutil`, `wg`, `sysctl`, `ipconfig` and `logger` may
+  be given ordinary words, numbers or `%i`/`%I` as arguments (the macOS tools
+  only at their own system paths). Any other program (a shell, `xcrun`,
+  `dtrace`, your own script…) may only be given options and full paths
+  (checked like the program itself), so `sh -c id`, `sh 1`, `xcrun tool`,
+  `dtrace -c %I` or `SH -c tool` is refused. Program names are matched in any
+  case, since macOS treats `/bin/SH` as `/bin/sh`.
+- **wg-quick runs with nothing of yours around it.** Tunnel now starts
+  wg-quick from `/` with an empty environment apart from `HOME=/var/root` and
+  `PATH`. A hook such as `/bin/zsh /etc/wireguard/up.sh`, `/bin/bash -l`,
+  `/usr/bin/python3` or `/usr/bin/make` passed the review but, as
+  administrator, read your shell startup files, Python `.pth` files or a
+  `Makefile` in Sentinel's folder.
+- **OpenVPN runs with nothing of yours around it either.** Tunnel starts
+  OpenVPN the same way: from `/`, with an empty environment apart from
+  `HOME=/var/root` and a fixed `PATH`, and with every path made absolute. As
+  administrator it used to see your environment (`OPENSSL_CONF` can load a
+  library into it) and start its scripts in Sentinel's folder, so `up up.sh`
+  ran a `./up.sh` from there. A relative file name in an `.ovpn` (`ca ca.crt`)
+  now means a file in `/`: use full paths or inline blocks. The review shows the
+  exact command instead of an abbreviated one.
+- **An OpenVPN hook must name its program by full path.** `up up.sh`,
+  `down ./down.sh` or `plugin ./p.so` passed the review with no finding, and
+  OpenVPN runs such a word as written, from its working directory. They now
+  stop a Connect. Files named by a relative path (`ca ca.crt`,
+  `key ~/client.key`, a proxy's credentials file) draw a warning: OpenVPN
+  looks for them in `/`. The review now reads the directives inside a
+  `<connection>` block too, and accepts an inline key block nested in one,
+  which it used to refuse as ambiguous.
+- **OpenVPN directives that load code as administrator stop a Connect.**
+  `engine` (OpenSSL loads an unknown name as a library), `replay-persist`
+  (OpenVPN writes that file as administrator) and a `providers` line naming
+  anything but OpenSSL's own providers (`default`, `base`, `legacy`, `null`,
+  `fips`) are refused; `providers legacy default` still works. The libraries a
+  `pkcs11-providers` line names are listed with the hooks and checked like a
+  hook program: full path, owned by root all the way up.
+- **A wildcard in DNS stops a Connect.** wg-quick expands `DNS = 10.64.0.*`, so
+  which DNS server applies could not be known; the review said "system DNS
+  stays in use". Search domains without a server are marked as not applied,
+  and keys wg-quick ignores (`DNS_`, `D-NS`) no longer count as DNS.
+- **The review's DNS line now matches what wg-quick sets.** `DNS # = 10.64.0.1`
+  sets no DNS server (wg-quick cuts the line at `#` before it reads the key), but
+  the review showed "DNS: 10.64.0.1". It now says system DNS stays in use and
+  warns about the line; a comment after a value is no longer read as part of it.
+  A name such as `DNS = corp.example` is a search domain to wg-quick, not a
+  server, and is now shown as one; entries separated by spaces are split. An
+  entry with a wildcard is listed as neither, with a warning, and a config full
+  of bad entries gives a short list of warnings instead of thousands.
+- **The hook review can no longer pause the window or skip a folder it cannot
+  read.** A config packed with hook commands took about four seconds to review;
+  more than 200 commands and paths in a config's hooks is now refused at once,
+  and a hook gets one refusal in the dialog, not one per command. A folder on a
+  hook program's path that cannot be read (permission denied) now makes the
+  program unsafe instead of being skipped. OpenVPN scripts handed to `/bin/SH`,
+  `perl5.34` and similar are now checked like those handed to `sh` and `perl`.
+- **A WireGuard hook hidden from the review is now shown and refused.** wg-quick
+  runs `PostUp # = command`, a bare `PreUp` line, and a line with a NUL byte in it
+  (`Post\0Up = …`) as administrator, but the review read them as comments or
+  skipped them and listed nothing. They are now listed and stop a Connect (on
+  Disconnect they are a risk you confirm); any config containing a NUL byte is
+  refused. A hook path using wg-quick's `%i` or `%I` is refused, since the program
+  that runs is only known once the tunnel is up. A hook program reached through
+  links is followed one step at a time, as the system does, checking every folder
+  on the way; more than 40 links, an unreadable link, a path with a NUL byte or a
+  path too long for the system is refused or skipped instead of stopping the
+  review with an error, and a hook line over 4000 characters is refused without
+  its paths being walked.
+- **Hook review sees through two more tricks.** A WireGuard `SaveConfig = true`
+  followed by a `# comment` is now refused like a plain one, and a hook program
+  reached through a link (or a chain of links) is judged by where it really
+  lives, not only by the folder the link sits in.
 - Stop and Quit could, rarely, freeze the whole app (a blank window that ignored
   Close) or make it crash on exit. Sentinel no longer force-stops its background
   threads; it lets them finish on their own and stops listening to them.

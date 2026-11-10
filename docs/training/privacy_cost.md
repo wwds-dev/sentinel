@@ -4,8 +4,9 @@
 
 ## Local and cloud routes
 
-Ollama runs a model on this Mac. It avoids per-request API charges and keeps the
-prompt local, but uses CPU, memory and battery and may be slower or less capable.
+Ollama and LM Studio run a model on this Mac. They avoid per-request API charges
+and keep the prompt local, but use CPU, memory and battery and may be slower or
+less capable.
 A cloud provider receives the request over the internet, may retain or process
 it under its own terms, and can charge the associated account.
 

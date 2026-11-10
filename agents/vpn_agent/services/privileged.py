@@ -22,6 +22,12 @@ DEFAULT_TIMEOUT = 30
 # before the command even starts; the command's own timeout must not be spent
 # on that, or a slow typist sees "Timed out." for a change they approved.
 PASSWORD_ENTRY_SECONDS = 90
+# All the dialog path passes on. ``do shell script`` runs the command through
+# /bin/sh, which reads SHELLOPTS, PS4, BASH_ENV and the like from the
+# environment it is given and can run code from them as root before the command
+# itself starts; Sentinel's own environment is the user's to set
+# (``launchctl setenv``), so none of it reaches osascript.
+DIALOG_ENV = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
 
 ROOT_REFUSAL = (
     "Sentinel is running as root, so macOS cannot ask for your administrator "
@@ -30,13 +36,15 @@ ROOT_REFUSAL = (
 )
 
 
-def run(command: list[str], timeout: float = DEFAULT_TIMEOUT) -> tuple[bool, str]:
-    """Run a command directly, returning (ok, combined output)."""
+def run(command: list[str], timeout: float = DEFAULT_TIMEOUT,
+        env: dict[str, str] | None = None) -> tuple[bool, str]:
+    """Run a command directly, returning (ok, combined output). ``env`` replaces
+    the inherited environment when given."""
     try:
         # errors="replace": output can carry bytes that are not UTF-8 (ps prints
         # other processes' raw arguments); that must not raise out of a caller.
         proc = subprocess.run(command, capture_output=True, text=True, errors="replace",
-                              timeout=timeout)
+                              timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return False, "Timed out."
     except OSError as exc:
@@ -96,6 +104,7 @@ def run_with_dialog(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT) 
             "with administrator privileges",
         ],
         timeout + PASSWORD_ENTRY_SECONDS,
+        env=DIALOG_ENV,
     )
     if not ok and output == "Timed out.":
         # Once the password is accepted the command runs as root on its own;
@@ -103,7 +112,8 @@ def run_with_dialog(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT) 
         # "nothing happened" — callers re-check local state afterwards.
         output = ("Timed out waiting for the administrator dialog or the command. "
                   "If you had already approved it, the change may still have happened.")
-    return ok, output
+    # do shell script turns the command's line breaks into carriage returns.
+    return ok, output.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def run_as_root(script: str, prompt: str, timeout: float = DEFAULT_TIMEOUT, *,

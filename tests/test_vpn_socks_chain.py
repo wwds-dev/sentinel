@@ -193,7 +193,9 @@ def test_proxychains_conf_content_and_persistence(tmp_path, monkeypatch):
     assert "DNS will leak" in proxychain.render_proxychains_conf(c)
 
 
-DEEP = b'{"hops": ' + b"[" * 3000 + b"]" * 3000 + b"}"
+# Deep enough to exceed the parser's limit on every supported Python: 3000 levels
+# raised RecursionError on 3.11 but parsed on 3.13 (CI), where the C scanner allows more.
+DEEP = b'{"hops": ' + b"[" * 100_000 + b"]" * 100_000 + b"}"
 
 
 @pytest.mark.parametrize("saved", [

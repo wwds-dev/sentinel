@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
-from services import vpn_connection, vpn_execution
+from services import openvpn_manager, vpn_connection, vpn_execution, vpn_rootscript
+
+# An absolute wg-quick, so the root command is the same on every machine (S7:
+# root never runs a bare name).
+FAKE_WG_QUICK = "/opt/test/bin/wg-quick"
 
 PRIVATE_KEY = "cHJpdmF0ZS1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWsxMjM0NTY3OA=="
 
@@ -45,7 +50,7 @@ def wg_quick_installed(monkeypatch):
     monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
     real_which = vpn_connection.shutil.which
     monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: None if name == "wg-quick" else real_which(name, *a, **k))
+                        lambda name, *a, **k: FAKE_WG_QUICK if name == "wg-quick" else real_which(name, *a, **k))
 
 
 def write_conf(tmp_path, name="wgnl", allowed="0.0.0.0/0, ::/0", dns="10.8.0.1", mode=0o600):
@@ -92,7 +97,10 @@ def test_review_names_target_command_intent_and_rollback(tmp_path):
     assert r.allowed
     assert r.target == str(path)
     assert r.interface == "wgnl"
-    assert r.command.endswith(f"up '{path}'")
+    # S7: root runs a verified copy, and the review says so in words.
+    copy = "/private/var/run/sentinel-vpn/wg/wgnl/wgnl.conf"
+    assert r.command == (f"copy '{path}' to {copy}, check that the copy's SHA-256 is "
+                         f"the one below, then wg-quick up {copy}")
     assert r.route_mode == "Full tunnel"
     assert any("203.0.113.7:51820" in line for line in r.config_lines)
     assert any("10.8.0.1" in line for line in r.config_lines)
@@ -186,12 +194,140 @@ def test_openvpn_review_requires_client_and_file(tmp_path, monkeypatch):
 
 # ── Command construction (the PATH the admin dialog does not have) ──────────
 
-def test_wg_quick_command_uses_an_absolute_path_and_its_directory(monkeypatch):
-    monkeypatch.setattr(vpn_connection.shutil, "which",
-                        lambda name, *a, **k: "/opt/homebrew/bin/wg-quick")
-    assert vpn_connection.wg_quick_command("up", "/Users/me/wg nl.conf") == (
-        "PATH='/opt/homebrew/bin':\"$PATH\" '/opt/homebrew/bin/wg-quick' "
-        "up '/Users/me/wg nl.conf'")
+def test_hook_commands_resolve_in_the_order_root_uses():
+    # _which_privileged must look where ROOT_SCRIPT's PATH looks, in that order.
+    assert vpn_execution._PRIVILEGED_PATH == vpn_rootscript.SYSTEM_PATH
+    assert ('PATH="${wgq%/*}:' + ":".join(vpn_rootscript.SYSTEM_PATH) + '"'
+            in vpn_rootscript.ROOT_SCRIPT)
+
+
+def _wg_root_argv(monkeypatch, config_path, which=FAKE_WG_QUICK):
+    """The argv root gets for a WireGuard Connect of ``config_path``."""
+    import shlex
+    monkeypatch.setattr(vpn_connection.wireguard_manager, "is_wg_quick_available", lambda: True)
+    monkeypatch.setattr(vpn_connection.shutil, "which", lambda name, *a, **k: which)
+    seen = []
+    vpn_connection.connect({"protocol": "WireGuard", "endpoint": "203.0.113.7",
+                            "config_path": config_path},
+                           run_as_root=lambda script, prompt: seen.append(script) or (True, ""),
+                           config_sha256="a" * 64)
+    return shlex.split(seen[0]) if seen else []
+
+
+def test_a_relative_wireguard_config_reaches_root_as_an_absolute_path(monkeypatch, tmp_path):
+    """PR #34 review P1-2 under S7: root starts in /, so the file it copies must
+    be named absolutely; the user's home and working directory are not passed."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    argv = _wg_root_argv(monkeypatch, "sub/wg0.conf")
+    assert argv == vpn_rootscript.wireguard_argv(
+        "up", f"{os.getcwd()}/sub/wg0.conf", "a" * 64, "wg0", FAKE_WG_QUICK)
+    assert _wg_root_argv(monkeypatch, "~/wg0.conf")[7] == f"{tmp_path}/home/wg0.conf"
+
+def _ovpn_root_argv(monkeypatch, config_path, program="/opt/homebrew/sbin/openvpn"):
+    """The argv root gets for an OpenVPN Connect of ``config_path`` (S8b)."""
+    import shlex
+    monkeypatch.setattr(openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(openvpn_manager, "is_running", lambda: False)
+    seen = []
+    openvpn_manager.connect(config_path, config_sha256="a" * 64, openvpn=program,
+                            run_as_root=lambda script, prompt: seen.append(script) or (True, ""))
+    return shlex.split(seen[0]) if seen else []
+
+
+def test_openvpn_connect_hands_root_only_values(monkeypatch, tmp_path):
+    """S8b: root gets the constant script and positional values; the config's
+    path is one of them and never reaches openvpn (its copy does)."""
+    cfg = tmp_path / "my nl.ovpn"
+    cfg.write_text("client\n")
+    argv = _ovpn_root_argv(monkeypatch, str(cfg))
+    assert argv == vpn_rootscript.openvpn_argv(
+        "up", config=str(cfg), sha256="a" * 64, openvpn="/opt/homebrew/sbin/openvpn")
+    assert argv[:5] == ["/usr/bin/env", "-i", "/bin/bash", "-c", vpn_rootscript.OVPN_SCRIPT]
+
+
+def test_openvpn_runs_from_root_with_nothing_of_the_users_environment():
+    """The same isolation as wg-quick (#36, now inside the root script): openvpn
+    keeps its starting directory under --daemon and its hooks inherit it, and
+    openvpn reads OPENSSL_CONF and friends from its environment. The harness in
+    test_vpn_rootscript runs this for real."""
+    script = vpn_rootscript.OVPN_SCRIPT
+    assert "PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH" in script
+    assert "HOME=/var/root; export HOME" in script
+    assert '(cd / && exec "$ovpn" --cd "$base/$cfgd" --config "$base/$copy"' in script
+
+
+def test_a_relative_or_home_config_reaches_root_as_an_absolute_path(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "home").mkdir()
+    (tmp_path / "sub" / "srv.ovpn").write_text("client\n")
+    (tmp_path / "home" / "srv.ovpn").write_text("client\n")
+    here = os.getcwd()
+    assert _ovpn_root_argv(monkeypatch, "sub/srv.ovpn")[8] == f"{here}/sub/srv.ovpn"
+    assert _ovpn_root_argv(monkeypatch, "~/srv.ovpn")[8] == f"{tmp_path}/home/srv.ovpn"
+
+
+def test_a_relative_config_through_a_link_and_dotdot_stays_the_reviewed_file(monkeypatch, tmp_path):
+    """PR #36 review (Codex P1): abspath turned link/../x into x lexically, so root
+    could load a different file from the one the review opened and hashed."""
+    (tmp_path / "real" / "dir").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / "real" / "dir")
+    for name in ("client.ovpn", "wg0.conf"):
+        (tmp_path / "real" / name).write_text("reviewed")
+        (tmp_path / name).write_text("decoy")
+    monkeypatch.chdir(tmp_path)
+    ovpn = _ovpn_root_argv(monkeypatch, "link/../client.ovpn")[8]   # the source root copies
+    wg = _wg_root_argv(monkeypatch, "link/../wg0.conf")[7]
+    for word, name in ((ovpn, "client.ovpn"), (wg, "wg0.conf")):
+        assert os.path.isabs(word) and "/link/../" in word
+        assert Path(word).read_text() == Path(f"link/../{name}").read_text() == "reviewed"
+
+
+def test_a_binary_found_through_a_relative_path_entry_is_made_absolute(monkeypatch, tmp_path):
+    """PR #36 review (Codex P2): which() can answer bin/openvpn; root runs from /."""
+    monkeypatch.chdir(tmp_path)
+    here = os.getcwd()
+    monkeypatch.setattr(openvpn_manager.shutil, "which", lambda name, *a, **k: f"bin/{name}")
+    assert openvpn_manager.openvpn_binary() == f"{here}/bin/openvpn"
+    cfg = tmp_path / "srv.ovpn"
+    cfg.write_text("client\nremote 203.0.113.7 1194\n")
+    assert review("connect", profile_for(cfg)).program == f"{here}/bin/openvpn"
+    assert _wg_root_argv(monkeypatch, "/x/wg0.conf", which="bin/wg-quick")[10] == f"{here}/bin/wg-quick"
+
+
+def test_the_root_started_openvpn_is_recognised_as_sentinels(monkeypatch):
+    """ps shows the argv the root script gives openvpn: Disconnect must verify
+    exactly that process, by root's own --writepid path."""
+    from types import SimpleNamespace
+    base = vpn_rootscript.BASE_DIR
+    line = (f"/opt/homebrew/sbin/openvpn --cd {base}/ovpn/private/cfg --config "
+            f"{base}/ovpn/private/config.ovpn --daemon sentinel-ovpn --log "
+            f"{base}/ovpn/private/openvpn.log --writepid {base}/ovpn/openvpn.pid --verb 3\n")
+    assert f'--writepid "$base/$pidf"' in vpn_rootscript.OVPN_SCRIPT
+    monkeypatch.setattr(openvpn_manager.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=0, stdout=line))
+    assert openvpn_manager._is_tracked_process(4242) is True
+    monkeypatch.setattr(openvpn_manager.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=line.replace(f"{base}/ovpn/openvpn.pid", "/tmp/openvpn.pid")))
+    assert openvpn_manager._is_tracked_process(4242) is False
+
+
+def test_openvpn_review_shows_what_root_runs(monkeypatch, tmp_path):
+    monkeypatch.setattr(openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    cfg = tmp_path / "srv.ovpn"
+    cfg.write_text("client\nremote 203.0.113.7 1194\n")
+    profile = {"name": "O", "protocol": "OpenVPN", "endpoint": "203.0.113.7",
+               "config_path": str(cfg)}
+    r = review("connect", profile)
+    base = vpn_rootscript.BASE_DIR
+    assert r.command.startswith(f"copy '{cfg}' and the files it reads into {base}/ovpn/private")
+    assert (f"/opt/homebrew/sbin/openvpn --cd {base}/ovpn/private/cfg --config "
+            f"{base}/ovpn/private/config.ovpn --daemon sentinel-ovpn --writepid "
+            f"{base}/ovpn/openvpn.pid") in r.command
+    assert r.program == "/opt/homebrew/sbin/openvpn"
+    assert review("disconnect", profile).command.startswith("kill -TERM")
 
 
 def test_rollback_is_a_command_a_person_can_type(tmp_path, monkeypatch):
@@ -199,7 +335,6 @@ def test_rollback_is_a_command_a_person_can_type(tmp_path, monkeypatch):
                         lambda name, *a, **k: "/opt/homebrew/bin/wg-quick")
     path = write_conf(tmp_path)
     r = review("connect", profile_for(path))
-    assert r.command.startswith("PATH=")
     assert r.rollback[0].endswith(f"sudo wg-quick down '{path}'")
 
 
@@ -229,7 +364,8 @@ def test_verified_full_tunnel_connect(tmp_path):
 
     outcome = execute("connect", profile_for(path), run_as_root=runner,
                                     probe=probe, killswitch_armed=lambda: False, sleep=lambda s: None)
-    assert run.scripts == [f"wg-quick up '{path}'"]
+    assert run.scripts == [vpn_rootscript.wireguard_command(
+        "up", str(path), outcome.review.config_sha256, "wgnl", FAKE_WG_QUICK)]
     assert outcome.success and outcome.verified is True
     assert "utun7" in outcome.verification
     assert "not verified" in outcome.verification  # handshake/DNS honesty
@@ -292,11 +428,11 @@ def test_a_failed_command_is_reported(tmp_path):
 def test_openvpn_post_check_reads_the_tracked_process(tmp_path, monkeypatch):
     conf = tmp_path / "home.ovpn"
     conf.write_text("client\nremote 203.0.113.7 1194\n")
-    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     probe = Probe()
     monkeypatch.setattr(vpn_connection.openvpn_manager, "connect",
-                        lambda path, run_as_root: (setattr(probe, "openvpn", True)
-                                                   or {"success": True, "output": ""}))
+                        lambda path, **kwargs: (setattr(probe, "openvpn", True)
+                                                or {"success": True, "output": ""}))
     outcome = execute("connect", profile_for(conf), probe=probe,
                                     run_as_root=Recorder(), killswitch_armed=lambda: False, sleep=lambda s: None)
     assert outcome.verified is True
@@ -367,25 +503,217 @@ def test_review_surfaces_hooks_in_sections_confirmation_and_warnings(tmp_path, m
     path.write_text(
         "[Interface]\n"
         f"PrivateKey = {PRIVATE_KEY}\nAddress = 10.8.0.2/32\n"
-        "PostUp = /opt/hook.sh up\n"
+        "PostUp = /opt/hook.sh -v\n"
         "[Peer]\nPublicKey = c2VydmVyLXB1YmxpYy1rZXk=\n"
         "Endpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n")
     r = review("connect", profile_for(path))
-    assert r.root_hooks == ("PostUp: /opt/hook.sh up",)
+    assert r.root_hooks == ("PostUp: /opt/hook.sh -v",)
     assert r.allowed                                        # a warning, not a blocker
     titles = [title for title, _, _ in r.sections()]
     assert "Runs commands as administrator" in titles
     assert "RUNS COMMANDS AS ADMINISTRATOR" in r.confirmation_text()
-    assert "/opt/hook.sh up" in r.confirmation_text()
+    assert "/opt/hook.sh -v" in r.confirmation_text()
     assert any("as administrator" in w for w in r.warnings)
 
 
 def test_openvpn_review_surfaces_hooks(tmp_path, monkeypatch):
-    monkeypatch.setattr(vpn_execution.openvpn_manager, "is_openvpn_available", lambda: True)
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
     path = tmp_path / "srv.ovpn"
     path.write_text("client\nremote 203.0.113.7 1194\nscript-security 2\nup /x/y.sh\n")
     r = review("connect", profile_for(path))
     assert r.root_hooks == ("script-security: 2", "up: /x/y.sh")
+
+
+@pytest.mark.parametrize("line, program", [
+    ("up up.sh", "up.sh"),                              # TODO.md: never checked
+    ("down ./d.sh", "./d.sh"),
+    ('route-up "scripts/r.sh arg"', "scripts/r.sh"),
+    ("tls-verify 'v.sh'", "v.sh"),
+    ("plugin ./p.so", "./p.so"),                        # "./" loads from the cwd
+    # S8b: a bare plugin name loads from OpenVPN's plugin folder, which Homebrew
+    # leaves to the user.
+    ("plugin openvpn-plugin-down-root.so /etc/x", "openvpn-plugin-down-root.so"),
+])
+def test_a_relative_openvpn_hook_program_is_refused(line, program):
+    """OpenVPN execve()s the word with no PATH lookup, from root's copy of the
+    config's folder (--cd): the review cannot check what a relative word reaches."""
+    blockers, soft, warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
+    assert blockers == [] and len(soft) >= 1
+    assert f"names '{program}', which is not an absolute path" in soft[0]
+    assert "absolute path" in soft[0]
+
+
+@pytest.mark.parametrize("line", [
+    "up /usr/bin/true",
+    "up",
+    "script-security 2",
+])
+def test_openvpn_hooks_that_are_not_relative_programs_are_not_refused_for_it(line):
+    _, soft, _ = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")
+    assert not any("not an absolute path" in item for item in soft)
+
+
+def test_a_relative_openvpn_hook_blocks_connect(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary",
+                        lambda: "/opt/homebrew/sbin/openvpn")
+    path = tmp_path / "srv.ovpn"
+    path.write_text("client\nremote 203.0.113.7 1194\nscript-security 2\nup up.sh\n")
+    assert any("names 'up.sh', which is not an absolute path" in b
+               for b in review("connect", profile_for(path)).blockers)
+
+
+def test_openvpn_files_are_named_for_root_to_copy_not_warned_about():
+    """S8b: a relative file is copied with the config and read from the copy
+    (openvpn starts there with --cd), so it is listed, not warned about."""
+    text = ("client\nproto udp\nremote vpn.example.com 1194\n"
+            "ca ca.crt\nkey ~/k.key\ntls-auth ./ta.key 1\ncert /etc/c.crt\n"
+            "tls-crypt [inline]\nauth-user-pass stdin\nauth-user-pass\n"
+            "<ca>\nMIIBogus\n</ca>\n<tls-crypt>\nMIIBogus\n</tls-crypt>\n")
+    blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
+    assert blockers == [] and soft == []
+    assert not any("looks for these files" in w for w in warnings)
+    names, refused = vpn_execution._openvpn_file_names(text)
+    assert refused == []
+    assert names == ["ca.crt", "~/k.key", "ta.key", "/etc/c.crt"]     # ./ta.key normalised
+    for key in ("ca", "capath", "cert", "key", "dh", "extra-certs", "pkcs12", "tls-auth", "tls-crypt",
+                "tls-crypt-v2", "secret", "crl-verify", "auth-user-pass", "askpass",
+                "http-proxy-user-pass"):
+        assert vpn_execution._openvpn_file_names(f"client\n{key} f.txt\n")[0] == ["f.txt"], key
+
+
+@pytest.mark.parametrize("line, listed", [
+    # PR #37 review (Codex P2): a proxy's auth file is its third word.
+    ("http-proxy proxy.example 8080 creds.txt basic", "creds.txt"),
+    ("socks-proxy socks.example 1080 sa.txt", "sa.txt"),
+    ("http-proxy proxy.example 8080 auto", None),
+    ("http-proxy proxy.example 8080 auto-nct", None),
+    ("http-proxy proxy.example 8080 AUTO-NCT", "AUTO-NCT"),   # streq: exact
+    ("http-proxy proxy.example 8080 stdin", None),
+    ("http-proxy proxy.example 8080 /etc/creds.txt", "/etc/creds.txt"),
+    ("http-proxy proxy.example 8080", None),
+    ("socks-proxy socks.example 1080", None),
+    ("ca auto", "auto"),                                # "auto" is http-proxy's word only
+    ("socks-proxy socks.example 1080 stdin", None),
+    # PR #37 review (Codex P2): "stdin" is special only where OpenVPN reads
+    # credentials (get_user_pass); tls-auth stdin opens a file named stdin.
+    ("tls-auth stdin 1", "stdin"),
+    ("ca STDIN", "STDIN"),
+    ("auth-user-pass STDIN", "STDIN"),                  # PR #37 review: streq, exact
+    ("auth-user-pass stdin", None),
+    ("askpass stdin", None),
+    ("http-proxy-user-pass stdin", None),
+    # PR #37 review (Codex P2): "[inline]" is no keyword in OpenVPN 2.6; it only
+    # works beside a <tag> block of the same directive, which replaces the name.
+    ("askpass [inline]", "[inline]"),
+    ("tls-auth [inline] 1", "[inline]"),
+    ("tls-auth [inline] 1\n<tls-auth>\nMIIBogus\n</tls-auth>", None),
+    ("tls-auth [inline] 1\n<ca>\nMIIBogus\n</ca>", "[inline]"),
+    ("capath ca-certs", "ca-certs"),                    # PR #37 review: a directory
+    ("tls-auth [inline] 1\n  <tls-auth>\nMIIBogus\n</tls-auth>", None),   # read like _scan
+    ("TLS-AUTH [inline] 1\n<TLS-AUTH>\nMIIBogus\n</TLS-AUTH>", None),    # keys are lowercased
+])
+def test_proxy_auth_files_are_named_from_their_own_position(line, listed):
+    warnings = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[2]
+    assert not any("not on the reviewed list" in w for w in warnings)
+    names, _ = vpn_execution._openvpn_file_names(f"client\n{line}\n")
+    assert names == ([] if listed is None else [listed])
+
+
+CONNECTIONS = ("client\n<connection>\nremote a.example 1194\ntls-auth ta.key 1\n"
+               "http-proxy proxy.example 8080 creds.txt\n<tls-crypt>\nMIIBogus\n</tls-crypt>\n"
+               "</connection>\n<connection>\nremote b.example 443 tcp\n</connection>\n")
+
+
+def test_connection_blocks_are_read_as_directives():
+    """PR #37 review (Codex P2): OpenVPN reads a <connection> block's lines as
+    directives, which can name files; the review skipped them as inline data."""
+    found, problems = vpn_execution._scan(CONNECTIONS, "OpenVPN")
+    assert problems == []                    # a nested inline block is fine
+    assert [f[1] for f in found] == ["client", "remote", "tls-auth", "http-proxy", "remote"]
+    assert vpn_execution._openvpn_file_names(CONNECTIONS)[0] == ["ta.key", "creds.txt"]
+
+
+def test_a_hook_in_a_connection_block_is_still_reviewed():
+    # OpenVPN refuses it there (OPT_P_CONNECTION only), but nothing hides from the review.
+    text = "client\n<connection>\nremote a.example 1194\nup up.sh\n</connection>\n"
+    assert vpn_execution.hooks_from_text(text, "OpenVPN") == ["up: up.sh"]
+    assert any("names 'up.sh'" in item for item in vpn_execution._hook_findings(text, "OpenVPN")[1])
+
+
+@pytest.mark.parametrize("text", [
+    "client\n<connection>\nremote a.example 1194\n",                     # never closed
+    "client\n<connection>\nremote a.example 1194\n </connection>\n",     # not exactly the tag
+    "client\n<connection>\nremote a.example 1194\n</connectionx>\n",
+    "client\n<connection>\nremote a\n<tls-auth>\nA\n</connection>\n",   # closes a nested block
+    "client\n<connection>\nremote a\n</tls-auth>\n</connection>\n",      # a stray closing tag
+    "client\n<connection>\nremote a\n<connection>\nremote b\n</connection>\n</connection>\n",
+])
+def test_an_ambiguous_connection_block_blocks(text):
+    assert vpn_execution._hook_findings(text, "OpenVPN")[0]
+
+
+# ── OpenVPN directives that load code or write as root (TODO, found for #37) ──
+
+@pytest.mark.parametrize("line", [
+    "replay-persist /var/tmp/replay",                   # root writes the file (options.c)
+    "replay-persist replay",
+    "engine /tmp/x.dylib",                              # loaded through the "dynamic" engine
+    "engine dynamic",
+    "engine",
+])
+def test_root_writes_and_engines_block(line):
+    blockers = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[0]
+    assert len(blockers) == 1 and f"'{line.split()[0]}'" in blockers[0]
+
+
+@pytest.mark.parametrize("line", ["providers legacy default", "providers default",
+                                  "providers fips base null"])
+def test_openssls_own_providers_are_accepted(line):
+    assert vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN") == ([], [], [])
+
+
+@pytest.mark.parametrize("line, named", [
+    ("providers /tmp/evil", "/tmp/evil"),               # OSSL_PROVIDER_load takes a path
+    ("providers evil", "evil"),                         # or a module from OpenSSL's folder
+    ("providers Legacy", "Legacy"),                     # matched exactly, as OpenSSL does
+    ("providers legacy ./x default", "./x"),
+])
+def test_any_other_provider_blocks(line, named):
+    blockers = vpn_execution._hook_findings(f"client\n{line}\n", "OpenVPN")[0]
+    assert len(blockers) == 1 and f"names {named!r}" in blockers[0]
+
+
+def test_pkcs11_libraries_are_checked_like_hook_programs(monkeypatch):
+    unsafe = {"/Users/me/lib.dylib": "it is in a user's home directory"}
+    monkeypatch.setattr(vpn_execution, "_unsafe_executable_reason", lambda p: unsafe.get(str(p)))
+    monkeypatch.setattr(vpn_execution, "_exists", lambda p: True)
+    line = "pkcs11-providers /usr/local/lib/ok.dylib /Users/me/lib.dylib p11.dylib"
+    text = f"client\n{line}\n"
+    assert vpn_execution.hooks_from_text(text, "OpenVPN") == [
+        "pkcs11-providers: /usr/local/lib/ok.dylib /Users/me/lib.dylib p11.dylib"]
+    blockers, soft, warnings = vpn_execution._hook_findings(text, "OpenVPN")
+    assert blockers == [] and warnings == []
+    assert len(soft) == 2
+    assert "/Users/me/lib.dylib" in soft[0] and "user's home directory" in soft[0]
+    assert "loads p11.dylib, a relative path" in soft[1]
+    clean = "client\npkcs11-providers /usr/local/lib/ok.dylib\n"
+    assert vpn_execution._hook_findings(clean, "OpenVPN") == ([], [], [])
+
+
+def test_pkcs11_libraries_count_against_the_review_budget(monkeypatch):
+    monkeypatch.setattr(vpn_execution, "_unsafe_executable_reason", lambda p: None)
+    monkeypatch.setattr(vpn_execution, "_exists", lambda p: True)
+    paths = " ".join(f"/l/p{i}" for i in range(vpn_execution.HOOK_CHECK_LIMIT + 1))
+    blockers = vpn_execution._hook_findings(f"client\npkcs11-providers {paths}\n", "OpenVPN")[0]
+    assert not any("longer than" in b for b in blockers)
+    assert any("more than" in b for b in blockers)
+
+
+def test_a_foreign_provider_blocks_connect(tmp_path, monkeypatch):
+    monkeypatch.setattr(vpn_execution.openvpn_manager, "openvpn_binary", lambda: "/opt/homebrew/sbin/openvpn")
+    path = tmp_path / "srv.ovpn"
+    path.write_text("client\nremote 203.0.113.7 1194\nproviders legacy /tmp/evil\n")
+    assert any("names '/tmp/evil'" in b for b in review("connect", profile_for(path)).blockers)
 
 
 # test_disconnect_review_does_not_rescan_hooks pinned a gap (wg-quick down re-reads

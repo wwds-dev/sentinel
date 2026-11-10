@@ -113,7 +113,7 @@ Use a throwaway profile and a VPN you can lose; keep Terminal open with `sudo pf
 - S4: click Arm, leave the admin dialog open, quit: you get the Wait/Quit prompt; Wait, enter the password, quit completes, status matches `pfctl`. Repeat with Quit anyway (no crash report in Console, marker present, Disarm offered). Same for Connect.
 - S5: Verify with pf armed, after manual flush, with pf disabled (`sudo pfctl -d`): three different texts; paste the real `pfctl -s info` and `-s rules` output into the PR so the parser can be checked.
 - S6: Arm with the stdin loader (and the fallback if stdin fails): `sudo pfctl -a vpn-agent-killswitch -s rules` shows the expected rules; swap `killswitch.pf` during the dialog and confirm the loaded rules are unchanged.
-- S7: Connect a WireGuard profile: `ls -ld /var/run/sentinel-vpn/wg/*` is root:wheel 0700, interface name unchanged, `wg show` ok; edit the .conf (add a PostUp) while the dialog is open: refused with exit 98 text, no tunnel; Disconnect uses the stored copy and the dir disappears; test a tunnel started by the old build.
+- S7: Connect a WireGuard profile: `ls -ld /var/run/sentinel-vpn/wg/*` is root:wheel 0700, interface name unchanged, `wg show` ok; edit the .conf (add a PostUp) while the dialog is open: refused with exit 98 text, no tunnel; Disconnect uses the stored copy and the dir disappears; test a tunnel started by the old build. Since 2026-11-06 also: the administrator dialog still appears and Connect's output still reads correctly (osascript now gets only `PATH`); two Connects of the same profile in quick succession: the second says it is already up and Disconnect still says it ran the kept copy; `ls -l /private/var/run/sentinel-vpn/wg/` shows a `lock@<iface>` file owned by root.
 - S8: Connect an OpenVPN profile with inline certs, then one with relative `ca`/`key` files and one with an `up` script; verify pid/device files, kill switch arm with the OpenVPN device, Disconnect, no files left in `/var/run/sentinel-vpn`, and the legacy-pid case with a tunnel started by the previous build.
 - Every step: Cancel the dialog once and let it time out once; confirm the messages are truthful.
 
@@ -250,3 +250,218 @@ Corrected owner checklist, additions
 - S4: also quit with the administrator dialog open during Disarm: reopen Sentinel and read "Disarming, unconfirmed" (not "recorded as armed"); `sudo pfctl -a vpn-agent-killswitch -s rules` shows whether the flush happened; Verify and Disarm both work from that state. After Quit anyway the window geometry is the one you left (settings were saved).
 - S5: Verify with the anchor unregistered (remove the `# >>> vpn-agent-killswitch >>>` block from `/etc/pf.conf` by hand, keep rules loaded in the anchor): "Not enforcing: ... not registered" and the Disarm offer (not the clear-record offer). Verify with a partial anchor (load only `block drop all` by hand): "a blocking rule is present in the anchor". Paste the real `sudo pfctl -s rules` output (main ruleset) as well as the other two.
 - S6: arm with a hostile-looking profile endpoint (edit a profile's endpoint to contain a space, a tab, or `fe80::1%en0`): arming is refused with the reason, no password prompt, and `killswitch.pf` holds no extra rule. Arm normally and check `sudo pfctl -a vpn-agent-killswitch -s rules` again; if you can make `pfctl -f -` fail, confirm no `/private/var/run/sentinel-pf.*` file is left.
+
+## 14. Step S7 built (2026-11-05, branch `fix/s7-wireguard-root-copy`; rebased onto main 2026-11-06 as `fix/s7-root-copy-rebased`)
+
+Owner decisions applied: D8 (ADR `docs/adr/0004-root-runs-verified-copies.md`, accepted 2026-11-05); S8 deferred, with the OpenVPN claims reworded (`docs/agents/vpn.md`, `docs/training/tunnel.md`, `services/vpn_execution.py` docstrings).
+
+### What was built
+- `services/vpn_rootscript.py`: a constant `ROOT_SCRIPT` with the verb, source, hash, interface, wg-quick path, base, owner and wg-quick's run directory as `$1`-`$8`, plus `$9` = `locked` when the script re-runs itself under its lock (2026-11-06) (the `macaddr.ROOT_SCRIPT` shape); `wireguard_argv` validates every value and `wireguard_command` quotes them with `shlex.join`.
+- `vpn_connection.connect/disconnect` take `config_sha256` and run that script for WireGuard; `execute()` passes the confirmed review's hash. The review's command line now describes the copy (`wg_root_summary`), and the hash line says root re-checks it on its copy.
+
+### Deviations from the design
+- Base is `/private/var/run/sentinel-vpn`, not `/var/run/...`: `/var` is a symlink on macOS and the script refuses symlinks in what it owns.
+- `mkdir -m` + ownership check + `chown`, not `install -d -o root -g wheel`: the same result, and the ownership check runs on what exists either way.
+- The "is there a stored copy" decision is made by root inside the script (the `wg` folder is 0700, so Sentinel cannot see into it).
+- Root copies at most 256 KiB + 1 byte (`head -c`), so a bigger file can never hash equal.
+- The section 1.2 note that a root-run Sentinel "works unchanged" is superseded: gated actions are refused as root (`e4caccd`).
+- `SaveConfig = true` was already a blocker, so no new warning was needed.
+
+### Tests
+`tests/test_vpn_rootscript.py` (41: argv validation, interface rule, and the script under real `/bin/bash` with a fake wg-quick: copy-only run, swap refused with 98, oversized file, failed up removes the copy, Disconnect on the kept copy, fallback verify, refusal 96 with nothing verifiable, failed down keeps the copy, symlinked base and `wg` folder, foreign owner, path-shaped interface). Existing tests updated to the new command shape. 18/18 hand mutants killed. Full suite: 3275 passed, 14 skipped, 2 failures that also fail on `main` without this change (`test_learning_center` screenshot references after `001e6bf`; `test_providers_registry` starting the installed LM Studio CLI).
+
+### Limits that remain
+- A FIFO swapped in for the config made root's `head` block, and writing the reviewed bytes later finished the approved run at a time an attacker picked (security review P3-1; the earlier line here, "nothing runs", was wrong). Fixed in the follow-up below.
+- Real ownership, `/private/var/run` behaviour across a reboot, and wg-quick on the copy: owner checklist S7.
+- OpenVPN: S8, deferred.
+
+### Follow-up after the independent reviews (2026-11-05)
+Reports: `docs/audit/s7-wireguard-root-copy-code-review-2026-11-05.md` and `-security-review-2026-11-05.md`. Owner decision on the shared finding (code P1-1 / security P2-2, `wg-quick` and its folder are user-writable on Apple silicon): **warn, do not block**; ADR 0004 now names the gap (the copy protects the config, not the tools or Sentinel's checkout), and section 0's "never trusts a path in a user-writable directory" holds for the config only.
+- Security P2-1: root starts from `env -i`; the copy is hashed with `/sbin/sha256`, not Perl `shasum`. Test: `BASH_ENV`, `ENV`, `PERL5LIB`/`PERL5OPT`, `SHELLOPTS`/`PS4` set in the caller are all ignored.
+- Code P2-1: a WireGuard Disconnect's hooks heading, hash line and section title say the hooks shown are the file's now and that the copy kept since Connect, if any, is what runs; a warning says so too; the script prints which path it took.
+- Code P2-2: the fake wg-quick logs PATH; the test pins `<wg-quick folder>:/usr/bin:/bin:/usr/sbin:/sbin`, and `_which_privileged` takes its list from `vpn_rootscript.SYSTEM_PATH` (pinned by a test).
+- P3s: regular-file check and a 20 s read cut-off (FIFO); one exit (98) and message, without the path, for unreadable and changed; Connect refuses an interface that is already up before touching its copy, Disconnect of an interface that is not up removes the stale copy (94); `cd -P` into the base and relative paths, with a physical-path check; `chown` on existing directories; review blocks a WireGuard file not named `<interface>.conf`; the interface-only Disconnect summary says nothing else runs; `wg_quick_command` removed and its comments repointed; ADR 0004 amended.
+- Tests: `tests/test_vpn_rootscript.py` now 49, plus 5 review tests in `tests/test_vpn_review_gate.py` and one PATH-order test. 31/31 hand mutants killed (including the PATH line, `env -i`, the regular-file check, the moved-base check, both state checks, the Disconnect wording and the `.conf` rule).
+- Not covered by a test: the 20 s cut-off itself (it needs a FIFO swapped in between the regular-file check and the read); the `chown`/`chmod` results as root (owner checklist). Still open: the daemon-group rename window between creating the base and `cd -P` (outside the same-user model). The earlier claim here, that the physical-path check catches a rename made before it, was wrong: a rename followed by re-creating the same name passes `pwd -P` (rebase security review P3-A, probe 5). See "Still open" in the 2026-11-06 section.
+- Owner checklist additions for S7: `osascript -e 'do shell script "env" with administrator privileges'` (prints root's environment: if it holds your variables, `env -i` is what protects you); `stat -f '%Su:%Sg %Lp' /private/var/run/sentinel-vpn /private/var/run/sentinel-vpn/wg` gives `root:wheel 755` and `root:wheel 700`.
+
+### Rebase onto main and second round of reviews (2026-11-06)
+The three S7 commits were rebased onto `origin/main` `f14a19a` (PRs #30-#37: WireGuard hook allowlist, wg-quick from `/` with an empty environment, NUL and comment handling) and finished in `d2c77ff`. Reports: `docs/audit/s7-rebase-code-review-2026-11-06.md`, `docs/audit/s7-rebase-security-review-2026-11-06.md`, `docs/audit/s7-opus-audit-2026-11-06.md`; none found a P0 or P1. ADR 0004 has a 2026-11-06 amendment.
+- Main's #35/#36 isolation moved into `ROOT_SCRIPT` (`vpn_connection.wg_quick_command` is gone): wg-quick and its hooks run as `(cd / && exec "$wgq" ...)` with only `HOME=/var/root` and `PATH`; `vpn_connection._absolute` makes a relative config path and a wg-quick found through a relative PATH entry absolute, keeping `..` for the kernel. Main's tests for this were ported to the root script.
+- Ported from the review of the other S7 line (`c1c5178`, `docs/audit/audit-tier2-s7-rereview-2026-10-31.md`): `privileged.run_with_dialog` hands osascript only `DIALOG_ENV` (`PATH=/usr/bin:/bin:/usr/sbin:/sbin`), because `do shell script` runs `/bin/sh`, which honoured an inherited `SHELLOPTS=xtrace` + `PS4='$(...)'` before `env -i` ran (N1); a config the review cannot decode keeps no hash, so a Disconnect without a kept copy refuses (96) instead of having root run bytes nobody scanned (P1-2). N2 (a NUL byte hiding a hook) was already fixed on main.
+- Security P2-A: `ExecutionReview.wg_quick` holds the wg-quick the review judged (absolute), is part of the fingerprint, and `execute()` passes it to the runner, which does no lookup of its own. A wg-quick placed earlier on PATH after the dialog changes the review, so nothing runs.
+- Code review P3-1/P3-2: a WireGuard Disconnect summary says "without one, nothing runs" when no hash travels (unreadable or missing file) and "copy ... and check its SHA-256 first" for any config path, relative and `~` included. P3-4: a symlinked kept copy is never followed (test).
+- Opus audit P3-1: one root run per interface at a time. After `make_dir wg`, the script re-runs itself under `/usr/bin/lockf -k -t 30 wg/lock@<iface>` (using `BASH_EXECUTION_STRING`); a second Connect waits, then sees the interface up and refuses (94) instead of replacing and then removing the copy the live tunnel needs. A run that waits 30 s gets `lockf`'s exit 75. P3-C (rebase security review): `up_now` requires wg-quick's `.name` and the `.sock` of the device it names, as `vpn_execution.wireguard_interface_state` does; a stale `.name` no longer blocks Connect or keeps the key-bearing copy. P3-5: any `config_path` whose file name is not `<interface>.conf` is blocked at review (before, `wgnl` passed as a bare name and the runner refused after the dialog, every time). P3-3: the harness runs the script in its own process group and kills the group on a timeout, and the FIFO test holds a writer with marker bytes, so a broken `[ -f ]` guard fails in about 10 s and leaves no blocked `head`. P3-4: tests for folder modes on existing directories, the 20 s cut-off and the `wait || refused` check (the last two run a copy of the script with a 1 s cut-off, no `[ -f ]` guard and `cat` for `head`: BSD `head` buffers its output, so a killed `head` leaves an empty copy that fails the hash anyway and only an unbuffered reader reaches the `wait` check).
+- Behaviour changes: Disconnect of an interface whose `.name` is stale now refuses with 94 and removes the kept copy, instead of running `wg-quick down`; a `config_path` like `wgnl` is now a review blocker.
+- Tests: 23 hand mutants over the new logic, all killed (the first round's survivor, `execute` not passing `wg_quick`, has its own test). Full suite 3792 passed, 14 skipped, 1 unrelated failure (`test_providers_registry::test_server_off_falls_back_to_the_disk_listing`, LM Studio).
+- Still open: security P3-A, a group-`daemon` process renaming the base and re-creating the name after `cd -P`, and wg-quick reading the copy by its absolute path under the base (outside the same-user model); P3-B, a source on a stalling filesystem can delay the approved run before the 20 s cut-off starts, because the regular-file check runs first (not verified); the interpreter on wg-quick's `#!` line is not checked, like wg-quick itself (owner decision: warn, not block; not verified, wg-quick is not installed on the dev Mac).
+- Not verified: real wg-quick on the copy, behaviour as root (`chown`/`chmod`, `lockf` in `/private/var/run`), the administrator dialog with `DIALOG_ENV` (does it still appear, and does non-ASCII output still display without `HOME`/`LANG`/`TMPDIR`), `/var/run` across a reboot, how long a real `wg-quick up` takes. Owner checklist.
+
+## 15. Steps S8a and S8b built (2026-11-06, branch `fix/s8-openvpn-root-copy`)
+
+S8 was first built on another line (`claude/intelligent-archimedes-e15a0e`, whose S7 differed
+from §14's) and reviewed eight times there: `docs/audit/audit-tier2-s8a-review-2026-10-31.md`,
+`audit-tier2-s8b-review-2026-11-05.md`, `-security-`, `-rereview-`, `-review-r5r6-`,
+`-review-r7-` (copied here from that line; they describe its code, not this port). Its tip
+is now branch `claude/s8-r7-detached` (`ab53fae`; its §18, D12, is out of scope here), and
+`claude/rootscript-fifo-writer` holds three FIFO-test commits whose substance main's S7
+already has (§14, P3-3). Main had meanwhile changed the same files (#30-#37, S7), so S8 was
+ported by hand onto main's structure rather than replayed. Owner decision applied: D11
+(S8a then S8b) and ADR 0004 (D8); this section is checked against §1.3 and §5.
+
+### What was built
+- `services/vpn_rootscript.py`: `OVPN_SCRIPT` and `openvpn_argv`/`openvpn_command`, in the
+  shape of `ROOT_SCRIPT` (constant script, positional values, `env -i`, own PATH and HOME,
+  `cd -P` into the base, ownership checks, umask 077, `/sbin/sha256`, 20 s read cut-off,
+  exit 98 for changed or unreadable), with root's own value checks (exit 99) and one
+  OpenVPN run at a time under `lockf` (`ovpn/lock`). Up: refuse 94 while Sentinel's openvpn
+  runs; sweep a crash's copies, pid and device; copy the config and each relative file
+  (layout kept), keep each only within its cap and with its reviewed hash; hash absolute
+  files in place; re-check each hook program and library is root-owned and not group- or
+  other-writable along its path and real path; start openvpn from `/` with `--cd` in the
+  copies; wait up to 15 s for the device line, keep only the device name (0644), delete the
+  log, print its last six lines once if no device came; remove everything on failure.
+  Down: the pid must equal root's pid file (or the legacy file Sentinel names) and be
+  Sentinel's openvpn by `ps`; `kill -TERM`, wait up to 10 s, then remove copies, pid and
+  device; a pid that is no longer Sentinel's openvpn gets nothing signalled, the copies
+  removed, exit 94. `include_path` and the manifest checks run in Python first.
+- `services/openvpn_manager.py` (S8a): reads only root's pid and device, believing a file
+  only when root owns it (`vpn_rootscript.read_root_file`); legacy tracking of a tunnel an
+  older Sentinel started (its pid file must have been written within 60 s of the process
+  starting; its pid, device and log are deleted once it is gone); `connect` takes the
+  confirmed hash, manifest, reviewed openvpn and hook programs, and runs nothing without a
+  valid hash or a reviewed program. `start_command`, `_run_dir`, `_settle_log` are gone.
+- `services/vpn_execution.py` (S8b): `ExecutionReview.includes`, `.program`, `.programs`,
+  all in the fingerprint; the dialog detail and `sections()` list each data file by name
+  (no hash). `_openvpn_file_names`/`_openvpn_includes` build the manifest with main's
+  file-word rules (proxy auth word, `stdin` and `auto` only where OpenVPN treats them so,
+  `[inline]` only beside its block); blockers for `..`, a link out of the folder, a symlink,
+  a non-regular, unreadable or over-1-MiB file, two names differing only in case or Unicode
+  form, more than 16 files (counted before any is read), and an absolute file not
+  root-owned all the way up. Review hardening ported from S8b rounds 2-8, for OpenVPN only:
+  byte-order mark skipped; directive names limited to `-{0,2}[A-Za-z0-9][A-Za-z0-9-]*`;
+  the tokeniser refuses a quote touching other text and any backslash OpenVPN would read
+  differently, and a hook value is split again as OpenVPN does; `dns-updown`,
+  `tls-crypt-v2-verify` and `client-crresponse` are hooks; server profiles, `dev` other than
+  tun/tap/utun and `dev-node` other than utun, `genkey`, `ifconfig-pool-persist`,
+  `tls-export-cert`, `client-config-dir`, `auth-gen-token-secret` block; an OpenVPN hook
+  program must be absolute, existing and root-owned, not a system program (location rule,
+  Command Line Tools included) nor an interpreter or wrapper by written or real name; every
+  path argument must be absolute, existing and root-owned (CIDRs and `/dev/null` excepted);
+  plugin modules by absolute path, down-root arguments judged as a command; a hidden
+  `/.vol`-style prefix is unsafe in the shared ownership check. §1.3's `daemon` and
+  `syslog` are now blockers too. The review resolves openvpn once (`program`) and warns
+  when it is user-writable (as for wg-quick). `execute()` hands root the confirmed hash,
+  manifest, program and hook programs.
+- `agents/vpn_agent/services/privileged.py`: the dialog's carriage returns become line
+  breaks again (S8a review P3-4), so the log lines read as lines.
+
+### Deviations from the old line and from §1.3/§5
+- Main's conventions win where the two S7s differed: exit 94 (not 96) for "already
+  running" and for a Down whose process is gone; existing folders are normalised with
+  `chown`/`chmod`, not refused for their mode; no boot-session stamp (stale state is swept
+  by the next Connect); the script is passed through `run_as_root` as one `shlex.join` line.
+- Main's stricter rules stay: `engine` always blocks and `providers` takes only OpenSSL's own
+  names (S8b only warned about bare names); every relative OpenVPN program is refused,
+  which also covers S8b P3-3 (a hook naming a copied file). A bare plugin name is now
+  refused (main allowed it; S8b refused it).
+- S8b's WireGuard hook changes (R5-P2-2, R7-P2-2, R7-P2-3) are not ported: main's owner
+  allowlist of 2026-11-06 is newer and stricter in the same places.
+- §1.3 asked root to re-check executables with `stat`; the old line did not. Built here.
+- §5's `ensure_private_dir` for "what stays user-side": nothing stays user-side now; the
+  legacy folder is only read and emptied.
+- A relative data file now means the file beside the profile (OpenVPN used to look in
+  `/`): the behaviour change §1.3 predicted, in the CHANGELOG.
+
+### Tests
+- `tests/test_vpn_rootscript.py`: builder validation (every bad value, caps equal the
+  Python limits) and `OVPN_SCRIPT` under real `/bin/bash` with a stub openvpn that
+  daemonises a process `ps` reads as openvpn (from the old line, adapted): modes, log
+  deleted, device variants and a late device line, failure cleanup, 94 while running,
+  stale sweep, Down cleanup, slow and stubborn exits, lookalikes and a changed recorded
+  pid refused, legacy pid file, root's own value checks (99), relative copies with their
+  layout and openvpn reading only them, absolute files hashed in place, a changed config
+  or data file, missing/directory/FIFO/oversize files, the read cut-off; new here: openvpn
+  runs from `/` with only HOME and PATH, the lock serialising two Connects, the hook
+  program re-check (writable folder, missing, link to a writable folder, another
+  account's), a symlinked `ovpn/` and a foreign-owned base.
+- `tests/test_vpn_review_gate.py`: the old line's OpenVPN review tests (73 functions,
+  205 cases), adapted to main's rules (engine and providers; every relative program
+  refused); the WireGuard ones were not ported (see Deviations). Plus daemon/syslog, the
+  programs list in the fingerprint and in what `execute()` hands root, the openvpn
+  warning.
+- `tests/test_vpn_connection.py`, `test_tunnel_keeps_no_logs.py`, `test_vpn_killswitch.py`:
+  the old line's S8a manager tests (root-owned files, legacy tracking and cleanup);
+  `test_vpn_execution.py`: main's #36/#37 OpenVPN tests rewritten for the root script
+  (start from `/`, absolute config path through a link and `..`, relative PATH entry,
+  identity, file names now listed for root to copy instead of warned about).
+- Mutation check (scratchpad script, one mutant at a time on a copy of the worktree,
+  restored afterwards): 39 mutants of `OVPN_SCRIPT` and 67 of the Python side. First run
+  37/39 and 59/66 (one Python mutant did not apply); each survivor got a test (the
+  `wait` refusal after the cut-off, another account's program, daemon and syslog, the
+  programs in the fingerprint and in `execute()`, the openvpn warning, a non-regular pid
+  file, the no-program message), then 39/39 and 66/66.
+- The two gaps the test port found were fixed in code: `dh none` names no file, and a
+  `pkcs11-providers` library that does not exist blocks.
+
+### Round 2 (2026-11-06): fixes after the independent code and security reviews
+Reports: `docs/audit/s8-port-code-review-2026-11-06.md` (no P0/P1; 2 P2, 7 P3) and
+`docs/audit/s8-port-security-review-2026-11-06.md` (no P0; 2 P1, 2 P2, 3 P3). Both confirm
+the root script's copy-and-verify holds and that every earlier S8 P1/P2 fix survived the port.
+- Security P1-1: an OpenVPN line of 250 bytes or more blocks (OpenVPN's 256-byte line buffer
+  splits it, which can end an inline block early and hide directives). P1-2:
+  `show-pkcs11-ids` is a code-loading blocker.
+- Security P2-1: an OpenVPN hook script's `#!` interpreter (or `env`'s name, looked up in
+  the system folders) must be root-owned all the way up, and root re-checks it with the
+  programs. P2-2 and code P3-5: the two deferrals the port had dropped (openvpn's own
+  OpenSSL config, modules and libraries; manifest hashes on argv) are back in TODO.md and
+  named in `docs/agents/vpn.md`.
+- Code P2-1: an absolute data file only root can read is not blocked; it is root-owned all
+  the way up, so it joins the ownership re-check instead of the hash manifest, and the
+  review says so. Code P2-2: a status read never deletes an older Sentinel's tracking
+  files; Connect and Disconnect do, only on proof the process is gone (`ESRCH`, or `ps`
+  answering with another program).
+- Code P3-1: Disconnect asks root to remove the copies when root's pid file names a process
+  that is no longer Sentinel's openvpn; docs no longer say copies always go at Disconnect.
+  P3-2: root's ownership re-check ignores a link's own mode. P3-3: an openvpn path with a
+  space blocks at review. P3-4: a `capath` folder or `crl-verify … dir` gets a clear blocker
+  (CHANGELOG). P3-6: OpenVPN exit codes documented beside `OVPN_SCRIPT`; the file count must
+  be a plain number (`08` used to abort bash with 1). P3-7: the WireGuard side of the
+  hidden-prefix rule is in the CHANGELOG.
+- Security P3-1: openvpn starts with `--suppress-timestamps` and the device is taken only
+  from a whole `Opened utun device utunN` / `TUN/TAP device tunN opened` line, so server
+  text cannot pick it. P3-3: all reads together stop after 30 s, not 20 s per file.
+- Tests: 30 new or changed cases; 19 mutants over the new branches, all killed.
+
+### Limits that remain
+- Pid reuse between root's identity check and `kill` (ADR R4). The `openvpn` program in a
+  user-owned Homebrew folder (warned), and what it loads on its own (TODO, D10 follow-up).
+  Manifest hashes on root's argv (TODO). A hook program's linked libraries, and a
+  WireGuard hook script's `#!` interpreter (TODO). Copies are read by absolute path under
+  the base (as S7 P3-A). Hook review is a model of OpenVPN's parser, not the parser. The
+  legacy log is still read with the loose device pattern (older builds wrote timestamps).
+- NOT VERIFIED (openvpn is not installed on the dev Mac): `--cd` ordering, `--config`
+  after `--cd`, whether `--log` takes over before `--daemon`, the tuntaposx device line,
+  whether openvpn removes its pid file on exit, a SIGUSR1 restart re-reading `cfg/`, timing
+  inside the dialog's 30 s.
+
+### Owner checklist for S8 (real Mac)
+1. Import an `.ovpn` with `ca`, `cert`, `key` and `tls-auth` as files beside it (one in a
+   subfolder). Connect: the dialog lists each file; the tunnel comes up and the kill switch
+   arms with its device. `sudo ls -lR /private/var/run/sentinel-vpn/ovpn` shows
+   `openvpn.pid`, `device` (root, 0644), `lock`, and `private/` (0700) with `config.ovpn` and
+   `cfg/` in the same layout (folders 0700, files 0600), and no `openvpn.log`.
+2. `ps -ww -o command= -p $(cat /private/var/run/sentinel-vpn/ovpn/openvpn.pid)` shows
+   `--cd …/private/cfg --config …/private/config.ovpn` and nothing from your folder.
+3. As your user, `echo 1 > /private/var/run/sentinel-vpn/ovpn/openvpn.pid`: permission denied.
+4. Open the Connect dialog, then replace `ca.crt` beside the profile before answering;
+   enter the password: refused ("changed after you confirmed it"), no openvpn process,
+   `ovpn/private` gone.
+5. Disconnect: the process exits; `private/`, pid and device are gone.
+6. Connect with a wrong server: the last log lines show once, on separate lines;
+   Disconnect stops it.
+7. With a tunnel started by the previous build still up, open this build: Tunnel shows it
+   running and Disconnect stops it; afterwards Sentinel's data folder `vpn/` is empty.
+8. A real provider profile still passes the review, also when saved with a byte-order mark;
+   a profile with `ca ../ca.crt` is refused before any prompt; one with `up /bin/sh …` is
+   refused.

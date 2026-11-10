@@ -83,15 +83,59 @@ Disconnect.
 A WireGuard config can contain `PreUp`, `PostUp`, `PreDown` and `PostDown` lines,
 and an OpenVPN config can contain script or plugin directives such as `up`,
 `down`, `route-up`, `plugin` and `script-security`. The tunnel tool runs these as
-administrator. The Connect review lists each one (cut at 100 characters) in its
-own section and repeats them in the confirmation, and a second dialog asks
-again, defaulting to **No**. Continue only if you wrote them or trust their
-source; if a line is cut off or you do not recognise it, read the file itself
-first.
+administrator. The review lists each one in its own section and repeats them in
+the confirmation, and a second dialog asks again, defaulting to **No**. A long
+hook is shown cut after 300 characters with a note of how many more; **Show
+Details…** lists every hook in full with the file's SHA-256. Continue only if you
+wrote them or trust their source; if you do not recognise a line, read the file
+itself first.
 
-**Known limitation:** the list appears on Connect only — not on Disconnect and not
-in **Inspect config…** — and other `wg-quick` directives such as `SaveConfig` are
-not flagged.
+**Also checked:** Disconnect shows the same review for a WireGuard profile (its
+`PreDown` and `PostDown` lines run then). There, a long hook, an unsafe program
+path or `SaveConfig = true` is shown as a risk and you can still go ahead after an
+extra confirmation; an OpenVPN Disconnect only shows a note. On Connect, a hook
+that starts with an absolute path is refused unless root owns the program and
+every folder above it and none of them can be written by a group or by everyone,
+and a profile with `SaveConfig = true` is refused. If a WireGuard file changes
+after you confirm, nothing runs: administrator rights only ever run a copy that
+root has checked against the hash you confirmed. The same goes for an OpenVPN
+profile and every file it names beside it (certificates, keys, password files):
+root copies them, checks each copy and starts OpenVPN on the copies.
+
+**WireGuard hooks must be plain commands with full paths.** wg-quick hands each
+hook to the shell, so Tunnel only accepts commands that start with a full path
+(`/sbin/route …`) or with the plain name of a program in `/usr/bin`, `/bin`,
+`/usr/sbin` or `/sbin`, separated by `;`, `&&`, `||` or `&` if there is more
+than one. Only the macOS network programs `route`, `ifconfig`, `networksetup`,
+`pfctl`, `scutil`, `killall`, `dscacheutil`, `sysctl`, `ipconfig` and `logger`
+(at their own system paths) and `wg` may be given ordinary words, numbers or
+`%i`/`%I` as arguments; any other program, your own scripts included, may only
+be given options (`-v`, `--up`) and full paths.
+A hook with `$`, quotes, a backslash, `* ? [ ] { } < > ( ) ! ~` or a pipe, a
+`NAME=value` in front of a command, a shell word such as `.`, `source`, `eval`,
+`exec`, `if` or `echo`, a relative path, or a program name found anywhere else
+stops a Connect with "Tunnel cannot check what this hook runs; write plain
+commands with full paths." (Disconnect shows it as a risk). Write `/bin/echo`
+instead of `echo`, and put anything more complicated in a script owned by root,
+called by its full path. Tunnel runs wg-quick from `/` with an empty
+environment, so a hook cannot pick up your shell startup files or a file in the
+folder Sentinel runs from. The DNS line shows only the entries wg-quick uses as
+servers; a name such as `corp.example` is listed as a search domain (and marked
+as not applied when there is no server), and a DNS entry with a wildcard such
+as `10.64.0.*` stops a Connect.
+
+### What actually runs (WireGuard)
+
+Administrator rights never run your own WireGuard file. Sentinel copies it into a
+folder only root can read, checks that the copy is exactly what the review
+showed, and runs the copy. If you edit the file after answering Yes, nothing runs
+and Tunnel says the config changed. While the tunnel is up, Disconnect uses the
+copy you connected with, so edits made in the meantime do not change what
+Disconnect runs; the Disconnect confirmation says so. The copy protects the config
+file, not the `wg-quick` program: if Homebrew installed it in a folder your account
+owns, Tunnel warns that another program running as you could replace it. OpenVPN
+does not have this protection yet: `openvpn` still reads your `.ovpn` and its files
+after the review.
 
 ### Reading the result
 
@@ -119,9 +163,14 @@ start-up log is handled the same way.
 Disconnect stops only the process Sentinel started and can identify as its own.
 If it cannot, it refuses, stops nothing, and tells you to use the client that
 started the connection — that refusal comes after you answer Yes and is shown
-as a failure. Tunnel never stops OpenVPN by process name. The review shows an
-abbreviated command and no routing or DNS lines for OpenVPN, and configs that
-ask for a username and password, pushed DNS and live status are not supported.
+as a failure. Tunnel never stops OpenVPN by process name. OpenVPN starts from
+`/` with nothing of your environment, so a relative file name in an `.ovpn`
+(`ca ca.crt`) means a file in `/`: use full paths or inline blocks. The review
+warns about such files, and a hook script named without its full path
+(`up up.sh`) stops a Connect. The review
+shows the exact command and no routing or DNS lines for OpenVPN, and configs
+that ask for a username and password, pushed DNS and live status are not
+supported.
 
 ### If you close Sentinel mid-connection
 

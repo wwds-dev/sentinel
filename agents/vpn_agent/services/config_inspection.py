@@ -35,10 +35,55 @@ class WireGuardConfigSummary:
     secrets_discarded: int
     invalid_endpoint_count: int
     warnings: tuple[str, ...]
+    # DNS entries wg-quick passes on as search domains, not as servers.
+    dns_search: tuple[str, ...] = ()
+    # DNS entries with a shell wildcard: wg-quick may expand them to file names,
+    # so the DNS that applies cannot be known. The review refuses a Connect.
+    dns_wildcards: tuple[str, ...] = ()
+
+
+# The whitespace wg-quick's bash trims; str.strip() also removes U+00A0 and others.
+_ASCII_SPACE = " \t\r\v\f"
 
 
 def _items(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
+    return [item.strip(_ASCII_SPACE) for item in value.split(",") if item.strip(_ASCII_SPACE)]
+
+
+def _shell_items(value: str) -> list[str]:
+    """wg-quick's ``${value//,/ }``, word-split by bash: commas and blanks."""
+    return [item for item in re.split(r"[, \t]+", value) if item]
+
+
+# wg-quick (darwin.bash) keeps a DNS entry as a server only when it matches
+# (^[0-9.]+$)|(^.*:.*$); every other entry becomes a search domain.
+def _is_dns_server(item: str) -> bool:
+    return bool(re.fullmatch(r"[0-9.]+", item)) or ":" in item
+
+
+# wg-quick word-splits DNS unquoted, with extglob on, so an entry with a glob
+# character may expand to file names in its working directory. What it becomes
+# cannot be known here, so such an entry is listed as neither kind.
+_GLOB = re.compile(r"[*?\[]|[@+!]\(")
+
+# A 256 KiB config can hold tens of thousands of bad entries; the review lists
+# each kind of warning once and at most this many in all.
+WARNING_LIMIT = 20
+
+
+def _lines(numbers: list[int]) -> str:
+    """'Line 4' or 'Lines 4, 9, 12 …' (at most ten numbers)."""
+    shown = ", ".join(str(n) for n in numbers[:10]) + (" …" if len(numbers) > 10 else "")
+    return ("Line " if len(numbers) == 1 else "Lines ") + shown
+
+
+def _capped(warnings: list[str]) -> tuple[str, ...]:
+    """Each warning once, in order, and at most WARNING_LIMIT of them."""
+    unique = list(dict.fromkeys(warnings))
+    if len(unique) <= WARNING_LIMIT:
+        return tuple(unique)
+    return tuple(unique[:WARNING_LIMIT]) + (
+        f"… and {len(unique) - WARNING_LIMIT} more warnings about this file.",)
 
 
 def _endpoint_is_valid(value: str) -> bool:
@@ -105,6 +150,13 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
     section = ""
     addresses: list[str] = []
     dns_servers: list[str] = []
+    dns_search: list[str] = []
+    dns_wildcards: list[str] = []
+    # Lines wg-quick ignores, by kind; each kind is one warning (a padded file
+    # must not push the warnings that matter past WARNING_LIMIT).
+    after_hash: list[int] = []
+    no_equals: list[int] = []
+    unsupported: list[int] = []
     endpoints: list[str] = []
     allowed_ips: list[str] = []
     mtu = ""
@@ -112,37 +164,54 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
     secrets_discarded = 0
     warnings: list[str] = []
 
-    for line_number, raw_line in enumerate(text.splitlines(), 1):
-        line = raw_line.strip()
-        if not line or line.startswith(("#", ";")):
+    # Read lines as wg-quick does: split at "\n" only (splitlines() also splits
+    # at U+2028 and friends, which would show an entry wg-quick never reads),
+    # and drop everything from the first "#" before reading a key or a value,
+    # so "DNS # = 10.64.0.1" sets no DNS server and is not shown as one.
+    for line_number, raw_line in enumerate(text.split("\n"), 1):
+        full = raw_line.strip(_ASCII_SPACE)
+        line = full.split("#", 1)[0].strip(_ASCII_SPACE)
+        if not line or line.startswith(";"):
             continue
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1].strip().lower()
             if section == "peer":
                 peer_count += 1
             elif section not in {"interface", "peer"}:
-                warnings.append(f"Line {line_number}: unsupported section was ignored.")
+                unsupported.append(line_number)
             continue
         key, separator, value = line.partition("=")
         if not separator:
-            warnings.append(f"Line {line_number}: entry has no '=' and was ignored.")
+            (after_hash if "=" in full else no_equals).append(line_number)
             continue
-        normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
-        value = value.strip()
-        if normalized_key in _SECRET_FIELDS:
+        value = value.strip(_ASCII_SPACE)
+        # Secrets are discarded on a loose match (better too many than one kept).
+        if re.sub(r"[^a-z0-9]", "", key.lower()) in _SECRET_FIELDS:
             secrets_discarded += 1
             continue
         if section == "interface":
-            if normalized_key == "address":
-                addresses.extend(_items(value))
-            elif normalized_key == "dns":
-                dns_servers.extend(_items(value))
-            elif normalized_key == "mtu":
+            # wg-quick matches [Interface] keys itself: trimmed, any case.
+            interface_key = key.strip(_ASCII_SPACE).lower()
+            if interface_key == "address":
+                for item in _shell_items(value):
+                    if _GLOB.search(item):
+                        warnings.append("An Address entry contains a wildcard, which "
+                                        "wg-quick's shell may expand to other entries.")
+                    addresses.append(item)
+            elif interface_key == "dns":
+                for item in _shell_items(value):
+                    if _GLOB.search(item):
+                        dns_wildcards.append(item)
+                        continue
+                    (dns_servers if _is_dns_server(item) else dns_search).append(item)
+            elif interface_key == "mtu":
                 mtu = value
         elif section == "peer":
-            if normalized_key == "endpoint":
+            # [Peer] keys go to `wg setconf`, which drops every blank first.
+            peer_key = re.sub(r"[ \t\r\v\f]", "", key).lower()
+            if peer_key == "endpoint":
                 endpoints.append(value)
-            elif normalized_key == "allowedips":
+            elif peer_key == "allowedips":
                 allowed_ips.extend(_items(value))
 
     for address in addresses:
@@ -160,12 +229,21 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
         warnings.append(f"{invalid_endpoints} peer endpoint value(s) need attention.")
     if peer_count == 0:
         warnings.append("No [Peer] section was found.")
+    if after_hash:
+        warnings.insert(0, f"{_lines(after_hash)}: the '=' comes after a '#', so "
+                           "wg-quick reads no value from this entry; it was ignored.")
+    if unsupported:
+        warnings.append(f"{_lines(unsupported)}: unsupported section was ignored.")
+    if no_equals:
+        warnings.append(f"{_lines(no_equals)}: entry has no '=' and was ignored.")
 
     return WireGuardConfigSummary(
         source_name=source.name,
         interface_name=source.stem,
         addresses=tuple(addresses),
         dns_servers=tuple(dns_servers),
+        dns_search=tuple(dns_search),
+        dns_wildcards=tuple(dns_wildcards),
         mtu=mtu,
         peer_count=peer_count,
         endpoints=tuple(endpoints),
@@ -173,5 +251,5 @@ def inspect_wireguard_text(text: str, source: str | Path) -> WireGuardConfigSumm
         route_mode=_route_mode(allowed_ips),
         secrets_discarded=secrets_discarded,
         invalid_endpoint_count=invalid_endpoints,
-        warnings=tuple(warnings),
+        warnings=_capped(warnings),
     )
