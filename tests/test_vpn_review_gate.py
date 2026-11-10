@@ -1063,8 +1063,17 @@ def test_a_bare_hook_key_shows_the_line_itself_as_its_command(tmp_path):
     assert r.root_hooks == ("PreUp: PreUp",)
 
 
-def test_a_normal_config_with_plain_full_path_hooks_is_still_allowed(tmp_path):
+def test_a_normal_config_with_plain_full_path_hooks_is_still_allowed(tmp_path, monkeypatch):
     """False-positive check: Interface, Peer, DNS and plain system-program hooks."""
+    # The hook programs are macOS paths and the Linux CI runner's /opt is writable
+    # (which would make the fake wg-quick below user-replaceable): fake the whole
+    # tree as root-owned, as test_vpn_execution does, so only the hooks are tested.
+    monkeypatch.setattr(vpn_execution, "_stat", _fake_stat({
+        "/usr/sbin/networksetup": (0, ROOT_FILE), "/usr/sbin": (0, ROOT_DIR),
+        "/sbin/route": (0, ROOT_FILE), "/sbin": (0, ROOT_DIR), "/usr": (0, ROOT_DIR),
+        FAKE_WG_QUICK: (0, ROOT_FILE), "/opt/test/bin": (0, ROOT_DIR),
+        "/opt/test": (0, ROOT_DIR), "/opt": (0, ROOT_DIR), "/": (0, ROOT_DIR)}))
+    monkeypatch.setattr(vpn_execution, "_lstat", _fake_stat({}))   # no links anywhere
     extra = ("DNS = 10.64.0.1, 10.64.0.2 # resolver\n"
              "PostUp = /usr/sbin/networksetup -setdnsservers Wi-Fi 10.64.0.1\n"
              "PostDown = /sbin/route -n delete -inet 10.0.0.0/8 -interface %i\n")
