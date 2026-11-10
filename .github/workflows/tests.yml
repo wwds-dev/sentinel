@@ -38,8 +38,8 @@ jobs:
           pip install -r requirements-dev.txt pytest-cov
       - name: Test
         run: |
-          python -m pytest -p no:cacheprovider -q -rf > pytest.log 2>&1; rc=$?
+          python -m pytest -p no:cacheprovider -q -rf > pytest.log 2>&1 || rc=$?
           grep -E '^(FAILED|ERROR)' pytest.log | cut -c1-400 | while IFS= read -r l; do echo "::error::$l"; done
           grep -E '^E  ' pytest.log | head -25 | cut -c1-400 | while IFS= read -r l; do echo "::error::$l"; done
           tail -n 3 pytest.log | while IFS= read -r l; do echo "::error::$l"; done
-          exit $rc
+          exit ${rc:-0}
