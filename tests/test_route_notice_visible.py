@@ -44,3 +44,24 @@ def test_notice_clears_when_nothing_is_substituted(local_only):
         pass
     assert not win.route_notice_label.isVisibleTo(win.route_screen)
     assert win.route_notice_label.text() == ""
+
+
+def test_notice_clears_when_auto_route_is_turned_on(local_only):
+    """P2-1 of the PR #31 review: Auto-route returned before clearing the notice."""
+    win = local_only
+    win.resolve_backend_model()
+    assert win.route_notice_label.isVisibleTo(win.route_screen)   # a substitution happened
+    win.execution_mode_box.setCurrentText("Cloud only")
+    win.auto_recommend_checkbox.setChecked(True)
+    win.route_for_request = lambda *a, **k: _Decision()
+    win._apply_route_to_widgets = lambda *a, **k: None   # only the notice is under test
+    win._show_route = lambda decision: None
+    win.resolve_backend_model()
+    assert not win.route_notice_label.isVisibleTo(win.route_screen)
+    assert win.route_notice_label.text() == ""
+    assert win._route_resolution_notice == ""
+
+
+class _Decision:
+    provider = "anthropic"
+    model = "claude-sonnet-5"
