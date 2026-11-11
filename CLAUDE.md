@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-`AGENTS.md` is the company pipeline (installed from `foundry`); app facts are in `docs/company/app-context.md`. The rules below are this app's own and win on conflict.
+`AGENTS.md` is the Foundry pipeline (installed from `foundry`); app facts are in `docs/foundry/app-context.md`. The rules below are this app's own and win on conflict.
 
 ## Task lists
 - `TODO.md` and `SUGGESTIONS.md` in this folder feed the Lab Projects Monitor. Keep their existing format exactly.
@@ -18,7 +18,7 @@
 - Never print or copy values from `.env`.
 
 ## VPN Agent (Tunnel) rules
-Applies to Tor, the proxy chain, the MAC changer, the kill switch and server provisioning. These run on the owner's own Mac and provision only servers the owner owns or rents. What Sentinel is: `docs/company/app-context.md`.
+Applies to Tor, the proxy chain, the MAC changer, the kill switch and server provisioning. These run on the owner's own Mac and provision only servers the owner owns or rents. What Sentinel is: `docs/foundry/app-context.md`.
 - Fail closed: if a tunnel, Tor circuit or proxy hop drops, traffic is blocked. No clear-net fallback.
 - No DNS, IPv6 or WebRTC leaks; all DNS goes through the tunnel. The kill switch must work and be covered by a test.
 - MAC changer: record the original address, restore it on exit and on crash, validate the address, use locally administered unicast addresses, touch only the interface the user selected.

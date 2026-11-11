@@ -63,7 +63,10 @@ data/settings.local.json
 /vpn/
 
 # audit-sensitive company docs: kept local, never published (see foundry/audits)
-docs/company/app-context.md
-docs/company/tooling-baseline.md
+docs/foundry/app-context.md
+docs/foundry/tooling-baseline.md
 # Training screenshots are rendered locally, never committed (001e6bf).
 docs/training/images/
+
+# The legal pack lives in the Foundry HQ (private repo); this path is a link to it.
+/docs/legal

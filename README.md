@@ -395,7 +395,7 @@ The main runtime is organised around:
   repo: `AGENTS.md` is the engineering pipeline (roles, phases, owner approval
   gates), `CLAUDE.md` adds this app's own rules (TODO/SUGGESTIONS format,
   working rules, current goal). App facts for that pipeline live in
-  `docs/company/app-context.md`, and the per-role playbooks in `docs/playbooks/`
+  `docs/foundry/app-context.md`, and the per-role playbooks in `docs/playbooks/`
 - `VERSION` and `services/app_version.py` — canonical public version and the
   exact development-build description shown by the app
 - `services/registry.py` and `services/validator.py` — permissions and tool/provider checks; `registry.py` also has a `projects` table behind Chat Projects (an active-project picker in the run bar, a project filter and "Assign to project…" in History; usage is attributed to the project). Its instructions, default agent/provider/model and budget columns are not read by anything yet (`docs/projects_roadmap.md`, Stage 2), and there is no UI to rename, archive or delete a project
