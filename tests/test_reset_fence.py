@@ -249,6 +249,47 @@ def test_a_late_local_discovery_after_the_quit_rebuilds_nothing(win, monkeypatch
     assert rebuilt == [] and started == []
 
 
+def test_the_fence_disconnects_the_local_model_runs(win):
+    """Discovery and measurement are joined or parked like the scan, and
+    their late results reach nobody once a Reset fences them."""
+    got = []
+    discovery = workers.LocalDiscoveryWorker(None, None, None)
+    measure = workers.LocalMeasureWorker(None, None, [], None, None, None, 0)
+    discovery.finished_signal.connect(got.append)
+    measure.finished_signal.connect(got.append)
+    win.local_discovery_worker, win.local_measure_worker = discovery, measure
+    win.stop_background_work(fence=True)
+    discovery.finished_signal.emit("late")
+    measure.finished_signal.emit("late")
+    QApplication.processEvents()
+    assert got == []
+
+
+@pytest.mark.parametrize("write", ["ratings", "routing_rules", "savings_tally"])
+def test_the_local_model_stores_write_nothing_once_erasing_has_started(tmp_path, latch, write):
+    """A parked measurement run writes its ratings from its own thread, so
+    these stores check the latch too."""
+    from services import local_ratings, routing_advisor
+    path = tmp_path / "data" / f"{write}.json"
+    if write == "ratings":
+        store = local_ratings.RatingStore(path)
+        change = lambda n: store.save_reference_answer("ref", f"p{n}", 1, "answer")  # noqa: E731
+    elif write == "routing_rules":
+        store = routing_advisor.RoutingRules(path)
+        change = lambda n: store.add("chat", f"kind{n}", "ollama", "m")  # noqa: E731
+    else:
+        store = routing_advisor.SavingsTally(path)
+        change = lambda n: store.record_local_run(0.5 * n)  # noqa: E731
+    change(1)
+    before = {p.name: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    latch.set()
+    change(2)
+    assert {p.name: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    latch.clear()
+    change(3)
+    assert path.read_bytes() != before[path.name]
+
+
 @pytest.mark.parametrize("write", ["history_save", "history_update", "settings", "model_watch"])
 def test_no_data_write_once_erasing_has_started(tmp_path, latch, write):
     from services import history_store, model_watch, settings_store

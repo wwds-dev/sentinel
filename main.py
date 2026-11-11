@@ -5934,8 +5934,9 @@ class GodAI(QWidget):
             fence_parked()
             # A scan or pull that finished inside the join is not parked, so
             # not fenced: stop listening to it before the folder is erased.
-            drop_result_slots(getattr(self, "model_scan_worker", None))
-            drop_result_slots(getattr(self, "muse_pull_worker", None))
+            for name in ("model_scan_worker", "muse_pull_worker",
+                         "local_discovery_worker", "local_measure_worker"):
+                drop_result_slots(getattr(self, name, None))
         # Whatever a panel left authorised but never recorded: close each row
         # so the Run log does not show it as running for ever.
         for request_id in list(self._pending_requests):
