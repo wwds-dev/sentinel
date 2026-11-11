@@ -279,6 +279,10 @@ def test_server_off_falls_back_to_the_disk_listing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(lmstudio_client.requests, "get", refuse)
     monkeypatch.setattr(lmstudio_client, "models_dir", lambda: _models_dir(tmp_path))
+    # Server off means `lms server status` names no port either. Without this the
+    # test asks the real `lms` on a Mac with LM Studio installed, and passes only
+    # where it is not.
+    monkeypatch.setattr(lmstudio_client, "running_port", lambda *a, **k: None)
     client = LMStudioClient()
     assert client.server_up() is False
     states = {m["state"] for m in client.model_details()}
