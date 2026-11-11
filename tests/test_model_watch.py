@@ -441,3 +441,110 @@ def test_the_card_credits_the_ratings_it_uses(win, monkeypatch, clean_router):
         assert "CC BY 4.0" in row.toolTip()
     finally:
         mr.set_rating_lookup(None)
+
+
+# ── The scan asks only the providers a request could use (2026-11-11) ───────
+
+def _counting_client(calls, name, key=True):
+    class Counted:
+        KNOWN_MODELS = ["fallback"]
+
+        @staticmethod
+        def key_available():
+            return key
+
+        def list_models(self):
+            calls.append(name)
+            return [f"{name}-1"]
+
+    return Counted
+
+
+def test_local_only_mode_scans_no_cloud_provider():
+    calls = []
+    classes = {p: _counting_client(calls, p) for p in ("openai", "anthropic")}
+    scan, skipped = mw.scan_plan(classes, "Local only", {"openai": True, "anthropic": True})
+    assert scan == {}, "a ticked box does not override Local only"
+    assert [(s.provider, s.status, s.note) for s in skipped] == [
+        ("openai", "skipped", mw.NOT_ALLOWED_LOCAL), ("anthropic", "skipped", mw.NOT_ALLOWED_LOCAL)]
+    assert list_live(scan) == [] and calls == []
+
+
+def test_other_modes_scan_only_ticked_providers():
+    calls = []
+    classes = {p: _counting_client(calls, p) for p in ("openai", "anthropic", "kimi")}
+    for mode in ("Hybrid allowed", "Cloud only"):
+        calls.clear()
+        scan, skipped = mw.scan_plan(classes, mode, {"openai": True, "anthropic": False})
+        assert list(scan) == ["openai"]
+        assert {s.provider: s.note for s in skipped} == {"anthropic": mw.NOT_ALLOWED, "kimi": mw.NOT_ALLOWED}, \
+            "unticked and missing permissions are both 'not allowed'"
+        assert [l.provider for l in list_live(scan)] == ["openai"] and calls == ["openai"]
+    scan, _ = mw.scan_plan(classes, "Hybrid allowed", {"openai": 1})
+    assert scan == {}, "only an explicit True allows a provider"
+
+
+def test_the_worker_reports_skipped_providers_without_asking_them(monkeypatch):
+    from ui import workers
+
+    asked = []
+    monkeypatch.setattr("services.model_watch.list_live",
+                        lambda classes: asked.append(dict(classes)) or [ok("openai", "gpt-x")])
+    skipped = [ProviderListing("anthropic", "skipped", note=mw.NOT_ALLOWED)]
+    worker = workers.ModelScanWorker({"openai": object}, None, skipped)
+    got = []
+    worker.finished_signal.connect(lambda listings, ratings: got.append(listings))
+    worker.run()
+    assert asked == [{"openai": object}]
+    assert [(l.provider, l.status) for l in got[0]] == [("anthropic", "skipped"), ("openai", "ok")]
+
+
+def test_the_card_says_why_a_provider_was_not_checked():
+    from ui.model_updates import describe_notes
+
+    text = describe_notes({"anthropic": f"skipped: {mw.NOT_ALLOWED_LOCAL}",
+                           "kimi": "skipped: no API key", "openai": "ok"})
+    assert "anthropic: not checked — not allowed in Local only mode" in text
+    assert "kimi: not checked — no API key" in text and "openai: listed" in text
+
+
+def test_the_window_scans_only_what_its_mode_and_boxes_allow(win, monkeypatch):
+    import main
+
+    made = []
+
+    class Spy:
+        def __init__(self, classes, ratings_cache=None, skipped=()):
+            made.append((dict(classes), [s.provider for s in skipped]))
+            self.finished_signal = self.error_signal = type("S", (), {"connect": lambda *a: None})()
+
+        def isRunning(self):
+            return False
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(main, "ModelScanWorker", Spy)
+    before = win.execution_mode_box.currentText()
+    try:
+        _scan_cases(win, made, main)
+    finally:  # the window is shared by this module's tests
+        win.execution_mode_box.setCurrentText(before)
+        win.allow_openai_checkbox.setChecked(False)
+        win.model_scan_worker = None
+
+
+def _scan_cases(win, made, main):
+    win.model_scan_worker = None
+    win.execution_mode_box.setCurrentText("Local only")
+    win.allow_openai_checkbox.setChecked(True)
+    win.start_model_scan()
+    assert made[-1][0] == {} and sorted(made[-1][1]) == sorted(main.CLOUD_CLIENT_CLASSES)
+    win.model_scan_worker = None
+    win.execution_mode_box.setCurrentText("Hybrid allowed")
+    win.start_model_scan()
+    assert list(made[-1][0]) == ["openai"] and "openai" not in made[-1][1]
+    win.allow_openai_checkbox.setChecked(False)
+    win.model_scan_worker = None
+    win.start_model_scan()
+    assert made[-1][0] == {}, "boxes start unticked: a fresh start asks no provider"

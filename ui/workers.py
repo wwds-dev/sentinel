@@ -893,16 +893,19 @@ class ModelScanWorker(QThread):
     finished_signal = Signal(object, object)
     error_signal = Signal(str)
 
-    def __init__(self, client_classes, ratings_cache=None):
+    def __init__(self, client_classes, ratings_cache=None, skipped=()):
         super().__init__()
         self._client_classes = dict(client_classes)
         self._ratings_cache = ratings_cache
+        # Providers the scan may not contact (services.model_watch.scan_plan):
+        # reported as skipped, never asked.
+        self._skipped = list(skipped)
 
     def run(self):
         try:
             from services.model_watch import list_live
 
-            listings = list_live(self._client_classes)
+            listings = self._skipped + list(list_live(self._client_classes))
         except Exception as e:
             self.error_signal.emit(str(e))
             return

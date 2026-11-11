@@ -117,9 +117,36 @@ def _known_canonicals(ids: Iterable[str]) -> set[str]:
 @dataclass(frozen=True)
 class ProviderListing:
     provider: str
-    status: str                    # "ok", "skipped" (no key) or "unreachable"
+    status: str                    # "ok", "skipped" (no key, or not allowed) or "unreachable"
     models: tuple[str, ...] = ()
     note: str = ""
+
+
+LOCAL_ONLY = "Local only"
+NOT_ALLOWED_LOCAL = "not allowed in Local only mode"
+NOT_ALLOWED = "not allowed: tick it under the run bar's provider permissions"
+
+
+def scan_plan(client_classes: Mapping[str, type], execution_mode: str,
+              allowed: Mapping[str, bool]) -> tuple[dict, list[ProviderListing]]:
+    """Which providers a model scan may contact, and a skipped listing for the rest.
+
+    A scan contacts a cloud provider only on the same terms as a request: never
+    in Local only mode, and otherwise only a provider whose permission box is
+    ticked. It sends just the API key, but that still tells the provider the
+    app is running and from where, which the operator did not allow.
+    `allowed` is keyed by provider ("openai": True, ...); anything missing is
+    not allowed.
+    """
+    if execution_mode == LOCAL_ONLY:
+        return {}, [ProviderListing(p, "skipped", note=NOT_ALLOWED_LOCAL) for p in client_classes]
+    scan, skipped = {}, []
+    for provider, cls in client_classes.items():
+        if allowed.get(provider) is True:
+            scan[provider] = cls
+        else:
+            skipped.append(ProviderListing(provider, "skipped", note=NOT_ALLOWED))
+    return scan, skipped
 
 
 def list_live(client_classes: Mapping[str, type]) -> list[ProviderListing]:

@@ -47,7 +47,8 @@ def describe_notes(notes: Mapping[str, str]) -> str:
         if note == "ok":
             lines.append(f"{provider}: listed")
         elif note.startswith("skipped"):
-            lines.append(f"{provider}: not checked — no API key")
+            why = note.split(":", 1)[1].strip() if ":" in note else "no API key"
+            lines.append(f"{provider}: not checked — {why}")
         else:
             lines.append(f"{provider}: {note}")
     return "\n".join(lines)

@@ -14,6 +14,12 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **The model check asks only the providers you allowed.** At start and on
+  **Check now**, Sentinel used to ask every provider with a key for its model
+  list, in every execution mode, including Local only. It now asks only
+  providers whose box is ticked under the run bar's provider permissions, and
+  none in Local only; the Model updates card says why a provider was skipped.
+  The check never sent a prompt, but it did contact providers you had not allowed.
 - **Stop in Chat returns at once.** It used to freeze the window for up to two
   seconds. A model request cannot be interrupted part-way, so the model may still
   finish in the background; Sentinel never shows that reply, and the notice now

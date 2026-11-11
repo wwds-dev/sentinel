@@ -94,7 +94,7 @@ from services.model_recommendations import (
     ratings_loaded, MODEL_CATALOG, register_local_models, catalog, blended_price,
     classify_request, rating_for, same_model,
 )
-from services.model_watch import ModelWatch
+from services.model_watch import LOCAL_ONLY as SCAN_LOCAL_ONLY, ModelWatch, scan_plan
 from services.price_resolution import table_lookup
 from services import benchmarks
 from services import portable_reset
@@ -1599,7 +1599,16 @@ class GodAI(QWidget):
         # It stays off in Local only mode and when the operator has switched
         # it off in Settings; the shipped snapshot still serves the router.
         ratings_cache = RATINGS_CACHE_FILE if self.public_ratings_refresh_enabled() else None
-        worker = ModelScanWorker(CLOUD_CLIENT_CLASSES, ratings_cache)
+        # The provider half follows the same rule as a request: nothing in Local
+        # only mode, otherwise only the providers whose permission box is ticked.
+        # Before 2026-11-11 it asked every provider with a key, in every mode.
+        mode_box = getattr(self, "execution_mode_box", None)
+        mode = mode_box.currentText() if mode_box is not None else SCAN_LOCAL_ONLY
+        permissions = self.current_api_permissions()
+        to_scan, skipped = scan_plan(
+            CLOUD_CLIENT_CLASSES, mode,
+            {p: permissions.get(f"allow_{p}", False) for p in CLOUD_CLIENT_CLASSES})
+        worker = ModelScanWorker(to_scan, ratings_cache, skipped)
         worker.finished_signal.connect(self._on_model_scan_finished)
         worker.error_signal.connect(self._on_model_scan_error)
         self.model_scan_worker = worker

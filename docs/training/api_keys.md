@@ -121,9 +121,18 @@ Sentinel weigh the new model when it recommends one.
 
 The **MODEL UPDATES** card in the left rail does both:
 
-- At every start, and whenever you press **Check now**, Sentinel asks each
-  provider that has a key for its list of models. Listing is free and sends
-  no prompt. Providers are asked one after another, never all at once.
+- At every start, and whenever you press **Check now**, Sentinel asks for
+  its list of models only those providers a request could use right now: a
+  key is set **and** its box is ticked under the run bar's provider
+  permissions, and the execution mode is not **Local only**. In Local only
+  no provider is asked at all. The boxes start unticked at every launch, so
+  the check at start asks nobody until you tick a provider and press
+  **Check now**. Listing is free and sends no prompt, but it does tell the
+  provider that Sentinel is running and from where, which is why it follows
+  the same permission as a request. Providers are asked one after another,
+  never all at once. The card says why a provider was not checked ("no API
+  key", "not allowed in Local only mode", "not allowed: tick it under the
+  run bar's provider permissions").
 - The header shows how many models are new (**7 new**, amber light), and
   each new model is a row in the card. The very first check only reports
   models that are newer than anything Sentinel already rates, not the dozens
@@ -216,5 +225,5 @@ selectable in the dropdown.
 ## Completion check
 
 You can say which `.env` your copy of Sentinel reads, add a key so its
-provider shows **ready**, run **Check now**, and explain what **Adopt**
+provider shows **ready**, tick that provider and leave Local only, run **Check now**, and explain what **Adopt**
 would change for a model listed under **Review**.
