@@ -1,5 +1,3 @@
-<!-- Owner: enable GitHub's private vulnerability reporting for wwds-dev/sentinel (Settings > Code security > Private vulnerability reporting); the form linked below does not work until then. Delete this comment afterwards. -->
-
 # Security
 
 Sentinel is free, open-source software maintained by one person. It handles API keys for many services, runs privileged network changes after your approval, connects to remote servers over SSH/SFTP and processes untrusted web content,
