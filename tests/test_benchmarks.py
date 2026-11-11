@@ -22,11 +22,27 @@ def table(rows_by_category: dict, published="2026-10-02") -> b.RatingTable:
 
 @pytest.fixture
 def router_state():
-    saved = (mr._PRICE_LOOKUP, mr._RATING_LOOKUP, dict(mr._RECOMMENDATION_CONTEXT))
+    """A clean router for the test, and whatever was there put back after.
+
+    Starting clean matters: a test module that builds the real window leaves
+    the router holding that window's context (its Local only preferences, its
+    models, its price table, the local ratings), and a test run after it
+    inherited them; the agent picks then came out of the window's state, not
+    the test's (wifi got claude-sonnet-5, not gemini-3.8-flash).
+    """
+    from services import local_models
+
+    saved = (mr._PRICE_LOOKUP, mr._RATING_LOOKUP, dict(mr._RECOMMENDATION_CONTEXT),
+             local_models._RATING_LOOKUP)
+    mr.set_price_lookup(None)
+    mr.set_rating_lookup(None)
+    mr.set_recommendation_context(None, None, None)
+    local_models.set_rating_lookup(None)
     yield
     mr.set_price_lookup(saved[0])
     mr.set_rating_lookup(saved[1])
     mr._RECOMMENDATION_CONTEXT.update(saved[2])
+    local_models.set_rating_lookup(saved[3])
 
 
 def prices(**rates):
