@@ -303,7 +303,7 @@ S8 was first built on another line (`claude/intelligent-archimedes-e15a0e`, whos
 from §14's) and reviewed eight times there: `docs/audit/audit-tier2-s8a-review-2026-10-31.md`,
 `audit-tier2-s8b-review-2026-11-05.md`, `-security-`, `-rereview-`, `-review-r5r6-`,
 `-review-r7-` (copied here from that line; they describe its code, not this port). Its tip
-is now branch `claude/s8-r7-detached` (`ab53fae`; its §18, D12, is out of scope here), and
+is now branch `claude/s8-r7-detached` (`ab53fae`; its §18, D12, was out of scope here and is carried over as §16), and
 `claude/rootscript-fifo-writer` holds three FIFO-test commits whose substance main's S7
 already has (§14, P3-3). Main had meanwhile changed the same files (#30-#37, S7), so S8 was
 ported by hand onto main's structure rather than replayed. Owner decision applied: D11
@@ -465,3 +465,70 @@ the root script's copy-and-verify holds and that every earlier S8 P1/P2 fix surv
 8. A real provider profile still passes the review, also when saved with a byte-order mark;
    a profile with `ca ../ca.crt` is refused before any prompt; one with `up /bin/sh …` is
    refused.
+
+## 16. Hooks only from one root-owned folder, with no arguments (D12; approved by the owner 2026-11-05 with D12a-f as proposed; not built)
+
+*Carried over 2026-11-13 from branch `claude/s8-r7-detached` (`ab53fae`, spec §18 there), which the S8 port in §15 left out of scope. Text unchanged apart from section numbers and the branch in §16.8; §-references to the old line's S8b rounds now point at §15.*
+
+### 16.1 Problem
+Every review round of S8b (rounds 2-8 on the old S8 line, ported in §15) found a new way to make root run code the review did not show through a VPN hook: a byte-order mark, quote splitting, relative names under `--cd`, interpreters in other spellings, wrappers, hidden path prefixes (`/.vol`, `/.nofollow`), Command Line Tools, bash grammar, a disk image mounted after the review. The cause is the same each time. Sentinel predicts how bash (WireGuard) and OpenVPN will read a hook line, and refuses what looks dangerous. That is a deny model of two parsers Sentinel does not own, so each new construct needs a new rule, and the rules already refuse ordinary profiles in places (S8b round 8 on the old line). The hook check is now the largest and least certain part of the review.
+
+### 16.2 Proposal
+Replace the hook *analysis* with a hook *location* rule. A hook may only name a script that the owner has put, as administrator, in one folder that only root can write. It takes no arguments. Anything else in a hook directive is refused at review, before any prompt.
+
+- **Folder:** `/Library/Sentinel/hooks/` (D12a). It has no space, so it is one token for bash and OpenVPN alike. `/Library` is `root:wheel 0755` on this Mac. The folder must be `root:wheel 0755` and the scripts `root:wheel 0755`. There are no subfolders, and no symbolic links in the folder or as a script.
+- **WireGuard** (`PreUp`, `PostUp`, `PreDown`, `PostDown`): the whole value is one absolute path inside the folder. Optionally it is followed by exactly `%i`, which wg-quick replaces with the interface name that Sentinel already validates as `[a-zA-Z0-9_=+.-]{1,15}` (D12b). Nothing else is allowed on the line: no `;`, `&&`, `|`, quotes, `$`, redirections or a second word.
+- **OpenVPN** (`up`, `down`, `route-up`, `route-pre-down`, `ipchange`, `tls-verify`, `auth-user-pass-verify`, `learn-address`, `client-connect`, `client-disconnect`, `dns-updown`, `tls-crypt-v2-verify`, `client-crresponse`): the value is one absolute path inside the folder, with no arguments. OpenVPN appends its own arguments (device, MTU, addresses), which are its own and not the profile's. `dns-updown disable|force` stays allowed.
+- **`plugin`:** refused (D12c). The only common client use is down-root, which runs its arguments as a command. With no arguments allowed, a hook script in the folder does the same job.
+- **`providers`, `engine`, `pkcs11-providers`:** bare provider names only (`legacy`, `default`). Any path form is refused (D12f). Today a root-owned path is accepted.
+- **What the rule checks** is the same at review and in root:
+  - At review: the path is normalised and must be exactly `/Library/Sentinel/hooks/<name>`, with `<name>` matching `[A-Za-z0-9_.-]{1,64}` and not `.` or `..`. `lstat` must show a regular file, `uid 0`, not group- or other-writable. The folder itself must be `root:wheel 0755` and must not be a link.
+  - In root, just before wg-quick or openvpn starts: the constant script re-checks the folder's and each named script's owner and mode with `/usr/bin/stat`, the same way the run-dir prologue does (ADR 0004 §2). On any mismatch it exits 97 and nothing runs.
+  - A script's *contents* are trusted because only root can change them, the same trust D2 now gives root-owned files.
+- **The review shows each hook's contents.** The dialog lists every hook script named, with its first lines and a SHA-256 that is part of the fingerprint. The user sees what will run, not just a name. Root does not re-hash the script; ownership is the guard, and the hash shows when a script changed between dialogs.
+
+### 16.3 What goes away
+The interpreter and system-program lists, the second split of program values, the path-argument rule, the WireGuard shell-construct rule, the `cd` rule and the CIDR exemption (`_program_findings`, `_ovpn_program_findings`, `_ovpn_argument_findings`, `_runs_code`, `_system_program`, `_WG_UNFOLLOWABLE*`, most of `_library_findings`). They are replaced by one check (about 40 lines) used by both protocols. `_unsafe_executable_reason`, with its hidden-prefix and link-chain rules, stays for data files and the folder itself. The OpenVPN tokeniser and its refusal rules stay, because they also protect blockers and file references.
+
+### 16.4 Cost to the user (the main reason this needs the owner)
+- **Any profile with an inline hook stops connecting until it is changed.** This is the big one. Many macOS WireGuard confs carry lines such as `PostUp = /sbin/route -q -n add -inet 10.0.0.0/8 -interface %i` or `printf … | scutil`. Under D12 each such line must move into a script in the folder, and the `.conf` names the script. The review's blocker says exactly that, quotes the line, and suggests a script name.
+- **Adding a hook needs administrator rights once:** `sudo install -o root -g wheel -m 0755 my-hook.sh /Library/Sentinel/hooks/`. An in-app "Install hook script…" button is D12d: it would show the script, ask for the password, and copy it with the same constant-script pattern. Proposed: document the Terminal command now and build the button later.
+- **The folder survives reboots and reinstalls, and Sentinel never deletes it.** Removing a hook is the owner's own `sudo rm`.
+- **When the review applies (D12e):** proposed at review (Connect and Disconnect), as today. Import stays permissive, so a profile can be fixed after it is imported. A Disconnect whose `PreDown`/`PostDown` breaks the rule becomes a risk with "Disconnect anyway", which runs the copy confirmed at Connect, as for the soft blockers today. It is not a hard refusal, so no tunnel is ever stranded.
+
+### 16.5 Alternatives
+- **A. Keep the deny model (status quo after round 8).** No migration, but every review round has found a bypass, and the rules already refuse some ordinary hooks. Not recommended.
+- **B. The folder rule above.** Recommended.
+- **C. An allow-list of exact commands** (`route`, `networksetup`, `pfctl`, `scutil` with an argument grammar for each). Inline hooks for those keep working, but it is a fourth parser to maintain, and `pfctl -f` / `scutil` take input that is itself a program. Not recommended for v1. It could be added later as a convenience on top of B.
+- **D. No hooks at all.** The simplest and strongest option, but it removes a feature real profiles use (DNS and route setup). Tunnel does not yet replace them (`pushed-DNS handling … not supported`, `docs/agents/vpn.md`), so it is not proposed now.
+
+### 16.6 Success measure
+- The hook rule is one function with an exhaustive test table for both protocols. A mutation check of that function kills every mutant.
+- An independent review and a security-engineer pass of the change find no way to run unreviewed code through a hook, apart from residuals R1 and D2 as already accepted.
+- Real-Mac check: a WireGuard conf whose `PostUp` names a script in the folder connects, and the same conf with an inline `/sbin/route …` line is refused before any prompt, with the "move it into a script" message.
+
+### 16.7 Decisions wanted from the owner
+- **D12.** Adopt B: hooks only from one root-owned folder, with no arguments. *Proposed: yes.*
+- **D12a.** Folder path `/Library/Sentinel/hooks/`. *Proposed: yes.* The alternative `/usr/local/libexec/sentinel-hooks/` can be user-writable on some setups.
+- **D12b.** Allow the single argument `%i` for WireGuard hooks. *Proposed: yes.* It is the usual way a hook learns the interface, and Sentinel validates the value.
+- **D12c.** Refuse `plugin` entirely. *Proposed: yes.*
+- **D12d.** In-app "Install hook script…" button. *Proposed: later.* For now, document the `sudo install` command.
+- **D12e.** Apply the rule at review, with Disconnect as a risk (not a hard refusal). *Proposed: yes.*
+- **D12f.** `providers`/`engine`/`pkcs11-providers`: bare names only. *Proposed: yes.*
+
+### 16.8 Build plan (approved 2026-11-05; not started)
+Branch: from main. S8a/S8b were ported to main in §15 and the old line is retired, so the function names below are the old line's: check each against main's `services/vpn_execution.py` before deleting it (main never had the WireGuard rules `_WG_UNFOLLOWABLE*`; §15 Deviations). Each step is its own commit; run the four VPN test files after each, and the full suite before review.
+
+1. **Architect: ADR 0005 `docs/adr/0005-sentinel-vpn-hook-folder.md`.** Records the folder (`/Library/Sentinel/hooks/`, `root:wheel 0755`, scripts `root:wheel 0755`, no subfolders or links), the name grammar `[A-Za-z0-9_.-]{1,64}` (not `.`/`..`), the review and root re-check, `%i`, refusals (plugin, provider paths), Disconnect as a risk, and that Sentinel never creates or deletes the folder (the owner does, with `sudo install -d`). Consequences: §16.4. Gate: the owner already approved D12; the ADR records it, no new decision.
+2. **Tests first** (`tests/test_vpn_review_gate.py`, a new section; mark the superseded deny-model tests for removal in the same commit as their code):
+   - Accepted: `PostUp = /Library/Sentinel/hooks/dns-up`, `PostUp = /Library/Sentinel/hooks/dns-up %i`, OpenVPN `up /Library/Sentinel/hooks/dns-up`, `dns-updown disable|force`, `providers legacy default` (fake root-owned folder through `_stat`, as the existing tests do).
+   - Refused, each before any prompt: any other path; a name outside the grammar; `..`, `.`, a subfolder, a link (folder or script); wrong owner or mode (folder or script); missing script; a second word other than `%i` (WireGuard) or any argument (OpenVPN); `;`, `&&`, `|`, quotes, `$`; every inline hook from the S8b test tables (they must all now fail with the "move it into a script" blocker); `plugin` in any form; provider paths.
+   - Disconnect: a broken `PreDown`/`PostDown` is a risk, not a blocker; root runs the Connect copy.
+   - Dialog: each hook script listed with its first lines and SHA-256; the hash is in `fingerprint()`; a script edited between dialogs changes it.
+   - Root script (`tests/test_vpn_rootscript.py` harness): the folder and each named script re-checked with `/usr/bin/stat`; a wrong owner or mode gives 97 and wg-quick/openvpn never run. The hook paths reach root as argv values, validated by the builders (`ValueError` before any prompt).
+3. **Build** (`services/vpn_execution.py`): one `_hook_findings` replacement (`HOOK_DIR`, `_hook_script(path) -> reason | None`, `_hook_line_findings(raw, value, words, protocol)`), with the same messages for both protocols. Delete `_program_findings`, `_ovpn_program_findings`, `_ovpn_argument_findings`, `_runs_code`, `_system_program`, `_SYSTEM_PROGRAM_DIRS`, `_ALLOWED_SYSTEM_PROGRAMS`, `_INTERPRETER` (if unused), `_WG_UNFOLLOWABLE*`, `_CIDR`, the `cd` rule, and most of `_library_findings`. Keep `_unsafe_executable_reason` (with hidden-prefix and link-chain rules) for data files and the folder, the OpenVPN tokeniser and its refusals, and the data-file manifest. Add the hook-script listing to `ExecutionReview` (a `hook_scripts: tuple[(path, sha256, first_lines)]` field, in the fingerprint). `services/vpn_rootscript.py`: pass the named hook paths to `WG_SCRIPT` and `OVPN_SCRIPT` and re-check them in root (constant script, values as argv, absolute tools).
+4. **Review** (independent `code-reviewer`) and **Verify** (mutation check of the new function and the root re-check, foreground, restored in `finally`; every mutant killed).
+5. **Secure** (`security-engineer`): threat model "same-user process vs a hook" over the new rule, including `/Library` ownership on other Macs, a folder created by someone else, and TOCTOU between review and root's re-check.
+6. **Document:** CHANGELOG (behaviour change: inline hooks refused; how to move one into a script); `docs/agents/vpn.md` (a "Hooks" section with the `sudo install -d -o root -g wheel -m 0755 /Library/Sentinel/hooks` and `sudo install -o root -g wheel -m 0755 my-hook /Library/Sentinel/hooks/` commands and a sample `dns-up` script); spec §17 "D12 built" with an owner real-Mac checklist; TODO; the Lab Project Monitor.
+
+Owner real-Mac checklist (for §17): create the folder and a script with `sudo`; a WireGuard conf naming it connects and the hook ran; the same conf with an inline `/sbin/route …` line is refused before any prompt with the "move it into a script" message; `chmod g+w` on the script makes Connect refuse (review) and, if done during the dialog, root exits 97 with nothing run; Disconnect with a broken `PostDown` offers "Disconnect anyway".
