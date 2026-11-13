@@ -9,6 +9,8 @@ under **Detail** — this checklist is the summary view.
 
 ---
 
+- [ ] `P2` `infra` `@me` **Decide the 5 unmerged branches left after the 2026-11-13 cleanup** (19 landed ones deleted): `claude/rootscript-fifo-writer` and `claude/s8-r7-detached` (S8b VPN, diff against `main` first), `claude/chain-notice-cbf13a` / `claude/docs-mac-restore-4735be` (same Privacy-tab commit `29c7826`, not in `main`), `claude/intelligent-archimedes-e15a0e`, plus verify `claude/interesting-solomon-d5ffd0` and `fix/s7-wireguard-root-copy`. The two `fixes/audit-tier*` branches stay until their archive worktrees (submodules) are removed by hand.
+
 ## v2 — complete
 
 V2 closed on 2026-09-12. The release checklist contains no deferred work; all
