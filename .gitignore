@@ -27,6 +27,8 @@ data/cache/
 screenshots/
 .claude/*
 !.claude/settings.json
+!.claude/agents/
+!.claude/commands/
 
 # Build artifacts
 dist/
