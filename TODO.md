@@ -9,7 +9,7 @@ under **Detail** — this checklist is the summary view.
 
 ---
 
-- [ ] `P2` `infra` `@me` **Decide the 5 unmerged branches left after the 2026-11-13 cleanup** (19 landed ones deleted): `claude/rootscript-fifo-writer` and `claude/s8-r7-detached` (S8b VPN, diff against `main` first), `claude/chain-notice-cbf13a` / `claude/docs-mac-restore-4735be` (same Privacy-tab commit `29c7826`, not in `main`), `claude/intelligent-archimedes-e15a0e`, plus verify `claude/interesting-solomon-d5ffd0` and `fix/s7-wireguard-root-copy`. The two `fixes/audit-tier*` branches stay until their archive worktrees (submodules) are removed by hand.
+- [x] `P2` `infra` `@me` **Decide the 5 unmerged branches left after the 2026-11-13 cleanup** (19 landed ones deleted): `claude/rootscript-fifo-writer` and `claude/s8-r7-detached` (S8b VPN, diff against `main` first), `claude/chain-notice-cbf13a` / `claude/docs-mac-restore-4735be` (same Privacy-tab commit `29c7826`, not in `main`), `claude/intelligent-archimedes-e15a0e`, plus verify `claude/interesting-solomon-d5ffd0` and `fix/s7-wireguard-root-copy`. The two `fixes/audit-tier*` branches stay until their archive worktrees (submodules) are removed by hand. *Done 2026-11-13: all seven checked by content and deleted, with four worktrees (`rootscript-fifo-writer`, `intelligent-archimedes-e15a0e`, `interesting-solomon-d5ffd0`, `chain-notice-cbf13a`: all clean). Rescued to `main`: spec §16 D12 (`0ac7ef4`), the Privacy-tab text (`2773762`), the first S7 review (`6f47c3b`); the rest was in #32, #37, #39 and #40 or superseded (spec §15).*
 
 ## v2 — complete
 
