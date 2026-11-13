@@ -25,7 +25,8 @@ env/
 output/
 data/cache/
 screenshots/
-.claude/
+.claude/*
+!.claude/settings.json
 
 # Build artifacts
 dist/
