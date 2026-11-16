@@ -193,7 +193,7 @@ future and cross-project items are listed under V3 or in their owning project.
 - [ ] `P3` `bug` `@ai` `agent:vpn` Remove hop, Move hop and the chain mode box still change the in-memory chain when the save is refused or fails (`docs/audit/mac-record-unreadable-review-2026-11-05.md` P3-3): a removed hop leaves the table, Test chain and Write conf but not the disk, and comes back at the next start. Snapshot the chain before the edit and restore it when the save fails, as Add now does.
 - [ ] `P3` `bug` `@ai` `agent:vpn` A MAC record that fails JSON/UTF-8 decoding is deleted by the next `pending_restores()` (pre-existing; same review, P3-4), so a partly damaged file holding a real original is lost, and no test pins it. Move it aside (as the proxy chain does) instead of deleting it, with a test.
 - [x] `P3` `infra` `@me` Delete the throwaway diagnostic branches on GitHub: `diag/macos-abort`, `diag/macos-base`, `diag/macos-p0`, `diag/fds`, `diag/macos-fails`. They only hold a temporary workflow file; Claude's sandbox cannot delete remote branches. Done 2026-11-11 (deleted by the owner). `diag/ubuntu-pr49` was not in that list and still exists (next item).
-- [ ] `P3` `infra` `@me` Delete the leftover remote branches (2026-11-13): `claude/project-thread-ds7osq` (PR #16 closed; its one unique commit is already in `main`), `diag/ubuntu-pr49` (throwaway), `fix/vpn-review-gate-test-host-layout` (PR #49 closed, superseded by #50), `docs/todo-diag-branches` (PR #53 merged) and `docs/foundry-v10-and-history` (PR #54 merged). `git push origin --delete <names>` from the Mac; Claude's sandbox cannot delete remote branches. Turning on "Automatically delete head branches" in the repo settings stops this from recurring.
+- [ ] `P3` `infra` `@me` Delete the leftover remote branches: `claude/project-thread-ds7osq`, `diag/ubuntu-pr49`, `fix/vpn-review-gate-test-host-layout`, `docs/todo-diag-branches`, `docs/foundry-v10-and-history`, `docs/todo-session-close`. Reasons and the command are under Detail, Smaller items.
 - [ ] `P3` `infra` `@me` Review the 7 open Dependabot PRs and merge or close each: #41-#45 (pip: segno, idna, jiter, markdown, typing-inspection) and #12, #13 (GitHub Actions: setup-python, checkout).
 - [x] `P2` `docs` `@ai` Add Learning Centre images for local models and routing advice: no image in `docs/training/images/` shows LM Studio, the picker's *On this Mac* sections, Settings → Local models / Models, or an advice banner on a panel. Extend `scripts/capture_training_screenshots.py` with a stubbed local inventory and run it with the full re-capture item above. **Dropped 2026-11-05:** screenshots are no longer kept in the repo (`001e6bf`).
 ---
@@ -501,6 +501,12 @@ were; revisit once the run bar exists).
 - `BUDGET` card: `Session €` / `Daily €` could share one row (~34px saved), but
   the two label+field pairs do not fit the sidebar's ~250px inner width without
   shortening the labels.
+- Leftover remote branches (2026-11-13). `claude/project-thread-ds7osq`: PR #16 closed unmerged, its one
+  unique commit is already in `main`. `diag/ubuntu-pr49`: throwaway diagnostic. `fix/vpn-review-gate-test-host-layout`:
+  PR #49 closed, superseded by #50. `docs/todo-diag-branches` (#53), `docs/foundry-v10-and-history` (#54) and
+  `docs/todo-session-close` (#55): merged. Delete from the Mac with `git push origin --delete <names>`; Claude's
+  sandbox cannot delete remote branches. "Automatically delete head branches" in the repo settings only removes
+  the branches of merged PRs, so closed-unmerged and throwaway branches still need this manual cleanup.
 
 
 ---
