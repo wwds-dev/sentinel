@@ -36,6 +36,20 @@ on_macos = pytest.mark.skipif(sys.platform != "darwin",
                               reason="the root script uses macOS stat/chown paths")
 
 
+def _needs_sound_tmp(path):
+    """Skip when a folder above `path` is group/other-writable (for example
+    /private/tmp when TMPDIR is unset, as under `env -i`). The root script
+    refuses such a path by design ("not owned by root all the way up"), so
+    these tests can only pass where pytest's temp dir has a sound parent chain."""
+    p = os.path.realpath(path)
+    while True:
+        if os.lstat(p).st_mode & 0o022:
+            pytest.skip(f"{p} is writable by others; the root script refuses a path under it")
+        if p == os.sep:
+            return
+        p = os.path.dirname(p)
+
+
 # ── argv: what reaches root ─────────────────────────────────────────────────
 
 def test_the_script_is_a_constant_and_values_are_positional():
@@ -1320,6 +1334,7 @@ def test_a_failed_start_removes_the_copies(ovpn):
 def test_root_rechecks_that_each_hook_program_is_still_root_owned(ovpn, tmp_path):
     """Spec 1.3: the review judged each hook program root-owned; root checks
     again just before start (here the test's own uid stands in for root)."""
+    _needs_sound_tmp(tmp_path)
     good = tmp_path / "hooks" / "up.sh"
     good.parent.mkdir()
     good.write_text("#!/bin/sh\n")
@@ -1406,6 +1421,7 @@ def test_a_hook_program_owned_by_another_account_is_refused(ovpn):
 def test_a_links_own_mode_does_not_fail_the_program_recheck(ovpn, tmp_path):
     """Code review P3-2: macOS ignores a symlink's mode, and the review reads
     through it; root must not refuse a root-owned link made under umask 000."""
+    _needs_sound_tmp(tmp_path)
     real = tmp_path / "hooks" / "up.sh"
     real.parent.mkdir()
     real.write_text("#!/bin/sh\n")
