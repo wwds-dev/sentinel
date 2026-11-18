@@ -1,0 +1,9 @@
+# Foundry plan: estimates and milestones. Written by docs/foundry/tooling/plan.py.
+# Read by the Foundry workspace. A missing key is shown as 'not recorded'.
+estimate_hours = 40.0
+updated = "2026-11-18"
+
+[[milestone]]
+name = "Case workspace S1: Trace run to case to checkable report"
+due = "2026-12-15"
+spec = "case-workspace"
