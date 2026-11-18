@@ -38,6 +38,7 @@ build/
 
 # Local conversations and usage history
 data/chats/*.json
+data/reports/
 data/logs/*.jsonl
 data/usage_log.json
 # What this machine's model scan has seen and decided, and its ratings cache
