@@ -160,11 +160,20 @@ This feature is **new, XL and user-visible**: it adds promises (integrity, hones
 
 ## 13. Open questions for the owner (Define gate)
 - **Q1 Priority and timing.** Park until after the testing phase (recommended), or bring S1 into the tested scope?
+  **Owner, 2026-11-18:** Park until after the testing phase. Approve the spec now; Design, Architect and Build wait until testing has started on the current scope or B1 and H3 are closed.
 - **Q2 Cases vs Chat Projects.** Keep cases as their own object (recommended: different shape, immutability), or make every case also a Chat Project so its spend and chats group under it?
+  **Owner, 2026-11-18:** Separate object. A case is not a Chat Project.
 - **Q3 Retention and deletion.** Should closed cases offer an expiry (for example delete after N days with a reminder), and should deleting a case also delete the original Saved Chats runs it was built from, or leave them?
+  **Owner, 2026-11-18:** Manual delete only, no expiry. Deleting a case leaves the original Saved Chats runs untouched.
 - **Q4 Phone numbers.** Trace accepts a phone target today. Allow `phone` as a passive entity type (a label, no lookup), or leave it out entirely?
+  **Owner, 2026-11-18:** Leave phone out; it is not an entity type.
 - **Q5 Raw responses.** Snapshot the parsed records Sentinel already holds (recommended for S1), or change providers to keep raw HTTP bodies too (closer to the source, touches every provider, bigger files)?
+  **Owner, 2026-11-18:** Snapshot the parsed records Sentinel already holds; no raw HTTP bodies.
 - **Q6 Trusted timestamps.** Is an optional third-party timestamp on the export manifest (a cloud call, off by default, per export) ever wanted? If not, it stays a non-goal.
+  **Owner, 2026-11-18:** No third-party timestamps; stays a non-goal.
 - **Q7 Images.** May the operator add the image file itself to a case (it may hold faces and GPS), or only its EXIF block?
+  **Owner, 2026-11-18:** EXIF block only; the image file is not added.
 - **Q8 Report formats.** Markdown + manifest for S1, HTML in S4: enough, or is PDF needed (a new dependency)?
+  **Owner, 2026-11-18:** Markdown + manifest for S1, HTML in S4; no PDF.
 - **Q9 The `data/reports/` gap.** Add the one-line `.gitignore` fix as its own TODO item now (independent of this feature)?
+  **Owner, 2026-11-18:** Done (merged in 0985c81, `data/reports/` is git-ignored).

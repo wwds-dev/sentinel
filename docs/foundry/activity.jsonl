@@ -49,3 +49,5 @@
 {"ts": "2026-11-06T18:45:03", "phase": "document", "state": "done", "spec": "audit-tier2-privileged-layer"}
 {"ts": "2026-11-18T12:33:33", "phase": "define", "state": "start", "spec": "case-workspace"}
 {"ts": "2026-11-18T12:37:11", "phase": "define", "state": "done", "spec": "case-workspace"}
+{"ts": "2026-11-18T17:28:31", "phase": "define", "state": "start", "spec": "case-workspace"}
+{"ts": "2026-11-18T17:30:00", "phase": "define", "state": "done", "spec": "case-workspace"}

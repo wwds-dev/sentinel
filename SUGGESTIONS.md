@@ -26,7 +26,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | 37 | Remove Forge (inactive by design) and the general Chat tools (Writing, Coding, Rewrite) that other apps cover (portfolio review 2026-11-18) | design | S | IDEA |
 | 38 | Make Tunnel's core job independent verification of whatever VPN is running (leaks, routing, DNS); keep Tor, proxy chain and multi-hop as they are and do not add Nym (portfolio review 2026-11-18) | design | M | IDEA |
 | 39 | Drop Proton control from VPN Apps, since it is state-only (Proton's extension ignores `scutil --nc start`) (portfolio review 2026-11-18) | design | S | IDEA |
-| 40 | Case workspace for Trace and Bloodhound: an entity graph, a hashed evidence timeline and a report export (portfolio review 2026-11-18) | feature | XL | IDEA |
+| 40 | Case workspace for Trace and Bloodhound: an entity graph, a hashed evidence timeline and a report export (portfolio review 2026-11-18). Define approved 2026-11-18, spec `docs/specs/case-workspace.md`; parked until after the testing phase | feature | XL | PLANNED |
 | 41 | Sentry as a continuous home-network posture feed with plain-language alerts to the phone ("new device joined at 03:12") (portfolio review 2026-11-18) | feature | M | IDEA |
 | 42 | Local-model investigations run as a plan the operator approves step by step (portfolio review 2026-11-18) | feature | L | IDEA |
 
