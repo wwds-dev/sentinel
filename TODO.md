@@ -550,7 +550,7 @@ Phase 4 Plan for `docs/specs/case-workspace.md` S1. Build is **parked** (spec 13
 - CW-2 is the mutation-check target: planted mutations in `canonical()`, `event_hash()` and the chain comparison must each fail a test.
 - Delete case (CW-D): owner chose S1 on 2026-11-18; CW-8 stays.
 - Not in S1 (spec 10, 15.10): graph, HTML report, entity extraction, `timeline.jsonl` in the export (needs an owner yes), Saved Chats import, Bloodhound.
-- Estimate and due date are left unset in `docs/foundry/plan.toml` until the owner gives them.
+- Milestone due 2026-12-15, estimate 40 hours (owner, 2026-11-18), in `docs/foundry/plan.toml`.
 
 ---
 
