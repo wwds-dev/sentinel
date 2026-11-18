@@ -1,6 +1,6 @@
 # Spec: case workspace for Trace and Bloodhound (2026-11-18)
 
-Phase: **Define** approved 2026-11-18; **Design** for S1 done 2026-11-18 (section 14). No code, tests or schema changed. Architect and Build have not started.
+Phase: **Define** approved 2026-11-18; **Design** for S1 done 2026-11-18 (section 14); **Architect** for S1 written 2026-11-18 (section 15, ADRs 0005-0006), awaiting the owner's gate. No code, tests or schema changed. Plan and Build have not started.
 Source: `SUGGESTIONS.md` row #40 ("Case workspace for Trace and Bloodhound: an entity graph, a hashed evidence timeline and a report export", portfolio review 2026-11-18, effort XL, status IDEA). The review read docs only; section 2 checks its premise against the code on `main` at `03050e7`.
 Playbook: `docs/playbooks/product-manager.md`, `status: current`, last-reviewed 2026-10-14 (35 days). Its EU AI Act Art. 50 practice touches this spec (section 9); its CRA practice does not (tier `public`, nothing sold).
 In-flight check (`session_start.py --inflight`, 2026-11-18): no unreleased spec, `claude/*` branch or worktree covers cases, evidence or OSINT storage.
@@ -279,3 +279,117 @@ Section 5.1 and Q3 (manual delete only) apply. The plan decides whether delete s
 - The no-partial-output mechanism for Add to case and Export (14.7, 14.9).
 - How "same run already in this case" is detected. The design assumes the run id or the saved chat file identifies a run.
 - Whether "Export anyway" with changed items needs fields in the manifest (both hashes per changed item).
+
+## 15. Architecture (S1 only, `architect`, 2026-11-18)
+Started while the spec is parked: the owner asked for Architect now (2026-11-18). Covers S1 (section 10) and the Design in section 14. Decisions that are expensive to reverse are ADRs: **ADR 0005** (storage layout) and **ADR 0006** (canonical JSON, hash and chain). Radar check (`stack`): not run; S1 adds no dependency (stdlib `hashlib`, `json`, `os`, `uuid`). Legal consult at Architect (data map, retention, DPIA screening): **not run yet**; section 15.12 is its input.
+
+### 15.1 Storage (ADR 0005)
+- **No change to `sentinel.db`, no v4 migration.** A v4 would lock every older build out of `sentinel.db` (`services/database.py:169-174`) for state no other feature needs.
+- One folder per case: `user_data_base()/data/cases/<case_id>/` with `timeline.jsonl` (source of truth), `evidence/<sha256>.json` (content-addressed, per case), `summary.json` (derived cache for the list) and `.pending/` (staging).
+- Everything about a case is an **event**: `case_created` (title, purpose), `case_closed`, `case_reopened`, `run_added`, `evidence_added`, `entity_added`, `verify`, `export`. Current state is a replay of the timeline. Entities in S1 are add-only, so this costs nothing; S3's links and merges are more events.
+- `.gitignore` gains `data/cases/`. M6 tests it with `git check-ignore`.
+- **M4 needs rewording at this gate** (it is a Define-approved measure): proposed "every case operation leaves `sentinel.db` byte-identical with `user_version` 3"; the chat-file half moves to S2 (import).
+
+### 15.2 Writes, reset latch, single writer
+- `CaseStore` (15.4) calls `require_writes_allowed()` at the start of every write and again immediately before the final `os.replace` of a timeline.
+- **The UI thread is the only writer of case state.** Create, close, reopen, add identifier and Add to case run synchronously in `CaseStore` on the UI thread: they are local file writes of KB-sized data, with no fetch and no lock. Verify and Export workers only *read* the case; their timeline event is appended by the UI thread when the worker's `finished` signal arrives. No lock is shared between threads, so the UI thread can never wait on one (lab rule).
+- Build measures Add to case on the largest realistic Trace result (Passive DNS plus crt.sh for a busy domain). If it exceeds 100 ms, Add to case splits: a worker canonicalises, hashes and writes the files into `.pending/`, and the UI thread still does the commit (15.7). The commit rule and the on-disk format do not change.
+
+### 15.3 Canonical JSON, hash, chain (ADR 0006)
+- Serialisation `sentinel-json-v1`: sorted keys, `(",", ":")` separators, UTF-8, no ASCII escaping, finite floats as Python `repr`, NaN/±Inf as strings, unknown types raise. A golden test pins the bytes.
+- Evidence `sha256` = SHA-256 of the exact stored bytes, recorded in its `evidence_added` event.
+- `event_hash = SHA-256(canonical(event without event_hash))`, with `prev_hash` inside the body; the first event's `prev_hash` is `SHA-256("sentinel-case-v1:" + case_id)`.
+- Evidence metadata (origin, request descriptor, captured at, added at, tool version, provenance, media type, sha256) lives **in the event**, not in the file. The chain therefore covers it, and identical bytes from two runs are stored once.
+- **Captured at:** providers return no per-source time (section 2). S1 records the run's finish time with `captured_at_basis: "run_finished"`, and the details pane and report say "Run finished (UTC)" instead of "Captured". Per-source times need a provider change and stay out of S1.
+- **Tool version:** `services/app_version.py` (VERSION + build), the string the window shows.
+
+### 15.4 Module boundaries
+| Module | Holds | Imports Qt? |
+|---|---|---|
+| `services/case_integrity.py` | `canonical()`, `sha256_hex()`, `genesis()`, `event_hash()`, `verify_timeline()` (pure: bytes in, result out; no I/O except reading evidence through a callable). The mutation-check target. | no |
+| `services/case_store.py` | Paths, case id, replay into a `Case` dataclass, every write (15.7), recovery on open, list from `summary.json`, `find_run()` (15.8), entity normalisation and validation (domain, IP, email, handle; no phone). | no |
+| `services/case_capture.py` | Turns a Trace live result dict into evidence items: one `source_record` per source in `sources_contacted` + `sources_skipped` (each with its result key or its gap text), plus one `collection_summary` holding everything else (`query`, `type`, `cancelled`, the source lists, any key not mapped to a source). Nothing in the dict is dropped. Builds the request descriptor from an **allow-list** of fields (target, target type, source label, action), so a key, token or header can never pass through (M7). | no |
+| `services/case_export.py` | `report.md` template, manifest, `SHA256SUMS`, the staged-folder writer (15.7). Holds the 7.5 text and the purpose label once, as constants the UI imports too (M8). | no |
+| `ui/panels/cases.py` | Cases page, case view, dialogs (14.2-14.10), `VerifyWorker`, `ExportWorker`, `shutdown(deadline)`. | yes |
+| `ui/panels/osint.py` | The **Add to case…** button, its enable rules (14.7) and the picker. It hands `case_capture` the result dict it already holds plus a `capture_id`. | yes |
+| `main.py` | The **Cases** rail-footer row (by `main.py:2285`), the page in the main stack, registration as `self.panels["cases"]` so `shutdown_panels()` reaches it, a `cases_store` attribute both panels use. | yes |
+
+Boundaries: the three `services/case_*` modules import nothing from `ui/`, `providers/` or any network module; a test asserts this (supports M5). `case_capture` reads the result dict and nothing else; no lookup is re-run.
+
+### 15.5 Threading
+- **VerifyWorker** and **ExportWorker** are `QThread` subclasses in `ui/panels/cases.py`, following `ui/workers.py`: a `cancel()` flag checked between files, `progress(done, total)` and `finished(result)` signals, never `terminate()`.
+- `CasesPanel.shutdown(deadline)` calls `join_or_park([self._verify_worker, self._export_worker], deadline)` by name; ADR 0001's park-and-`os._exit` rule applies. A parked export leaves its staging folder; 15.7 cleans it at next start.
+- One Verify and one Export at a time, app-wide (buttons disabled while one runs). During either, Add to case and Export (or Verify) for that case are disabled (14.8). Close, reopen and add identifier stay allowed: the worker reads a snapshot (`timeline.jsonl` is opened once; `os.replace` never changes an open file's bytes) and records `head_seq` in its result.
+- **List and open (14.13 point 1):** the list reads one `summary.json` per case (a few hundred bytes each) and stays synchronous. Opening a case replays `timeline.jsonl`; at 2,000 events (about 2 MB) that is a JSON parse of a few ms, so it is synchronous too, and the "Loading…" states of 14.2 are **not built in S1**. Build adds a benchmark test at 2,000 events that reports the time (not asserted in CI). If it exceeds 50 ms, opening moves to a worker and the loading states come back. Evidence content is read only when its row is selected, and the viewer shows at most the first 2 MB with a note.
+
+### 15.6 Recovery on open
+On first use per session `CaseStore` deletes every `data/cases/*/.pending/` and every `evidence/` file that no event references (a leftover of a write that never committed, 15.7). It also deletes folders named `data/cases/.deleting-*` and the staging folders listed in `data/cases/.exports-pending.json`. Each action is noted in the local log by case id and count only, never by content.
+
+### 15.7 No partial output (14.13 point 2)
+**Add to case (and every other case write)**:
+1. `require_writes_allowed()`. Build every item and every new event in memory (canonicalise, hash, chain).
+2. Write each new evidence file to `.pending/<txn>/<sha256>.json` (`open(..., "xb")`, write, `fsync`).
+3. Write the new full timeline to `.pending/<txn>/timeline.jsonl`, `fsync`.
+4. `os.replace` each pending evidence file into `evidence/` (skip if that hash already exists there), then `fsync(evidence/)`.
+5. `require_writes_allowed()` again, then `os.replace` the pending timeline over `timeline.jsonl`, `fsync` the case folder. **This replace is the commit.**
+6. Rewrite `summary.json` the same way (temp, replace). It is a cache: if this step fails, the next read rebuilds it.
+7. Remove `.pending/<txn>/`.
+A failure or crash before step 5 leaves the old timeline in force. The only leftovers are unreferenced files, which 15.6 removes, so the case shows nothing of the add ("Nothing was added: <reason>", 14.7). A crash after step 5 means the add happened in full. Evidence is in place before any event references it, so a committed case never points to a missing file.
+
+**Export:**
+1. Pick the final folder `<dest>/<case title> <YYYY-MM-DD HHMM>`, with the title sanitised (no `/`, `:`, leading `.`; at most 80 characters). Add ` (2)`, ` (3)`… if it exists.
+2. Record the staging path in `data/cases/.exports-pending.json` (only when writes are allowed; otherwise the export is refused, because its timeline event could not be written either).
+3. Write everything into `<dest>/.sentinel-export-<uuid>.partial/`, `fsync` each file.
+4. `os.rename` the staging folder to the final name (same parent, so it is atomic). Then remove the pending record.
+5. On cancel or error: `shutil.rmtree` the staging folder and remove the record. The export left nothing ("Nothing was left in <folder>", 14.9). If the process dies, 15.6 removes the staging folder at next start.
+6. UI thread appends the `export` event (`data`: folder name, file count, selection, manifest sha256). If that append fails, the export on disk stands and the message says the case could not record it.
+
+**Delete case** (whichever slice ships it, 14.10): `os.rename` the case folder to `data/cases/.deleting-<case_id>`, then `rmtree` it. The case vanishes in one step; a crash mid-delete is finished by 15.6.
+
+### 15.8 Same-run detection (14.13 point 3)
+The Trace panel holds no run id today: `record_external_research` (`main.py:4683`) mints one and does not return it, and a failed save leaves none. So:
+- When a live lookup **finishes** (`_on_lookup_finished`), the panel mints `capture_id = uuid4().hex` and keeps it with the result it shows.
+- `record_external_research` returns its `run_id` (one-line change; callers that ignore it are unaffected). The panel keeps it when there is one.
+- `run_added` events carry `capture_id`, the `run_id` (or `null`) and the saved chat file name (or `null`). `CaseStore.find_run(case, capture_id)` scans that case's `run_added` events. A match produces the 14.7 "already in this case" state.
+- A result re-shown from **Saved searches** (`_show_lookup_result(save=False)`) has no `capture_id`, so Add to case is disabled with "Saved searches come to cases with import, in a later version". Import from Saved Chats is S2. **Design addition**, flagged for the owner: section 14.7 did not list this disabled state.
+
+### 15.9 Verify
+`VerifyWorker` runs `case_integrity.verify_timeline` over a snapshot. It returns, per event, `intact | changed | missing | chain_broken`, the first broken `seq` or `None`, counts, `head_seq`, and the truncation note (ADR 0006). Hashing streams each file in 1 MB blocks and checks `cancel()` between files. Cancel returns nothing and writes nothing (14.8). The UI thread appends a `verify` event with the counts and first broken seq, and rewrites `summary.json` with "Last check".
+
+### 15.10 Export contents and manifest (14.13 point 4)
+Export first runs the same verify (14.9 "integrity first"), inside `ExportWorker`. For each selected evidence item it reads the stored bytes **once**, hashes them, and writes those same bytes. The exported file and its `SHA256SUMS` line therefore always agree, even if the stored file changed. Exported name: `evidence/<recorded_sha256>.json`. A changed item keeps the recorded name, and its SHA256SUMS line holds the hash of the bytes actually written, so `shasum -c` passes on the export while the manifest and report show the mismatch.
+
+`manifest.json` (canonical `sentinel-json-v1`, so it is itself stable):
+- `format: "sentinel-case-export/1"`, `sentinel_version`, `exported_at` (UTC), `case_id`, `case_title`
+- `selection: "whole" | "selected"`, `selected_seqs` (evidence event numbers; all of them for whole)
+- `timeline_head: {seq, event_hash}` and `chain: {state: "intact" | "broken", first_broken_seq}`
+- `check: {intact, changed, missing}` counts from the pre-export verify
+- `files`: one entry per exported file other than `manifest.json` and `SHA256SUMS`: `{path, sha256}`. For evidence also `{seq, kind, source, recorded_sha256, state}`, where `state` is `intact | changed`. **Changed items carry both hashes** (`sha256` = exported bytes, `recorded_sha256` = at capture).
+- `missing`: `{seq, source, recorded_sha256}` per missing item. No file, and no SHA256SUMS line.
+- `statement`: the section 7.5 text.
+
+`SHA256SUMS` lists `report.md`, `manifest.json` and every evidence file in `shasum -a 256` format (`<hex>  <path>`, two spaces, relative paths, LF). `report.md` marks changed and missing items in the evidence table and the summary. **Not in S1:** `timeline.jsonl` in the export (a reader could then recheck the chain outside Sentinel). It is a small later addition, worth an owner yes because it carries every event.
+
+### 15.11 Success measures touched
+M1 to `case_capture` + `case_store` tests on a 3-source fixture (one error) giving 4 files whose recomputed hashes match. M2 to `verify_timeline` tests (byte flip, deleted file, edited event, reordered lines, truncation note). M3 to a subprocess `shasum -a 256 -c` test in a temp export (macOS and ubuntu CI both ship `shasum`). M4 rewording in 15.1. M5 to a socket-blocking fixture around create, add, verify and export, plus the import-boundary test (15.4). M6 to `git check-ignore data/cases/x/timeline.jsonl` and the git-repo warning, found by walking parents for `.git` without running `git`. M7 to a keyed-source fixture and the descriptor allow-list. M8 to a copy test over `ui/panels/cases.py` and `services/case_export.py`. New: a golden test for `sentinel-json-v1` and the chain (ADR 0006), and a crash-ordering test that fails `os.replace` at each step of 15.7 and asserts the case replays unchanged.
+
+### 15.12 Data map (input for the legal-compliance consult)
+| Data | Where | Leaves the Mac? | Retention |
+|---|---|---|---|
+| Case title, purpose note (operator text) | `data/cases/<id>/timeline.jsonl` | only in an export the operator makes | until the operator deletes the case (owner Q3) |
+| Evidence: parsed public-source records about third parties (WHOIS contacts, emails, handles, IPs, breach listings) | `data/cases/<id>/evidence/` | only in an export | as above; also erased by Emergency Reset (portable) |
+| Entities (identifiers typed or taken from a run target) | timeline | only in an export | as above |
+| Exports | operator-chosen folder, default `~/Documents/Sentinel cases/` | when the operator hands it on | outside Sentinel's control once written |
+No processor, no network call, no model call in S1. The original Saved Chats runs are untouched (Q3).
+
+### 15.13 Answers to section 14.13
+1. **Can list or open exceed a frame?** The list does not (summary files). Opening is expected to stay under a frame up to about 2,000 events. The loading states are not built in S1; a benchmark decides (15.5).
+2. **No-partial-output mechanism:** staged files, then an atomic timeline replace as the commit, plus recovery on open. Export uses a hidden staging folder renamed into place (15.7).
+3. **Same run:** a `capture_id` minted when the lookup finishes, stored in `run_added`; `run_id` and the chat file name are recorded too (15.8).
+4. **"Export anyway" fields:** yes. Per changed item, `sha256` (exported bytes) and `recorded_sha256` (at capture), plus `state`. Missing items go in `missing`. Chain state and the counts go at the top level (15.10).
+
+### 15.14 Open points for the owner at this gate
+- Approve ADR 0005 (files, no migration) and ADR 0006 (format and chain).
+- M4 rewording (15.1).
+- The Saved-searches disabled state (15.8), a Design addition.
+- Before Build: run the legal-compliance Architect consult on 15.12 (not run in this session).
