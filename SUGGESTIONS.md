@@ -23,6 +23,12 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | 36 | **Panels share one banner per panel, Chat has its own.** A job held on Trace's banner is invisible if you switch agent; the Cost card tally counts it, but nothing in the run bar says a job is waiting. Show a dot on the agent's rail entry while it holds one. | UX | S | IDEA |
 | 35 | **Auto-route still lists models on the UI thread.** `route_for_request` (Auto-route, the Auto checkbox) calls `models_for_provider`, which asks each cloud API for its list synchronously. The advisor avoids it by reading the last model scan; Auto-route should too. | bug | S | IDEA |
 | 36 | **Keep local as a rule.** Only *Always* (switch) is remembered; a *Keep local for this kind* rule would stop repeat banners for a model the user trusts but that is unmeasured. | feature | S | IDEA |
+| 37 | Remove Forge (inactive by design) and the general Chat tools (Writing, Coding, Rewrite) that other apps cover (portfolio review 2026-11-18) | design | S | IDEA |
+| 38 | Make Tunnel's core job independent verification of whatever VPN is running (leaks, routing, DNS); keep Tor, proxy chain and multi-hop as they are and do not add Nym (portfolio review 2026-11-18) | design | M | IDEA |
+| 39 | Drop Proton control from VPN Apps, since it is state-only (Proton's extension ignores `scutil --nc start`) (portfolio review 2026-11-18) | design | S | IDEA |
+| 40 | Case workspace for Trace and Bloodhound: an entity graph, a hashed evidence timeline and a report export (portfolio review 2026-11-18) | feature | XL | IDEA |
+| 41 | Sentry as a continuous home-network posture feed with plain-language alerts to the phone ("new device joined at 03:12") (portfolio review 2026-11-18) | feature | M | IDEA |
+| 42 | Local-model investigations run as a plan the operator approves step by step (portfolio review 2026-11-18) | feature | L | IDEA |
 
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|

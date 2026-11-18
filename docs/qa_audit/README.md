@@ -29,3 +29,8 @@ read, no `shutdown()`) stands.
 
 The consolidated view, confirmed defects D1–D7 and the revised plan are in the
 "Sentinel QA Test Plan" doc.
+
+**2026-11-18:** `readiness-2026-11-18.md` is the code-level readiness audit before the
+testing phase (at `e7f53a0`): verdict, 32 new findings ranked Blocker/High/Medium/Low, the
+doc-sweep leads confirmed or refuted, a recheck of 173 rows of the files above, the test
+run, and the checks only the owner can run on real hardware.
