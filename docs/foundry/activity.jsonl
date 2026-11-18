@@ -51,3 +51,5 @@
 {"ts": "2026-11-18T12:37:11", "phase": "define", "state": "done", "spec": "case-workspace"}
 {"ts": "2026-11-18T17:28:31", "phase": "define", "state": "start", "spec": "case-workspace"}
 {"ts": "2026-11-18T17:30:00", "phase": "define", "state": "done", "spec": "case-workspace"}
+{"ts": "2026-11-18T17:31:40", "phase": "design", "state": "start", "spec": "case-workspace"}
+{"ts": "2026-11-18T17:33:14", "phase": "design", "state": "done", "spec": "case-workspace"}
