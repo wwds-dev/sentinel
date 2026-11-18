@@ -1,6 +1,6 @@
 # Spec: case workspace for Trace and Bloodhound (2026-11-18)
 
-Phase: **Define** only. No code, tests or schema changed. Design, Architect and Build have not started.
+Phase: **Define** approved 2026-11-18; **Design** for S1 done 2026-11-18 (section 14). No code, tests or schema changed. Architect and Build have not started.
 Source: `SUGGESTIONS.md` row #40 ("Case workspace for Trace and Bloodhound: an entity graph, a hashed evidence timeline and a report export", portfolio review 2026-11-18, effort XL, status IDEA). The review read docs only; section 2 checks its premise against the code on `main` at `03050e7`.
 Playbook: `docs/playbooks/product-manager.md`, `status: current`, last-reviewed 2026-10-14 (35 days). Its EU AI Act Art. 50 practice touches this spec (section 9); its CRA practice does not (tier `public`, nothing sold).
 In-flight check (`session_start.py --inflight`, 2026-11-18): no unreleased spec, `claude/*` branch or worktree covers cases, evidence or OSINT storage.
@@ -177,3 +177,105 @@ This feature is **new, XL and user-visible**: it adds promises (integrity, hones
   **Owner, 2026-11-18:** Markdown + manifest for S1, HTML in S4; no PDF.
 - **Q9 The `data/reports/` gap.** Add the one-line `.gitignore` fix as its own TODO item now (independent of this feature)?
   **Owner, 2026-11-18:** Done (merged in 0985c81, `data/reports/` is git-ignored).
+
+## 14. Design (S1 only, `ux-designer`, 2026-11-18)
+Started while the spec is parked: the owner asked for Design now (2026-11-18). Covers S1 (section 10) only. No graph view (S4), no Bloodhound, Structure Query or import (S2), no extraction or links (S3). Playbook: `docs/playbooks/ux-designer.md`, `status: current`, last-reviewed 2026-11-11. The Architect decides storage, threads and file layout; this section says what the operator sees.
+
+### 14.1 Where cases live
+- A **Cases** row in the left rail footer, under the agent list, next to the existing History / Saved searches footer rows (`main.py:2285`). It is always visible, whichever agent is selected. Cases are not an agent and do not join `BUILTIN_AGENT_ORDER`.
+- Clicking it opens the **Cases page** in the main area (it replaces the agent view the way an agent does; the agent rows lose their checked state). Selecting an agent leaves the Cases page; the page remembers the open case for the session.
+
+### 14.2 Cases page: the list
+One list, newest activity first. Columns: **Title**, **Status** (Open / Closed, as text), **Evidence** (count), **Last activity** (local time). A filter toggle above it: *Open* (default) / *All*. Buttons: **New case** (primary), **Open**, and on a selected row **Delete…**. Double-click or Return opens a case.
+
+| State | What shows |
+|---|---|
+| No cases yet | "No cases yet. A case collects Trace results as evidence you can check and export." + **New case** button. |
+| Only closed cases, filter on Open | "No open cases. Show all to see closed ones." with a link-style **Show all**. |
+| Loading (only if the Architect finds it can exceed a frame) | The list area says "Loading cases…"; buttons disabled. |
+| Case store unreadable | "Sentinel could not read the case store: <reason>. Nothing was changed." Buttons other than **New case** disabled; **New case** also disabled if the folder is unwritable. |
+
+### 14.3 New case dialog
+- **Title** (required, 1-120 characters, trimmed; inline error "Give the case a title.").
+- **Purpose note** (optional, multi-line). Label above it: "Purpose (your own statement, not verified by Sentinel)". Placeholder: "Why you are looking into this, e.g. 'phishing domain impersonating my site'." No hint that a purpose makes anything lawful or in scope.
+- Buttons **Create case** (default) / **Cancel**. Create opens the new case. The timeline's first event is "Case created".
+- Duplicate titles are allowed (cases are told apart by created time); the list shows both.
+
+### 14.4 Case view
+Header: title, status badge (text "Open" / "Closed", not colour alone), created time, purpose note shown with the label "Operator's statement, not verified by Sentinel", and **Last check**: "Not checked yet" or "<time>: no changes found" / "<time>: 2 problems found". Header actions: **Verify case**, **Export report…**, **Close case** (or **Reopen case**), **Back to cases**.
+
+Below, a two-pane split:
+- **Left, tabs:** **Timeline** (default) and **Identifiers**.
+- **Right, details pane** for whatever is selected; empty state: "Select an event or identifier to see its details."
+
+Closed case: read-only. **Add identifier** is disabled with the tooltip "Reopen the case to change it". Verify and Export still work. Closing needs no confirmation (it is reversible) and adds a "Case closed" event. Reopening adds a "Case reopened" event.
+
+### 14.5 Timeline tab
+A table, oldest first (the chain order), never editable. Columns: **#** (sequence), **Time** (local; the tooltip shows UTC), **Event**, **Details**, **Check** (blank until a Verify has run, then the state for that row).
+
+Event wording: "Case created", "Trace results added: Live Research · Domain · example.com (4 items)", "Evidence: crt.sh (observed)", "Evidence: run summary", "Identifier added: domain example.com (from the run target)" or "(added by you)", "Case closed", "Case reopened", "Integrity check: no changes found", "Integrity check: 2 problems found", "Report exported to <folder name> (12 files)".
+
+Selecting an evidence row fills the details pane:
+- **Source**, **Action**, **Captured** (UTC, with the local time beside it), **Added**, **Sentinel version**, **Origin label**: "Observed: a source returned this" or "Typed by you". S1 has no `model` or `imported` items.
+- **SHA-256**: full hash in a monospace, selectable field with a **Copy hash** button.
+- **Content**: the stored JSON in a read-only, monospace, scrollable viewer. A failed or skipped source shows its gap text ("crt.sh did not answer: timeout") with the same metadata. Gaps are not hidden or greyed out.
+- No edit, delete or re-run control exists for an evidence item.
+
+Empty timeline (case only just created): a hint line under the "Case created" row: "Add Trace results from a finished Live Research or Exposure Check with **Add to case**."
+
+### 14.6 Identifiers tab
+A list: **Type** (Person, Organisation, Domain, IP address, Handle, Email), **Value** (display form), **Source** ("run target" or "added by you"), **First seen**. Selecting one shows the evidence items that mention it (S1: the run's items for a run target, none for a hand-added one: "Added by you; no evidence names it yet.").
+
+**Add identifier…** opens a small dialog: type drop-down (no Phone), value, optional note. Inline validation per type: "Not a valid IP address", "Not a valid email address", "Not a valid domain". A Handle asks for a platform (free text, e.g. "github"; "unknown" allowed). A duplicate after normalisation does not add a row; it says "Already in this case as example.com" and selects the existing one.
+
+Empty state: "No identifiers yet. The target of each run you add appears here, or add one yourself."
+
+### 14.7 Add to case from Trace
+- An **Add to case…** button joins Trace's action row after **Stop**. It is enabled only when the panel shows a **finished** Live Research or Exposure Check result. It is disabled while a run is busy, after a Structure Query ("Structure Query results come to cases in a later version"), after a stopped run ("Only finished runs can be added; run it again to add it") and when no result is shown. A disabled button always carries the reason as its tooltip and accessible description.
+- Clicking opens a picker: the open cases (most recent first), plus **New case…** at the top, which opens the 14.3 dialog and then adds to the new case. Closed cases are not listed. With no open case the picker goes straight to **New case…**.
+- Before adding, the picker shows what will be stored: "4 evidence items: 3 source records (1 failed: crt.sh) and 1 run summary. Nothing is looked up again." Then **Add** / **Cancel**.
+- Run target to identifier: Domain to domain, IP address to IP, Email to email, Company to organisation, Username to handle with platform "unknown" (the operator can add a more exact handle by hand). Live Research refuses Person and Phone targets today, so S1 never has to map them.
+- **Same run twice:** if this run is already in the chosen case, the picker says "This run is already in <case title> (added <time>)." and offers only **Open case** / **Cancel**. Adding the same run to a *different* case is allowed.
+- **Success:** a non-modal note in Trace's activity log, "Added 4 items to case <title>.", with **Open case**. The button changes to **Added to <title>** (disabled) for that result.
+- **Failure:** nothing is partly added. The message says "Nothing was added: <reason>." The reasons are the case store being unwritable, the disk being full, or "Sentinel is in reset mode; writes are blocked" (the reset latch).
+
+### 14.8 Verify case
+- **Verify case** runs off the UI thread. The header shows "Checking 12 of 40…" with **Cancel**. While it runs, Add to case and Export for that case are disabled. A cancelled check adds no timeline event and changes no Check column.
+- **Result banner** above the tabs (dismissible; it stays in **Last check**):
+  - All intact: "No changes found. All 40 stored items match the hashes recorded when they were captured, and the timeline chain is unbroken." It is followed by the section 7.5 sentence in smaller text, with a **What this shows** disclosure that expands to the full 7.5 text.
+  - Problems: "2 problems found. 1 item changed since capture (crt.sh, event #7). 1 item missing (run summary, event #8). The timeline chain is broken from event #7." Each item name selects its row.
+- **Check column** per row: "Intact", "Changed", "Missing", "Chain broken". The state is the text plus an icon, never colour alone. "Changed" and "Missing" use the danger colour, "Intact" the normal text colour (no green "verified" look).
+- Verify adds a timeline event with its outcome. Wording never uses "verified", "authentic", "proven" or "tamper-proof" about the evidence. The button keeps the spec's name, **Verify case**; results speak of "changes since capture".
+
+### 14.9 Export report dialog
+- **What to include:** *Whole case* (default) or *Selected evidence*. The second shows a checklist of evidence items (source, captured time) with Select all / none. The case summary, identifiers and timeline are always included; the manifest records which evidence was selected.
+- **Where:** a folder field plus **Choose…**. The default is `~/Documents/Sentinel cases/`. The export goes into a new subfolder `<case title> <YYYY-MM-DD HHMM>`, shown in full before export. If the chosen folder is inside a git repository, an inline warning appears: "This folder is inside a git repository. Exported case data could be committed by mistake." **Export** stays enabled, but the operator must tick "Export here anyway".
+- **What will be written:** a fixed list, `report.md`, `evidence/` (N files), `manifest.json`, `SHA256SUMS`, and one sentence: "The report names people, accounts and addresses. Share it only with whoever needs it."
+- **Integrity first:** Export runs the Verify check before writing. If it finds problems, the dialog says so ("2 stored items changed or missing since capture. The report will list them as such.") and offers **Export anyway** / **Cancel**. Changed items are exported with both hashes and marked in `report.md`. It is never silently exported as intact.
+- **Progress / errors:** "Writing 12 of 40…" with **Cancel**. Cancel or failure leaves no partial folder (the Architect picks the mechanism). Error copy: "Export failed: <reason>. Nothing was left in <folder>."
+- **Done:** "Report exported to <path>." with **Show in Finder** and a copyable check command: `cd "<path>" && shasum -a 256 -c SHA256SUMS`. Below it: "Anyone with the folder can run this to check every file, without Sentinel." The export adds a timeline event.
+
+### 14.10 Delete case
+Section 5.1 and Q3 (manual delete only) apply. The plan decides whether delete ships in S1 or S2. Design: **Delete…** on the case list only (not in the case view header, to keep it away from routine actions). The confirmation names the case and the counts: "Delete '<title>' and its 40 evidence items and 3 identifiers? This cannot be undone. Your Trace runs in Saved searches are not deleted. Exported reports already on disk are not touched." Buttons: **Delete case** (danger style, not default) / **Cancel** (default, Escape).
+
+### 14.11 Copy rules (M8)
+- Purpose note label everywhere (header, export): "Operator's statement, not verified by Sentinel".
+- The section 7.5 text appears in Verify's **What this shows** and in `report.md`, word for word.
+- Banned in any case UI string and in the report template: "verified scope", "authorised"/"authorized", "in scope", "lawful", "forensically sound", "court-admissible", "tamper-proof", "proven", "authentic". The M8 copy test reads the case UI module(s) and the report template.
+- "Observed" means a source returned it. It never means true. S1 shows no model text; when S2 adds it, its label is "Written by a language model, not checked".
+- Plain verbs on buttons: New case, Add to case…, Add identifier…, Verify case, Export report…, Close case, Reopen case, Delete…. Ellipsis only where a dialog follows.
+
+### 14.12 Accessibility (WCAG 2.2 AA by analogy, playbook)
+- Everything works by keyboard. Tab order on the case view: header actions, tabs, table, details pane. Return opens or selects, Space ticks, Escape closes dialogs. The focus ring is visible on every control and never hidden behind the details pane (2.4.11).
+- State is never colour alone: status badges, the Check column and the Verify banner carry text, and their icons have accessible names.
+- Hashes, paths and the shasum command are selectable text, and each has a Copy button with an accessible name ("Copy SHA-256 of crt.sh evidence").
+- Click targets are at least 24×24 px. Table rows are at least 28 px high, matching the existing rail rows (36 px).
+- New colour uses reuse existing tokens: normal text `#a8b3ad`/`#e8ece9`, accent `#3cff88`, the existing DangerAction colour. Any new token goes into the contrast test (4.5:1 text, 3:1 indicators).
+- Every disabled button has its reason in the tooltip and in `setAccessibleDescription`. The Verify and Export progress lines are announced (a live-region-like accessible name update).
+- The Verify phase includes a five-minute VoiceOver pass over the Cases page, the case view and the three dialogs.
+
+### 14.13 Open points for the Architect (not owner questions)
+- Whether loading the case list or opening a large case can exceed a frame. If so, the "Loading…" states in 14.2 apply.
+- The no-partial-output mechanism for Add to case and Export (14.7, 14.9).
+- How "same run already in this case" is detected. The design assumes the run id or the saved chat file identifies a run.
+- Whether "Export anyway" with changed items needs fields in the manifest (both hashes per changed item).
