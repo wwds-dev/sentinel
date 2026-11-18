@@ -1,6 +1,6 @@
 # Spec: case workspace for Trace and Bloodhound (2026-11-18)
 
-Phase: **Define** approved 2026-11-18; **Design** for S1 done 2026-11-18 (section 14); **Architect** for S1 written 2026-11-18 (section 15, ADRs 0005-0006), awaiting the owner's gate. No code, tests or schema changed. Plan and Build have not started.
+Phase: **Define** approved 2026-11-18; **Design** for S1 done 2026-11-18 (section 14); **Architect** for S1 written 2026-11-18 (section 15, ADRs 0005-0006), Architect gate approved by the owner 2026-11-18 ("Approve Architect"). No code, tests or schema changed. Plan and Build have not started.
 Source: `SUGGESTIONS.md` row #40 ("Case workspace for Trace and Bloodhound: an entity graph, a hashed evidence timeline and a report export", portfolio review 2026-11-18, effort XL, status IDEA). The review read docs only; section 2 checks its premise against the code on `main` at `03050e7`.
 Playbook: `docs/playbooks/product-manager.md`, `status: current`, last-reviewed 2026-10-14 (35 days). Its EU AI Act Art. 50 practice touches this spec (section 9); its CRA practice does not (tier `public`, nothing sold).
 In-flight check (`session_start.py --inflight`, 2026-11-18): no unreleased spec, `claude/*` branch or worktree covers cases, evidence or OSINT storage.
@@ -389,6 +389,7 @@ No processor, no network call, no model call in S1. The original Saved Chats run
 4. **"Export anyway" fields:** yes. Per changed item, `sha256` (exported bytes) and `recorded_sha256` (at capture), plus `state`. Missing items go in `missing`. Chain state and the counts go at the top level (15.10).
 
 ### 15.14 Open points for the owner at this gate
+**Owner, 2026-11-18:** "Approve Architect". The gate covered the points below: ADRs 0005 and 0006, the M4 rewording and the Saved-searches state. The legal consult is still open.
 - Approve ADR 0005 (files, no migration) and ADR 0006 (format and chain).
 - M4 rewording (15.1).
 - The Saved-searches disabled state (15.8), a Design addition.

@@ -1,6 +1,6 @@
 # 0005 — Case store is plain files under `data/cases/`, not `sentinel.db`
 
-Date: 2026-11-18 · Status: proposed (Architect gate for `docs/specs/case-workspace.md`, section 15)
+Date: 2026-11-18 · Status: accepted by the owner 2026-11-18 (Architect gate, `docs/specs/case-workspace.md` section 15)
 
 ## Context
 The case workspace (spec `case-workspace`, slice S1) adds durable state: cases, immutable

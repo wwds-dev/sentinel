@@ -1,6 +1,6 @@
 # 0006 — Case canonical JSON (`sentinel-json-v1`), evidence hash and timeline chain
 
-Date: 2026-11-18 · Status: proposed (Architect gate for `docs/specs/case-workspace.md`, section 15)
+Date: 2026-11-18 · Status: accepted by the owner 2026-11-18 (Architect gate, `docs/specs/case-workspace.md` section 15)
 
 ## Context
 Every evidence hash and every timeline `event_hash` is stored forever and printed in exported
