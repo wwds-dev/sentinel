@@ -55,6 +55,15 @@ PROMPTS_FILE = Path(__file__).resolve().parents[1] / "config" / "local_rating_pr
 # Off in the test suites (conftest), so building a window never starts a run.
 AUTOMATIC = True
 
+# Asked before every write of the ratings file. An app sets it to a function
+# that returns False while its data folder must not be written (Sentinel: an
+# Emergency Reset in progress). None means writes are always allowed.
+WRITE_GUARD: Callable[[], bool] | None = None
+
+
+def _writes_allowed() -> bool:
+    return WRITE_GUARD is None or bool(WRITE_GUARD())
+
 # ── Kinds of work ────────────────────────────────────────────────────────────
 # Each measured kind is placed against the leaderboard category of one router
 # task, and rates the router tasks listed for it. Extraction is the everyday
@@ -268,7 +277,7 @@ class RatingStore:
                 pass
 
     def _save(self) -> None:
-        if self.path is None:
+        if self.path is None or not _writes_allowed():
             return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)

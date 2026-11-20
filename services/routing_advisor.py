@@ -40,7 +40,18 @@ import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
+
+# Asked before every write of the routing rules and the savings tally. An app
+# sets it to a function that returns False while its data folder must not be
+# written (Sentinel: an Emergency Reset in progress). None means writes are
+# always allowed.
+WRITE_GUARD: Callable[[], bool] | None = None
+
+
+def _writes_allowed() -> bool:
+    return WRITE_GUARD is None or bool(WRITE_GUARD())
+
 
 # ── Modes ────────────────────────────────────────────────────────────────────
 LOCAL_ADVISE = "local_advise"
@@ -620,6 +631,8 @@ def _read_json(path: Path, default):
 
 
 def _write_json(path: Path, data) -> None:
+    if not _writes_allowed():
+        return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
