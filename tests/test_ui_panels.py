@@ -455,13 +455,22 @@ class TestLoadModelsInto:
         # Either real models, or Forge's hint — never a silently empty box.
         assert model_box.count() > 0
 
-    def test_a_failing_client_is_noted_rather_than_swallowed(self, win, qapp,
-                                                             monkeypatch):
-        """Two of the six panels used to discard this exception entirely."""
+    def test_a_panel_never_asks_the_provider_and_a_broken_client_cannot_fail_it(
+            self, win, qapp, monkeypatch):
+        """Readiness audit B1 (2026-11-18): filling a model box is not a request.
+
+        Until then this path called `client.list_models()` on the UI thread, in
+        every mode, and a failure was noted on the box. Now the box is filled
+        from the cached lists, so a client that would raise is never asked and
+        there is no failure here to note or to swallow.
+        """
         from PySide6.QtWidgets import QComboBox
+
+        asked = []
 
         class Exploding:
             def list_models(self):
+                asked.append("list_models")
                 raise RuntimeError("provider down")
 
         noted = []
@@ -471,20 +480,77 @@ class TestLoadModelsInto:
         provider_box, model_box = QComboBox(), QComboBox()
         provider_box.addItem("qwen")
         win.load_models_into(provider_box, model_box, "trace")
-        assert noted == ["trace: load models"]
-        assert model_box.count() == 0
+        assert asked == []
+        assert noted == []
+        offered = [model_box.itemText(i) for i in range(model_box.count())]
+        assert offered, "the cached list must still fill the box"
+        assert offered[:len(win._cached_models("qwen"))] == win._cached_models("qwen")
 
-    def test_no_context_keeps_the_old_silent_behaviour(self, win, monkeypatch):
+    def test_models_for_provider_reads_the_cache_with_or_without_a_context(
+            self, win, monkeypatch):
+        asked = []
+
         class Exploding:
             def list_models(self):
+                asked.append("list_models")
                 raise RuntimeError("provider down")
 
         noted = []
         monkeypatch.setattr(win, "qwen", Exploding())
         monkeypatch.setattr(win, "_note_failure",
                             lambda *a, **k: noted.append(a))
-        assert win.models_for_provider("qwen") == []
+        cached = win._cached_models("qwen")
+        assert cached, "qwen ships a known-model list"
+        for context in ("", "trace"):
+            assert win.models_for_provider("qwen", context)[:len(cached)] == cached
+        assert asked == []
         assert noted == []
+
+    def test_a_failed_model_scan_is_noted_rather_than_swallowed(self, win,
+                                                                monkeypatch):
+        """Where a listing failure is reported now: the background model scan.
+
+        One provider failing comes back from `list_live` as an "unreachable"
+        listing (tests/test_model_watch.py); the scan itself failing reaches
+        `_on_model_scan_error`, which must note it, not drop it.
+        """
+        noted = []
+        monkeypatch.setattr(win, "_note_failure",
+                            lambda ctx, exc, widget=None: noted.append((ctx, str(exc))))
+        win._on_model_scan_error("provider down")
+        assert noted == [("model scan", "provider down")]
+
+
+    def test_a_finished_check_reaches_the_model_boxes_even_with_nothing_new(
+            self, win, monkeypatch):
+        """The boxes read the cached lists, so the check has to refresh them.
+
+        A listing that only drops a retired model has no new model in it; the
+        boxes used to keep the shipped list until a provider switch.
+        """
+        from services.model_watch import ProviderListing
+
+        shipped = win._cached_models("qwen")
+        assert len(shipped) > 1
+        still_offered = tuple(shipped[:-1])        # the provider retired one
+        reloads = []
+        monkeypatch.setattr(win, "_reload_all_model_lists",
+                            lambda: reloads.append(True))
+        win._on_model_scan_finished([ProviderListing("qwen", "ok", still_offered)])
+        assert reloads == [True]
+        assert win.models_for_provider("qwen")[:len(still_offered)] == list(still_offered)
+        assert shipped[-1] not in win._cached_models("qwen")
+
+    def test_a_check_that_listed_nothing_leaves_the_boxes_alone(self, win,
+                                                                monkeypatch):
+        from services.model_watch import ProviderListing
+
+        reloads = []
+        monkeypatch.setattr(win, "_reload_all_model_lists",
+                            lambda: reloads.append(True))
+        win._on_model_scan_finished(
+            [ProviderListing("qwen", "skipped", note="not allowed in Local only mode")])
+        assert reloads == []
 
 
 class TestBestFitIsPresentedAsABadge:

@@ -14,6 +14,12 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Opening Sentinel and typing no longer contact a cloud provider for its model
+  list.** Each agent's model box, and the router on every keystroke, used to ask
+  the selected cloud provider for its models directly, in every execution mode,
+  including Local only. They now read the list from the last model check, or the
+  lists shipped with Sentinel before one has run. Only the model check asks
+  providers, and only the ones you allowed (readiness audit B1).
 - **The model check asks only the providers you allowed.** At start and on
   **Check now**, Sentinel used to ask every provider with a key for its model
   list, in every execution mode, including Local only. It now asks only

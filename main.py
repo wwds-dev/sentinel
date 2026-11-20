@@ -1267,12 +1267,13 @@ class GodAI(QWidget):
                             widget=None) -> list[str]:
         """Model ids offered by one provider, or [] for an unknown provider.
 
-        Every client falls back to its own KNOWN_MODELS list when the API is
-        unreachable, so this only returns empty for a name we don't handle.
-
-        A `context` turns a failure from silent into recorded: the panels that
-        loaded their own models used to note it on the model box as a tooltip,
-        and that survives the move here.
+        Never a request: this runs on the UI thread, at window construction
+        and per keystroke (route_for_request). Local providers read the local
+        inventory; cloud providers read `_cached_models` (the last gated model
+        scan, else the shipped lists). Live cloud listing happens only in the
+        background ModelScanWorker, which `scan_plan` gates on the execution
+        mode and the allow boxes, so Local only contacts no cloud provider.
+        `context` and `widget` are kept for callers; nothing here fails.
         """
         clients = {
             "ollama": self.ollama,
@@ -1296,14 +1297,8 @@ class GodAI(QWidget):
             if watch is not None:
                 models += [m for m in watch.adopted_models(provider) if m not in models]
             return models
-        try:
-            models = list(client.list_models())
-        except Exception as exc:
-            if context:
-                self._note_failure(f"{context}: load models", exc, widget)
-            return []
-        # An adopted model stays selectable even when the live listing failed
-        # and the client fell back to its KNOWN_MODELS.
+        models = self._cached_models(provider)
+        # An adopted model stays selectable even before a scan has listed it.
         watch = getattr(self, "model_watch", None)
         if watch is not None:
             models += [m for m in watch.adopted_models(provider) if m not in models]
@@ -1643,6 +1638,10 @@ class GodAI(QWidget):
             more = f" and {len(summary.found) - 3} more" if len(summary.found) > 3 else ""
             self._set_chat_status(f"New model available: {names}{more}. "
                                   "See Model Updates in the left rail.")
+        if summary.found or self._listed_models:
+            # The model boxes read these lists and never ask a provider, so a
+            # finished check has to reach them whether or not a model is new;
+            # otherwise a retired model stays on offer until a provider switch.
             self._reload_all_model_lists()
 
     def _on_model_scan_error(self, message: str) -> None:
@@ -3332,9 +3331,9 @@ class GodAI(QWidget):
         self.model_box.clear()
 
         try:
-            # The same route the agent panels take: each client owns its API
-            # call and its offline fallback, and a failure is noted on the
-            # model box as "chat: load models" instead of raising here.
+            # The same route the agent panels take: cached lists for a cloud
+            # provider (never a request from here), the local inventory for
+            # Ollama and LM Studio.
             models = self.models_for_provider(provider, "chat", self.model_box)
             if provider == "ollama" and not models:
                 # No daemon, or nothing pulled yet: offer the names we know.
@@ -3860,7 +3859,8 @@ class GodAI(QWidget):
             return list(listed)
         cls = CLOUD_CLIENT_CLASSES.get(provider)
         known = list(getattr(cls, "KNOWN_MODELS", ()) or ())
-        return known + [m.model for m in MODEL_CATALOG if m.provider == provider]
+        known += [m.model for m in MODEL_CATALOG if m.provider == provider]
+        return list(dict.fromkeys(known))
 
     def _advisor_candidate(self, provider: str, model: str, task: str,
                            request_text: str, snap) -> "routing_advisor.Candidate":

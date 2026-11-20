@@ -57,3 +57,6 @@
 {"ts": "2026-11-18T17:40:08", "phase": "architect", "state": "done", "spec": "case-workspace"}
 {"ts": "2026-11-18T19:50:24", "phase": "plan", "state": "start", "spec": "case-workspace"}
 {"ts": "2026-11-18T19:50:55", "phase": "plan", "state": "done", "spec": "case-workspace"}
+{"ts": "2026-11-18T12:30:11", "phase": "build", "state": "start", "spec": "readiness-b1"}
+{"ts": "2026-11-20T12:39:22", "phase": "build", "state": "done", "spec": "readiness-b1"}
+{"ts": "2026-11-20T12:39:23", "phase": "review", "state": "done", "spec": "readiness-b1"}
