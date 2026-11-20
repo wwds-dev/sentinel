@@ -47,6 +47,13 @@ and the git log, and is not back-filled here.
   folder being erased.
 
 ### Security
+- **Emergency Reset: a local-model measurement that finishes late writes
+  nothing.** A measurement run still waiting on a model when you reset could
+  finish while the data folder was being erased and write its ratings, the
+  routing rules, the savings tally or its usage row back into it. Those four
+  writes now ask the reset latch first, and the reset stops listening to
+  late results from model discovery and measurement (PR #52, reworked so the
+  files shared with Imprint stay identical).
 - **WireGuard: administrator rights run a checked copy, never your file.**
   Connect and Disconnect used to check your `.conf` when the password prompt
   opened and then let `wg-quick` read the file itself as root, so anything that

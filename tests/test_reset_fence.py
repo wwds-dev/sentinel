@@ -266,10 +266,15 @@ def test_the_fence_disconnects_the_local_model_runs(win):
 
 
 @pytest.mark.parametrize("write", ["ratings", "routing_rules", "savings_tally"])
-def test_the_local_model_stores_write_nothing_once_erasing_has_started(tmp_path, latch, write):
+def test_the_local_model_stores_write_nothing_once_erasing_has_started(tmp_path, monkeypatch,
+                                                                      latch, write):
     """A parked measurement run writes its ratings from its own thread, so
-    these stores check the latch too."""
+    these stores ask the latch too. They are shared with Imprint byte for byte
+    (test_providers_drift), so they ask through a WRITE_GUARD hook, as
+    benchmarks does, and never import portable_reset themselves."""
     from services import local_ratings, routing_advisor
+    monkeypatch.setattr(local_ratings, "WRITE_GUARD", portable_reset.writes_allowed)
+    monkeypatch.setattr(routing_advisor, "WRITE_GUARD", portable_reset.writes_allowed)
     path = tmp_path / "data" / f"{write}.json"
     if write == "ratings":
         store = local_ratings.RatingStore(path)
@@ -288,6 +293,57 @@ def test_the_local_model_stores_write_nothing_once_erasing_has_started(tmp_path,
     latch.clear()
     change(3)
     assert path.read_bytes() != before[path.name]
+
+
+def test_a_measurement_runs_late_bill_writes_nothing_once_erasing_has_started(win, latch):
+    """A parked measurement run's cloud call returns during the reset. Its
+    usage signal is not a result signal, so the fence does not disconnect it;
+    the slot itself must refuse, or the usage row would recreate the database
+    in the erased folder (review P1, 2026-11-20)."""
+    spent = (win.session_cost_total, win.session_request_count)
+    before = _usage_count()
+    latch.set()
+    win._on_measure_usage("openai", "gpt-5.5", "prompt", "reply")
+    assert _usage_count() == before
+    assert (win.session_cost_total, win.session_request_count) == spent
+    latch.clear()
+    win._on_measure_usage("openai", "gpt-5.5", "prompt", "reply")
+    assert _usage_count() == before + 1          # billed again without the latch
+
+
+def test_a_fenced_measurement_runs_late_bill_writes_nothing(win):
+    measure = workers.LocalMeasureWorker(None, None, [], None, None, None, 0)
+    measure.usage_signal.connect(win._on_measure_usage)
+    before = _usage_count()
+    measure._sentinel_fenced = True
+    measure.usage_signal.emit("openai", "gpt-5.5", "prompt", "reply")
+    QApplication.processEvents()
+    assert _usage_count() == before
+    measure._sentinel_fenced = False
+    measure.usage_signal.emit("openai", "gpt-5.5", "prompt", "reply")
+    QApplication.processEvents()
+    assert _usage_count() == before + 1
+
+
+def test_the_local_model_stores_write_freely_with_no_guard_set(tmp_path, monkeypatch):
+    """Imprint sets no guard: None means every write is allowed."""
+    from services import local_ratings, routing_advisor
+    monkeypatch.setattr(local_ratings, "WRITE_GUARD", None)
+    monkeypatch.setattr(routing_advisor, "WRITE_GUARD", None)
+    ratings = tmp_path / "ratings.json"
+    rules = tmp_path / "rules.json"
+    local_ratings.RatingStore(ratings).save_reference_answer("ref", "p1", 1, "answer")
+    routing_advisor.RoutingRules(rules).add("chat", "kind", "ollama", "m")
+    assert ratings.is_file() and rules.is_file()
+
+
+def test_main_sets_the_latch_on_the_local_model_stores():
+    import main
+    from services import local_ratings, routing_advisor
+
+    assert local_ratings.WRITE_GUARD is portable_reset.writes_allowed
+    assert routing_advisor.WRITE_GUARD is portable_reset.writes_allowed
+    assert main.local_ratings is local_ratings and main.routing_advisor is routing_advisor
 
 
 @pytest.mark.parametrize("write", ["history_save", "history_update", "settings", "model_watch"])

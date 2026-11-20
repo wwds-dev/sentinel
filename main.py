@@ -101,7 +101,9 @@ from services import portable_reset
 from agents.sentry.sentry import baseline as sentry_baseline
 
 # Once, on the main thread at startup: no ratings-cache write lands while an
-# Emergency Reset is erasing the data folder, whoever calls benchmarks.
+# Emergency Reset is erasing the data folder, whoever calls benchmarks. The
+# local-model stores (measured ratings, routing rules, savings tally) are
+# written from a measurement run's own thread, so they ask the same latch.
 benchmarks.WRITE_GUARD = portable_reset.writes_allowed
 sentry_baseline.WRITE_GUARD = portable_reset.writes_allowed
 local_ratings.WRITE_GUARD = portable_reset.writes_allowed
@@ -1502,7 +1504,15 @@ class GodAI(QWidget):
         self._local_ratings_changed(reload_lists=False)
 
     def _on_measure_usage(self, provider, model, prompt, reply) -> None:
-        """Bill one cloud call of a measurement run, as every request is billed."""
+        """Bill one cloud call of a measurement run, as every request is billed.
+
+        Nothing is recorded for a fenced run, or once an Emergency Reset has
+        started erasing: this slot can be queued while the folder is erased and
+        delivered by the next dialog's event loop, and a database write then
+        would recreate `sentinel.db` in the erased folder.
+        """
+        if getattr(self.sender(), "_sentinel_fenced", False) or not portable_reset.writes_allowed():
+            return
         try:
             entry = self.usage_tracker.log_request(
                 agent=LOCAL_RATINGS_AGENT, backend=provider, model=model,
