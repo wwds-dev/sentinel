@@ -76,7 +76,7 @@ selected, and every cloud entry says so on hover, so a cloud route is visible
 before you run it, not only after the cost is logged. Chat starts in Local only
 mode (Options → Execution mode) with every paid provider unticked (Options →
 Paid provider access), so a cloud provider picked in the run bar runs on your saved
-Ollama default model instead (this fallback is Ollama-only for now)
+Ollama default model instead (or, when Ollama is not running, a fitting LM Studio model if its server is up)
 until you switch to Hybrid allowed or Cloud only and tick that provider; while
 that substitution applies, the cost beside Run ends with "local only" and
 hovering it names the substitution.
@@ -90,7 +90,7 @@ recommended model is missing and another stands in, the route's reason says so.
 Chat's **Options → Execution mode** is enforced at send time. In **Local only**
 a cloud provider still selected in the run bar is never contacted and its model
 name is never sent to a local runtime: the request goes to Ollama with the saved
-Ollama default model (the fallback does not use LM Studio yet), the run-bar estimate reads `free · … · local only`, and hovering
+Ollama default model (or, when Ollama is not running, a fitting LM Studio model if its server is up), the run-bar estimate reads `free · … · local only`, and hovering
 it names the substitution. In **Hybrid allowed** or **Cloud only**, a cloud
 provider whose permission is not ticked blocks the request: the estimate reads
 `blocked · see route` (hover for the reason) and **Send** shows **Request

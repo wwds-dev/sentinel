@@ -249,6 +249,9 @@ def _local_only_stub(provider: str, model: str, saved_ollama: str = "llama3:8b")
     stub.model_box = _TextValue(model)
     stub.settings = {"default_model_ollama": saved_ollama}
     stub._local_default_model = lambda: saved_ollama
+    from main import GodAI
+    # the real helper; with no local inventory it keeps the Ollama route
+    stub._local_only_route = lambda: GodAI._local_only_route(stub)
     return stub
 
 

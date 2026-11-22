@@ -60,3 +60,6 @@
 {"ts": "2026-11-18T12:30:11", "phase": "build", "state": "start", "spec": "readiness-b1"}
 {"ts": "2026-11-20T12:39:22", "phase": "build", "state": "done", "spec": "readiness-b1"}
 {"ts": "2026-11-20T12:39:23", "phase": "review", "state": "done", "spec": "readiness-b1"}
+{"ts": "2026-11-22T01:45:50", "phase": "define", "state": "start", "spec": "local-only-any-runtime"}
+{"ts": "2026-11-22T01:52:10", "phase": "define", "state": "done", "spec": "local-only-any-runtime"}
+{"ts": "2026-11-22T01:52:10", "phase": "build", "state": "done", "spec": "local-only-any-runtime"}

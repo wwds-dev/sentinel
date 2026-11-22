@@ -3734,12 +3734,12 @@ class GodAI(QWidget):
             if is_local_provider(provider):
                 self._set_route_notice("")
                 return provider, model if model else DEFAULT_LOCAL_MODEL
-            local_model = self._local_default_model()
+            local_provider, local_model = self._local_only_route()
             self._set_route_notice(
-                f"Local only mode: using ollama · {local_model} instead of "
+                f"Local only mode: using {local_provider} · {local_model} instead of "
                 f"{provider} · {model}. Switch the execution mode to use {provider}."
             )
-            return "ollama", local_model
+            return local_provider, local_model
 
         self._set_route_notice("")
 
@@ -3781,6 +3781,30 @@ class GodAI(QWidget):
         settings = getattr(self, "settings", None) or {}
         saved = str(settings.get("default_model_ollama") or "").strip()
         return saved or DEFAULT_LOCAL_MODEL
+
+    def _local_only_route(self) -> tuple[str, str]:
+        """The local route Local only substitutes for a cloud pick.
+
+        Ollama with its saved default while Ollama is up or nothing is known
+        yet; otherwise a fitting LM Studio model when its server is up (spec
+        local-only-any-runtime). Reads the cached inventory, never fetches.
+        """
+        ollama_route = ("ollama", self._local_default_model())
+        inventory = getattr(self, "local_inventory", None)
+        if inventory is None or not inventory.has_data:
+            return ollama_route
+        snap = inventory.snapshot()
+        if snap.ollama_up or not snap.lmstudio_up:
+            return ollama_route
+        fitting = [m for m in snap.of(local_models.LMSTUDIO)
+                   if m.fit not in {"tight", "too_big"}]
+        settings = getattr(self, "settings", None) or {}
+        saved = str(settings.get("default_model_lmstudio") or "").strip()
+        for pick in ([m for m in fitting if m.id == saved],
+                     [m for m in fitting if m.loaded], fitting):
+            if pick:
+                return local_models.LMSTUDIO, pick[0].id
+        return ollama_route
 
     def _set_route_notice(self, text: str) -> None:
         """Show (or clear) a one-line notice about how the route was resolved."""

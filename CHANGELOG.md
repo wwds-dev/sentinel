@@ -14,6 +14,10 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Local only works on a Mac that runs only LM Studio.** When a cloud provider was
+  picked in Chat's run bar, Local only always swapped in Ollama, so the request failed
+  without Ollama. It now uses a fitting LM Studio model when Ollama is not running and
+  the LM Studio server is; the notice beside Run names the model it used.
 - **Opening Sentinel and typing no longer contact a cloud provider for its model
   list.** Each agent's model box, and the router on every keystroke, used to ask
   the selected cloud provider for its models directly, in every execution mode,
