@@ -106,6 +106,10 @@ future and cross-project items are listed under V3 or in their owning project.
 
 ### Can wait
 
+- [ ] `P2` `bug` `design` `@ai` The Chat empty state ("Nothing run yet", `main.py:2941`) shows through the Bug Spray, Beacon and Tunnel panels, overlapping their group titles (off-screen render at 1600x1000, 2026-11-22). The backdrop should hide whenever an agent panel is selected.
+- [ ] `P2` `bug` `design` `@ai` Bloodhound clips at the right edge at 1600x1000: the court-records checkbox label, "Clear Image" and the whole metrics column (Threat, Confidence, Sources, Depth) are cut off (`ui/panels/osint_heavy.py`, 2026-11-22). Related to Detail 3.
+- [ ] `P3` `design` `@me` GUI review of all eight agents (2026-11-22): decide whether the proposed layouts go into the GUI overhaul (Detail 7): Bloodhound optional sections collapsed with metrics as a strip; Bug Spray split into Radar, Recon, Report; Tunnel as one status card plus five tabs; one shared run-bar and metric-strip pattern for every agent.
+
 - [ ] `P2` `feature` `@ai` **Case workspace for Trace and Bloodhound (SUGGESTIONS #40, XL).** Define and Architect approved by the owner 2026-11-18 (`approvals.jsonl`); Design, legal consult and Plan done 2026-11-18, backlog CW-0 to CW-11 below. Spec `docs/specs/case-workspace.md`. Parked: Build starts only after the testing phase has started on the current scope or readiness B1 and H3 are closed. First slice S1 = Trace run to case to checkable report, no graph.
 - [x] `P2` `docs` `@ai` **Case workspace S1 (Plan, 2026-11-18), step CW-0: legal-compliance Architect consult on spec 15.12** (data map, retention, DPIA screening; third-party data in evidence). Output `docs/audit/case-workspace-legal-compliance.md` (DONE 2026-11-18: no P0, 5 P1, 20 numbered spec/data-map changes for the Architect to apply, 5 LAWYER triggers in the register). Must finish before any Build task below. Plan: Detail, *Case workspace S1 plan*.
 - [x] `P2` `feature` `@me` **Case workspace S1, CW-D: Delete case ships in S1** (owner, 2026-11-18: "Delete in S1"; spec 14.10). Task CW-8 stays in S1.
