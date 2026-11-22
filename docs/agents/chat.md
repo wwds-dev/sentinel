@@ -42,11 +42,11 @@ Each completed request is logged to the Run log (agent, Tool, provider, model, t
 ## How it works
 `GodAI.build_tool_messages()` in `main.py` returns `[system(tool prompt), user]` for the selected Tool, with the Command scaffold already in front of the user text. On the first turn that pair starts the thread; on later turns the earlier user and assistant messages are kept, the new user message is appended, and the selected Tool's system prompt replaces the thread's system message. `_backend_messages()` strips the UI-only notices, and the rest is re-sent each time. Ollama, OpenAI, DeepSeek, Kimi and Qwen receive the thread as role messages, Anthropic receives the system prompt separately, and Gemini receives the whole thread flattened into one `role: text` string with no system channel.
 
-Every provider streams token by token (`stream_chat`, including Ollama); a backend that hands back a finished string, such as an OpenAI image model, is replayed word by word instead. Stop sets the worker's cancel flag, marks the worker as detached and parks its thread (`ui/workers.py: park`) until the model call returns; no thread is ever terminated. Every chat handler drops what a detached worker delivers later. The design is in `docs/adr/0001-park-workers-and-leave-with-os-exit.md`.
+Every provider streams token by token (`stream_chat`, including Ollama and LM Studio); a backend that hands back a finished string, such as an OpenAI image model, is replayed word by word instead. Stop sets the worker's cancel flag, marks the worker as detached and parks its thread (`ui/workers.py: park`) until the model call returns; no thread is ever terminated. Every chat handler drops what a detached worker delivers later. The design is in `docs/adr/0001-park-workers-and-leave-with-os-exit.md`.
 
 **Known limitation:** `ChatAgent.build_messages()` is a stub that returns only `[user]`; it is used only when the selected Tool has no entry in the tool map, which the Tool box cannot produce. The system-plus-user messages come from `build_tool_messages()`.
 
-**Known limitation:** every keystroke re-runs the router and the live cost estimate on the UI thread, which ask Ollama (and each ticked cloud provider) for its model list over HTTP without caching, so typing can lag when the Ollama daemon is slow to answer.
+**Known limitation:** every keystroke re-runs the router and the live cost estimate on the UI thread, but they read cached model lists only (the local inventory and the last model check), so typing makes no network request. One request is left on the UI thread: building the window asks Ollama for its models once (`load_models`, tracked in TODO.md).
 
 ## Under the hood — files & functions
 | Location | Role |
