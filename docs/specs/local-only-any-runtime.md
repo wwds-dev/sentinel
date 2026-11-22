@@ -1,6 +1,6 @@
 # Spec: Local only falls back to any running local runtime
 
-Status: draft, awaiting owner approval (Define gate). Owner go-ahead to fix: "Yes, fix it here" (2026-11-22).
+Status: approved by the owner 2026-11-22 ("Approve and merge"). Owner go-ahead to fix: "Yes, fix it here" (2026-11-22).
 
 ## Problem
 In Chat, with Execution mode **Local only** and a cloud provider picked in the run bar,
