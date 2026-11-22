@@ -20,7 +20,7 @@ live lookup whenever the guess could matter.
 ## Structure Query versus Live Research
 
 **Structure Query** asks the selected model to create an investigation plan.
-It does not contact research sources. With Ollama, the target remains local.
+It does not contact research sources. With a local model (Ollama or LM Studio), the target remains local.
 With a cloud model, the prompt is sent to that provider after you confirm the
 request. Separately, Sentinel refreshes a public list of OSINT tools from
 GitHub at most once a week; that request carries no target. **Stop** cancels

@@ -198,8 +198,8 @@ a first-pass baseline, a refused baseline, and a dry run with no baseline send
 nothing.
 
 When it does send, the request goes to whichever provider and model the run bar has
-selected. The panel's default provider is Anthropic, a paid cloud route; pick an
-Ollama model to keep the read on this Mac. The request carries:
+selected. The panel's default provider is Anthropic, a paid cloud route; pick a
+local model (Ollama or LM Studio) to keep the read on this Mac. The request carries:
 - the fixed Sentry system prompt;
 - the number of devices, listeners and connections seen;
 - for each finding, its severity, title and evidence: for a device its IP, MAC and
@@ -208,7 +208,7 @@ Ollama model to keep the read on this Mac. The request carries:
   the process name, PID, remote address and port.
 
 It does **not** carry the findings' detail text, the baseline, or the raw neighbour
-table, listener list or connection list. Every non-Ollama request shows the shared
+table, listener list or connection list. Every cloud request shows the shared
 confirmation (provider, model, approximate tokens, estimated cost — not the content)
 and is checked against the budget caps. The findings message and the reply are then
 saved as an ordinary Saved Chat on this Mac, and the run log keeps the first 200

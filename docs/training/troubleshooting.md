@@ -8,7 +8,7 @@
 | API key missing | No credential was detected | Add the key as described in [API keys and new models](api_keys.md), quit and restart Sentinel, then check the API KEYS card |
 | Insufficient balance / HTTP 402 | The provider account cannot fund the request | Add provider credit or deliberately choose another route; never assume Auto-route changes providers silently |
 | Budget exceeded | A Sentinel cap blocked the request | Review Cost history, then change the cap only if the spend is intended |
-| Ollama unavailable | The local service is stopped or the model is absent | Start Ollama, install/select an available model, then refresh models |
+| Local model unavailable | Ollama or the LM Studio server is stopped, or the model is absent | Start Ollama, or the LM Studio server (Models → Start LM Studio server), install or select an available model, then refresh models |
 | LM Studio models read *on disk · server off* | LM Studio's server is not running, or `LMSTUDIO_URL` points at an address it is not on | Press **Start LM Studio server** (shown while LM Studio is selected) or **Start server** in Settings → Local models; without the `lms` tool, start the server in LM Studio. Sentinel follows the server to its real port only when `LMSTUDIO_URL` is not set |
 | App feels slow | A local model or scan is using resources | Check Inspector, wait, stop the task or select a smaller model |
 | No live research result | Source failed, rate-limited or had no match | Read Trace Activity; keep successful partial results and retry only when appropriate |

@@ -148,7 +148,7 @@ Use only a network you own. Start with the background watch off and **Explain fi
 
 1. Select **Sentry**. Press **Reset baseline** if a baseline exists, then **Run watch pass**.
 2. Join a spare device you own to the network and let your Mac talk to it (AirDrop, or `ping` from Terminal). Press **Dry run**, then **Run watch pass** twice.
-3. Tick **Explain findings with AI**, choose an Ollama model and repeat step 2 with another spare device; then choose a cloud model and read the confirmation dialog.
+3. Tick **Explain findings with AI**, choose a local model (Ollama or LM Studio) and repeat step 2 with another spare device; then choose a cloud model and read the confirmation dialog.
 
 - [ ] The AI box is unticked on first open and its hover text names LAN IPs, MAC addresses and process names.
 - [ ] The first pass says "Baseline recorded." and flags nothing; nothing is sent to a model.
@@ -330,7 +330,7 @@ Repeat with a disposable agent name and approve the reviewed specification.
 ## 9. Shared permissions, budgets, and persistence
 
 - [ ] A disabled cloud-provider permission blocks the request before network use.
-- [ ] Local Ollama requests do not require a cloud permission.
+- [ ] Local requests (Ollama and LM Studio) do not require a cloud permission.
 - [ ] Session and daily budget limits block requests that would exceed them.
 - [ ] Cancelling or failing a request closes its run with the correct status.
 - [ ] Restarting the app preserves settings, saved chats, usage, and run history.

@@ -41,4 +41,4 @@ filtered and assigned to a Chat Project.
 - **Attachments / RAG**: `send_prompt()` is the hook — enrich the user message before it reaches `ChatWorker`.
 
 ## Requirements
-Any compatible text/reasoning provider. Ollama is free/local; cloud providers need an API key (app `.env`). Image-only and speech-only models are excluded from text-task recommendations.
+Any compatible text/reasoning provider. Local runtimes (Ollama, LM Studio) are free and need no key; cloud providers need an API key (app `.env`). Image-only and speech-only models are excluded from text-task recommendations.

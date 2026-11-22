@@ -17,7 +17,7 @@ username also checks several hundred sites (allow up to two minutes).
 
 The provider and model are chosen in the run bar beside **Investigate**. Sentinel
 pre-selects its recommendation for Bloodhound, normally a paid cloud model;
-choose Ollama if the dossier step must stay on this Mac.
+choose a local model (Ollama or LM Studio) if the dossier step must stay on this Mac.
 
 **Investigate** produces Overview, Digital Footprint, Infrastructure/Social
 Profile, Risk & Red Flags, and Methodology & Tools. Threat and confidence scores

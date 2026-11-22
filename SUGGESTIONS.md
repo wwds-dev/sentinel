@@ -33,7 +33,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|
 | 7 | Streaming responses in the chat panel rather than wait-then-dump | feature | L | IDEA |
-| 8 | Local model provider (Ollama) as a zero-cost fallback when the budget cap is hit | feature | L | IDEA |
+| 8 | Local model (Ollama or LM Studio) as a zero-cost fallback when the budget cap is hit | feature | L | IDEA |
 | 9 | Retry-with-backoff wrapper shared by every provider client, instead of per-client handling | infra | M | IDEA |
 | 10 | Export a run (prompt + response + usage + cost) as a single markdown file for archiving | feature | S | IDEA |
 | 11 | Add intermediate and independent exercises to the existing practical course for every agent | docs/feature | M | PLANNED |

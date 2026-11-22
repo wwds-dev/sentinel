@@ -142,7 +142,7 @@ request guard, cost tracking, history, and run logger.
 - Edit the system prompt in `agents/osint_agent/__init__.py` to change tradecraft focus.
 
 ## Requirements
-Any model provider (API key and consent for cloud; Ollama is local and free).
+Any model provider (API key and consent for cloud; Ollama and LM Studio are local and free).
 HIBP requires `HIBP_API_KEY`; its checkbox is unavailable without one. EmailRep,
 Gravatar, BreachDirectory, URLScan, GitHub (60 lookups an hour), Keybase, GLEIF,
 WHOIS, the configured DNS resolver, Team Cymru, Mnemonic, DShield, crt.sh, the

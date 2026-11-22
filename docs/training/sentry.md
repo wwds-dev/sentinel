@@ -92,8 +92,8 @@ pass has at least one finding. Then the findings go to the provider and model
 selected in the run bar: for each one its title and evidence — LAN IPs, MAC
 addresses, interface, process names and IDs, ports and remote addresses — plus the
 counts of devices, listeners and connections. The baseline and the raw tables are
-not sent. Sentry's default provider is a paid cloud one (Anthropic); choose an
-Ollama model to keep the read on your Mac. A cloud request asks you to confirm, with
+not sent. Sentry's default provider is a paid cloud one (Anthropic); choose a
+local model (Ollama or LM Studio) to keep the read on your Mac. A cloud request asks you to confirm, with
 its estimated cost, and is checked against your budgets. The request and the reply
 are kept in Saved Chats, so they stay on your Mac afterwards. Everything else Sentry
 does is local and free.

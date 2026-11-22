@@ -34,8 +34,8 @@ background. Sentinel never shows that reply; the notice says so. A cloud provide
 may still bill for it. If the late reply arrives while Sentinel is open, its cost
 appears in **Cost history** as a cancelled run: `cancelled-exact` when the
 provider reported its token counts, `cancelled-estimated` when it did not (for
-example, you stopped part-way through a reply). A local Ollama model may stay
-busy until it finishes, so your next local request can wait behind it.
+example, you stopped part-way through a reply). A local model (Ollama or LM
+Studio) may stay busy until it finishes, so your next local request can wait behind it.
 
 The whole conversation is sent again with every message, so on a cloud provider
 a long conversation costs more than the estimate beside **Run** suggests: that
@@ -69,7 +69,7 @@ report**, which saves the whole conversation as a plain-text file.
 ## Routing and privacy
 
 **Auto-route** picks a provider and model for the message you have typed and
-selects them for you; it does not change the Tool. Ollama runs locally. Cloud
+selects them for you; it does not change the Tool. Ollama and LM Studio run locally. Cloud
 providers live under **Cloud providers** in the dropdown, turn the control
 amber once selected, require an API key and permission, and may incur a
 charge. Never include passwords, API keys or unnecessary personal data in a
@@ -77,7 +77,7 @@ cloud request.
 
 Sentinel starts in **Local only** mode with every paid provider switched off.
 In that state a cloud provider you pick in the run bar is not used: the request
-runs on Ollama instead, and the cost beside **Run** ends with "local only"
+runs on your saved Ollama default model instead (this fallback is Ollama-only for now), and the cost beside **Run** ends with "local only"
 (hover it for the details). To use a cloud provider, choose **Options → Execution
 mode → Hybrid allowed** (or **Cloud only**), tick the provider under **Options →
 Paid provider access**, then press **Run** and confirm the cost prompt that

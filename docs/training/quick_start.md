@@ -7,7 +7,7 @@
 3. Press **Auto-route** to see the recommended provider and model.
 4. Check the route before sending. Ollama and LM Studio are local; an amber selection is
    a cloud provider and may cost money, but while Options → Execution mode is
-   Local only (the default) the request runs on Ollama anyway. The **BEST FIT** badge in the
+   Local only (the default) the request runs on your saved Ollama default model anyway. The **BEST FIT** badge in the
    dropdown is what Sentinel would have chosen.
 5. Press **Enter** to send. Use **Shift+Enter** when you want a new line.
 6. Read the answer in the scrollable conversation. Each message has a local

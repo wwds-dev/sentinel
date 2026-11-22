@@ -14,7 +14,7 @@ An amber provider/model control means “potentially paid cloud route is
 selected”; in the open dropdown, the hover text on each cloud entry says the
 same thing. Neither means the provider has credit, the model is available, or
 that the final price is known. In Chat's default Local only mode an amber
-selection is not used: the request runs on Ollama until you choose Hybrid
+selection is not used: the request runs on your saved Ollama default model until you choose Hybrid
 allowed or Cloud only and tick the provider.
 
 ## Before approving cloud use
@@ -35,7 +35,7 @@ on this Mac. Only the optional **Explain findings with AI** box sends anything, 
 off by default, and it sends only when a pass has findings: each finding's title and
 evidence (LAN IPs, MAC addresses, interface names, process names and IDs, ports and
 remote addresses) and the counts of devices, listeners and connections. Sentry's
-default provider is a paid cloud one; choose an Ollama model to keep the read on
+default provider is a paid cloud one; choose a local model (Ollama or LM Studio) to keep the read on
 this Mac. The request and the reply are saved in Saved Chats.
 
 ## Budgets and records

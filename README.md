@@ -75,7 +75,8 @@ than a local one (Ollama or LM Studio) is a paid selection: the control turns am
 selected, and every cloud entry says so on hover, so a cloud route is visible
 before you run it, not only after the cost is logged. Chat starts in Local only
 mode (Options → Execution mode) with every paid provider unticked (Options →
-Paid provider access), so a cloud provider picked in the run bar runs on Ollama
+Paid provider access), so a cloud provider picked in the run bar runs on your saved
+Ollama default model instead (this fallback is Ollama-only for now)
 until you switch to Hybrid allowed or Cloud only and tick that provider; while
 that substitution applies, the cost beside Run ends with "local only" and
 hovering it names the substitution.
@@ -88,8 +89,8 @@ recommended model is missing and another stands in, the route's reason says so.
 
 Chat's **Options → Execution mode** is enforced at send time. In **Local only**
 a cloud provider still selected in the run bar is never contacted and its model
-name is never sent to Ollama: the request goes to Ollama with the saved Ollama
-default model, the run-bar estimate reads `free · … · local only`, and hovering
+name is never sent to a local runtime: the request goes to Ollama with the saved
+Ollama default model (the fallback does not use LM Studio yet), the run-bar estimate reads `free · … · local only`, and hovering
 it names the substitution. In **Hybrid allowed** or **Cloud only**, a cloud
 provider whose permission is not ticked blocks the request: the estimate reads
 `blocked · see route` (hover for the reason) and **Send** shows **Request
@@ -123,7 +124,7 @@ Sentinel never shows that reply. A cloud provider may still bill for it: when
 the late reply arrives while Sentinel is open, its cost is recorded in Cost
 history as a cancelled run (`cancelled-exact`, or `cancelled-estimated` when the
 provider's token counts never arrived), and the Run log row keeps the status
-`cancelled` with that cost. A local Ollama model may stay busy until it
+`cancelled` with that cost. A local model (Ollama or LM Studio) may stay busy until it
 finishes, so your next local request can wait behind it.
 
 While Sentinel is open it also places an item in the macOS menu bar — a shield
@@ -475,7 +476,7 @@ Run the automated suite from the activated environment:
 pytest
 ```
 
-The suite never contacts a model provider or the local Ollama daemon:
+The suite never contacts a model provider or a local runtime (Ollama or LM Studio):
 `tests/conftest.py` serves every client's offline `KNOWN_MODELS` and points
 Chat's saved defaults at a temporary copy of `config/settings.json`, with an
 empty override, so neither the shipped defaults nor your own picks in
