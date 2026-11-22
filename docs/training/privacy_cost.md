@@ -14,7 +14,7 @@ An amber provider/model control means “potentially paid cloud route is
 selected”; in the open dropdown, the hover text on each cloud entry says the
 same thing. Neither means the provider has credit, the model is available, or
 that the final price is known. In Chat's default Local only mode an amber
-selection is not used: the request runs on your saved Ollama default model until you choose Hybrid
+selection is not used: the request runs on a local model (your saved Ollama default, or LM Studio when only it is running) until you choose Hybrid
 allowed or Cloud only and tick the provider.
 
 ## Before approving cloud use

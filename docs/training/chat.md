@@ -77,7 +77,7 @@ cloud request.
 
 Sentinel starts in **Local only** mode with every paid provider switched off.
 In that state a cloud provider you pick in the run bar is not used: the request
-runs on your saved Ollama default model instead (this fallback is Ollama-only for now), and the cost beside **Run** ends with "local only"
+runs on your saved Ollama default model instead, or on an LM Studio model when only LM Studio is running, and the cost beside **Run** ends with "local only"
 (hover it for the details). To use a cloud provider, choose **Options → Execution
 mode → Hybrid allowed** (or **Cloud only**), tick the provider under **Options →
 Paid provider access**, then press **Run** and confirm the cost prompt that
