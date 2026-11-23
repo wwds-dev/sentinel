@@ -14,6 +14,17 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Tunnel is one status card and five tabs.** The card shows the tunnel state
+  read from this Mac ("No tunnel interface up" or "Tunnel interface up: utun4",
+  which says nothing about traffic protection), the server picker, Import config
+  and **Connect**; **Disconnect** replaces Connect while a tunnel interface is up,
+  and both show until Sentinel has read the interfaces. Under it sit four cells:
+  Kill switch (Arm, Disarm, Verify), Local IP, Public IP and DNS leak; the amber
+  notice is one line with its full text as the tooltip. Everything else moved into
+  **Diagnose**, **Servers**, **Privacy**, **VPN apps** and **Advisor**; every
+  control that was there before is still there. **Ask Advisor** is no longer
+  styled as a second primary button, and its provider and model are under
+  **Change model**.
 - **Bug Spray is a target bar and three steps.** Target, program, scope type and
   severity read as one line at the top, with the badge "Scope declared, not
   verified" and **Edit** to change them. The work is split into tabs: **1 Radar**

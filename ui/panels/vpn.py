@@ -17,9 +17,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
+    QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget, QTextBrowser,
-    QVBoxLayout,
+    QVBoxLayout, QWidget,
 )
 
 from agents.vpn_agent.sentinel_chat_agent import build_configs
@@ -65,31 +65,38 @@ class VpnPanel(AgentPanel):
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
+    SAFETY_TEXT = (
+        "Connect starts WireGuard/OpenVPN; traffic protection is not verified. It may ask for your "
+        "administrator password. Example country profiles are templates and will "
+        "not connect until you import a real config or set a real endpoint. "
+        "Diagnostics and Action Preview remain read-only."
+    )
+
     def _build(self) -> None:
+        # Layout: docs/specs/agent-layouts.md, screen 3. One status card for
+        # what is live now (connection, kill switch, IPs, DNS leak); everything
+        # else in five tabs. A regrouping: every control that existed remains.
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        banner = QLabel(
-            "Connect starts WireGuard/OpenVPN; traffic protection is not verified. It may ask for your "
-            "administrator password. Example country profiles are templates and will "
-            "not connect until you import a real config or set a real endpoint. "
-            "Diagnostics and Action Preview remain read-only."
-        )
-        banner.setWordWrap(True)
-        banner.setObjectName("VPNSafetyBanner")
-        banner.setStyleSheet(
-            "color: #d0d8e0; background: #33240f; border: 1px solid #7a5a1e; "
-            "border-radius: 6px; padding: 6px 8px; font-size: 12px;")
-        layout.addWidget(banner)
-
-        # ── Live VPN connection ──────────────────────────────────────────
-        connect_group = QGroupBox("VPN Connection (live)")
-        connect_group.setObjectName("VPNConnectGroup")
-        connect_layout = QVBoxLayout(connect_group)
+        # ── Status card ──────────────────────────────────────────────────
+        self.status_card = QFrame()
+        self.status_card.setObjectName("VPNStatusCard")
+        self.status_card.setAttribute(Qt.WA_StyledBackground, True)
+        card = QVBoxLayout(self.status_card)
+        card.setContentsMargins(12, 10, 12, 10)
+        card.setSpacing(8)
 
         connect_row = QHBoxLayout()
-        connect_row.addWidget(QLabel("Server:"))
+        connect_row.setSpacing(8)
+        self.connection_dot = QLabel("●")
+        self.connection_dot.setObjectName("VPNStateDot")
+        connect_row.addWidget(self.connection_dot)
+        self.connection_state_label = QLabel("Tunnel state not checked")
+        self.connection_state_label.setObjectName("VPNStateText")
+        connect_row.addWidget(self.connection_state_label)
+        connect_row.addSpacing(8)
         self.connect_profile_box = MenuComboBox()
         self.connect_profile_box.setMinimumWidth(200)
         self.connect_profile_box.setToolTip(
@@ -100,24 +107,50 @@ class VpnPanel(AgentPanel):
         self.import_config_btn.setToolTip("Load a WireGuard .conf or OpenVPN .ovpn file.")
         self.import_config_btn.clicked.connect(self.import_vpn_config)
         connect_row.addWidget(self.import_config_btn)
-        connect_layout.addLayout(connect_row)
-
-        action_row = QHBoxLayout()
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.setObjectName("PrimaryAction")
+        self.connect_btn.setMinimumWidth(120)
         self.connect_btn.clicked.connect(self.connect_vpn)
-        action_row.addWidget(self.connect_btn)
+        connect_row.addWidget(self.connect_btn)
         self.disconnect_btn = QPushButton("Disconnect")
         self.disconnect_btn.setObjectName("DangerAction")
         self.disconnect_btn.clicked.connect(self.disconnect_vpn)
-        action_row.addWidget(self.disconnect_btn)
-        self.connection_status_label = QLabel("Connection state not checked.")
-        self.connection_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
-        action_row.addWidget(self.connection_status_label, 1)
-        connect_layout.addLayout(action_row)
+        connect_row.addWidget(self.disconnect_btn)
+        card.addLayout(connect_row)
 
-        ks_row = QHBoxLayout()
-        ks_row.addWidget(QLabel("Kill switch:"))
+        self.connection_status_label = QLabel("Connection state not checked.")
+        self.connection_status_label.setObjectName("VPNStatusDetail")
+        self.connection_status_label.setWordWrap(True)
+        card.addWidget(self.connection_status_label)
+
+        cells = QGridLayout()
+        cells.setHorizontalSpacing(10)
+        cells.setVerticalSpacing(0)
+
+        def cell(column: int, caption: str, value: QLabel, buttons: list) -> None:
+            box = QFrame()
+            box.setObjectName("VPNStatusCell")
+            box.setAttribute(Qt.WA_StyledBackground, True)
+            lay = QVBoxLayout(box)
+            lay.setContentsMargins(10, 8, 10, 8)
+            lay.setSpacing(4)
+            cap = QLabel(caption)
+            cap.setObjectName("MetricCaption")
+            lay.addWidget(cap)
+            value.setWordWrap(True)
+            value.setMinimumWidth(0)
+            value.setObjectName("VPNCellValue")
+            lay.addWidget(value)
+            lay.addStretch(1)
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            for button in buttons:
+                row.addWidget(button)
+            row.addStretch(1)
+            lay.addLayout(row)
+            cells.addWidget(box, 0, column)
+            cells.setColumnStretch(column, 1)
+
         self.arm_ks_btn = QPushButton("Arm")
         self.arm_ks_btn.setToolTip(
             "Block network traffic except the tunnel interface, the tunnel's "
@@ -125,128 +158,82 @@ class VpnPanel(AgentPanel):
             "tunnel cannot leak. Connect first, then arm. Only a WireGuard tunnel "
             "interface is exempt. Requires macOS pf and your administrator password.")
         self.arm_ks_btn.clicked.connect(self.arm_kill_switch)
-        ks_row.addWidget(self.arm_ks_btn)
         self.disarm_ks_btn = QPushButton("Disarm")
         self.disarm_ks_btn.clicked.connect(self.disarm_kill_switch)
-        ks_row.addWidget(self.disarm_ks_btn)
         self.verify_ks_btn = QPushButton("Verify")
         self.verify_ks_btn.setToolTip(
             "Ask pf what it really holds (read-only; never changes anything). "
             "Always asks for your administrator password, so it only runs when you press it. "
             "Without it the label is only a record of what Sentinel did.")
         self.verify_ks_btn.clicked.connect(self.verify_kill_switch)
-        ks_row.addWidget(self.verify_ks_btn)
         self.kill_switch_status_label = QLabel(
             vpn_connection.killswitch_status_text() or "Kill switch not armed.")
-        self.kill_switch_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
-        ks_row.addWidget(self.kill_switch_status_label, 1)
-        connect_layout.addLayout(ks_row)
+        cell(0, "Kill switch", self.kill_switch_status_label,
+             [self.arm_ks_btn, self.disarm_ks_btn, self.verify_ks_btn])
 
-        layout.addWidget(connect_group)
-        self.reload_connect_profiles()
-
-        # ── Your IP (local now, public on request) ───────────────────────
-        ip_group = QGroupBox("Your IP && DNS")
-        ip_group.setObjectName("VPNIpGroup")
-        ip_layout = QGridLayout(ip_group)
-        ip_layout.setSpacing(6)
-
-        ip_layout.addWidget(QLabel("Local:"), 0, 0)
         self.local_ip_label = QLabel("—")
-        self.local_ip_label.setWordWrap(True)
         self.local_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.local_ip_label.setToolTip(
             "Your LAN address and any VPN tunnel interface that currently holds "
             "one. Read locally — this contacts nothing.")
-        ip_layout.addWidget(self.local_ip_label, 0, 1)
         self.refresh_local_ip_btn = QPushButton("Refresh")
         self.refresh_local_ip_btn.setToolTip("Re-read local interface addresses. Local only.")
         self.refresh_local_ip_btn.clicked.connect(self.refresh_local_ip)
-        ip_layout.addWidget(self.refresh_local_ip_btn, 0, 2)
+        cell(1, "Local IP", self.local_ip_label, [self.refresh_local_ip_btn])
 
-        ip_layout.addWidget(QLabel("Public:"), 1, 0)
         self.public_ip_label = QLabel("Not checked")
-        self.public_ip_label.setWordWrap(True)
         self.public_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.public_ip_label.setToolTip(
             "Your exit IP, its location and network owner, and — only with an "
             "IPinfo key on a plan that returns it — whether it is flagged as a "
             "VPN/proxy/hosting range.")
-        ip_layout.addWidget(self.public_ip_label, 1, 1)
         self.check_public_ip_btn = QPushButton("Check public IP")
         self.check_public_ip_btn.setToolTip(
             "Contacts api.ipify.org for your exit IP, then IPinfo (when IPINFO_API_KEY "
             "is set) or ipapi.co for its location and network owner. Starts "
             "immediately. No AI provider is used.")
         self.check_public_ip_btn.clicked.connect(self.check_public_ip)
-        ip_layout.addWidget(self.check_public_ip_btn, 1, 2)
+        cell(2, "Public IP", self.public_ip_label, [self.check_public_ip_btn])
 
-        ip_layout.addWidget(QLabel("DNS leak:"), 2, 0)
         self.dns_leak_label = QLabel("Not checked")
-        self.dns_leak_label.setWordWrap(True)
         self.dns_leak_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.dns_leak_label.setToolTip(
             "Which DNS resolvers your traffic actually uses, and whether they sit "
             "outside your tunnel's network — a real egress test, not a guess.")
-        ip_layout.addWidget(self.dns_leak_label, 2, 1)
         self.dns_leak_btn = QPushButton("Run test")
         self.dns_leak_btn.setToolTip(
             "Optional: runs a real DNS-leak test via bash.ws (resolves probe "
             "hostnames and reads back the resolvers seen). No AI provider is used.")
         self.dns_leak_btn.clicked.connect(self.run_dns_leak_test)
-        ip_layout.addWidget(self.dns_leak_btn, 2, 2)
+        cell(3, "DNS leak", self.dns_leak_label, [self.dns_leak_btn])
+        card.addLayout(cells)
 
-        layout.addWidget(ip_group)
+        # The amber notice, as one line; the full text is its tooltip.
+        self.safety_banner = QLabel(
+            "Connect starts WireGuard/OpenVPN; traffic protection is not verified. "
+            "Hover for details.")
+        self.safety_banner.setObjectName("VPNSafetyBanner")
+        self.safety_banner.setWordWrap(True)
+        self.safety_banner.setToolTip(self.SAFETY_TEXT)
+        card.addWidget(self.safety_banner)
+        layout.addWidget(self.status_card)
+        self.reload_connect_profiles()
         self.refresh_local_ip()
 
-        # ── Deployment setup ─────────────────────────────────────────────
-        setup_group = QGroupBox("Deployment")
-        setup_group.setObjectName("VPNSetupGroup")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
+        # ── Tabs ─────────────────────────────────────────────────────────
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("VPNTabs")
+        self.tabs.setDocumentMode(True)
 
-        setup_layout.addWidget(QLabel("Mode:"), 0, 0)
-        self.mode_box = MenuComboBox()
-        self.mode_box.addItems(["Remote (VPS)", "Native (home LAN)"])
-        self.mode_box.setToolTip(
-            "Remote: traffic exits at a rented VPS — hides your IP, changes your "
-            "apparent country.\nNative: runs on hardware you own — an encrypted way "
-            "INTO your LAN, exit IP stays your home ISP."
-        )
-        setup_layout.addWidget(self.mode_box, 0, 1)
+        # Diagnose: connection check, action preview, and their result views.
+        diagnose = QWidget()
+        diagnose_layout = QVBoxLayout(diagnose)
+        diagnose_layout.setContentsMargins(0, 8, 0, 0)
+        diagnose_layout.setSpacing(8)
 
-        setup_layout.addWidget(QLabel("Protocol:"), 0, 2)
-        self.protocol_box = MenuComboBox()
-        self.protocol_box.addItems(["WireGuard", "OpenVPN 443 fallback", "Both"])
-        setup_layout.addWidget(self.protocol_box, 0, 3)
-
-        setup_layout.addWidget(QLabel("Server host:"), 1, 0)
-        self.host_input = QLineEdit()
-        self.host_input.setPlaceholderText("VPS IP or DDNS hostname (Config Builder)")
-        setup_layout.addWidget(self.host_input, 1, 1)
-
-        setup_layout.addWidget(QLabel("SSH user:"), 1, 2)
-        self.ssh_input = QLineEdit()
-        self.ssh_input.setPlaceholderText("e.g. root")
-        setup_layout.addWidget(self.ssh_input, 1, 3)
-
-        setup_layout.addWidget(QLabel("LAN subnet:"), 2, 0)
-        self.lan_input = QLineEdit()
-        self.lan_input.setPlaceholderText("Native mode, e.g. 192.168.1.0/24")
-        setup_layout.addWidget(self.lan_input, 2, 1)
-
-        setup_layout.addWidget(QLabel("Egress iface:"), 2, 2)
-        self.egress_input = QLineEdit()
-        self.egress_input.setPlaceholderText("server NIC, e.g. eth0")
-        setup_layout.addWidget(self.egress_input, 2, 3)
-
-        layout.addWidget(setup_group)
-
-        # ── Read-only connection check ─────────────────────────────────
         diagnostics_group = QGroupBox("Connection Check")
         diagnostics_group.setObjectName("VPNDiagnosticsGroup")
         diagnostics_layout = QVBoxLayout(diagnostics_group)
-
         diagnostics_note = QLabel(
             "Inspect installed VPN tools, active tunnels, the default route, and "
             "configured DNS. This check never connects, disconnects, or changes settings."
@@ -284,19 +271,17 @@ class VpnPanel(AgentPanel):
         )
         diagnostics_row.addWidget(self.external_checks_box)
         diagnostics_row.addStretch()
-
         self.diagnostics_stop_btn = QPushButton("Stop Check")
         self.diagnostics_stop_btn.setObjectName("DangerAction")
         self.diagnostics_stop_btn.setVisible(False)
         self.diagnostics_stop_btn.setEnabled(False)
         self.diagnostics_stop_btn.clicked.connect(self.stop_diagnostics)
         diagnostics_row.addWidget(self.diagnostics_stop_btn)
-
         self.diagnostics_btn = QPushButton("Check Connection")
         self.diagnostics_btn.clicked.connect(self.run_diagnostics)
         diagnostics_row.addWidget(self.diagnostics_btn)
         diagnostics_layout.addLayout(diagnostics_row)
-        layout.addWidget(diagnostics_group)
+        diagnose_layout.addWidget(diagnostics_group)
 
         preview_group = QGroupBox("Safe Action Preview")
         preview_layout = QHBoxLayout(preview_group)
@@ -310,8 +295,75 @@ class VpnPanel(AgentPanel):
         self.preview_action_btn = QPushButton("Preview")
         self.preview_action_btn.clicked.connect(self.preview_action)
         preview_layout.addWidget(self.preview_action_btn)
-        layout.addWidget(preview_group)
+        diagnose_layout.addWidget(preview_group)
 
+        self.diagnose_results = QTabWidget()
+        self.diagnose_results.setObjectName("VPNDiagnoseResults")
+        self.diagnostics_view = SectionView()
+        self.diagnose_results.addTab(self.diagnostics_view, "Diagnostics")
+        self.action_view = SectionView()
+        self.diagnose_results.addTab(self.action_view, "Action Preview")
+        self.config_inspection_view = SectionView()
+        self.diagnose_results.addTab(self.config_inspection_view, "Config Inspection")
+        self.execution_view = SectionView()
+        self.diagnose_results.addTab(self.execution_view, "Execution")
+        diagnose_layout.addWidget(self.diagnose_results, 1)
+        self.tabs.addTab(diagnose, "Diagnose")
+
+        # Servers: the deployment form and the provisioned servers.
+        servers = QWidget()
+        servers_layout = QVBoxLayout(servers)
+        servers_layout.setContentsMargins(0, 8, 0, 0)
+        servers_layout.setSpacing(8)
+        setup_group = QGroupBox("Deployment")
+        setup_group.setObjectName("VPNSetupGroup")
+        setup_layout = QGridLayout(setup_group)
+        setup_layout.setSpacing(6)
+        setup_layout.addWidget(QLabel("Mode:"), 0, 0)
+        self.mode_box = MenuComboBox()
+        self.mode_box.addItems(["Remote (VPS)", "Native (home LAN)"])
+        self.mode_box.setToolTip(
+            "Remote: traffic exits at a rented VPS — hides your IP, changes your "
+            "apparent country.\nNative: runs on hardware you own — an encrypted way "
+            "INTO your LAN, exit IP stays your home ISP."
+        )
+        setup_layout.addWidget(self.mode_box, 0, 1)
+        setup_layout.addWidget(QLabel("Protocol:"), 0, 2)
+        self.protocol_box = MenuComboBox()
+        self.protocol_box.addItems(["WireGuard", "OpenVPN 443 fallback", "Both"])
+        setup_layout.addWidget(self.protocol_box, 0, 3)
+        setup_layout.addWidget(QLabel("Server host:"), 1, 0)
+        self.host_input = QLineEdit()
+        self.host_input.setPlaceholderText("VPS IP or DDNS hostname (Config Builder)")
+        setup_layout.addWidget(self.host_input, 1, 1)
+        setup_layout.addWidget(QLabel("SSH user:"), 1, 2)
+        self.ssh_input = QLineEdit()
+        self.ssh_input.setPlaceholderText("e.g. root")
+        setup_layout.addWidget(self.ssh_input, 1, 3)
+        setup_layout.addWidget(QLabel("LAN subnet:"), 2, 0)
+        self.lan_input = QLineEdit()
+        self.lan_input.setPlaceholderText("Native mode, e.g. 192.168.1.0/24")
+        setup_layout.addWidget(self.lan_input, 2, 1)
+        setup_layout.addWidget(QLabel("Egress iface:"), 2, 2)
+        self.egress_input = QLineEdit()
+        self.egress_input.setPlaceholderText("server NIC, e.g. eth0")
+        setup_layout.addWidget(self.egress_input, 2, 3)
+        servers_layout.addWidget(setup_group)
+        self.servers_tab = ServersTab()
+        servers_layout.addWidget(self.servers_tab, 1)
+        self.tabs.addTab(servers, "Servers")
+
+        self.privacy_tab = PrivacyTab()
+        self.tabs.addTab(self.privacy_tab, "Privacy")
+
+        self.apps_tab = AppsTab()
+        self.tabs.addTab(self.apps_tab, "VPN apps")
+
+        # Advisor: the offline config builder and the model-backed advisor.
+        advisor = QWidget()
+        advisor_layout = QVBoxLayout(advisor)
+        advisor_layout.setContentsMargins(0, 8, 0, 0)
+        advisor_layout.setSpacing(8)
         # Configuration generation is deterministic and offline; keep it apart
         # from the model-backed troubleshooting advisor below.
         builder_row = QHBoxLayout()
@@ -326,74 +378,49 @@ class VpnPanel(AgentPanel):
         )
         self.build_btn.clicked.connect(self.build_config)
         builder_row.addWidget(self.build_btn)
-        layout.addLayout(builder_row)
+        advisor_layout.addLayout(builder_row)
 
-        # ── Advisor question ─────────────────────────────────────────────
         self.question_input = QLineEdit()
         self.question_input.setPlaceholderText(
             "Ask the advisor — e.g. \"WireGuard won't connect on hotel wifi, what now?\""
         )
         self.question_input.returnPressed.connect(self.run)
-        layout.addWidget(self.question_input)
+        advisor_layout.addWidget(self.question_input)
 
+        # Secondary: Connect is the one primary action on this screen.
         self.run_btn = QPushButton("Ask Advisor")
         self.run_btn.setMinimumWidth(120)
-        self.run_btn.setObjectName("PrimaryAction")
+        self.run_btn.setObjectName("AdvisorAction")
         self.run_btn.clicked.connect(self.run)
-
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
         self.set_busy(self.run_btn, self.stop_btn, False)
-
-        # ── Provider / action row ────────────────────────────────────────
         provider_row_container = self.build_run_bar(
             self.run_btn,
             stop=self.stop_btn,
             context="Advisor",
+            fold_pickers=True,
         )
+        advisor_layout.addWidget(provider_row_container)
 
-        layout.addWidget(provider_row_container)
-
-        # ── Results tabs ─────────────────────────────────────────────────
-        self.tabs = QTabWidget()
-
-        self.diagnostics_view = SectionView()
-        self.tabs.addTab(self.diagnostics_view, "Diagnostics")
-
+        self.advisor_results = QTabWidget()
+        self.advisor_results.setObjectName("VPNAdvisorResults")
         self.advisor_box = QTextBrowser()
         self.advisor_box.setOpenExternalLinks(False)
-        self.tabs.addTab(self.advisor_box, "Advisor")
-
+        self.advisor_results.addTab(self.advisor_box, "Advisor")
         self.config_box = QTextBrowser()
         self.config_box.setOpenExternalLinks(False)
-        self.tabs.addTab(self.config_box, "Config && Commands")
-
-        self.action_view = SectionView()
-        self.tabs.addTab(self.action_view, "Action Preview")
-
-        self.config_inspection_view = SectionView()
-        self.tabs.addTab(self.config_inspection_view, "Config Inspection")
-
-        self.execution_view = SectionView()
-        self.tabs.addTab(self.execution_view, "Execution")
-
-        self.privacy_tab = PrivacyTab()
-        self.tabs.addTab(self.privacy_tab, "Privacy")
-
-        self.servers_tab = ServersTab()
-        self.tabs.addTab(self.servers_tab, "Servers")
-
-        self.apps_tab = AppsTab()
-        self.tabs.addTab(self.apps_tab, "VPN Apps")
-
+        self.advisor_results.addTab(self.config_box, "Config && Commands")
         self.advisor_box.setPlaceholderText(
             "Troubleshooting advice will appear after you select Ask Advisor."
         )
         self.config_box.setPlaceholderText(
             "Generated VPN configuration and commands will appear after Build Config."
         )
+        advisor_layout.addWidget(self.advisor_results, 1)
+        self.tabs.addTab(advisor, "Advisor")
 
         layout.addWidget(self.tabs, 1)
 
@@ -408,7 +435,48 @@ class VpnPanel(AgentPanel):
         bottom_row.addWidget(self.clear_btn)
         layout.addLayout(bottom_row)
 
+        self._set_tunnel_state(None)
         self.reload_profiles()
+
+    # ── Where results show ──────────────────────────────────────────────
+    def show_result(self, view) -> None:
+        """Bring a result view to the front: its tab, and the tab inside it."""
+        for inner in (self.diagnose_results, self.advisor_results):
+            if inner.indexOf(view) >= 0:
+                inner.setCurrentWidget(view)
+                self.tabs.setCurrentWidget(inner.parentWidget())
+                return
+        self.tabs.setCurrentWidget(view)
+
+    def current_view(self):
+        """The view in front: inside Diagnose or Advisor, the inner tab's page."""
+        page = self.tabs.currentWidget()
+        for inner in (self.diagnose_results, self.advisor_results):
+            if inner.parentWidget() is page:
+                return inner.currentWidget()
+        return page
+
+    # ── Tunnel state (local view only) ──────────────────────────────────
+    def _set_tunnel_state(self, tunnels: list[str] | None) -> None:
+        """Connect or Disconnect from what this Mac shows, never a guess.
+
+        `tunnels` comes from the local interface snapshot (off the UI thread).
+        None means not known yet: both buttons stay, so Disconnect is always
+        reachable when Sentinel cannot tell. A tunnel interface being up says
+        nothing about traffic protection; the label does not claim it.
+        """
+        if tunnels is None:
+            state, text = "unknown", "Tunnel state not checked"
+        elif tunnels:
+            state, text = "up", "Tunnel interface up: " + ", ".join(tunnels)
+        else:
+            state, text = "down", "No tunnel interface up"
+        self.connection_state_label.setText(text)
+        self.connection_dot.setProperty("state", state)
+        self.connection_dot.style().unpolish(self.connection_dot)
+        self.connection_dot.style().polish(self.connection_dot)
+        self.connect_btn.setVisible(state != "up")
+        self.disconnect_btn.setVisible(state != "down")
 
     # ── The advisor (paid) ──────────────────────────────────────────────
     def context_prefix(self) -> str:
@@ -446,7 +514,7 @@ class VpnPanel(AgentPanel):
 
         self._last_response = ""
         self.advisor_box.clear()
-        self.tabs.setCurrentWidget(self.advisor_box)
+        self.show_result(self.advisor_box)
         self.status_label.setText("Consulting advisor…")
         self.set_busy(self.run_btn, self.stop_btn, True)
 
@@ -611,6 +679,7 @@ class VpnPanel(AgentPanel):
         local = snapshot.get("local")
         if local:
             self.local_ip_label.setText(self._format_local_ip(local))
+            self._set_tunnel_state(list(local.get("tunnels") or []))
         public = snapshot.get("public")
         if public is not None:
             self.public_ip_label.setText(self._format_public_ip(public))
@@ -742,7 +811,7 @@ class VpnPanel(AgentPanel):
         execute(), which aborts if anything differs) or None."""
         review = vpn_execution.review_execution(action, profile)
         self.execution_view.show_sections(review.sections())
-        self.tabs.setCurrentWidget(self.execution_view)
+        self.show_result(self.execution_view)
         if not review.allowed:
             self.connection_status_label.setText(
                 ("Refused: " + "; ".join(review.blockers))[:300])
@@ -802,7 +871,7 @@ class VpnPanel(AgentPanel):
         self.disconnect_btn.setEnabled(True)
         if result.get("sections"):
             self.execution_view.show_sections(result["sections"])
-            self.tabs.setCurrentWidget(self.execution_view)
+            self.show_result(self.execution_view)
         if result.get("status_line"):
             self.connection_status_label.setText(str(result["status_line"])[:300])
         elif result.get("success"):
@@ -968,7 +1037,7 @@ class VpnPanel(AgentPanel):
                 return
 
         self.diagnostics_view.clear()
-        self.tabs.setCurrentWidget(self.diagnostics_view)
+        self.show_result(self.diagnostics_view)
         self.status_label.setText(
             "Checking locally and externally…" if include_external else "Checking locally…"
         )
@@ -996,7 +1065,7 @@ class VpnPanel(AgentPanel):
         self._finish_diagnostics_ui()
         self._last_diagnostics_report = report
         self.diagnostics_view.show_sections(report.sections(), raw=report.as_text())
-        self.tabs.setCurrentWidget(self.diagnostics_view)
+        self.show_result(self.diagnostics_view)
         self.status_label.setText("Connection check stopped." if report.cancelled else "Connection check complete.")
 
     def _on_diagnostics_error(self, error: str) -> None:
@@ -1004,7 +1073,7 @@ class VpnPanel(AgentPanel):
         self.diagnostics_view.show_sections(
             [("Connection check could not finish", error, False)], raw=error
         )
-        self.tabs.setCurrentWidget(self.diagnostics_view)
+        self.show_result(self.diagnostics_view)
         self.status_label.setText("Connection check error.")
 
     def stop_diagnostics(self) -> None:
@@ -1031,7 +1100,7 @@ class VpnPanel(AgentPanel):
         self.config_inspection_view.show_sections(
             inspection.sections(), raw=inspection.as_text()
         )
-        self.tabs.setCurrentWidget(self.config_inspection_view)
+        self.show_result(self.config_inspection_view)
         self.status_label.setText(
             "Configuration inspected locally — key material discarded."
         )
@@ -1150,7 +1219,7 @@ class VpnPanel(AgentPanel):
             self._last_diagnostics_report,
         )
         self.action_view.show_sections(preview.sections(), raw=preview.as_text())
-        self.tabs.setCurrentWidget(self.action_view)
+        self.show_result(self.action_view)
         self.status_label.setText(
             "Action preview ready — nothing executed."
             if preview.valid else "Action preview unavailable."
@@ -1168,7 +1237,7 @@ class VpnPanel(AgentPanel):
             egress_iface=self.egress_input.text().strip() or "eth0",
         )
         self.config_box.setPlainText(text)
-        self.tabs.setCurrentWidget(self.config_box)
+        self.show_result(self.config_box)
         self.status_label.setText("Config rendered.")
 
     def clear(self) -> None:

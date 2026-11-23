@@ -234,7 +234,9 @@ Use only a network you own. Start with the background watch off and **Explain fi
 
 The next steps need macOS, an owned WireGuard config and an administrator account; run them on a lab network you can recover.
 
-9. Your IP & DNS. Open Tunnel.
+9. Status card: Local IP, Public IP, DNS leak, Connect/Disconnect. Open Tunnel.
+
+- [ ] With no tunnel up, the card says "No tunnel interface up" and shows Connect only; after a connect it says "Tunnel interface up: <name>" and Disconnect replaces Connect. Before the first local read both buttons show. Nothing on the card claims traffic is protected.
 
 - [ ] Local fills in without any dialog and contacts nothing; Refresh works.
 - [ ] Check public IP and Run test start immediately (no confirmation); the Run test label says which resolvers answered; no flag appears without an `IPINFO_API_KEY`.

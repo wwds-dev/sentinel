@@ -358,7 +358,7 @@ class TestInspectConfig:
         assert "Full tunnel" in shown or "0.0.0.0/0" in shown
         assert PRIVATE_KEY not in shown
         assert "key material discarded" in tunnel.status_label.text()
-        assert tunnel.tabs.currentWidget() is tunnel.config_inspection_view
+        assert tunnel.current_view() is tunnel.config_inspection_view
         assert gate.run.scripts == [] and gate.workers == []     # read-only: nothing executed
 
     @pytest.mark.parametrize("make", [

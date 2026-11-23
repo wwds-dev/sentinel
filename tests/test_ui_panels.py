@@ -3505,15 +3505,18 @@ def tunnel(qapp, monkeypatch, tmp_path):
 
 class TestTunnelPanel:
 
-    def test_it_builds_hidden_with_nine_tabs(self, tunnel):
+    def test_it_builds_hidden_with_five_tabs(self, tunnel):
+        # docs/specs/agent-layouts.md, screen 3: the nine flat tabs became five,
+        # with the result views inside Diagnose and Advisor.
         assert tunnel.isHidden() is True
-        assert tunnel.tabs.count() == 9
-        assert tunnel.tabs.tabText(0) == "Diagnostics"
-        assert tunnel.tabs.tabText(3) == "Action Preview"
-        assert tunnel.tabs.tabText(5) == "Execution"
-        assert tunnel.tabs.tabText(6) == "Privacy"
-        assert tunnel.tabs.tabText(7) == "Servers"
-        assert tunnel.tabs.tabText(8) == "VPN Apps"
+        assert [tunnel.tabs.tabText(i) for i in range(tunnel.tabs.count())] == [
+            "Diagnose", "Servers", "Privacy", "VPN apps", "Advisor"]
+        diagnose = tunnel.diagnose_results
+        assert [diagnose.tabText(i) for i in range(diagnose.count())] == [
+            "Diagnostics", "Action Preview", "Config Inspection", "Execution"]
+        advisor = tunnel.advisor_results
+        assert [advisor.tabText(i) for i in range(advisor.count())] == [
+            "Advisor", "Config && Commands"]
 
     def test_verify_button_starts_a_verify_worker_without_a_confirmation(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
@@ -3662,7 +3665,7 @@ class TestTunnelPanel:
         (title, text, default), = asked
         assert "wg0.conf" in text and "Target: " in text and "wg-quick" in text and "To undo" in text
         assert default == QMessageBox.No
-        assert tunnel.tabs.currentWidget() is tunnel.execution_view
+        assert tunnel.current_view() is tunnel.execution_view
 
     def test_a_blocked_review_refuses_without_asking(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
@@ -3703,7 +3706,7 @@ class TestTunnelPanel:
             "sections": [("Result", "The command completed.", False)],
         })
         assert "NOT verified" in tunnel.connection_status_label.text()
-        assert tunnel.tabs.currentWidget() is tunnel.execution_view
+        assert tunnel.current_view() is tunnel.execution_view
 
     def test_connecting_a_template_profile_does_nothing(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
@@ -3864,7 +3867,7 @@ class TestTunnelPanel:
         assert "WireGuard" in tunnel.connection_status_label.text()
         assert "not verified" in tunnel.connection_status_label.text()
         assert tunnel.connect_btn.isEnabled() is True
-        assert tunnel.tabs.tabText(4) == "Config Inspection"
+        assert tunnel.diagnose_results.tabText(2) == "Config Inspection"
         assert tunnel.external_checks_box.isChecked() is False
         assert tunnel.profile_box.currentText() == "Travel VPS"
 
@@ -4002,7 +4005,7 @@ class TestTunnelPanel:
         tunnel.build_config()
         text = tunnel.config_box.toPlainText()
         assert "203.0.113.9" in text
-        assert tunnel.tabs.currentWidget() is tunnel.config_box
+        assert tunnel.current_view() is tunnel.config_box
         assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
 
     def test_local_connection_check_uses_no_model_or_external_permission(self, tunnel):
@@ -4017,7 +4020,7 @@ class TestTunnelPanel:
         tunnel.action_box.setCurrentText("Disconnect")
         tunnel.preview_action()
 
-        assert tunnel.tabs.currentWidget() is tunnel.action_view
+        assert tunnel.current_view() is tunnel.action_view
         assert "sudo wg-quick down wg3" in tunnel.action_view._raw
         assert "nothing executed" in tunnel.status_label.text().lower()
         assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
@@ -4045,7 +4048,7 @@ AllowedIPs = 0.0.0.0/0
 
         tunnel.inspect_config()
 
-        assert tunnel.tabs.currentWidget() is tunnel.config_inspection_view
+        assert tunnel.current_view() is tunnel.config_inspection_view
         assert secret not in tunnel.config_inspection_view._raw
         assert "key material discarded" in tunnel.status_label.text().lower()
         assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
@@ -4072,7 +4075,7 @@ AllowedIPs = 0.0.0.0/0
             dns_servers=["10.0.0.53"],
             openvpn_running=False,
         ))
-        assert tunnel.tabs.currentWidget() is tunnel.diagnostics_view
+        assert tunnel.current_view() is tunnel.diagnostics_view
         assert "utun7" in tunnel.diagnostics_view._raw
         assert tunnel.status_label.text() == "Connection check complete."
 

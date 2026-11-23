@@ -633,6 +633,33 @@ _GREEN_STYLESHEET = """
             padding: 2px 8px;
             font-size: 11px;
         }
+        QFrame#VPNStatusCard {
+            background-color: #101311;
+            border: 1px solid #232a26;
+            border-radius: 10px;
+        }
+        QFrame#VPNStatusCell {
+            background-color: #151816;
+            border: 1px solid #232a26;
+            border-radius: 8px;
+        }
+        QLabel#VPNStateDot { font-size: 13px; color: #7d8983; }
+        QLabel#VPNStateDot[state="up"] { color: #3cff88; }
+        QLabel#VPNStateDot[state="down"] { color: #f85149; }
+        QLabel#VPNStateText {
+            color: #e8ece9;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        QLabel#VPNStatusDetail, QLabel#VPNCellValue {
+            color: #7d8983;
+            font-size: 12px;
+        }
+        QLabel#VPNCellValue { color: #e8ece9; }
+        QLabel#VPNSafetyBanner {
+            color: #f0c040;
+            font-size: 11px;
+        }
         QLabel#ResultsHeading {
             color: #e8ece9;
             font-size: 15px;

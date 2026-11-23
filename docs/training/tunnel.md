@@ -3,7 +3,7 @@
 **Goal:** compare the current VPN state with an intended profile, understand the topology, and either create a reviewable configuration or run a gated connection. **Time:** 30 minutes.
 
 Tunnel is for infrastructure you own or administer. It has six distinct
-paths: **VPN Connection (live)** actually connects or disconnects a real
+paths: **Connect** in the status card actually connects or disconnects a real
 tunnel, but only through an execution gate; **Connection Check** reads current
 status; **Safe Action Preview** shows but cannot run a proposed change; the
 **Advisor** uses an AI model; and **Build Config** and **Config Inspection** are
@@ -12,16 +12,18 @@ anything to a model and does not count against an AI budget. Neither do Connect
 and Disconnect: only **Ask Advisor** uses a model. Three more tabs act on this
 Mac or on a server you own, each behind its own confirmation: **Privacy**
 (hardware address, Tor, proxy chain), **Servers** (a VPN server you own) and
-**VPN Apps** (start and stop the Mullvad app's own tunnel; ProtonVPN is shown, not controlled).
+**VPN apps** (start and stop the Mullvad app's own tunnel; ProtonVPN is shown, not controlled).
 
-The amber banner at the top of the screen states the boundary: connecting starts
+**Layout.** A status card at the top holds what is live now: the tunnel state (read from this Mac's interfaces: "No tunnel interface up" or "Tunnel interface up: utun4"; an interface being up does not mean traffic is protected), the **Server** picker, **Import config…** and **Connect**, which **Disconnect** replaces while a tunnel interface is up (before the first local read both show); then four cells: **Kill switch** (Arm, Disarm, Verify), **Local IP** (Refresh), **Public IP** (Check public IP) and **DNS leak** (Run test); then the amber notice as one line, with its full text as the tooltip. Below it five tabs: **Diagnose** (Connection Check, Safe Action Preview and the Diagnostics, Action Preview, Config Inspection and Execution results), **Servers** (the Deployment form and your servers), **Privacy**, **VPN apps**, and **Advisor** (Build Config, the advisor question with its run bar, and the Advisor and Config & Commands results). Provider and model are under **Change model** in the Advisor's run bar.
+
+The amber line in the status card (hover it for the full text) states the boundary: connecting starts
 WireGuard or OpenVPN and may ask for your administrator password, traffic
 protection is not verified afterwards, and the example country profiles are
 templates that will not connect until you import a real config. Only the live
-connection, the kill switch and the actions on the Privacy, Servers and VPN Apps
+connection, the kill switch and the actions on the Privacy, Servers and VPN apps
 tabs can change anything; every other path stays read-only.
 
-## VPN Connection (live)
+## Connect and Disconnect (status card)
 
 This is the only path that touches a real tunnel. Choose a **Server** profile,
 or select **Import config…** to load a WireGuard `.conf` or OpenVPN `.ovpn` file
@@ -40,7 +42,7 @@ file yet, the first import creates one that holds only the imported profile, so
 the starter profiles disappear from the pickers.
 
 Selecting **Connect** or **Disconnect** never runs the command immediately. It
-first opens the **Execution** results tab with a target review, and only then
+first opens the **Execution** results tab (under Diagnose) with a target review, and only then
 asks a Yes/No question that defaults to **No**. The gate has fixed stages:
 
 1. **Target review** validates the profile and lists any blockers, warnings and
@@ -146,7 +148,7 @@ WireGuard it looks for the tunnel's run records and, for a full tunnel, checks
 which interface the route to a public address now uses (a routing lookup; no
 traffic is sent). For OpenVPN it checks that the process Sentinel started exists.
 **Verified never means a handshake happened, DNS is safe, or traffic is
-protected** — confirm with Connection Check, **Your IP & DNS** and, if it
+protected** — confirm with Connection Check, the status card's IP and DNS cells and, if it
 matters, an external IP check, rather than trusting the button alone.
 
 A config that splits the default route into two halves (`0.0.0.0/1` and
@@ -260,10 +262,10 @@ useful clues, not proof of anonymity or a complete leak test. A VPN interface
 can be active while an application uses another route, and a configured DNS
 server list does not show every resolver an application might contact.
 
-### Your IP & DNS
+### Local IP, Public IP and DNS leak
 
-The **Your IP & DNS** group is separate from Check Connection and is always
-visible. **Local** reads your LAN address and any active tunnel interface (IPv4
+These three cells in the status card are separate from Check Connection and always
+visible. **Local IP** reads your LAN address and any active tunnel interface (IPv4
 only) with no network contact; it also runs once when the panel opens. **Check
 public IP** contacts an address service — IPinfo when an `IPINFO_API_KEY` is set,
 otherwise `ipapi.co` — to show your exit IP, its location and network owner. A
@@ -294,7 +296,7 @@ IP re-checks only if you already ran it this session.
 3. Compare **Default interface** with the behavior you expect. Full-tunnel VPNs
    normally influence the default route; split tunnels may not.
 4. Treat **Configured DNS servers** as context. If DNS behavior matters, follow
-   up with **Your IP & DNS → Run test**, keeping its limits in mind.
+   up with **DNS leak → Run test**, keeping its limits in mind.
 5. Copy an individual card when asking the Advisor for help. Never copy private
    keys or complete secret configuration files into an AI request.
 
@@ -326,7 +328,7 @@ an arbitrary active `utun` belongs to the selected profile.
 **Known limitation:** this also applies to a tunnel Sentinel itself started. Right
 after a verified Connect, Connection Check may still report the selected tunnel
 as not active. This has not been confirmed on a Mac yet; until it is, trust the
-Execution tab's result and **Your IP & DNS → Local**, which lists the tunnel
+Execution tab's result and **Local IP**, which lists the tunnel
 interface and its address.
 
 The **Recommended next steps** card prioritizes concrete follow-up work. Follow
@@ -438,7 +440,7 @@ changed"). It never contacts the internet and never changes anything. Until the
 build that fixed it, these checks were scheduled but never ran, so you may now
 see warnings you have not seen before.
 
-## VPN Apps tab
+## VPN apps tab
 
 Two cards, one per app. Each shows the state the app reports. Mullvad's buttons are greyed out when the
 app is not installed. **Refresh** reads the state again.
@@ -460,7 +462,7 @@ from your Proton account and use **Import config…**.
 
 Every Mullvad Connect and Disconnect asks first (default **No**), runs in the
 background and is not logged. A connected app is not proof of protection:
-check the exit address under **Your IP & DNS**. While either app is connected,
+check the exit address under the status card's IP and DNS cells. While either app is connected,
 Tunnel's kill switch refuses to arm, and connecting a Tunnel profile on top of
 it warns that two VPNs will stack.
 
@@ -529,7 +531,7 @@ text editor or in the official WireGuard app.
 6. **Connect.** Read the Execution review, confirm, enter the administrator
    password. Then run **Check Connection** again: a recent handshake and a
    default interface that matches the profile are the evidence you want.
-7. **Verify.** In **Your IP & DNS**, run **Check public IP** (the exit address
+7. **Verify.** In the status card's IP and DNS cells, run **Check public IP** (the exit address
    should differ from step 5) and **Run test** (the resolvers should not belong
    to your ISP). One passing result does not prove the other.
 8. **Arm the kill switch** only after the tunnel is up and verified, against the
@@ -547,7 +549,7 @@ If you are locked out, use the recovery command below. It works without Sentinel
 Tunnel has three kinds of function, and which you get depends on what is already
 running on the Mac.
 
-- **Observe** needs nothing installed: Connection Check, **Your IP & DNS**, the
+- **Observe** needs nothing installed: Connection Check, the status card's IP and DNS cells, the
   DNS-leak test, config inspection and the health monitor.
 - **Guard** is the kill switch.
 - **Operate** needs tools: Connect and Disconnect need `wg-quick` or `openvpn`;
@@ -558,7 +560,7 @@ running on the Mac.
 Let the app run the tunnel. It handles relay choice, reconnecting and its own
 firewall better than a second tool can. Use Tunnel to check it:
 
-1. Run **Check public IP** and **Run test** in **Your IP & DNS**. The exit
+1. Run **Check public IP** and **Run test** in the status card's IP and DNS cells. The exit
    address should belong to the provider and the resolvers should be the
    provider's, not your ISP's. Provider-run check pages (for Mullvad,
    `am.i.mullvad.net`) confirm the same from the other side.
@@ -579,18 +581,18 @@ cannot be read) and tells you why. Use the app's own "always require VPN" or
 lockdown setting. If you connect a Tunnel profile while such an app is
 connected, the Connect review warns that two VPNs will stack.
 
-The **VPN Apps** tab can also start and stop Mullvad for you (through Mullvad's
+The **VPN apps** tab can also start and stop Mullvad for you (through Mullvad's
 own command-line tool) and choose its country or city. Log in with the Mullvad app
 first: Tunnel never asks for or keeps your account number, and Connect refuses
 while you are logged out, because Mullvad would otherwise block all traffic. The
 same tab shows ProtonVPN's state, but it cannot start or stop Proton: macOS accepts
 the request and Proton's extension ignores it, so use the ProtonVPN app for that
 (or download a Proton config and use **Import config…**). After connecting either
-one, confirm the exit address under **Your IP & DNS**.
+one, confirm the exit address under the status card's IP and DNS cells.
 
 ### B. No VPN is running
 
-1. Run **Your IP & DNS** first. This is what the websites you visit and your ISP
+1. Run the status card's IP and DNS cells first. This is what the websites you visit and your ISP
    currently see.
 2. On public Wi-Fi, use **Hardware address → Randomise…** (Privacy tab) before
    joining, then connect a tunnel.
