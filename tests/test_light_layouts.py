@@ -169,3 +169,34 @@ def test_forge_run_bar_has_no_spare_height(win):
     # The folded bar is one row: no taller than its tallest control plus margins.
     tallest = max(w.sizeHint().height() for w in bar.findChildren(QPushButton) if w.isVisibleTo(bar))
     assert bar.sizeHint().height() <= tallest + 20
+
+
+def _forge_primary_names(forge):
+    return [b.text() for b in _primaries(forge)]
+
+
+def test_forge_has_exactly_one_primary_through_the_spec_lifecycle(win):
+    forge = win.panels["manager"]
+    win.select_agent("manager")
+    QApplication.processEvents()
+    assert _forge_primary_names(forge) == ["Analyze Idea"]
+
+    # A spec is pending and can be approved: Approve is the only green button.
+    forge.spec_group.setVisible(True)
+    forge.pending_spec = {"name": "x"}
+    forge.approve_btn.setEnabled(True)
+    forge._sync_primary()
+    QApplication.processEvents()
+    assert _forge_primary_names(forge) == ["Approve && Create Agent"]
+
+    # A spec that cannot be created leaves Analyze green (Approve is disabled).
+    forge.approve_btn.setEnabled(False)
+    forge._sync_primary()
+    assert _forge_primary_names(forge) == ["Analyze Idea"]
+
+    forge.approve_btn.setEnabled(True)
+    forge._sync_primary()
+    forge.reject_spec()
+    QApplication.processEvents()
+    assert _forge_primary_names(forge) == ["Analyze Idea"]
+    forge.log.clear()
