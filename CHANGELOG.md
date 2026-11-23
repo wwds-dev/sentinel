@@ -97,6 +97,8 @@ and the git log, and is not back-filled here.
   folder being erased.
 
 ### Security
+- **The kill switch blocks DNS to your local network.** Armed, it still lets the LAN through (printers, NAS, the router's page) but drops DNS lookups (port 53, UDP and TCP) to it, so a lookup to your router can no longer go out in the clear beside the tunnel. Lookups inside the tunnel still work. A new **Allow local network DNS** tick under the kill switch (off by default, remembered) lets them out if you need a local DNS server; it applies from the next Arm, and the Arm dialog says which way it is set. Owner decision 2026-11-23 (readiness audit H1).
+- **Connect says when system DNS stays in use.** The Connect review now warns when the tunnel leaves macOS on its current DNS servers: a WireGuard config with no `DNS =` line, and every OpenVPN config (Sentinel's OpenVPN does not apply DNS a server pushes), and shows whether the kill switch blocks local network DNS (readiness audit H2).
 - **Emergency Reset: a local-model measurement that finishes late writes
   nothing.** A measurement run still waiting on a model when you reset could
   finish while the data folder was being erased and write its ratings, the

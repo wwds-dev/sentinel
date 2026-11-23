@@ -62,13 +62,15 @@ class _FakeKS:
     def __init__(self, supported=True):
         self._supported = supported
         self.arm_calls = []
+        self.lan_dns = []                  # allow_lan_dns of each arm call
         self.disarm_calls = 0
 
     def is_supported(self):
         return self._supported
 
-    def arm(self, endpoints, allow):
+    def arm(self, endpoints, allow, allow_lan_dns=None):
         self.arm_calls.append((list(endpoints), list(allow)))
+        self.lan_dns.append(allow_lan_dns)
         return True, "Kill switch ARMED"
 
     def disarm(self):
@@ -226,8 +228,9 @@ def test_a_failed_arm_reports_the_recovery_command(real_ks, monkeypatch):
 # ── Final review: OpenVPN tunnels and OpenVPN config spellings ──────────────
 
 class _FakeKSWithDevices(_FakeKS):
-    def arm(self, endpoints, allow, extra_interfaces=None):
+    def arm(self, endpoints, allow, extra_interfaces=None, allow_lan_dns=None):
         self.arm_calls.append((list(endpoints), list(allow), list(extra_interfaces or [])))
+        self.lan_dns.append(allow_lan_dns)
         return True, "Kill switch ARMED"
 
 

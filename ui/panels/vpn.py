@@ -127,7 +127,8 @@ class VpnPanel(AgentPanel):
         cells.setHorizontalSpacing(10)
         cells.setVerticalSpacing(0)
 
-        def cell(column: int, caption: str, value: QLabel, buttons: list) -> None:
+        def cell(column: int, caption: str, value: QLabel, buttons: list,
+                 extra=None) -> None:
             box = QFrame()
             box.setObjectName("VPNStatusCell")
             box.setAttribute(Qt.WA_StyledBackground, True)
@@ -141,6 +142,8 @@ class VpnPanel(AgentPanel):
             value.setMinimumWidth(0)
             value.setObjectName("VPNCellValue")
             lay.addWidget(value)
+            if extra is not None:
+                lay.addWidget(extra)
             lay.addStretch(1)
             row = QHBoxLayout()
             row.setSpacing(6)
@@ -154,9 +157,11 @@ class VpnPanel(AgentPanel):
         self.arm_ks_btn = QPushButton("Arm")
         self.arm_ks_btn.setToolTip(
             "Block network traffic except the tunnel interface, the tunnel's "
-            "transport to the server, loopback, DHCP and your LAN, so a dropped "
-            "tunnel cannot leak. Connect first, then arm. Only a WireGuard tunnel "
-            "interface is exempt. Requires macOS pf and your administrator password.")
+            "transport to the server, loopback, DHCP and your LAN (but not DNS to "
+            "your LAN unless \"Allow local network DNS\" is ticked), so traffic and "
+            "lookups cannot leave outside the tunnel if it drops. Connect first, then "
+            "arm. Exempt tunnel interfaces: the WireGuard tunnel, and an OpenVPN "
+            "tunnel Sentinel started. Requires macOS pf and your administrator password.")
         self.arm_ks_btn.clicked.connect(self.arm_kill_switch)
         self.disarm_ks_btn = QPushButton("Disarm")
         self.disarm_ks_btn.clicked.connect(self.disarm_kill_switch)
@@ -168,8 +173,18 @@ class VpnPanel(AgentPanel):
         self.verify_ks_btn.clicked.connect(self.verify_kill_switch)
         self.kill_switch_status_label = QLabel(
             vpn_connection.killswitch_status_text() or "Kill switch not armed.")
+        self.allow_lan_dns_check = QCheckBox("Allow local network DNS")
+        self.allow_lan_dns_check.setChecked(vpn_connection.killswitch_allow_lan_dns())
+        self.allow_lan_dns_check.setToolTip(
+            "Off (recommended): while armed, DNS lookups to your local network (usually "
+            "your router) are blocked, so they cannot go out in the clear. Tick only if "
+            "you need a local DNS server; those lookups then bypass the tunnel. Covers "
+            "port 53 only (not DNS over TLS or HTTPS to a local server). Applies from the "
+            "next Arm; lookups already in flight may finish.")
+        self.allow_lan_dns_check.toggled.connect(self._on_allow_lan_dns_toggled)
         cell(0, "Kill switch", self.kill_switch_status_label,
-             [self.arm_ks_btn, self.disarm_ks_btn, self.verify_ks_btn])
+             [self.arm_ks_btn, self.disarm_ks_btn, self.verify_ks_btn],
+             extra=self.allow_lan_dns_check)
 
         self.local_ip_label = QLabel("—")
         self.local_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -930,8 +945,12 @@ class VpnPanel(AgentPanel):
             "Arm a firewall kill switch?\n\n"
             "This loads a pf anchor that blocks all network traffic except "
             f"{allowed} to the selected tunnel's endpoint ({profile.get('endpoint')}), "
-            "the tunnel interface itself, loopback, DHCP and your LAN. If the "
-            "tunnel drops, traffic stays blocked until you press Disarm.\n\n"
+            "the tunnel interface itself, loopback, DHCP and your LAN. "
+            + ("DNS to your LAN is allowed (\"Allow local network DNS\" is ticked): "
+               "those lookups bypass the tunnel. "
+               if vpn_connection.killswitch_allow_lan_dns() else
+               "DNS to your LAN is blocked, so lookups only work inside the tunnel. ")
+            + "If the tunnel drops, traffic stays blocked until you press Disarm.\n\n"
             "It asks for your administrator password, and refuses to arm if the "
             "endpoint cannot be resolved.\n\n"
             f"If Sentinel cannot disarm it, run in Terminal:\n{recovery}",
@@ -940,6 +959,21 @@ class VpnPanel(AgentPanel):
             self.kill_switch_status_label.setText("Kill switch: not armed (declined).")
             return
         self._start_killswitch("arm", profile, "Arming kill switch…")
+
+    def _on_allow_lan_dns_toggled(self, checked: bool) -> None:
+        try:
+            vpn_connection.set_killswitch_allow_lan_dns(checked)
+            armed = vpn_connection.killswitch_armed_lan_dns()
+            if armed is not None and armed is not checked:
+                self.kill_switch_status_label.setText(
+                    "Saved. The armed kill switch still " + ("allows" if armed else "blocks")
+                    + " local network DNS; press Arm again to apply the change.")
+        except Exception as exc:  # noqa: BLE001 - not stored: show it, keep the block
+            self.allow_lan_dns_check.blockSignals(True)
+            self.allow_lan_dns_check.setChecked(vpn_connection.killswitch_allow_lan_dns())
+            self.allow_lan_dns_check.blockSignals(False)
+            self.kill_switch_status_label.setText(
+                f"Could not save \"Allow local network DNS\": {exc}"[:300])
 
     def disarm_kill_switch(self) -> None:
         if self._connection_busy():
