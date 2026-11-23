@@ -172,9 +172,11 @@ class OsintHeavyPanel(AgentPanel):
 
         self.courtlistener_box = QCheckBox("Include CourtListener court records (Organisation)")
         self.courtlistener_box.setChecked(False)
-        brief_layout.addWidget(self.courtlistener_box, 1, 4)
+        # Its own row: beside Scope, the long label set the form's minimum
+        # width past the centre column and clipped the panel's right edge.
+        brief_layout.addWidget(self.courtlistener_box, 2, 1, 1, 3)
 
-        brief_layout.addWidget(QLabel("Objective:"), 2, 0)
+        brief_layout.addWidget(QLabel("Objective:"), 3, 0)
         self.objective_input = QTextEdit()
         self.objective_input.setPlaceholderText(
             "What are you trying to establish? e.g. verify identity, map infrastructure, "
@@ -182,7 +184,7 @@ class OsintHeavyPanel(AgentPanel):
         )
         self.objective_input.setMinimumHeight(70)
         self.objective_input.setMaximumHeight(120)
-        brief_layout.addWidget(self.objective_input, 2, 1, 1, 3)
+        brief_layout.addWidget(self.objective_input, 3, 1, 1, 3)
 
         self.investigate_btn = QPushButton("Investigate")
         self.investigate_btn.setMinimumWidth(140)
@@ -201,7 +203,7 @@ class OsintHeavyPanel(AgentPanel):
             context="Investigation",
         )
 
-        brief_layout.addWidget(provider_row_container, 3, 0, 1, 4)
+        brief_layout.addWidget(provider_row_container, 4, 0, 1, 4)
         layout.addWidget(brief_group)
 
         # ── Target Image (optional) ──────────────────────────────────────

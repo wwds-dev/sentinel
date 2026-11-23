@@ -2940,7 +2940,7 @@ class GodAI(QWidget):
         # under the prompt — the space that is empty because nothing has run.
         self.output_backdrop = vibe.install_backdrop(
             center_widget,
-            visible_while=lambda: not self.output_box.toPlainText().strip(),
+            visible_while=self._output_backdrop_wanted,
             heading="Nothing run yet",
             subcopy="Results and conversation appear here once something runs.",
         )
@@ -3469,6 +3469,16 @@ class GodAI(QWidget):
         ("opensanctions",  "OpenSanctions",       "Legal",    "Free",       "https://www.opensanctions.org/api/",            "OPENSANCTIONS_API_KEY"),
     ]
     # What each one does and which agents use it: services/osint_keys.py.
+
+    def _output_backdrop_wanted(self) -> bool:
+        """The empty state belongs to Chat-style agents with nothing run yet.
+
+        A specialist panel fills the centre column with its own form and
+        empty states; the backdrop would show through between its sections.
+        """
+        if getattr(self, "_current_agent", "chat") in getattr(self, "panels", {}):
+            return False
+        return not self.output_box.toPlainText().strip()
 
     def select_agent(self, agent_name):
         self.agent_box.setCurrentText(agent_name)

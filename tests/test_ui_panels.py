@@ -4536,3 +4536,32 @@ class TestSentryPanel:
         sentry_panel.install_background()
         sentry_panel.remove_background()
         assert calls == [("install", 300), ("remove",)]
+
+
+# ── GUI review 2026-11-22: two layout bugs ────────────────────────────
+
+def test_the_chat_empty_state_stays_off_specialist_panels(win):
+    """"Nothing run yet" showed through Bug Spray, Beacon and Tunnel."""
+    try:
+        for key in win.panels:
+            win.select_agent(key)
+            assert win._output_backdrop_wanted() is False, key
+        win.select_agent("chat")
+        nothing_run = not win.output_box.toPlainText().strip()
+        assert win._output_backdrop_wanted() is nothing_run
+    finally:
+        win.select_agent("chat")
+
+
+def test_bloodhound_fits_the_centre_column(win):
+    """The court-records label beside Scope pushed the panel to 1059 px wide.
+
+    The centre column is about 1020 px in a 1600 px window, so the right edge
+    (Clear Image, the indicator cards) was cut off. No panel needs more than
+    Bug Spray's 776 px; 800 leaves room for a font a little wider than ours.
+    """
+    panel = win.panels["osint_heavy"]
+    assert panel.minimumSizeHint().width() <= 800
+    grid = panel.courtlistener_box.parentWidget().layout()
+    row_of = lambda w: grid.getItemPosition(grid.indexOf(w))[0]
+    assert row_of(panel.courtlistener_box) != row_of(panel.scope_box)

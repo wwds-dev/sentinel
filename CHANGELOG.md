@@ -125,6 +125,11 @@ and the git log, and is not back-filled here.
   the running tunnel needs to disconnect.
 
 ### Fixed
+- **Bloodhound no longer cuts off its right edge.** The court-records option
+  has its own line, so Clear Image and the Threat, Confidence, Sources and Depth
+  cards are fully visible in a 1600 px window.
+- **"Nothing run yet" no longer shows through Bug Spray, Beacon and Tunnel.** The
+  empty-state text belongs to Chat and now appears only there.
 - **A tunnel record left behind by a crash no longer blocks WireGuard.** wg-quick's
   record without its tunnel used to make Connect say "already up" and kept the
   copy holding your private key; now Connect goes ahead and Disconnect removes
