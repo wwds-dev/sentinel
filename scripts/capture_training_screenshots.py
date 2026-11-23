@@ -69,6 +69,14 @@ def main() -> int:
         os.environ["VPN_AGENT_STATE_DIR"] = str(Path(tmp) / "vpn-agent")
         database.init_db()
 
+        # The repo is public: never capture this Mac's real LAN address.
+        # Tunnel reads it through get_ip_snapshot on a worker; serve a sample
+        # (a documentation-range address) instead. Nothing is contacted.
+        from agents.vpn_agent.services import public_ip
+        public_ip.get_ip_snapshot = lambda include_public=False: {
+            "local": {"primary": "192.168.1.20", "tunnels": [], "interfaces": {}},
+        }
+
         import main as sentinel_main
 
         # Agent selection saves the preferred model during a normal run.
