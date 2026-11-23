@@ -241,6 +241,33 @@ def test_an_unticked_cloud_provider_blocks_before_a_worker_or_a_run(win):
     assert any("not enabled" in w for w in win.warnings)
 
 
+def test_privacy_first_blocks_a_ticked_cloud_provider_in_chat(win):
+    """Privacy first allows no cloud (routing_advisor.allows_cloud); the
+    advisor only drops cloud suggestions, so Chat must refuse the pick itself
+    (testing readiness H3, review P1)."""
+    win.execution_mode_box.setCurrentText("Hybrid allowed")
+    win.provider_box.setCurrentIndex(win.provider_box.findText("openai"))
+    win.allow_openai_checkbox.setChecked(True)
+    saved = win.settings.get("routing_priority")
+    win.settings["routing_priority"] = "privacy"
+    try:
+        with get_connection() as conn:
+            runs_before = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        FakeChatWorker.instances.clear()
+        win.input_box.setPlainText("hello cloud")
+        win.send_prompt()
+        assert FakeChatWorker.instances == []
+        with get_connection() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == runs_before
+        assert any("Privacy first" in w for w in win.warnings)
+    finally:
+        if saved is None:
+            win.settings.pop("routing_priority", None)
+        else:
+            win.settings["routing_priority"] = saved
+        win.allow_openai_checkbox.setChecked(False)
+
+
 # ── P0-9: a configured secret never leaves through the Chat path ────────────
 
 CANARY = "CANARY-sk-7f3a9c1e5b2d4086"

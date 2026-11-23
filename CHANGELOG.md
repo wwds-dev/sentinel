@@ -97,6 +97,7 @@ and the git log, and is not back-filled here.
   folder being erased.
 
 ### Security
+- **Local only and Privacy first never fall through to the cloud in an agent panel.** If the routing advisor failed, a panel used to carry on, and one Yes to the consent dialog sent the job to a cloud provider despite Local only. A cloud provider is now refused before any dialog whenever the mode allows no cloud (or cannot be read), and a broken advisor stops a cloud job instead of passing it on (testing readiness H3).
 - **Emergency Reset: a local-model measurement that finishes late writes
   nothing.** A measurement run still waiting on a model when you reset could
   finish while the data folder was being erased and write its ratings, the
@@ -171,6 +172,7 @@ and the git log, and is not back-filled here.
   the running tunnel needs to disconnect.
 
 ### Fixed
+- **Tunnel warns when a WireGuard tunnel drops.** The health monitor compared the profile's name (`wg0`) with the utun socket names macOS uses (`utun4.sock`), so "TUNNEL DROPPED" never appeared for WireGuard. It now reads wg-quick's name records and compares name with name (testing readiness H7). Checked with tests on the wg-quick file layout only; whether a normal user can read `/var/run/wireguard` on a real Mac is not yet confirmed (owner check O11).
 - **The Inspector's Cost card no longer cuts off "saved".** Local savings and
   hybrid spend are two rows, "Local saved" and "Hybrid spent", instead of one
   line that was too wide.

@@ -187,3 +187,92 @@ def test_trace_needs_tool_use_so_a_local_model_without_it_is_held(win):
     panel.analyse()
     advice = panel._advice_banner.advice
     assert advice is not None and ra.CAPABILITY in advice.codes
+
+
+# ── H3: Local only / Privacy first never fail open (audit 2026-11-23, G2) ────
+def _advisor_raises(win, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("advisor broke")
+    monkeypatch.setattr(win, "_advisor_context", boom)
+
+
+def _pick_cloud(panel):
+    panel.provider_box.setCurrentText(SONNET[0])
+    panel.model_box.clear()
+    panel.model_box.addItems([SONNET[1]])
+    panel.model_box.setCurrentText(SONNET[1])
+    assert (panel.provider, panel.model) == SONNET
+
+
+@pytest.mark.parametrize("ticked", [False, True])
+def test_local_only_with_a_broken_advisor_sends_nothing_to_the_cloud(
+        win, panel, monkeypatch, ticked):
+    """The advisor raising used to mean "carry on": an unticked keyed cloud
+    provider then met one consent dialog, and a Yes sent it despite Local only."""
+    win.settings[ra.OVERRIDES_KEY] = {AGENT: ra.LOCAL_ONLY}
+    win.allow_anthropic_checkbox.setChecked(ticked)
+    _advisor_raises(win, monkeypatch)
+    _pick_cloud(panel)
+    _run(win, panel)
+    assert panel.started == [] and win.questions == []
+    assert panel._request_id is None
+    assert "Local only" in panel.status_label.text()
+
+
+def test_a_broken_advisor_still_blocks_in_advise_itself(win, panel, monkeypatch):
+    """advise() is the panel's own guard, not only authorize_request()."""
+    win.settings[ra.OVERRIDES_KEY] = {AGENT: ra.LOCAL_ONLY}
+    _advisor_raises(win, monkeypatch)
+    _pick_cloud(panel)
+    assert win.panel_routing.advise(panel, PROMPT) is False
+    assert "Local only" in panel.status_label.text()
+
+
+def test_a_broken_advisor_lets_a_local_job_run_under_local_only(win, panel, monkeypatch):
+    win.settings[ra.OVERRIDES_KEY] = {AGENT: ra.LOCAL_ONLY}
+    _advisor_raises(win, monkeypatch)
+    assert win.panel_routing.advise(panel, PROMPT) is True
+    _run(win, panel)
+    assert panel.started == [("lmstudio", LOCAL_ID)] and win.questions == []
+
+
+def test_a_broken_advisor_in_a_cloud_mode_still_reaches_the_consent_dialog(
+        win, panel, monkeypatch):
+    """Outside Local only the old behaviour stays: advice never blocks a run,
+    and the paid run still asks first."""
+    _advisor_raises(win, monkeypatch)
+    _pick_cloud(panel)
+    assert win.panel_routing.advise(panel, PROMPT) is True
+    _run(win, panel)
+    assert panel.started == [SONNET] and len(win.questions) == 1
+
+
+@pytest.mark.parametrize("ticked", [False, True])
+def test_authorize_request_refuses_a_cloud_provider_under_local_only(win, ticked):
+    win.settings[ra.OVERRIDES_KEY] = {AGENT: ra.LOCAL_ONLY}
+    win.allow_anthropic_checkbox.setChecked(ticked)
+    assert win.authorize_request(AGENT, *SONNET, PROMPT) is False
+    assert win.questions == [] and not win._pending_requests
+    # A local provider in the same mode is not refused by the mode check.
+    assert win.authorize_request(AGENT, "lmstudio", LOCAL_ID, PROMPT) is True
+
+
+def test_authorize_request_refuses_a_cloud_provider_under_privacy_first(win, panel):
+    win.settings["routing_priority"] = "privacy"
+    assert win.authorize_request(AGENT, *SONNET, PROMPT) is False
+    assert win.questions == []
+    assert "Privacy first" in panel.status_label.text()
+
+
+def test_the_run_bar_local_only_also_refuses_a_cloud_provider(win):
+    win.execution_mode_box.setCurrentText("Local only")
+    assert win.authorize_request(AGENT, *SONNET, PROMPT) is False
+    assert win.questions == []
+
+
+def test_an_unreadable_mode_fails_closed(win, monkeypatch):
+    def boom(agent="chat"):
+        raise ValueError("settings corrupt")
+    monkeypatch.setattr(win, "routing_mode", boom)
+    assert win.cloud_allowed(AGENT) is False
+    assert win.authorize_request(AGENT, *SONNET, PROMPT) is False

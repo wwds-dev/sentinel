@@ -206,6 +206,13 @@ def win(_window):
     # test with openai disallowed, passing only when a real key in .env let
     # the request through the one-time-consent path instead.
     _window.current_api_permissions = lambda: dict(ALL_ALLOWED)
+    # authorize_request refuses every cloud provider under Local only or
+    # Privacy first (testing readiness H3). The window starts in whatever mode
+    # this machine's settings and launch give it, so pin a mode that allows
+    # the cloud: these tests are about the guard after that check.
+    from services import routing_advisor
+    _window.routing_mode = lambda agent="chat": routing_advisor.LOCAL_ADVISE
+    _window.settings["routing_priority"] = "balanced"
     _window.session_cost_total = 0.0
     _window.session_request_count = 0
     _window._pending_requests = {}
