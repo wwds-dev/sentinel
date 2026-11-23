@@ -125,6 +125,9 @@ and the git log, and is not back-filled here.
   the running tunnel needs to disconnect.
 
 ### Fixed
+- **The Inspector's Cost card no longer cuts off "saved".** Local savings and
+  hybrid spend are two rows, "Local saved" and "Hybrid spent", instead of one
+  line that was too wide.
 - **Bloodhound no longer cuts off its right edge.** The court-records option
   has its own line, so Clear Image and the Threat, Confidence, Sources and Depth
   cards are fully visible in a 1600 px window.

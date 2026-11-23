@@ -4565,3 +4565,14 @@ def test_bloodhound_fits_the_centre_column(win):
     grid = panel.courtlistener_box.parentWidget().layout()
     row_of = lambda w: grid.getItemPosition(grid.indexOf(w))[0]
     assert row_of(panel.courtlistener_box) != row_of(panel.scope_box)
+
+
+def test_the_local_savings_rows_fit_the_rail(win):
+    """"saved €0.00 · spent €0.00" lost its first letter in the Inspector."""
+    saved, spent = win.cost_rows["local"], win.cost_rows["local_spent"]
+    widest_key = max(len(row.key.text()) for row in win.cost_rows.values())
+    for row in (saved, spent):
+        assert "·" not in row.value.text()
+        # No longer than the rows that already fit ("Estimate" + its figure).
+        assert len(row.key.text()) <= widest_key
+        assert len(row.key.text()) + len(row.value.text()) <= len("Estimate") + len("€0.00 · 0 tok")
