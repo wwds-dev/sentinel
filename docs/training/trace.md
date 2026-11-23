@@ -2,8 +2,9 @@
 
 **Goal:** structure and run a lawful public-source search. **Time:** 15 minutes.
 
-The run bar has an **Exposure Check** button beside **Live Research**; **Stop**
-replaces the three action buttons while a request runs.
+The run bar has **Structure Query** and a **Live checks** menu holding **Live Research**
+and **Exposure Check**; **Stop** replaces them while a request runs. The Activity
+trail appears once a run starts.
 
 ## Choose a target
 

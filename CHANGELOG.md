@@ -14,6 +14,15 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Beacon, Trace, Sentry and Forge are quieter.** Every agent's run bar now
+  shows the model and its price, with provider and model under **Change model**.
+  Beacon's Connection preflight is a collapsed row until you run it, and its five
+  figures are one strip above the output. Trace's **Live Research** and **Exposure
+  Check** sit in one **Live checks** menu, and the Activity trail appears once a run
+  starts (then stays, since it says which outside sources were contacted). Sentry's
+  introduction is one line (the full text is its tooltip) and the baseline and
+  background-watch controls share one row. Forge's run bar no longer has a blank
+  area under it, and the spec card and Creation Log show only once they have content.
 - **Tunnel is one status card and five tabs.** The card shows the tunnel state
   read from this Mac ("No tunnel interface up" or "Tunnel interface up: utun4",
   which says nothing about traffic protection), the server picker, Import config

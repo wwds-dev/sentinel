@@ -56,24 +56,31 @@ class SentryPanel(AgentPanel):
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
+    INTRO_TEXT = (
+        "Sentry watches your own network, read-only: the neighbour (ARP/NDP) "
+        "table, the default gateway, this Mac's listening services and its "
+        "outbound connections. It records a trusted baseline on the first "
+        "pass, then flags what is new — a fresh device, ARP-spoofing / gateway "
+        "changes, an unexpected service, or a new outbound connection. It "
+        "sends no packets and changes nothing."
+    )
+
     def _build(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        intro = QLabel(
-            "Sentry watches your own network, read-only: the neighbour (ARP/NDP) "
-            "table, the default gateway, this Mac's listening services and its "
-            "outbound connections. It records a trusted baseline on the first "
-            "pass, then flags what is new — a fresh device, ARP-spoofing / gateway "
-            "changes, an unexpected service, or a new outbound connection. It "
-            "sends no packets and changes nothing."
-        )
-        intro.setWordWrap(True)
-        intro.setStyleSheet("color: #aaa; font-size: 12px;")
-        layout.addWidget(intro)
+        # One line; the full description is its tooltip
+        # (docs/specs/agent-layouts.md, screen 4).
+        self.intro_label = QLabel(
+            "Read-only watch of your own network: it sends no packets and changes nothing.")
+        self.intro_label.setObjectName("SentryIntro")
+        self.intro_label.setWordWrap(True)
+        self.intro_label.setToolTip(self.INTRO_TEXT)
+        self.intro_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        layout.addWidget(self.intro_label)
 
-        # ── Baseline / watch state ────────────────────────────────────────
+        # ── Baseline and background watch: one card, one control row ─────
         watch_group = QGroupBox("Network Watch")
         watch_group.setObjectName("SentryWatchGroup")
         watch_layout = QVBoxLayout(watch_group)
@@ -83,6 +90,7 @@ class SentryPanel(AgentPanel):
         watch_layout.addWidget(self.state_label)
 
         controls = QHBoxLayout()
+        controls.setSpacing(8)
         self.dry_run_btn = QPushButton("Dry run")
         self.dry_run_btn.setToolTip("Compare against the baseline without updating it.")
         self.dry_run_btn.clicked.connect(lambda: self.run_pass(persist=False))
@@ -91,32 +99,28 @@ class SentryPanel(AgentPanel):
         self.reset_btn.clicked.connect(self.reset_baseline)
         controls.addWidget(self.dry_run_btn)
         controls.addWidget(self.reset_btn)
-        controls.addStretch()
-        watch_layout.addLayout(controls)
-        layout.addWidget(watch_group)
-
-        # ── Continuous background watch ───────────────────────────────────
-        bg_group = QGroupBox("Continuous Background Watch")
-        bg_group.setObjectName("SentryBackgroundGroup")
-        bg_layout = QGridLayout(bg_group)
-        bg_layout.setSpacing(6)
-        bg_layout.addWidget(QLabel("Check every:"), 0, 0)
+        divider = QLabel("·")
+        divider.setObjectName("RunBarDot")
+        controls.addWidget(divider)
+        controls.addWidget(QLabel("Background watch every"))
         self.interval_box = QSpinBox()
         self.interval_box.setRange(1, 720)
         self.interval_box.setValue(5)
         self.interval_box.setSuffix(" min")
-        bg_layout.addWidget(self.interval_box, 0, 1)
+        controls.addWidget(self.interval_box)
         self.install_btn = QPushButton("Install background watch")
         self.install_btn.clicked.connect(self.install_background)
         self.remove_btn = QPushButton("Remove")
         self.remove_btn.clicked.connect(self.remove_background)
-        bg_layout.addWidget(self.install_btn, 0, 2)
-        bg_layout.addWidget(self.remove_btn, 0, 3)
+        controls.addWidget(self.install_btn)
+        controls.addWidget(self.remove_btn)
+        controls.addStretch(1)
+        watch_layout.addLayout(controls)
         self.bg_status_label = QLabel("")
         self.bg_status_label.setWordWrap(True)
         self.bg_status_label.setStyleSheet("font-size: 11px; color: #888;")
-        bg_layout.addWidget(self.bg_status_label, 1, 0, 1, 4)
-        layout.addWidget(bg_group)
+        watch_layout.addWidget(self.bg_status_label)
+        layout.addWidget(watch_group)
 
         # ── Run bar (primary = run a watch pass) ──────────────────────────
         self.run_btn = QPushButton("Run watch pass")
@@ -129,6 +133,7 @@ class SentryPanel(AgentPanel):
         self.set_busy(self.run_btn, self.stop_btn, False)
         layout.addWidget(self.build_run_bar(
             self.run_btn, stop=self.stop_btn, context="Network watch",
+            fold_pickers=True,
         ))
 
         ai_row = QHBoxLayout()

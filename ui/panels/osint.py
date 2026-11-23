@@ -18,8 +18,8 @@ import re
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QTextBrowser,
-    QVBoxLayout,
+    QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QTextBrowser,
+    QVBoxLayout, QWidget,
 )
 
 from ui.widgets import MenuComboBox, SectionView
@@ -133,11 +133,35 @@ class OsintPanel(AgentPanel):
         self.stop_btn.clicked.connect(self.stop)
         self._set_trace_busy(False)
 
+        # The two live checks contact outside services and run rarely, so they
+        # sit in one menu beside the run bar rather than as two more buttons
+        # (docs/specs/agent-layouts.md, screen 4). The buttons stay, in a
+        # hidden holder: their busy state and confirmations are unchanged, and
+        # the menu presses them.
+        self._live_holder = QWidget(self)
+        self._live_holder.setVisible(False)
+        for button in (self.live_btn, self.exposure_btn):
+            button.setParent(self._live_holder)
+        self.live_checks_btn = QPushButton("Live checks")
+        self.live_checks_btn.setToolTip(
+            "Live Research and Exposure Check: public sources, each after its own confirmation.")
+        self.live_checks_menu = QMenu(self.live_checks_btn)
+        self.live_research_action = self.live_checks_menu.addAction("Live Research…")
+        self.live_research_action.setToolTip(self.live_btn.toolTip())
+        self.live_research_action.triggered.connect(self.live_btn.click)
+        self.exposure_action = self.live_checks_menu.addAction("Exposure Check…")
+        self.exposure_action.setToolTip(self.exposure_btn.toolTip())
+        self.exposure_action.triggered.connect(self.exposure_btn.click)
+        self.live_checks_menu.setToolTipsVisible(True)
+        self.live_checks_menu.aboutToShow.connect(self._sync_live_checks_menu)
+        self.live_checks_btn.setMenu(self.live_checks_menu)
+
         provider_row_container = self.build_run_bar(
             self.analyse_btn,
             stop=self.stop_btn,
-            secondary=(self.live_btn, self.exposure_btn),
+            secondary=(self.live_checks_btn,),
             context="Query",
+            fold_pickers=True,
         )
 
         setup_layout.addWidget(provider_row_container, 2, 0, 1, 4)
@@ -154,6 +178,10 @@ class OsintPanel(AgentPanel):
         self.activity_box.setMaximumHeight(180)
         activity_layout.addWidget(self.activity_box)
         layout.addWidget(activity_group)
+        # Hidden until a run starts; then it stays, because the trail is where
+        # Trace says whether any external source was queried.
+        self.activity_group = activity_group
+        activity_group.setVisible(False)
         self._reset_activity()
 
         # ── Output ───────────────────────────────────────────────────────
@@ -373,7 +401,7 @@ class OsintPanel(AgentPanel):
 
     def _set_trace_busy(self, busy: bool) -> None:
         self.set_busy(self.analyse_btn, self.stop_btn, busy)
-        for name in ("live_btn", "exposure_btn"):
+        for name in ("live_btn", "exposure_btn", "live_checks_btn"):
             button = getattr(self, name, None)
             if button is not None:
                 button.setVisible(not busy)
@@ -960,7 +988,14 @@ class OsintPanel(AgentPanel):
 
     def _append_activity(self, message: str) -> None:
         self._activity_entries.append(message)
+        if hasattr(self, "activity_group"):
+            self.activity_group.setVisible(True)
         self._render_activity()
+
+    def _sync_live_checks_menu(self) -> None:
+        """The menu offers a check only when its button would accept a press."""
+        self.live_research_action.setEnabled(self.live_btn.isEnabled())
+        self.exposure_action.setEnabled(self.exposure_btn.isEnabled())
 
     def _render_activity(self) -> None:
         if not hasattr(self, "activity_box"):

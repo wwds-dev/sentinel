@@ -24,7 +24,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter,
+    QLineEdit, QMessageBox, QProgressBar, QPushButton,
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
@@ -35,7 +35,7 @@ from agents.wifi_agent import (
 from services.runtime_paths import user_data_base
 from ui.workers import SubprocessWorker
 from ui.panels.base import AgentPanel
-from ui.widgets import MenuComboBox, SectionView
+from ui.widgets import MenuComboBox, MetricStrip, ProgressiveSection, SectionView
 
 # Static facts about the adapters the Kali builder knows how to target.
 KALI_ADAPTERS = {
@@ -141,16 +141,19 @@ class WifiPanel(AgentPanel):
         layout.addWidget(self.kali_group)
         self.kali_group.hide()
 
-        preflight_group = QGroupBox("Connection Preflight")
-        preflight_layout = QVBoxLayout(preflight_group)
+        # Collapsed until it has something to show (docs/specs/agent-layouts.md,
+        # screen 4): an empty box was the second-largest thing on the screen.
+        self.preflight_section = ProgressiveSection(
+            "Connection preflight", status="Not run")
+        self.preflight_section.setObjectName("BeaconPreflightSection")
         self.preflight_box = QTextBrowser()
         self.preflight_box.setObjectName("BeaconPreflight")
         self.preflight_box.setMaximumHeight(150)
         self.preflight_box.setPlaceholderText(
             "Run the read-only preflight to identify internet/control and USB monitor roles."
         )
-        preflight_layout.addWidget(self.preflight_box)
-        layout.addWidget(preflight_group)
+        self.preflight_section.addWidget(self.preflight_box)
+        layout.addWidget(self.preflight_section)
 
         self.run_btn = QPushButton("Run")
         self.run_btn.setMinimumWidth(110)
@@ -177,6 +180,7 @@ class WifiPanel(AgentPanel):
             stop=self.stop_btn,
             secondary=(self.preflight_btn, self.detect_btn),
             context="Wireless",
+            fold_pickers=True,
         )
 
         layout.addWidget(provider_row_container)
@@ -195,97 +199,50 @@ class WifiPanel(AgentPanel):
         ai_row.addStretch()
         layout.addLayout(ai_row)
 
-        # ── Results splitter ─────────────────────────────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
+        # ── Results: header, figures strip, output at full width ─────────
+        results_header = QHBoxLayout()
+        results_heading = QLabel("Results")
+        results_heading.setObjectName("ResultsHeading")
+        results_header.addWidget(results_heading)
+        results_header.addStretch(1)
+        self.save_btn = QPushButton("Save Output")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self.save)
+        results_header.addWidget(self.save_btn)
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self.clear)
+        results_header.addWidget(self.clear_btn)
+        layout.addLayout(results_header)
 
-        output_widget = QWidget()
-        output_layout = QVBoxLayout(output_widget)
-        output_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.stream_box = QTextBrowser()
-        self.stream_box.setOpenExternalLinks(False)
-        self.stream_box.setVisible(False)
-        output_layout.addWidget(self.stream_box, 1)
-
-        self.sections = SectionView()
-        output_layout.addWidget(self.sections, 1)
-        results_splitter.addWidget(output_widget)
-
-        # ── Sidebar indicators ───────────────────────────────────────────
-        indicators_widget = QWidget()
-        indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(8, 8, 8, 8)
-        indicators_layout.setSpacing(8)
-
-        adapter_group = QGroupBox("Adapter")
-        adapter_group.setObjectName("WiFiAdapterGroup")
-        adapter_layout = QVBoxLayout(adapter_group)
-        self.adapter_label = QLabel("Not detected")
-        self.adapter_label.setAlignment(Qt.AlignCenter)
-        self.adapter_label.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #4db8ff;")
-        self.adapter_label.setWordWrap(True)
-        adapter_layout.addWidget(self.adapter_label)
-        indicators_layout.addWidget(adapter_group)
-
-        chipset_group = QGroupBox("Chipset")
-        chipset_group.setObjectName("WiFiChipsetGroup")
-        chipset_layout = QVBoxLayout(chipset_group)
-        self.chipset_label = QLabel("—")
-        self.chipset_label.setAlignment(Qt.AlignCenter)
-        self.chipset_label.setStyleSheet("font-size: 12px; color: #aaa;")
-        chipset_layout.addWidget(self.chipset_label)
-        indicators_layout.addWidget(chipset_group)
-
-        caps_group = QGroupBox("Capabilities")
-        caps_group.setObjectName("WiFiCapsGroup")
-        caps_layout = QVBoxLayout(caps_group)
+        self.metric_strip = MetricStrip()
+        self.metric_strip.setObjectName("BeaconMetrics")
+        self.adapter_label = self.metric_strip.add_cell("Adapter", QLabel("Not detected"))
+        self.chipset_label = self.metric_strip.add_cell("Chipset", QLabel("—"))
         self.monitor_label = QLabel("Monitor  —")
         self.inject_label = QLabel("Injection  —")
-        self.monitor_label.setStyleSheet("font-size: 12px;")
-        self.inject_label.setStyleSheet("font-size: 12px;")
-        caps_layout.addWidget(self.monitor_label)
-        caps_layout.addWidget(self.inject_label)
-        indicators_layout.addWidget(caps_group)
-
-        signal_group = QGroupBox("Signal (RSSI)")
-        signal_group.setObjectName("WiFiSignalGroup")
-        signal_layout = QVBoxLayout(signal_group)
+        self.inject_label.setObjectName("MetricValue")
+        self.metric_strip.add_cell("Capabilities", self.monitor_label, bar=self.inject_label)
         self.signal_bar = QProgressBar()
         self.signal_bar.setMinimum(0)
         self.signal_bar.setMaximum(100)
         self.signal_bar.setValue(0)
-        self.signal_bar.setTextVisible(True)
-        signal_layout.addWidget(self.signal_bar)
-        self.signal_val_label = QLabel("—")
-        self.signal_val_label.setAlignment(Qt.AlignCenter)
-        self.signal_val_label.setStyleSheet("font-size: 11px; color: #aaa;")
-        signal_layout.addWidget(self.signal_val_label)
-        indicators_layout.addWidget(signal_group)
+        self.signal_bar.setTextVisible(False)
+        self.signal_bar.setFixedHeight(4)
+        self.signal_val_label = self.metric_strip.add_cell(
+            "Signal (RSSI)", QLabel("—"), bar=self.signal_bar)
+        self.security_label = self.metric_strip.add_cell("Security", QLabel("—"))
+        layout.addWidget(self.metric_strip)
 
-        sec_group = QGroupBox("Security")
-        sec_group.setObjectName("WiFiSecGroup")
-        sec_layout = QVBoxLayout(sec_group)
-        self.security_label = QLabel("—")
-        self.security_label.setAlignment(Qt.AlignCenter)
-        self.security_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-        sec_layout.addWidget(self.security_label)
-        indicators_layout.addWidget(sec_group)
-
-        indicators_layout.addStretch()
-
-        self.save_btn = QPushButton("Save Output")
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(self.save)
-        indicators_layout.addWidget(self.save_btn)
-
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self.clear)
-        indicators_layout.addWidget(self.clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([680, 220])
-        layout.addWidget(results_splitter, 1)
+        output_widget = QWidget()
+        output_layout = QVBoxLayout(output_widget)
+        output_layout.setContentsMargins(0, 0, 0, 0)
+        self.stream_box = QTextBrowser()
+        self.stream_box.setOpenExternalLinks(False)
+        self.stream_box.setVisible(False)
+        output_layout.addWidget(self.stream_box, 1)
+        self.sections = SectionView()
+        output_layout.addWidget(self.sections, 1)
+        layout.addWidget(output_widget, 1)
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("font-size: 12px; color: #888;")
@@ -369,6 +326,8 @@ class WifiPanel(AgentPanel):
                 "has_usb": False,
             }
         self.preflight_box.setPlainText(result["text"])
+        self.preflight_section.setStatus("Read-only check done")
+        self.preflight_section.setExpanded(True)
         self.preflight_btn.setEnabled(True)
         self.status_label.setText("Connection preflight complete (read-only).")
         return result

@@ -18,7 +18,8 @@ Two capabilities in one panel:
 | Kali sub-form (hidden unless Kali mode) | Operation (`Handshake Capture` / `Deauth Attack` / `WPS Audit` / `PMKID Attack`), Adapter, BSSID, Channel, ESSID. |
 | AI interpretation | A plain checkbox, unchecked by default. Enable it to send the raw subprocess output to the selected provider/model. The provider dropdown still defaults to Sentinel's standard provider, which may be a paid cloud model — switch it to a local model yourself before ticking the box if you want this data to stay off the network; nothing redacts it for you. |
 | Detect Adapters | Scan USB for known adapters. |
-| Run Preflight | Read interfaces, default route and known USB adapters; assign suggested roles and show connection risks without changing anything. |
+| Run Preflight | Read interfaces, default route and known USB adapters; assign suggested roles and show connection risks without changing anything. The **Connection preflight** row stays collapsed ("Not run") until this runs, then opens. |
+| Results strip | Adapter, Chipset, Capabilities, Signal (RSSI) and Security as one row of figures above the output, with **Save Output** and **Clear** in the Results header. Provider and model are under **Change model** in the run bar. |
 | Run / Stop | Execute, or cancel while work is active. Save and Clear are visible the whole time; Save becomes enabled once there is output to write. **Known limitation:** there is no Help button on this panel — use this doc instead. |
 
 ## Outputs

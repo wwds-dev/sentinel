@@ -100,7 +100,7 @@ does is local and free.
 
 ## Watching in the background
 
-Install the **Continuous Background Watch** to keep checking on a schedule even
+In the **Network Watch** card, use the **Background watch every** control (on the same row as Dry run and Reset baseline) to keep checking on a schedule even
 while Sentinel is closed. Choose the interval (1 to 720 minutes, 5 by default) and
 press **Install background watch**. That adds a small launch agent to your Mac, which
 repeats one read-only pass at that interval, at every login, and once straight away,

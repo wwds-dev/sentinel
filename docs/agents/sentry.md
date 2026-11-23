@@ -75,8 +75,8 @@ socket is opened by Sentry itself.
 | Dry run | Compare against the baseline **without** updating it; the result is headed "dry run, nothing saved". With no baseline it says so and saves nothing. |
 | Reset baseline | Delete the baseline **and** the recorded findings; the next pass records a fresh baseline. There is no confirmation. The background watch shares both files, so it is reset too. Reset refuses ("A watch pass is running; try again when it ends.") while a pass holds the lock, and clears the findings before the baseline. |
 | Explain findings with AI | **Off by default.** When ticked, the findings of a pass that has some (a dry run counts) are sent to the selected model — see *What is sent to a model*. |
-| Continuous background watch | Interval (1–720 min, default 5) + Install/Remove — a launchd agent that keeps watching while the app is closed. |
-| Provider / Model / Auto-route / Stop | Shared run-bar controls for the AI read. Stop also cancels a watch pass that is in progress. |
+| Background watch (same row as Dry run and Reset baseline) | Interval (1–720 min, default 5) + Install/Remove — a launchd agent that keeps watching while the app is closed. |
+| Change model (Provider / Model / Auto-route) / Stop | Shared run-bar controls for the AI read. Stop also cancels a watch pass that is in progress. |
 
 ## Outputs
 The findings pane opens with the counts (devices · listeners · connections), the

@@ -73,6 +73,7 @@ class ManagerPanel(AgentPanel):
             secondary=(self.clear_btn,),
             context="Agent Builder",
             empty_placeholder=True,
+            fold_pickers=True,
         )
         idea_layout.addWidget(idea_run_bar)
         layout.addWidget(idea_group)
@@ -108,6 +109,10 @@ class ManagerPanel(AgentPanel):
         approve_row.addStretch()
         spec_layout.addLayout(approve_row)
         layout.addWidget(spec_group)
+        # Spec and Log show only once they have something in them
+        # (docs/specs/agent-layouts.md, screen 4).
+        self.spec_group = spec_group
+        spec_group.setVisible(False)
 
         # ── Creation log ─────────────────────────────────────────────────
         log_group = QGroupBox("Creation Log")
@@ -121,6 +126,11 @@ class ManagerPanel(AgentPanel):
         self.log.setStyleSheet("font-family: monospace; font-size: 12px;")
         log_layout.addWidget(self.log)
         layout.addWidget(log_group)
+        self.log_group = log_group
+        log_group.setVisible(False)
+        self.log.textChanged.connect(
+            lambda: self.log_group.setVisible(bool(self.log.toPlainText())))
+        layout.addStretch(1)
 
     # ── Running ─────────────────────────────────────────────────────────
     def analyze_idea(self) -> None:
@@ -140,6 +150,7 @@ class ManagerPanel(AgentPanel):
         self.sections.setVisible(False)
         self.stream_box.setPlainText("Analyzing…")
         self.stream_box.setVisible(True)
+        self.spec_group.setVisible(True)
         self.analyze_btn.setEnabled(False)
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
@@ -164,6 +175,7 @@ class ManagerPanel(AgentPanel):
         self._last_response += token
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
+        self.spec_group.setVisible(True)
         self.stream_box.setPlainText(self._last_response)
 
     def _on_finished(self, response: str) -> None:
@@ -204,6 +216,7 @@ class ManagerPanel(AgentPanel):
         self.analyze_btn.setEnabled(True)
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
+        self.spec_group.setVisible(True)
         self.stream_box.setPlainText(f"[Error]\n{error}")
         self.log.append(f"[Error] {error}")
 
@@ -329,3 +342,4 @@ class ManagerPanel(AgentPanel):
         self.stream_box.setVisible(False)
         self.sections.clear()
         self.sections.setVisible(True)
+        self.spec_group.setVisible(False)

@@ -11,12 +11,12 @@ A meta-agent that turns a plain-language idea into a reviewable agent scaffold: 
 | Control | Purpose |
 |---|---|
 | Idea box | Describe the agent: purpose, users, inputs, outputs, providers, tools, budget, approval. The spec has no fields for users, inputs or outputs, so those only land in the description or system prompt if the model puts them there. |
-| Provider / Model | The two selectors in the run bar (labelled "Agent Builder") choose the model that drafts the spec. At startup the app preselects the recommended choice (when it is in the lists) and marks it BEST FIT. There is no separate "Model override" control. |
+| Provider / Model | Under **Change model** in the run bar, which shows the chosen provider, model and price; they choose the model that drafts the spec. At startup the app preselects the recommended choice (when it is in the lists) and marks it BEST FIT. There is no separate "Model override" control. |
 | Auto-route | Asks the shared router to pick a provider and model for the current idea text. Forge has no status line, so it shows no message either way. |
 | Analyze Idea | First asks the routing advisor about the selected model for this job (`ui/panel_routing.py`, the same check every agent gets). When it would suggest another model, a banner at the top of the panel holds the request with **Switch for this job**, **Always for <kind> jobs** and **Keep local** (or **Keep <model>**); any answer runs Analyze again, and Switch and Always first put the suggested model in the run bar. Then the idea goes to the selected model through the shared request guard (provider permission, budget caps, cost confirmation). The reply streams into a text box, then becomes the review cards. |
 | Approve & Create Agent | Disabled until a spec has been parsed **and** passes the factory's checks (see below). Opens a Yes/No confirmation. |
 | Reject / Clear Spec | Discards the pending spec and its cards. The idea text stays. Writes nothing. Enabled as soon as the review cards are shown, valid spec or not. |
-| Clear | Empties the idea box and the review. The Creation Log is kept. Does not stop a running analysis. |
+| Clear | Empties the idea box and the review. The Creation Log is kept. (The spec card and the Creation Log appear only once they have content.) Does not stop a running analysis. |
 | Stop (window) | Forge has no Stop button of its own; the window's Stop cancels a running analysis. Nothing is written. |
 
 ## Outputs
