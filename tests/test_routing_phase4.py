@@ -225,7 +225,7 @@ def test_settings_page_sets_mode_and_override_and_syncs_execution(win):
 
     page = RoutingModesPage(win.settings, {"chat": "Chat", "osint": "Trace"},
                             win.routing_rules, on_change=win.apply_routing_settings)
-    assert page.mode_buttons[ra.LOCAL_ADVISE].isChecked()
+    assert page.mode_buttons[ra.LOCAL_ADVISE].isChecked()   # the fixture stores it
     page.mode_buttons[ra.LOCAL_ONLY].click()
     assert win.routing_mode() == ra.LOCAL_ONLY
     assert win.execution_mode_box.currentText() == "Local only"
@@ -252,7 +252,7 @@ def test_the_run_bar_execution_mode_moves_the_routing_mode(win):
     win.execution_mode_box.setCurrentText("Cloud only")
     assert win.routing_mode() == ra.CLOUD_ONLY
     win.execution_mode_box.setCurrentText("Hybrid allowed")
-    assert win.routing_mode() == ra.DEFAULT_MODE
+    assert win.routing_mode() == ra.HYBRID_MODE
 
 
 # ── Tally and status line ────────────────────────────────────────────────────

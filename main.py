@@ -3880,7 +3880,7 @@ class GodAI(QWidget):
         elif text == "Cloud only":
             wanted = routing_advisor.CLOUD_ONLY
         elif mode in (routing_advisor.LOCAL_ONLY, routing_advisor.CLOUD_ONLY):
-            wanted = routing_advisor.DEFAULT_MODE
+            wanted = routing_advisor.HYBRID_MODE
         else:
             return
         if wanted != mode:
