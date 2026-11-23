@@ -592,7 +592,7 @@ class ProgressiveSection(QWidget):
     """
 
     def __init__(self, title: str, summary: str = "", *, expanded: bool = False,
-                 parent=None):
+                 status: str | None = None, parent=None):
         super().__init__(parent)
         self.setObjectName("ProgressiveSection")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
@@ -608,6 +608,19 @@ class ProgressiveSection(QWidget):
         self.header.setChecked(expanded)
         self.header.clicked.connect(self.setExpanded)
         outer.addWidget(self.header)
+
+        # A status on the right of the header ("Off", "None", a file name):
+        # the one fact about a collapsed section worth reading without
+        # opening it. Only built when asked for, so existing uses are unchanged.
+        self.status_label: QLabel | None = None
+        if status is not None:
+            header_row = QHBoxLayout(self.header)
+            header_row.setContentsMargins(10, 0, 12, 0)
+            header_row.addStretch(1)
+            self.status_label = QLabel(status)
+            self.status_label.setObjectName("ProgressiveStatus")
+            self.status_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            header_row.addWidget(self.status_label)
 
         self.body = QWidget()
         self.body.setObjectName("ProgressiveBody")
@@ -641,6 +654,13 @@ class ProgressiveSection(QWidget):
 
     def isExpanded(self) -> bool:
         return self.header.isChecked()
+
+    def setStatus(self, status: str) -> None:
+        if self.status_label is not None:
+            self.status_label.setText(status)
+
+    def status(self) -> str:
+        return self.status_label.text() if self.status_label is not None else ""
 
     def _refresh_header(self) -> None:
         arrow = "▾" if self.header.isChecked() else "▸"
@@ -783,6 +803,65 @@ class Meter(QWidget):
     def set_unavailable(self, text: str = "n/a") -> None:
         self.bar.set(0.0, self.LEVEL_COLOURS["muted"])
         self.value.setText(text)
+
+
+class MetricStrip(QFrame):
+    """One row of compact figures: caption over value, side by side.
+
+    Replaces columns of tall cards that each held one number. A cell may carry
+    a thin `Bar` under its value. Labels ignore their text width, so a long
+    value never sets the minimum width of the panel; the strip shrinks with
+    the column instead.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("MetricStrip")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setSpacing(6)
+        self._row = QHBoxLayout()
+        self._row.setContentsMargins(0, 0, 0, 0)
+        self._row.setSpacing(16)
+        outer.addLayout(self._row)
+        self.note = QLabel("")
+        self.note.setObjectName("MetricStripNote")
+        self.note.setWordWrap(True)
+        self.note.setVisible(False)
+        outer.addWidget(self.note)
+        self.cells: dict[str, QWidget] = {}
+
+    def add_cell(self, caption: str, value: QLabel | None = None, *,
+                 bar: QWidget | None = None, tip: str = "") -> QLabel:
+        """Add one cell and return its value label (the one passed, if any)."""
+        cell = QWidget(self)
+        cell.setObjectName("MetricCell")
+        lay = QVBoxLayout(cell)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        cap = QLabel(caption)
+        cap.setObjectName("MetricCaption")
+        value = value if value is not None else QLabel("—")
+        value.setObjectName("MetricValue")
+        value.setStyleSheet("")
+        value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        for label in (cap, value):
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        lay.addWidget(cap)
+        lay.addWidget(value)
+        if bar is not None:
+            lay.addWidget(bar)
+        if tip:
+            cell.setToolTip(tip)
+        self._row.addWidget(cell, 1)
+        self.cells[caption] = cell
+        return value
+
+    def set_note(self, text: str) -> None:
+        self.note.setText(text)
+        self.note.setVisible(bool(text))
 
 
 class SectionCard(QFrame):

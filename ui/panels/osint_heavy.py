@@ -19,7 +19,7 @@ from PySide6.QtGui import QGuiApplication, QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QFileDialog,
     QGridLayout, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMessageBox, QProgressBar, QPushButton, QSplitter,
+    QListWidget, QMessageBox, QProgressBar, QPushButton,
     QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QVBoxLayout,
     QWidget,
 )
@@ -33,7 +33,7 @@ from ui.workers import (
     LiveCollectionWorker, LocalFileSearchWorker, RemoteFileSearchWorker, join_or_park,
     shutdown_deadline,
 )
-from ui.widgets import MenuComboBox, SectionView
+from ui.widgets import MenuComboBox, MetricStrip, ProgressiveSection, SectionView
 
 
 # ── EXIF, as plain functions ────────────────────────────────────────────────
@@ -139,15 +139,21 @@ class OsintHeavyPanel(AgentPanel):
 
     # ── Construction ────────────────────────────────────────────────────
     def _build(self) -> None:
+        # Layout: docs/specs/agent-layouts.md, screen 1. One Brief card with
+        # the optional extras collapsed inside it and the run bar at its foot;
+        # then the dossier with its figures as one strip above it.
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        # ── Investigation Brief ──────────────────────────────────────────
-        brief_group = QGroupBox("Investigation Brief")
+        # ── Brief ────────────────────────────────────────────────────────
+        brief_group = QGroupBox("Brief")
         brief_group.setObjectName("OSINTHeavyBriefBox")
-        brief_layout = QGridLayout(brief_group)
+        brief_outer = QVBoxLayout(brief_group)
+        brief_outer.setSpacing(8)
+        brief_layout = QGridLayout()
         brief_layout.setSpacing(6)
+        brief_outer.addLayout(brief_layout)
 
         brief_layout.addWidget(QLabel("Target:"), 0, 0)
         self.target_input = QLineEdit()
@@ -170,13 +176,7 @@ class OsintHeavyPanel(AgentPanel):
         self.scope_box.setCurrentText("Standard Investigation")
         brief_layout.addWidget(self.scope_box, 1, 3)
 
-        self.courtlistener_box = QCheckBox("Include CourtListener court records (Organisation)")
-        self.courtlistener_box.setChecked(False)
-        # Its own row: beside Scope, the long label set the form's minimum
-        # width past the centre column and clipped the panel's right edge.
-        brief_layout.addWidget(self.courtlistener_box, 2, 1, 1, 3)
-
-        brief_layout.addWidget(QLabel("Objective:"), 3, 0)
+        brief_layout.addWidget(QLabel("Objective:"), 2, 0)
         self.objective_input = QTextEdit()
         self.objective_input.setPlaceholderText(
             "What are you trying to establish? e.g. verify identity, map infrastructure, "
@@ -184,35 +184,15 @@ class OsintHeavyPanel(AgentPanel):
         )
         self.objective_input.setMinimumHeight(70)
         self.objective_input.setMaximumHeight(120)
-        brief_layout.addWidget(self.objective_input, 3, 1, 1, 3)
+        brief_layout.addWidget(self.objective_input, 2, 1, 1, 3)
+        brief_layout.setColumnStretch(1, 1)
+        brief_layout.setColumnStretch(3, 1)
 
-        self.investigate_btn = QPushButton("Investigate")
-        self.investigate_btn.setMinimumWidth(140)
-        self.investigate_btn.setObjectName("PrimaryAction")
-        self.investigate_btn.clicked.connect(self.investigate)
-
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.setObjectName("DangerAction")
-        self.stop_btn.clicked.connect(self.stop)
-        self.set_busy(self.investigate_btn, self.stop_btn, False)
-
-        provider_row_container = self.build_run_bar(
-            self.investigate_btn,
-            stop=self.stop_btn,
-            context="Investigation",
-        )
-
-        brief_layout.addWidget(provider_row_container, 4, 0, 1, 4)
-        layout.addWidget(brief_group)
-
-        # ── Target Image (optional) ──────────────────────────────────────
-        image_group = QGroupBox(
-            "Target Image  —  optional, enables EXIF analysis && face search links")
-        image_group.setObjectName("OSINTHeavyImageBox")
-        image_outer = QVBoxLayout(image_group)
-        image_outer.setSpacing(4)
-        image_outer.setContentsMargins(8, 4, 8, 4)
+        # ── Optional extras: collapsed, one line each ────────────────────
+        self.image_section = ProgressiveSection("Target image", status="None")
+        self.image_section.setObjectName("OSINTHeavyImageBox")
+        self.image_section.setToolTip(
+            "Optional: enables EXIF analysis and face search links.")
         image_top_row = QHBoxLayout()
         self.image_label = QLabel("No image selected")
         self.image_label.setStyleSheet("color: #666; font-style: italic;")
@@ -228,7 +208,7 @@ class OsintHeavyPanel(AgentPanel):
         self.clear_image_btn.setMaximumWidth(130)
         self.clear_image_btn.clicked.connect(self.clear_image)
         image_top_row.addWidget(self.clear_image_btn)
-        image_outer.addLayout(image_top_row)
+        self.image_section.addLayout(image_top_row)
         # Image metadata stays local unless the operator says otherwise: the
         # Bloodhound lesson promises it is sent only when explicitly approved,
         # and the selected model may be a paid cloud one.
@@ -240,7 +220,7 @@ class OsintHeavyPanel(AgentPanel):
             "On: camera, timestamps and GPS coordinates are sent to the selected "
             "provider and model with the dossier request. The file itself and its "
             "name are never sent.")
-        image_outer.addWidget(self.send_exif_checkbox)
+        self.image_section.addWidget(self.send_exif_checkbox)
         self.exif_display = QTextEdit()
         self.exif_display.setReadOnly(True)
         self.exif_display.setMinimumHeight(56)
@@ -251,18 +231,83 @@ class OsintHeavyPanel(AgentPanel):
         self.exif_display.setStyleSheet(
             "font-family: monospace; font-size: 11px; color: #aaa;"
         )
-        image_outer.addWidget(self.exif_display)
+        self.image_section.addWidget(self.exif_display)
         self.image_details = QTextBrowser()
         self.image_details.setOpenExternalLinks(True)
         self.image_details.setMaximumHeight(190)
         self.image_details.setVisible(False)
-        image_outer.addWidget(self.image_details)
-        layout.addWidget(image_group)
+        self.image_section.addWidget(self.image_details)
+        brief_outer.addWidget(self.image_section)
 
-        self._build_file_discovery(layout)
+        self._build_file_discovery(brief_outer)
 
-        # ── Results splitter: tabs left, indicators right ────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
+        self.court_section = ProgressiveSection(
+            "Court records", status="Organisations only")
+        self.court_section.setObjectName("OSINTHeavyCourtBox")
+        self.courtlistener_box = QCheckBox("Include CourtListener court records (Organisation)")
+        self.courtlistener_box.setChecked(False)
+        self.court_section.addWidget(self.courtlistener_box)
+        brief_outer.addWidget(self.court_section)
+
+        # ── Run bar: cost left, Change model + Investigate right ─────────
+        self.investigate_btn = QPushButton("Investigate")
+        self.investigate_btn.setMinimumWidth(140)
+        self.investigate_btn.setObjectName("PrimaryAction")
+        self.investigate_btn.clicked.connect(self.investigate)
+
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setObjectName("DangerAction")
+        self.stop_btn.clicked.connect(self.stop)
+        self.set_busy(self.investigate_btn, self.stop_btn, False)
+
+        provider_row_container = self.build_run_bar(
+            self.investigate_btn,
+            stop=self.stop_btn,
+            context="Investigation",
+            fold_pickers=True,
+        )
+        brief_outer.addWidget(provider_row_container)
+        layout.addWidget(brief_group)
+
+        # ── Results: header, figures strip, dossier at full width ────────
+        results_header = QHBoxLayout()
+        results_heading = QLabel("Dossier")
+        results_heading.setObjectName("ResultsHeading")
+        results_header.addWidget(results_heading)
+        results_header.addStretch(1)
+        self.save_btn = QPushButton("Save Report")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self.save)
+        results_header.addWidget(self.save_btn)
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self.clear)
+        results_header.addWidget(self.clear_btn)
+        layout.addLayout(results_header)
+
+        self.metric_strip = MetricStrip()
+        self.metric_strip.setObjectName("OSINTHeavyMetrics")
+        self.threat_bar = QProgressBar()
+        self.threat_bar.setRange(0, 10)
+        self.threat_bar.setValue(0)
+        self.threat_bar.setTextVisible(False)
+        self.threat_bar.setFixedHeight(4)
+        self.threat_bar.setStyleSheet(
+            "QProgressBar { border: none; background: #242424; border-radius: 2px; }"
+            "QProgressBar::chunk { background-color: #cc2200; border-radius: 2px; }"
+        )
+        self.threat_label = self.metric_strip.add_cell(
+            "Threat (AI est.)", QLabel("—"), bar=self.threat_bar)
+        self.conf_label = self.metric_strip.add_cell(
+            "Confidence (AI est.)", QLabel("—"))
+        self.sources_label = self.metric_strip.add_cell(
+            "Sources contacted", QLabel("—"))
+        self.depth_label = self.metric_strip.add_cell("Depth", QLabel("—"))
+        self.metric_strip.set_note(
+            "Threat and Confidence are the AI's own estimate, not a measurement. "
+            "Sources counts the public sources actually contacted by live collection."
+        )
+        layout.addWidget(self.metric_strip)
 
         result_widget = QWidget()
         result_layout = QVBoxLayout(result_widget)
@@ -274,96 +319,17 @@ class OsintHeavyPanel(AgentPanel):
         result_layout.addWidget(self.stream_box, 1)
         self.sections = SectionView()
         result_layout.addWidget(self.sections, 1)
-
-        results_splitter.addWidget(result_widget)
-
-        # ── Indicators sidebar ───────────────────────────────────────────
-        indicators_widget = QWidget()
-        indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(8, 0, 0, 0)
-        indicators_layout.setSpacing(10)
-
-        threat_group = QGroupBox("Threat Level (AI estimate)")
-        threat_group.setObjectName("OSINTHeavyThreatBox")
-        threat_layout = QVBoxLayout(threat_group)
-        self.threat_bar = QProgressBar()
-        self.threat_bar.setRange(0, 10)
-        self.threat_bar.setValue(0)
-        self.threat_bar.setTextVisible(False)
-        self.threat_bar.setFixedHeight(16)
-        self.threat_bar.setStyleSheet(
-            "QProgressBar::chunk { background-color: #cc2200; }"
-        )
-        threat_layout.addWidget(self.threat_bar)
-        self.threat_label = QLabel("—")
-        self.threat_label.setAlignment(Qt.AlignCenter)
-        threat_layout.addWidget(self.threat_label)
-        indicators_layout.addWidget(threat_group)
-
-        conf_group = QGroupBox("Confidence (AI estimate)")
-        conf_group.setObjectName("OSINTHeavyConfBox")
-        conf_layout = QVBoxLayout(conf_group)
-        self.conf_label = QLabel("—")
-        self.conf_label.setAlignment(Qt.AlignCenter)
-        self.conf_label.setStyleSheet(
-            "font-size: 20px; font-weight: bold; color: #dd88ff;")
-        conf_layout.addWidget(self.conf_label)
-        indicators_layout.addWidget(conf_group)
-
-        sources_group = QGroupBox("Sources")
-        sources_group.setObjectName("OSINTHeavySourcesBox")
-        sources_layout = QVBoxLayout(sources_group)
-        self.sources_label = QLabel("—")
-        self.sources_label.setAlignment(Qt.AlignCenter)
-        self.sources_label.setStyleSheet(
-            "font-size: 18px; font-weight: bold; color: #4db8ff;")
-        sources_layout.addWidget(self.sources_label)
-        indicators_layout.addWidget(sources_group)
-
-        gauge_note = QLabel(
-            "Threat and Confidence are the AI's own estimate, not a measurement. "
-            "Sources counts the public sources actually contacted by live collection."
-        )
-        gauge_note.setWordWrap(True)
-        gauge_note.setStyleSheet("font-size: 10px; color: #888;")
-        indicators_layout.addWidget(gauge_note)
-
-        depth_group = QGroupBox("Depth")
-        depth_group.setObjectName("OSINTHeavyDepthBox")
-        depth_layout = QVBoxLayout(depth_group)
-        self.depth_label = QLabel("—")
-        self.depth_label.setAlignment(Qt.AlignCenter)
-        self.depth_label.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #aaaaff;")
-        depth_layout.addWidget(self.depth_label)
-        indicators_layout.addWidget(depth_group)
-
-        indicators_layout.addStretch()
-
-        self.save_btn = QPushButton("Save Report")
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(self.save)
-        indicators_layout.addWidget(self.save_btn)
-
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self.clear)
-        indicators_layout.addWidget(self.clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([680, 220])
-
-        layout.addWidget(results_splitter, 1)
+        layout.addWidget(result_widget, 1)
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("font-size: 12px; color: #888;")
         layout.addWidget(self.status_label)
 
     def _build_file_discovery(self, layout: QVBoxLayout) -> None:
-        group = QGroupBox("File Discovery — selected locations only")
+        group = ProgressiveSection("File discovery", status="Off")
         group.setObjectName("BloodhoundFileDiscoveryBox")
-        group.setCheckable(True)
-        group.setChecked(False)
-        outer = QVBoxLayout(group)
+        group.setToolTip("Searches selected locations only.")
+        self.file_discovery_section = group
         self.file_discovery_body = QWidget()
         body = QVBoxLayout(self.file_discovery_body)
         body.setContentsMargins(0, 4, 0, 0)
@@ -465,7 +431,9 @@ class OsintHeavyPanel(AgentPanel):
 
         actions = QHBoxLayout()
         self.file_search_btn = QPushButton("Search Selected Folders")
-        self.file_search_btn.setObjectName("PrimaryAction")
+        # Secondary: one primary per screen, and that is Investigate
+        # (docs/specs/agent-layouts.md).
+        self.file_search_btn.setObjectName("BloodhoundFileSearch")
         self.file_search_btn.clicked.connect(self.start_file_search)
         actions.addWidget(self.file_search_btn)
         self.file_cancel_btn = QPushButton("Cancel")
@@ -510,10 +478,34 @@ class OsintHeavyPanel(AgentPanel):
         self.file_hint.setWordWrap(True)
         body.addWidget(self.file_hint)
 
-        outer.addWidget(self.file_discovery_body)
+        group.addWidget(self.file_discovery_body)
+        # Collapsed means off, as the unchecked group box did: hidden and
+        # disabled, so its fields stay out of routing_text and nothing in it
+        # can run.
+        self.file_discovery_body.setEnabled(False)
         self.file_discovery_body.setVisible(False)
-        group.toggled.connect(self.file_discovery_body.setVisible)
+        group.header.toggled.connect(self.file_discovery_body.setEnabled)
+        group.header.toggled.connect(self.file_discovery_body.setVisible)
+        self.file_folders.model().rowsInserted.connect(
+            lambda *_a: self._refresh_file_discovery_status())
+        self.file_folders.model().rowsRemoved.connect(
+            lambda *_a: self._refresh_file_discovery_status())
+        self.file_folders.model().modelReset.connect(
+            lambda *_a: self._refresh_file_discovery_status())
+        self.remote_roots_input.textChanged.connect(
+            lambda _t: self._refresh_file_discovery_status())
+        self.file_source_box.currentTextChanged.connect(
+            lambda _t: self._refresh_file_discovery_status())
         layout.addWidget(group)
+
+    def _refresh_file_discovery_status(self) -> None:
+        """"Off", or how many locations a search would cover."""
+        if self.file_source_box.currentText() == "Remote SSH machine":
+            count = len([r for r in self.remote_roots_input.text().split(",") if r.strip()])
+        else:
+            count = self.file_folders.count()
+        self.file_discovery_section.setStatus(
+            "Off" if count == 0 else f"{count} location{'s' if count != 1 else ''}")
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1094,6 +1086,7 @@ class OsintHeavyPanel(AgentPanel):
         self._image_path = path
         self.image_label.setText(Path(path).name)
         self.image_label.setStyleSheet("color: #dd88ff; font-style: normal;")
+        self.image_section.setStatus(Path(path).name)
         self.exif_display.setPlainText(exif_summary(path))
         self._populate_image_details(path)
 
@@ -1101,6 +1094,7 @@ class OsintHeavyPanel(AgentPanel):
         self._image_path = ""
         self.image_label.setText("No image selected")
         self.image_label.setStyleSheet("color: #666; font-style: italic;")
+        self.image_section.setStatus("None")
         self.exif_display.clear()
         self.image_details.clear()
         self.image_details.setVisible(False)

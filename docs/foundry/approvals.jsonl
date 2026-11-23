@@ -1,3 +1,4 @@
 {"ts": "2026-11-18T17:29:54", "gate": "define", "by": "owner", "words": "Approve (selected in the Define-gate question: approve spec, parked until after testing)", "recorded_by": "agent", "spec": "case-workspace"}
 {"ts": "2026-11-18T17:40:46", "gate": "architect", "by": "owner", "words": "Approve Architect", "recorded_by": "agent", "spec": "case-workspace"}
 {"ts": "2026-11-22T02:13:12", "gate": "define", "by": "owner", "words": "Approve and merge", "recorded_by": "agent", "spec": "local-only-any-runtime"}
+{"ts": "2026-11-23T00:31:12", "gate": "define", "by": "owner", "words": "Approve, fold pickers", "recorded_by": "agent", "spec": "agent-layouts", "note": "Open question answered: Change model folds provider/model pickers into a menu"}

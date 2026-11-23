@@ -14,6 +14,18 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Bloodhound is one Brief card and a dossier.** Target image, File discovery
+  and Court records are now collapsed one-line rows inside the Brief, each with
+  its state on the right ("None", "Off" or the number of locations,
+  "Organisations only"); they open in place to the same controls, and a
+  collapsed File discovery is off, as before. The run bar at the foot of the
+  card shows the model and its price ("Price unknown" when there is no price,
+  never free), with **Change model** (provider, model, Auto-route) and
+  **Investigate**. Threat, Confidence, Sources contacted and Depth sit in one
+  strip above the full-width dossier, with the note that Threat and Confidence
+  are the AI's own estimate. "Search Selected Folders" is no longer styled as a
+  second primary button. Placeholder text in every typed field is now muted grey
+  instead of green.
 - **Local only works on a Mac that runs only LM Studio.** When a cloud provider was
   picked in Chat's run bar, Local only always swapped in Ollama, so the request failed
   without Ollama. It now uses a fitting LM Studio model when Ollama is not running and

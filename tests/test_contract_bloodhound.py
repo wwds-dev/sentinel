@@ -217,8 +217,8 @@ def make_panel(qapp, monkeypatch, *, agent=None):
     host.agent_instances["osint_heavy"] = agent if agent is not None else FakeAgent()
     panel = OsintHeavyPanel(host)
     panel.target_input.setText("acme.com")
-    # File Discovery ships collapsed, and an unchecked group disables its children.
-    panel.findChild(QObject, "BloodhoundFileDiscoveryBox").setChecked(True)
+    # File Discovery ships collapsed, and a collapsed section disables its children.
+    panel.findChild(QObject, "BloodhoundFileDiscoveryBox").setExpanded(True)
     return panel
 
 

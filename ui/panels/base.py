@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QComboBox, QGridLayout, QMenu, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QSizePolicy, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -171,14 +171,24 @@ class AgentPanel(QWidget):
         secondary: tuple[QPushButton, ...] = (),
         context: str = "",
         empty_placeholder: bool = False,
+        fold_pickers: bool = False,
     ) -> QWidget:
         """Build the same compact provider/model/action surface used by Chat.
+
+        `fold_pickers` is the agent-layouts form (docs/specs/agent-layouts.md):
+        cost on the left, "Change model" and the actions on the right. The
+        provider and model combos still exist as the same objects, hidden,
+        and the menu drives them, so routing and recommendations are unchanged.
 
         Specialist panels keep their task-specific forms and results, but the
         decision immediately before execution should always read the same way:
         workflow, provider, model, optional utility, primary action. Centralising
         this also prevents provider widths and action order drifting per agent.
         """
+        if fold_pickers:
+            return self._build_folded_run_bar(
+                primary, stop=stop, secondary=secondary, context=context,
+                empty_placeholder=empty_placeholder)
         container = QWidget(self)
         container.setObjectName("RunBar")
         container.setAttribute(Qt.WA_StyledBackground, True)
@@ -226,6 +236,116 @@ class AgentPanel(QWidget):
             row.addWidget(stop)
         row.addWidget(primary)
         return container
+
+    def _build_folded_run_bar(
+        self,
+        primary: QPushButton,
+        *,
+        stop: QPushButton | None,
+        secondary: tuple[QPushButton, ...],
+        context: str,
+        empty_placeholder: bool,
+    ) -> QWidget:
+        container = QWidget(self)
+        container.setObjectName("RunBar")
+        container.setAttribute(Qt.WA_StyledBackground, True)
+        row = QHBoxLayout(container)
+        row.setContentsMargins(10, 8, 8, 8)
+        row.setSpacing(8)
+
+        # The pickers live in a hidden holder: the same combos every other
+        # part of the app reads and sets, just not on screen.
+        holder = QWidget(container)
+        holder.setObjectName("RunBarPickerHolder")
+        holder_row = QHBoxLayout(holder)
+        holder_row.setContentsMargins(0, 0, 0, 0)
+        self.build_provider_row(holder_row, labels=False,
+                                empty_placeholder=empty_placeholder)
+        self.provider_box.setObjectName("MachinePick")
+        self.model_box.setObjectName("MachinePick")
+        holder.setVisible(False)
+
+        self.auto_route_btn = QPushButton("Auto-route", container)
+        self.auto_route_btn.setObjectName("AutoRouteAction")
+        self.auto_route_btn.setToolTip(
+            "Choose the best available provider and model for this agent's current input"
+        )
+        self.auto_route_btn.clicked.connect(
+            lambda _checked=False: self.auto_route(context)
+        )
+        self.auto_route_btn.setVisible(False)
+
+        self.run_bar_cost = QLabel(container)
+        self.run_bar_cost.setObjectName("RunBarCost")
+        self.run_bar_cost.setMinimumWidth(0)
+        self.run_bar_cost.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        row.addWidget(self.run_bar_cost, 1)
+
+        self.change_model_btn = QPushButton("Change model", container)
+        self.change_model_btn.setToolTip("Provider, model and Auto-route")
+        self.change_model_menu = QMenu(self.change_model_btn)
+        self.change_model_menu.aboutToShow.connect(self._fill_change_model_menu)
+        self.change_model_btn.setMenu(self.change_model_menu)
+        row.addWidget(self.change_model_btn)
+
+        for button in secondary:
+            row.addWidget(button)
+        if stop is not None:
+            row.addWidget(stop)
+        row.addWidget(primary)
+
+        self.provider_box.currentTextChanged.connect(
+            lambda _t: self._refresh_run_bar_cost())
+        self.model_box.currentTextChanged.connect(
+            lambda _t: self._refresh_run_bar_cost())
+        self._refresh_run_bar_cost()
+        return container
+
+    def _fill_change_model_menu(self) -> None:
+        """Rebuilt on every open: the model list changes with the provider."""
+        menu = self.change_model_menu
+        menu.clear()
+        for title, combo in (("Provider", self.provider_box), ("Model", self.model_box)):
+            sub = menu.addMenu(title)
+            current = combo.currentText()
+            for index in range(combo.count()):
+                value = combo.itemText(index)
+                action = sub.addAction(value)
+                action.setCheckable(True)
+                action.setChecked(value == current)
+                action.triggered.connect(
+                    lambda _checked=False, box=combo, chosen=value:
+                        box.setCurrentText(chosen))
+        menu.addSeparator()
+        menu.addAction("Auto-route").triggered.connect(self.auto_route_btn.click)
+
+    def _refresh_run_bar_cost(self) -> None:
+        """Model and price in words. Reads cached pricing only, never fetches.
+
+        A missing price reads "price unknown", never free: a zero or absent
+        price means unknown (workspace rule).
+        """
+        from services.model_recommendations import pricing_metadata
+        provider = self.provider_box.currentText() if self.provider_box else ""
+        model = self.model_box.currentText() if self.model_box else ""
+        try:
+            pricing = pricing_metadata(provider, model)
+        except Exception:     # display only; never block the panel on pricing
+            pricing = None
+        if pricing is not None and pricing.status == "free_local":
+            cost = "Local · no charge"
+        elif (pricing is None or pricing.status != "paid"
+              or not pricing.input_per_1m_usd or not pricing.output_per_1m_usd):
+            cost = "Price unknown"
+        else:
+            cost = (f"${pricing.input_per_1m_usd:g} / ${pricing.output_per_1m_usd:g} "
+                    "per 1M tokens in/out")
+            if pricing.source == "default":
+                cost += " (provider default)"
+        route = " · ".join(part for part in (provider, model) if part)
+        text = f"{route} — {cost}" if route else cost
+        self.run_bar_cost.setText(text)
+        self.run_bar_cost.setToolTip(text)
 
     def routing_text(self, context: str = "") -> str:
         """Collect only editable request fields for an explicit route decision."""

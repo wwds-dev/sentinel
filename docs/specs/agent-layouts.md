@@ -1,6 +1,6 @@
 # Spec: agent screen layouts (GUI review 2026-11-22)
 
-Status: draft, waiting for the owner's approval (Define gate: user-visible). The visuals were
+Status: approved by the owner 2026-11-23 ("Approve, fold pickers"); the open question is answered: "Change model" folds the pickers into a menu. The visuals were
 approved on 2026-11-23 ("visuals are approved"; `TODO.md`, row "GUI review of all eight agents").
 This spec writes those mockups down, since they exist only in chat.
 
@@ -100,7 +100,13 @@ unchanged and green):
 - "Run Nmap" is the primary button only on the Recon tab; "Analyse" on the Report tab. One visible
   primary per tab.
 
-Success measure: tests show the target bar summary follows the fields; each tab holds the widgets
+- Defect to fix in the same step (added 2026-11-23 at the owner's request, relayed from the GUI
+  review session; recorded in `TODO.md` "Two small defects from the 2026-11-22 GUI review"): the
+  Recent changes table in `ui/panels/bug_spray_feed.py` shows six full rows and a seventh cut in
+  half at 1600x1000. Its height must land on a whole row.
+
+Success measure: the Recent changes table's visible height is a whole number of rows (header plus
+N rows, a test computes it); tests show the target bar summary follows the fields; each tab holds the widgets
 listed; the scope and Nmap facts above are present (pinned by substring); the existing Nmap
 confirmation and Program-required tests stay green; one visible `PrimaryAction` per tab; render.
 

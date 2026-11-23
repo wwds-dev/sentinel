@@ -134,6 +134,15 @@ class TestPanelProviderRows:
         run_bar = panel.findChild(QObject, "RunBar")
         assert panel.auto_route_btn.text() == "Auto-route"
         assert panel.auto_route_btn.objectName() == "AutoRouteAction"
+        if getattr(panel, "change_model_btn", None) is not None:
+            # Folded run bar (docs/specs/agent-layouts.md, approved "fold
+            # pickers"): Auto-route sits in the bar's Change model menu.
+            assert run_bar.layout().indexOf(panel.change_model_btn) >= 0
+            assert not panel.change_model_btn.isHidden()
+            panel._fill_change_model_menu()
+            titles = [a.text() for a in panel.change_model_menu.actions()]
+            assert "Auto-route" in titles
+            return
         assert not panel.auto_route_btn.isHidden()
         assert run_bar.layout().indexOf(panel.auto_route_btn) >= 0
 
@@ -4562,6 +4571,7 @@ def test_bloodhound_fits_the_centre_column(win):
     """
     panel = win.panels["osint_heavy"]
     assert panel.minimumSizeHint().width() <= 800
-    grid = panel.courtlistener_box.parentWidget().layout()
-    row_of = lambda w: grid.getItemPosition(grid.indexOf(w))[0]
-    assert row_of(panel.courtlistener_box) != row_of(panel.scope_box)
+    # The checkbox now lives in its own collapsed "Court records" row, so it
+    # can never sit beside Scope again.
+    assert panel.court_section.isAncestorOf(panel.courtlistener_box)
+    assert not panel.court_section.isAncestorOf(panel.scope_box)

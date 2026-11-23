@@ -91,7 +91,7 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 - [ ] The dossier carries the model's legal/ethical point and disclaimer (a request in the prompt, not added by the panel), and the run is logged under `osint_heavy`.
 - [ ] Stop during collection cancels it and the request is never billed. (Stop during the model call is a known gap: a streaming reply ends as "Error", a non-streaming reply is not cancelled.)
 
-3. Tick **File Discovery — selected locations only**, leave **This Mac** selected, add a small test folder, and search by a
+3. Open the **File discovery** row in the Brief, leave **This Mac** selected, add a small test folder, and search by a
    partial name, extension, size, and modified date.
 
 - [ ] Bloodhound searches only folders explicitly listed by the user.

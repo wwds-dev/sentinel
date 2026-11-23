@@ -161,6 +161,9 @@ _GREEN_STYLESHEET = """
         QSpinBox, QDoubleSpinBox {
             font-family: 'SF Mono', 'Menlo', 'JetBrains Mono', 'Consolas', monospace;
             color: #00ff41;
+            /* Placeholder is a hint, not something you wrote: muted, never
+               phosphor (agent-layouts spec, shared piece 4). */
+            placeholder-text-color: #6b7771;
             selection-background-color: #00ff41;
             selection-color: #0d0f0e;
         }
@@ -581,6 +584,37 @@ _GREEN_STYLESHEET = """
         QPushButton#ProgressiveHeader:hover {
             color: #3cff88;
             background-color: rgba(60, 255, 136, 0.04);
+        }
+        QLabel#ProgressiveStatus {
+            color: #7d8983;
+            font-size: 11px;
+            background: transparent;
+        }
+        QFrame#MetricStrip {
+            background-color: #101311;
+            border: 1px solid #232a26;
+            border-radius: 10px;
+        }
+        QLabel#MetricCaption {
+            color: #7d8983;
+            font-size: 11px;
+            background: transparent;
+        }
+        QLabel#MetricValue {
+            color: #e8ece9;
+            font-size: 15px;
+            font-weight: 500;
+            background: transparent;
+        }
+        QLabel#MetricStripNote {
+            color: #7d8983;
+            font-size: 11px;
+            background: transparent;
+        }
+        QLabel#ResultsHeading {
+            color: #e8ece9;
+            font-size: 15px;
+            font-weight: 500;
         }
         QWidget#ProgressiveBody {
             background-color: transparent;

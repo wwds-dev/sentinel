@@ -81,7 +81,7 @@ model as data it is told to trust, so verify anything that matters at its source
 
 ## File Discovery
 
-This separate mode uses no AI. Tick **File Discovery — selected locations only**
+This separate mode uses no AI. Click the **File discovery** row in the Brief
 to open it, choose **This Mac** or **Remote SSH machine**, then explicitly add
 the folders to search; nothing is searched until you press **Search Selected
 Folders**. Filter by complete/partial name (case-insensitive), comma-separated
