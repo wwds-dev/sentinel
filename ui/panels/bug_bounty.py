@@ -38,6 +38,7 @@ SEVERITY_COLOURS = {
 _CVSS_VERSION = re.compile(r"(?i)\bv(?:ersion)?\s*\d\.\d\b")
 # A bare version straight after the word: "CVSS 3.1: 7.5", "CVSS3.1 score of 7.5".
 _CVSS_LEADING_VERSION = re.compile(r"(?i)^\s*(?:v(?:ersion)?\s*)?[2-4]\.[01](?![\d.])")
+_CVSS_BRACKET_VERSION = re.compile(r"(?i)\(\s*v?[2-4]\.[01]\s*\)")
 _CVSS_VECTOR = re.compile(r"(?i)CVSS:\s*\d\.\d/[A-Z]{1,3}:[A-Z0-9:/.]+")
 _CVSS_SCORE = re.compile(r"(?<![\d.])(10(?:\.0)?|\d(?:\.\d)?)(?![\d.])")
 
@@ -50,19 +51,28 @@ def extract_cvss_score(text: str) -> str | None:
     and vector strings are dropped first, then the first number in 0-10 after
     the word CVSS is the score.
     """
-    match = re.search(r"CVSS(.{0,160})", text, re.IGNORECASE | re.DOTALL)
-    if not match:
-        return None
-    tail = _CVSS_VECTOR.sub(" ", "CVSS" + match.group(1))
-    # The vector, when present, took the leading "CVSS" with it.
-    tail = tail[4:] if tail[:4].upper() == "CVSS" else tail
-    tail = _CVSS_LEADING_VERSION.sub(" ", tail, count=1)
-    tail = _CVSS_VERSION.sub(" ", tail)
-    score = _CVSS_SCORE.search(tail)
-    if not score:
-        return None
-    value = score.group(1)
-    return value if "." in value else f"{value}.0"
+    # Every mention is tried in turn, and one mention never reads past the
+    # next: in "**CVSS** — CVSS 3.1 score: 7.6" the first is a label, and
+    # reading on from it took the second mention's version for the score.
+    for match in re.finditer(r"CVSS", text, re.IGNORECASE):
+        tail = text[match.start():match.start() + 164]
+        following = re.search(r"CVSS", tail[4:], re.IGNORECASE)
+        vector = _CVSS_VECTOR.match(tail)
+        if following and not vector:
+            tail = tail[:4 + following.start()]
+        tail = _CVSS_VECTOR.sub(" ", tail)
+        # The vector, when present, took the leading "CVSS" with it.
+        tail = tail[4:] if tail[:4].upper() == "CVSS" else tail
+        tail = _CVSS_LEADING_VERSION.sub(" ", tail, count=1)
+        tail = _CVSS_VERSION.sub(" ", tail)
+        # "CVSS Score (3.1): 9.8": a bracketed version is dropped only when a
+        # score is left without it, so "CVSS score (3.1)" still reads 3.1.
+        score = (_CVSS_SCORE.search(_CVSS_BRACKET_VERSION.sub(" ", tail))
+                 or _CVSS_SCORE.search(tail))
+        if score:
+            value = score.group(1)
+            return value if "." in value else f"{value}.0"
+    return None
 
 
 NMAP_TIMEOUT_MS = 10 * 60 * 1000     # a scan the operator has not killed by then is stuck

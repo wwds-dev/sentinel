@@ -175,6 +175,9 @@ and the git log, and is not back-filled here.
   the running tunnel needs to disconnect.
 
 ### Fixed
+- **Bug Spray no longer shows the CVSS version as the score.** A report that names CVSS twice (`**CVSS** — CVSS 3.1 score: 7.6`, the form the prompt asks for) or brackets the version (`CVSS Score (3.1): 9.8`) put 3.1 on the tile, in green. Each mention is now read on its own and a bracketed version is skipped.
+- **Bloodhound's dossier cards no longer start with the rest of their heading.** Infrastructure, Risk and Methodology opened with "/ SOCIAL PROFILE", "AND RED FLAGS" and "AND TOOLS".
+- **Bloodhound says when its source count is the AI's own.** Without live collection the tile showed the model's number under "Sources contacted", next to a note saying sources were actually contacted. It now reads **Sources (AI est.)** and the note says no public source was contacted.
 - **Tunnel warns when a WireGuard tunnel drops.** The health monitor compared the profile's name (`wg0`) with the utun socket names macOS uses (`utun4.sock`), so "TUNNEL DROPPED" never appeared for WireGuard. It now reads wg-quick's name records and compares name with name (testing readiness H7). Checked with tests on the wg-quick file layout only; whether a normal user can read `/var/run/wireguard` on a real Mac is not yet confirmed (owner check O11).
 - **The Inspector's Cost card no longer cuts off "saved".** Local savings and
   hybrid spend are two rows, "Local saved" and "Hybrid spent", instead of one

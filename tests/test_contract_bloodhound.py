@@ -300,6 +300,31 @@ class TestInvestigateContract:
         assert plain_hound.sources_label.text() == "14"
         assert "AI-estimated" in plain_hound.sources_label.toolTip()
 
+    def test_an_estimated_count_is_labelled_as_one_where_it_is_read(self, hound, plain_hound):
+        """Filled-in render 2026-11-23: the model's own number sat under
+        "Sources contacted" with a note saying sources were actually contacted;
+        only the tooltip said otherwise."""
+        def caption(panel):
+            return panel._sources_caption.text()
+
+        assert caption(plain_hound) == "Sources contacted"       # nothing run yet
+        plain_hound.investigate()
+        FakeWorker.instances[-1].finished_signal.emit(DOSSIER)
+        assert caption(plain_hound) == "Sources (AI est.)"
+        note = plain_hound.metric_strip.note.text()
+        assert "no public source was contacted" in note
+        assert "actually contacted" not in note
+
+        hound.investigate()                                       # live collection ran
+        FakeCollectionWorker.instances[-1].finished_signal.emit([])
+        FakeWorker.instances[-1].finished_signal.emit(DOSSIER)
+        assert caption(hound) == "Sources contacted"
+        assert "actually contacted" in hound.metric_strip.note.text()
+
+        plain_hound.clear()                                       # the label does not outlive its number
+        assert caption(plain_hound) == "Sources contacted"
+        assert "actually contacted" in plain_hound.metric_strip.note.text()
+
     def test_the_real_count_of_one_run_never_leaks_into_the_next(self, hound):
         agent = hound.host.agent_instances["osint_heavy"]
         hound.investigate()

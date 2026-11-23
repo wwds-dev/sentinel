@@ -3404,6 +3404,19 @@ class TestBloodhoundParsing:
         assert parsed["footprint"] == "accounts"
         assert parsed["methodology"] == "how it was found"
 
+    def test_the_rest_of_a_heading_is_not_the_first_line_of_its_card(self):
+        # Filled-in render 2026-11-23: cards 3 to 5 opened with "/ SOCIAL
+        # PROFILE", "AND RED FLAGS" and "AND TOOLS".
+        from ui.panels.osint_heavy import OsintHeavyPanel
+        parsed = OsintHeavyPanel.parse_sections(
+            "## 1. OVERVIEW\nwho\n## 2. DIGITAL FOOTPRINT\naccounts\n"
+            "## 3. INFRASTRUCTURE / SOCIAL PROFILE\nhosts\nmore hosts\n"
+            "## 4. RISK AND RED FLAGS\nTHREAT LEVEL: 4/10\n"
+            "## 5. METHODOLOGY AND TOOLS\nhow\n")
+        assert parsed["infra"] == "hosts\nmore hosts"
+        assert parsed["risk"] == "THREAT LEVEL: 4/10"
+        assert parsed["methodology"] == "how"
+
     def test_missing_headings_come_back_empty(self):
         from ui.panels.osint_heavy import OsintHeavyPanel
         parsed = OsintHeavyPanel.parse_sections("## 1. OVERVIEW\nonly this")

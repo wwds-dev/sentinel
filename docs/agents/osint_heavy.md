@@ -88,6 +88,7 @@ The prompt tells the model to treat every collected value as a confirmed fact, w
 
 A provider that fails does not stop the others: its error is kept in the collected record and the model is told to flag any `error` value as a collection gap. The panel does not list the collected records, per-provider results or failures (the status line shows a source's state only while it runs); the only product of collection it keeps is the **Sources** count, so records are visible only if the dossier restates them.
 > If the collection step itself fails (an error outside any single provider), the dossier is still requested with no collected data, and the Sources gauge shows 0, never the previous run's count.
+> When no live collection ran for the target type, the tile is captioned **Sources (AI est.)** and the note under the strip says no public source was contacted: the number is then the model's own `SOURCES REFERENCED`.
 > BreachDirectory's answer is reduced to breach names and counts.
 
 A **Deep Dive** on a username also sweeps the

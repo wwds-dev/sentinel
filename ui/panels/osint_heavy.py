@@ -304,10 +304,10 @@ class OsintHeavyPanel(AgentPanel):
         self.sources_label = self.metric_strip.add_cell(
             "Sources contacted", QLabel("—"))
         self.depth_label = self.metric_strip.add_cell("Depth", QLabel("—"))
-        self.metric_strip.set_note(
-            "Threat and Confidence are the AI's own estimate, not a measurement. "
-            "Sources counts the public sources actually contacted by live collection."
-        )
+        self._sources_caption = next(
+            label for label in self.metric_strip.cells["Sources contacted"].findChildren(QLabel)
+            if label.objectName() == "MetricCaption")
+        self._set_sources_estimated(False)
         layout.addWidget(self.metric_strip)
 
         result_widget = QWidget()
@@ -1033,6 +1033,7 @@ class OsintHeavyPanel(AgentPanel):
         self.threat_label.setText("—")
         self.conf_label.setText("—")
         self.sources_label.setText("—")
+        self._set_sources_estimated(False)
         self.depth_label.setText("—")
         self.save_btn.setEnabled(False)
 
@@ -1051,19 +1052,43 @@ class OsintHeavyPanel(AgentPanel):
 
     @staticmethod
     def parse_sections(text: str) -> dict:
-        """Split the dossier on its five numbered headings."""
+        """Split the dossier on its five numbered headings.
+
+        Headings 3 to 5 carry more words than the pattern names ("/ SOCIAL
+        PROFILE", "AND RED FLAGS", "AND TOOLS"); the rest of the heading line
+        belongs to the heading, not to the card's first line.
+        """
         patterns = {
             "overview":    r"##\s*1\.\s*OVERVIEW(.*?)(?=##\s*2\.|$)",
             "footprint":   r"##\s*2\.\s*DIGITAL FOOTPRINT(.*?)(?=##\s*3\.|$)",
-            "infra":       r"##\s*3\.\s*INFRASTRUCTURE.*?(.*?)(?=##\s*4\.|$)",
-            "risk":        r"##\s*4\.\s*RISK.*?(.*?)(?=##\s*5\.|$)",
-            "methodology": r"##\s*5\.\s*METHODOLOGY.*?(.*?)$",
+            "infra":       r"##\s*3\.\s*INFRASTRUCTURE[^\n]*(.*?)(?=##\s*4\.|$)",
+            "risk":        r"##\s*4\.\s*RISK[^\n]*(.*?)(?=##\s*5\.|$)",
+            "methodology": r"##\s*5\.\s*METHODOLOGY[^\n]*(.*?)$",
         }
         result = {}
         for key, pat in patterns.items():
             m = re.search(pat, text, re.DOTALL | re.IGNORECASE)
             result[key] = m.group(1).strip() if m else ""
         return result
+
+    SOURCES_NOTE_REAL = (
+        "Threat and Confidence are the AI's own estimate, not a measurement. "
+        "Sources counts the public sources actually contacted by live collection.")
+    SOURCES_NOTE_ESTIMATED = (
+        "Threat, Confidence and Sources are the AI's own estimate, not a measurement: "
+        "no live collection ran, so no public source was contacted.")
+
+    def _set_sources_estimated(self, estimated: bool) -> None:
+        """Say on the tile itself whose number it is.
+
+        Without live collection the count is the model's own "SOURCES
+        REFERENCED"; the caption and the note under the strip said "contacted"
+        either way, and only the tooltip told the two apart.
+        """
+        self._sources_caption.setText(
+            "Sources (AI est.)" if estimated else "Sources contacted")
+        self.metric_strip.set_note(
+            self.SOURCES_NOTE_ESTIMATED if estimated else self.SOURCES_NOTE_REAL)
 
     def _update_indicators(self, text: str) -> None:
         threat_m = re.search(r"THREAT LEVEL[:\s]+(\d+)\s*/\s*10", text, re.IGNORECASE)
@@ -1084,7 +1109,9 @@ class OsintHeavyPanel(AgentPanel):
             self.sources_label.setText(str(real))
             self.sources_label.setToolTip(
                 "Public sources actually contacted by live collection.")
+            self._set_sources_estimated(False)
         elif sources_m:
+            self._set_sources_estimated(True)
             self.sources_label.setText(sources_m.group(1))
             self.sources_label.setToolTip(
                 "AI-estimated — no live collection ran for this target type.")
