@@ -97,7 +97,7 @@ class ManagerPanel(AgentPanel):
         self.approve_btn = QPushButton("Approve && Create Agent")
         self.approve_btn.setEnabled(False)
         self.approve_btn.setMinimumWidth(200)
-        self.approve_btn.setObjectName("PrimaryAction")
+        self.approve_btn.setObjectName("SecondaryAction")
         self.approve_btn.clicked.connect(self.approve_spec)
         approve_row.addWidget(self.approve_btn)
 
@@ -155,6 +155,7 @@ class ManagerPanel(AgentPanel):
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
         self.pending_spec = None
+        self._sync_primary()
 
         if not self.authorize(idea, resume=self.analyze_idea):
             # Analyze was disabled above; a blocked request has to put it back
@@ -210,6 +211,7 @@ class ManagerPanel(AgentPanel):
             self.sections.show_sections(
                 [("Cannot be created as written", reason, False)] + self._spec_sections(spec),
                 raw=response)
+        self._sync_primary()
 
     def _on_error(self, error: str) -> None:
         self.abandon(error=error)
@@ -308,6 +310,7 @@ class ManagerPanel(AgentPanel):
             self.approve_btn.setEnabled(False)
             self.reject_btn.setEnabled(False)
             self.pending_spec = None
+            self._sync_primary()
             QMessageBox.information(
                 self,
                 "Scaffold Created",
@@ -326,6 +329,7 @@ class ManagerPanel(AgentPanel):
         self._clear_spec()
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
+        self._sync_primary()
         self.log.append("[Rejected] Spec cleared. You can describe a new idea.")
 
     def clear(self) -> None:
@@ -334,7 +338,18 @@ class ManagerPanel(AgentPanel):
         self.pending_spec = None
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
+        self._sync_primary()
         self.log.append("[Cleared]")
+
+    def _sync_primary(self) -> None:
+        """One green button: Approve while a spec can be approved, else Analyze."""
+        approve = bool(self.pending_spec) and self.approve_btn.isEnabled()
+        for btn, primary in ((self.approve_btn, approve), (self.analyze_btn, not approve)):
+            name = "PrimaryAction" if primary else "SecondaryAction"
+            if btn.objectName() != name:
+                btn.setObjectName(name)
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
 
     def _clear_spec(self) -> None:
         self._last_response = ""

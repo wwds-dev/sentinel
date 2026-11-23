@@ -14,6 +14,7 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Forge has one green button at a time.** While a spec can be approved, "Approve & Create Agent" is the green one and "Analyze Idea" is a normal button; otherwise Analyze Idea is green.
 - **Beacon, Trace, Sentry and Forge are quieter.** Every agent's run bar now
   shows the model and its price, with provider and model under **Change model**.
   Beacon's Connection preflight is a collapsed row until you run it, and its five
