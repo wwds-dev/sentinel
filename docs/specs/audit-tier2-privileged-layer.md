@@ -1,5 +1,6 @@
 # Spec: audit tier-2 fixes, the privileged layer (2026-10-12)
 
+Needs: define, architect, plan, build, review, verify, secure, docs
 Source: security P1-2, P2-1, P2-2; code-review P1-1, P1-2, P1-3, P1-4 (HQ `audits/sentinel/`). Design only; no code changed.
 Prerequisite state: tier-1 (`docs/specs/audit-tier1-fixes.md`) is separate and untouched.
 Inputs not available: `docs/company/app-context.md` does not exist in this worktree (AGENTS.md names it; not found under `lab/` either), so hot spots were taken from the audits and the code. Architect playbook is `status: baseline` (last-reviewed 2026-10-10, 2 days old): its practice section is empty, so this design rests on the code and the audits.
