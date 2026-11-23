@@ -1920,3 +1920,67 @@ class TestCompanionWiring:
         m._on_tunnels([])
         assert "TUNNEL DROPPED" in tunnel.connection_status_label.text()
         assert gate.entries() == []
+
+    def test_a_dropped_wireguard_tunnel_warns_on_the_real_macos_layout(
+            self, tunnel, gate, tmp_path, monkeypatch):
+        """macOS wg-quick: the socket is the utun's (utun7.sock), the profile's
+        name is only in wgtest.name. The source the panel really uses must
+        match the profile's name, so a drop warns (audit 2026-11-23, H7)."""
+        from agents.vpn_agent.services import wireguard_manager
+        from services import openvpn_manager
+
+        run = tmp_path / "wireguard"
+        run.mkdir()
+        monkeypatch.setattr(wireguard_manager, "WG_RUN_DIR", str(run))
+        monkeypatch.setattr(openvpn_manager, "is_running", lambda: False)
+        conf = tmp_path / "wgtest.conf"
+        conf.write_text("[Interface]\nPrivateKey = x\n[Peer]\nEndpoint = 203.0.113.9:51820\n")
+        pick(tunnel, wg_profile(conf))
+        tunnel._watch_selected_profile()
+        m = tunnel.health_monitor
+        assert m._watched_interfaces == ["wgtest"]
+
+        (run / "wgtest.name").write_text("utun7\n")
+        (run / "utun7.sock").write_text("")
+        up = tunnel._local_tunnels()
+        assert "wgtest" in up and "utun7" in up
+        m._on_tunnels(up)
+        assert "TUNNEL DROPPED" not in tunnel.connection_status_label.text()
+
+        # The tunnel's device dies; wg-quick's name record is left behind.
+        (run / "utun7.sock").unlink()
+        down = tunnel._local_tunnels()
+        assert "wgtest" not in down
+        m._on_tunnels(down)
+        assert "TUNNEL DROPPED" in tunnel.connection_status_label.text()
+        assert "wgtest" in tunnel.connection_status_label.text()
+        assert gate.entries() == []
+
+    def test_wireguard_names_come_from_name_records_only(self, tmp_path):
+        from agents.vpn_agent.services import wireguard_manager
+
+        run = tmp_path / "wireguard"
+        run.mkdir()
+        (run / "wg0.name").write_text("utun4\n")
+        (run / "utun4.sock").write_text("")
+        (run / "stale.name").write_text("utun9\n")       # no utun9.sock
+        (run / "utun5.sock").write_text("")               # the WireGuard app, no record
+        unreadable = run / "locked.name"
+        unreadable.write_text("utun6\n")
+        unreadable.chmod(0)
+        try:
+            names = wireguard_manager.list_active_tunnel_names(str(run))
+        finally:
+            unreadable.chmod(0o600)
+        # A record root keeps unreadable still means "up" (presence is the signal).
+        # (root can read it anyway, sees utun6 has no socket and drops it.)
+        expected = {"wg0", "locked"} if os.geteuid() != 0 else {"wg0"}
+        assert set(names) == expected
+        assert wireguard_manager.list_active_tunnel_names(str(tmp_path / "missing")) == []
+        if os.geteuid() != 0:
+            # wg-quick may leave the folder root-only (0700): no names, no crash.
+            run.chmod(0)
+            try:
+                assert wireguard_manager.list_active_tunnel_names(str(run)) == []
+            finally:
+                run.chmod(0o700)

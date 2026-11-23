@@ -3854,6 +3854,24 @@ class GodAI(QWidget):
         settings = getattr(self, "settings", None) or {}
         return str(settings.get("routing_priority", "")).lower() == "privacy"
 
+    def cloud_allowed(self, agent: str = "chat") -> bool:
+        """May a job of `agent` reach a cloud service right now? No under
+        Local only (the agent's own override or the run bar) and under Privacy
+        first. If the mode cannot be read, the answer is no: fail closed."""
+        try:
+            return routing_advisor.allows_cloud(self.routing_mode(agent),
+                                                privacy=self._privacy_routing())
+        except Exception as exc:  # noqa: BLE001 - an unreadable mode never opens the cloud
+            self._note_failure("routing mode: read", exc)
+            return False
+
+    def cloud_refusal_text(self, agent: str, provider: str) -> str:
+        """Why a cloud provider was refused under a no-cloud mode."""
+        why = ("Privacy first is on" if self._privacy_routing()
+               else "Local only mode is on")
+        return (f"Request blocked: {why}, so nothing is sent to {provider}. "
+                "Choose a local model, or change the mode in Settings → Models.")
+
     def _execution_mode(self, agent: str = "chat") -> str:
         return execution_mode_for(self, agent)
 
@@ -4343,6 +4361,14 @@ class GodAI(QWidget):
         else:
             context = getattr(self, "_advised_context", None)
 
+        # Privacy first (or an unreadable mode) allows no cloud, whatever the
+        # advisor said: it only drops cloud models from its suggestions, so a
+        # ticked cloud pick would otherwise run after one Yes (H3, review P1).
+        if not is_local_provider(final_backend) and not self.cloud_allowed(selected_agent):
+            QMessageBox.warning(self, "Request blocked",
+                                self.cloud_refusal_text(selected_agent, final_backend))
+            return
+
         # The specialist panels stop here (authorize_request) when a provider
         # has no key; Chat used to start the run and fail inside the worker.
         if not self.provider_key_available(final_backend):
@@ -4569,6 +4595,15 @@ class GodAI(QWidget):
         request id. ``request_id`` is optional so older direct callers can keep
         using the agent-only record/abandon methods for one in-flight request.
         """
+        if not is_local_provider(provider) and not self.cloud_allowed(agent):
+            # Local only / Privacy first: refused before any consent dialog, so
+            # one "Yes" can never turn a no-cloud mode into a cloud run (H3).
+            panel = self.panels.get(agent) if hasattr(self, "panels") else None
+            status = getattr(panel, "status_label", None)
+            if status is not None:
+                status.setText(self.cloud_refusal_text(agent, provider))
+            return False
+
         estimated_cost, approx_tokens = self.estimate_chat_cost(provider, model, prompt)
 
         permissions = self.current_api_permissions()

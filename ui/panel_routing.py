@@ -56,9 +56,15 @@ class PanelRouting:
         try:
             context = host._advisor_context(agent, tool, prompt, panel.provider,
                                             panel.model, request_text=prompt)
-        except Exception as exc:  # noqa: BLE001 - advice must never block a run
+        except Exception as exc:  # noqa: BLE001 - advice must never block a local run
             host._note_failure("routing advisor", exc)
-            return True
+            if is_local_provider(panel.provider) or host.cloud_allowed(agent):
+                return True
+            # Local only / Privacy first with a cloud provider picked: without
+            # the advisor nothing has checked the mode yet, so stop here
+            # rather than fall through to a consent dialog (H3).
+            self._status(panel, host.cloud_refusal_text(agent, panel.provider))
+            return False
         advice = context.advice
         if advice.action == ra.RUN:
             target = advice.run

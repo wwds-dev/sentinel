@@ -1121,10 +1121,17 @@ class VpnPanel(AgentPanel):
 
     @staticmethod
     def _local_tunnels() -> list[str]:
-        """Tunnels visible without contacting anything: WireGuard sockets + OpenVPN."""
+        """Tunnels visible without contacting anything: WireGuard + OpenVPN.
+
+        The monitor watches a profile's name (``wg0``), but on macOS the
+        WireGuard socket is named after its utun (``utun4.sock``). So the
+        wg-quick names from their ``<name>.name`` records are listed as well,
+        and the comparison is name against name (audit 2026-11-23, H7)."""
         from agents.vpn_agent.services import wireguard_manager
         from services import openvpn_manager
         names = list(wireguard_manager.list_active_tunnels())
+        names += [name for name in wireguard_manager.list_active_tunnel_names()
+                  if name not in names]
         if openvpn_manager.is_running():
             names.append("openvpn")
         return names

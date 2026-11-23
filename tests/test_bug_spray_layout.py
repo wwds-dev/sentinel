@@ -197,16 +197,40 @@ def test_recent_changes_shows_whole_rows_only(spray, win):
         assert visible % row == 0 and visible >= feed.MIN_ROWS * row, (tree, visible, row)
 
 
-def test_shown_tree_viewport_is_whole_rows_and_fills_the_tab(win):
+def _fake_feed(rows: int = 40) -> dict:
+    """What read_feed returns, with enough rows to overflow the tab."""
+    programs = [
+        {"name": f"Program {n}", "platform": "hackerone", "slug": f"p{n}",
+         "reward": None, "scope_count": 3}
+        for n in range(rows)
+    ]
+    changes = [
+        {"program": programs[n], "scanned_at": "2026-11-23T10:00:00", "new": True}
+        for n in range(rows)
+    ]
+    return {"changes": changes, "programs": programs, "last_scan": None}
+
+
+def test_shown_tree_viewport_is_whole_rows_and_fills_the_tab(win, monkeypatch):
     """Measured on screen: whole rows, and the list takes the tab's height
-    (less than one row left below it) instead of leaving a third empty."""
+    (less than one row left below it) instead of leaving a third empty.
+
+    Showing the feed re-reads saved programs and changes, so the data is
+    pinned here: the result must not depend on what the checkout has saved
+    (CI and fresh worktrees have none)."""
+    import ui.panels.bug_spray_feed as feed_module
+
+    feed = win.panels["bug_bounty"].program_feed
+    monkeypatch.setattr(feed_module.config, "load", lambda *a, **k: feed_module.config.Settings())
+    monkeypatch.setattr(feed_module, "read_feed", lambda *a, **k: _fake_feed())
+    monkeypatch.setattr(feed, "_maybe_scan", lambda: None)
     win.resize(1600, 1000)
     win.show()
     try:
         win.select_agent("bug_bounty")
-        feed = win.panels["bug_bounty"].program_feed
         win.panels["bug_bounty"].steps.setCurrentIndex(0)
-        _fill(feed)
+        feed.refresh()
+        assert feed.changes.topLevelItemCount() == 40, feed.status.text()
         for _ in range(10):
             QApplication.processEvents()
         feed._fit_whole_rows()
