@@ -84,8 +84,8 @@ as an unverified expectation; the severity in the report and in the Severity til
 still comes from the model's reading of your evidence, so do not treat the menu
 as a result.
 
-The **Nmap Recon Scan** section is optional and always visible. It runs a real
-local process. As the caption under it warns, it runs on your machine with no
+The **Nmap Recon Scan** on the **2 Recon** tab is optional. It runs a real
+local process. As the badge (**No scope check**) and the line beside it warn, it runs on your machine with no
 scope check (Sentinel does not verify scope; the confirmation is your
 statement) and outside the budget or authorisation guard, and it touches
 whatever host you give it. Each press of **Run Nmap** needs a Program and a Yes
@@ -121,8 +121,8 @@ Before anything is sent, Sentinel prices the whole request (the built-in
 instructions plus your Program, Scope Type, Target, Nmap output and Findings),
 checks your budget caps, and for a cloud model asks you to confirm the estimated
 cost; a local model skips the confirmation. If the request is refused the status
-reads "Blocked before sending." Provider and model sit in the bar next to
-**Analyse**; press **Auto-route** to let Sentinel choose from your input.
+reads "Blocked before sending." The bar next to **Analyse** shows the provider, model and price;
+**Change model** changes them, and its **Auto-route** lets Sentinel choose from your input.
 
 The result is split into cards, each with a **Copy** button: **Vulnerability
 report**, **Proof of concept**, **Remediation** and **Submission draft**. The
@@ -177,17 +177,17 @@ one reflected-input observation into a submittable report.
 
 **Do this:**
 
-1. In **Program radar**, filter for the program if you track it, or just type the
-   name into **Program** below. Radar never contacts the program's assets.
-2. Under **Target & Program**, enter the target, program and scope type. Set
-   **Severity Target** to what you expect (it is only a hint to the model). Remember the caption: scope is
-   declared by you and is not enforced.
-3. Leave **Nmap Recon Scan** empty and do not press **Run Nmap** for this example;
+1. On the **1 Radar** tab, filter for the program if you track it, or just type the
+   name into **Program** in the target bar. Radar never contacts the program's assets.
+2. In the target bar (press **Edit** if it is closed), enter the target, program and scope type. Set
+   **Severity Target** to what you expect (it is only a hint to the model). Remember the badge: scope is
+   declared by you and is not verified or enforced.
+3. Skip the **2 Recon** tab: leave **Nmap Recon Scan** empty and do not press **Run Nmap** for this example;
    it runs on your machine outside the guard and this finding needs no port scan.
-4. In **Findings**, paste the request and the reflected response, the exact
+4. On the **3 Report** tab, in **Findings**, paste the request and the reflected response, the exact
    payload (`?q=<b>hello</b>`), and one sentence of observed impact. Remove any
    real cookies or personal data.
-5. Check the provider and model beside **Analyse** (or press **Auto-route**), then
+5. Check the provider and model beside **Analyse** (or use **Change model** → **Auto-route**), then
    select **Analyse** and confirm the cost dialog if you picked a cloud model.
 
 **You should see:** a result split into vulnerability report, proof-of-concept,

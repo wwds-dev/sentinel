@@ -13,17 +13,21 @@ The workspace has two parts that share a screen but not a code path.
 Nothing in Bug Spray can submit a report to a platform: you copy the draft and submit it yourself.
 
 ## Inputs (panel controls)
+The screen is a target bar that stays at the top, then three step tabs: **1 Radar**, **2 Recon**, **3 Report**.
+
 | Control | Purpose |
 |---|---|
-| Program radar | Search saved programs and recent changes; open the live page or fill the Program field; **Scan now** refreshes the public listings. Details below. |
+| Target bar | One summary line (target · program · scope type · severity), the badge **Scope declared, not verified** and **Edit**, which opens the four fields below in place (open on start, while nothing is declared). Under it one line: declared by you, not verified or enforced; only test programs you are authorised to test (full text in its tooltip). |
+| Program radar (1 Radar) | Search saved programs and recent changes; open the live page or fill the Program field; **Scan now** refreshes the public listings. Details below. |
 | Target URL / IP | The asset the report is about. Free text; not validated. |
 | Program | Bug bounty program name. Free text; not verified. |
 | Scope Type | Web Application · API / REST · Mobile (Android) · Mobile (iOS) · Network / Infrastructure · Source Code Review · Cloud Config · Other. Sent to the model as "Scope Type"; not checked against anything. |
 | Severity Target | Critical (P1) … Informational. Sent to the model as an unverified "severity expectation" line; it does not change the Severity tile, which reads the model's reply. |
-| Nmap Recon Scan | Optional, always shown (not collapsed): command field, **Run Nmap** (replaced by **Kill** while a scan runs) and an output box. Details below. |
-| Findings / Burp Suite Output / Notes | Paste HTTP responses, Burp output, source snippets, recon notes. |
-| Run bar | Workflow chip "Analysis", provider and model boxes, **Auto-route**, then **Analyse** (replaced by **Stop** while a request runs). Provider and model start on Sentinel's recommendation for this agent (baseline: anthropic / claude-sonnet-5, "capability baseline for security and coding analysis"). There is no separate "Model override" section; change them here. |
-| Save Report / Clear | Always visible. Save is disabled until an analysis has completed. |
+| Nmap Recon Scan (2 Recon) | Optional, on its own tab: command field, **Run Nmap** (replaced by **Kill** while a scan runs) and an output box. Details below. |
+| Findings / Burp Suite output / notes (3 Report) | Paste HTTP responses, Burp output, source snippets, recon notes. |
+| Run bar (3 Report) | Under the findings: the provider, model and price per million tokens ("Price unknown" when Sentinel has no price, never free) on the left; **Change model** (provider and model lists, **Auto-route**), then **Analyse** (replaced by **Stop** while a request runs). Provider and model start on Sentinel's recommendation for this agent (baseline: anthropic / claude-sonnet-5, "capability baseline for security and coding analysis"). There is no separate "Model override" section; change them with **Change model**. |
+| Severity / CVSS / Bounty estimate (3 Report) | A narrow column of figures beside the findings, filled from the model's reply. |
+| Save Report / Clear | In the **Draft report** header on the Report tab. Save is disabled until an analysis has completed. |
 
 ## Program radar
 - **Layout:** two tabs, **Recent changes (N)** and **Programs (N)**, filtered by the search box, the platform menu and the watchlist. **Show all** ignores the watchlist. **Watchlist…** edits the platforms to scan and the keyword, tag and minimum-top-payout filters and saves them to `agents/bug_spray/config.json`; filters change only what is shown, every program is still stored. The status line reads `Last scan: <time> · N watched programs`, plus `· errors: <platform>` for a platform that failed in the last recorded scan.

@@ -14,6 +14,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+import shiboken6
 from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtGui import QGuiApplication, QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
@@ -486,20 +487,34 @@ class OsintHeavyPanel(AgentPanel):
         self.file_discovery_body.setVisible(False)
         group.header.toggled.connect(self.file_discovery_body.setEnabled)
         group.header.toggled.connect(self.file_discovery_body.setVisible)
-        self.file_folders.model().rowsInserted.connect(
-            lambda *_a: self._refresh_file_discovery_status())
-        self.file_folders.model().rowsRemoved.connect(
-            lambda *_a: self._refresh_file_discovery_status())
-        self.file_folders.model().modelReset.connect(
-            lambda *_a: self._refresh_file_discovery_status())
-        self.remote_roots_input.textChanged.connect(
-            lambda _t: self._refresh_file_discovery_status())
-        self.file_source_box.currentTextChanged.connect(
-            lambda _t: self._refresh_file_discovery_status())
+        model = self.file_folders.model()
+        refresh = lambda *_a: self._refresh_file_discovery_status()
+        self._file_status_links = [
+            (signal, signal.connect(refresh)) for signal in (
+                model.rowsInserted, model.rowsRemoved, model.modelReset,
+                self.remote_roots_input.textChanged,
+                self.file_source_box.currentTextChanged,
+            )
+        ]
+        # When the window is destroyed its children go one by one: the combo
+        # first, then the folder list, whose model still emits rowsRemoved as
+        # it empties. Closing the window cuts these links (shutdown below);
+        # the status refresh also checks the widgets it reads still exist, for
+        # a window destroyed without being closed (the off-screen renders).
         layout.addWidget(group)
+
+    def _stop_file_discovery_status(self, *_args) -> None:
+        links, self._file_status_links = self._file_status_links, []
+        for signal, link in links:
+            signal.disconnect(link)
 
     def _refresh_file_discovery_status(self) -> None:
         """"Off", or how many locations a search would cover."""
+        status_label = self.file_discovery_section.status_label
+        if not all(shiboken6.isValid(widget) for widget in (
+                self.file_source_box, self.remote_roots_input,
+                self.file_folders, status_label)):
+            return          # mid-teardown: the status has nowhere to go
         if self.file_source_box.currentText() == "Remote SSH machine":
             count = len([r for r in self.remote_roots_input.text().split(",") if r.strip()])
         else:
@@ -709,6 +724,7 @@ class OsintHeavyPanel(AgentPanel):
         """Cancel every worker and join it against `deadline` (the window's
         shared quit budget) before the widgets are destroyed. One that is still
         inside a metadata read or an SFTP listing is parked, never terminated."""
+        self._stop_file_discovery_status()
         deadline = shutdown_deadline(timeout_ms, deadline)
         workers = [self.worker, self._file_search_worker]
         for worker in workers:

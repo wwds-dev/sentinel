@@ -287,7 +287,45 @@ class BugSprayFeed(QGroupBox):
         actions.addWidget(self.use_button)
         actions.addStretch()
         layout.addLayout(actions)
-        self.setMaximumHeight(420)
+        layout.addStretch(1)
+        # The feed has its own "1 Radar" tab now, so no height cap; the lists
+        # instead show a whole number of rows (no row cut through the middle).
+        self.changes.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._fit_whole_rows()
+
+    VISIBLE_ROWS = 8
+
+    def _row_height(self, tree: QTreeWidget) -> int:
+        if tree.topLevelItemCount():
+            return max(1, tree.sizeHintForRow(0))
+        # Empty: the height a row will take, so the box does not jump later.
+        probe = QTreeWidgetItem(["0000-00-00 00:00"])
+        tree.addTopLevelItem(probe)
+        height = max(1, tree.sizeHintForRow(0))
+        tree.takeTopLevelItem(tree.indexOfTopLevelItem(probe))
+        return height
+
+    @staticmethod
+    def _chrome_height(tree: QTreeWidget) -> int:
+        """Header plus frame. QTreeView puts the header in its top viewport
+        margin once laid out, so count the larger of the two, not both."""
+        margins = tree.viewportMargins()
+        header = max(tree.header().sizeHint().height(), margins.top())
+        return header + margins.bottom() + 2 * tree.frameWidth()
+
+    def _fit_whole_rows(self) -> None:
+        """Size each list to its header plus VISIBLE_ROWS full rows.
+
+        Row height is only final once the style sheet has polished the items,
+        so this runs again after the feed is shown, and measures the chrome
+        (header, frame, margins) from the laid-out widget when it can.
+        """
+        for tree in (self.changes, self.programs):
+            if tree.isVisible() and tree.viewport().height() > 0:
+                chrome = tree.height() - tree.viewport().height()
+            else:
+                chrome = self._chrome_height(tree)
+            tree.setFixedHeight(chrome + self.VISIBLE_ROWS * self._row_height(tree))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -296,6 +334,7 @@ class BugSprayFeed(QGroupBox):
             self._started = True
             self._timer.start()
         QTimer.singleShot(0, self._maybe_scan)
+        QTimer.singleShot(0, self._fit_whole_rows)
 
     def refresh(self) -> None:
         try:
@@ -327,6 +366,7 @@ class BugSprayFeed(QGroupBox):
             ])
             item.setData(0, Qt.UserRole, (program["platform"], program["slug"]))
             self.programs.addTopLevelItem(item)
+        self._fit_whole_rows()
         self.tabs.setTabText(0, f"Recent changes ({len(data['changes'])})")
         self.tabs.setTabText(1, f"Programs ({len(data['programs'])})")
         self._filter(self.search.text())

@@ -611,6 +611,28 @@ _GREEN_STYLESHEET = """
             font-size: 11px;
             background: transparent;
         }
+        QFrame#BBTargetBar {
+            background-color: #101311;
+            border: 1px solid #232a26;
+            border-radius: 10px;
+        }
+        QLabel#BBTargetSummary {
+            color: #e8ece9;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        QLabel#BBScopeNote, QLabel#BBNmapNote {
+            color: #7d8983;
+            font-size: 11px;
+        }
+        QLabel#WarningBadge {
+            color: #f0c040;
+            background-color: rgba(240, 192, 64, 0.10);
+            border: 1px solid rgba(240, 192, 64, 0.45);
+            border-radius: 6px;
+            padding: 2px 8px;
+            font-size: 11px;
+        }
         QLabel#ResultsHeading {
             color: #e8ece9;
             font-size: 15px;

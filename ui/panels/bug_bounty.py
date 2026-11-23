@@ -19,14 +19,14 @@ import shutil
 from PySide6.QtCore import QProcess, Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QSplitter, QTextBrowser, QTextEdit,
-    QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QSizePolicy, QTabWidget, QTextBrowser,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
 from ui.panels.base import AgentPanel
 from ui.panels.bug_spray_feed import BugSprayFeed
-from ui.widgets import MenuComboBox, SectionView
+from ui.widgets import MenuComboBox, MetricStrip, SectionView
 from ui.workers import join_or_park, remaining_ms, shutdown_deadline
 
 SEVERITY_COLOURS = {
@@ -133,18 +133,63 @@ class BugBountyPanel(AgentPanel):
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
+    SCOPE_NOTE = (
+        "Program and Scope are declared by you and are not verified or enforced. "
+        "Bug Spray drafts a report from what you enter; only stay within programs "
+        "you are authorised to test."
+    )
+    NMAP_NOTE = (
+        "Runs this command on your machine (the first word is the program to "
+        "launch), with no scope check and outside the budget/authorisation guard. "
+        "Each run asks you to confirm you are authorised to test the target under "
+        "the named program's rules, and needs the Program field filled in."
+    )
+
     def _build(self) -> None:
+        # Layout: docs/specs/agent-layouts.md, screen 2. A target bar that is
+        # always visible, then the work as three steps: Radar, Recon, Report.
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        self.program_feed = BugSprayFeed(self)
-        layout.addWidget(self.program_feed)
+        # ── Target bar ───────────────────────────────────────────────────
+        self.target_bar = QFrame()
+        self.target_bar.setObjectName("BBTargetBar")
+        self.target_bar.setAttribute(Qt.WA_StyledBackground, True)
+        bar_layout = QVBoxLayout(self.target_bar)
+        bar_layout.setContentsMargins(12, 10, 12, 10)
+        bar_layout.setSpacing(6)
 
-        # ── Target / program setup ───────────────────────────────────────
-        setup_group = QGroupBox("Target && Program")
-        setup_group.setObjectName("BBSetupBox")
-        setup_layout = QGridLayout(setup_group)
+        summary_row = QHBoxLayout()
+        self.target_summary = QLabel()
+        self.target_summary.setObjectName("BBTargetSummary")
+        self.target_summary.setMinimumWidth(0)
+        self.target_summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        summary_row.addWidget(self.target_summary, 1)
+        self.scope_badge = QLabel("Scope declared, not verified")
+        self.scope_badge.setObjectName("WarningBadge")
+        self.scope_badge.setToolTip(self.SCOPE_NOTE)
+        summary_row.addWidget(self.scope_badge)
+        self.edit_target_btn = QPushButton("Edit")
+        self.edit_target_btn.setCheckable(True)
+        self.edit_target_btn.toggled.connect(self._set_target_editing)
+        summary_row.addWidget(self.edit_target_btn)
+        bar_layout.addLayout(summary_row)
+
+        # One line; the full sentence is the tooltip. Every fact stays:
+        # declared by you, not verified, not enforced, authorised programs only.
+        self.scope_note = QLabel(
+            "Declared by you; not verified or enforced. Only test programs you "
+            "are authorised to test.")
+        self.scope_note.setObjectName("BBScopeNote")
+        self.scope_note.setWordWrap(True)
+        self.scope_note.setToolTip(self.SCOPE_NOTE)
+        bar_layout.addWidget(self.scope_note)
+
+        self.target_editor = QWidget()
+        self.target_editor.setObjectName("BBSetupBox")
+        setup_layout = QGridLayout(self.target_editor)
+        setup_layout.setContentsMargins(0, 4, 0, 0)
         setup_layout.setSpacing(6)
 
         setup_layout.addWidget(QLabel("Target URL / IP:"), 0, 0)
@@ -156,7 +201,6 @@ class BugBountyPanel(AgentPanel):
         self.program_input = QLineEdit()
         self.program_input.setPlaceholderText("HackerOne — Acme Corp  /  Bugcrowd — Example")
         setup_layout.addWidget(self.program_input, 1, 1, 1, 3)
-        self.program_feed.program_selected.connect(self.program_input.setText)
 
         setup_layout.addWidget(QLabel("Scope Type:"), 2, 0)
         self.scope_box = MenuComboBox()
@@ -171,23 +215,32 @@ class BugBountyPanel(AgentPanel):
         self.severity_box.addItems(
             ["Critical (P1)", "High (P2)", "Medium (P3)", "Low (P4)", "Informational"])
         setup_layout.addWidget(self.severity_box, 2, 3)
+        setup_layout.setColumnStretch(1, 1)
+        setup_layout.setColumnStretch(3, 1)
+        bar_layout.addWidget(self.target_editor)
+        layout.addWidget(self.target_bar)
 
-        scope_note = QLabel(
-            "Program and Scope are declared by you and are not verified or enforced. "
-            "Bug Spray drafts a report from what you enter; only stay within programs "
-            "you are authorised to test."
-        )
-        scope_note.setWordWrap(True)
-        scope_note.setStyleSheet("font-size: 11px; color: #999;")
-        setup_layout.addWidget(scope_note, 3, 0, 1, 4)
+        for field in (self.target_input, self.program_input):
+            field.textChanged.connect(lambda _t: self._refresh_target_summary())
+        for box in (self.scope_box, self.severity_box):
+            box.currentTextChanged.connect(lambda _t: self._refresh_target_summary())
 
-        layout.addWidget(setup_group)
+        # ── Steps ────────────────────────────────────────────────────────
+        self.steps = QTabWidget()
+        self.steps.setObjectName("BBSteps")
+        self.steps.setDocumentMode(True)
 
-        # ── Nmap scan section ────────────────────────────────────────────
-        nmap_group = QGroupBox("Nmap Recon Scan")
-        nmap_group.setObjectName("BBNmapBox")
-        nmap_layout = QVBoxLayout(nmap_group)
-        nmap_layout.setSpacing(4)
+        # 1 Radar
+        self.program_feed = BugSprayFeed(self)
+        self.program_feed.program_selected.connect(self.program_input.setText)
+        self.steps.addTab(self.program_feed, "1 Radar")
+
+        # 2 Recon
+        recon = QWidget()
+        recon.setObjectName("BBNmapBox")
+        nmap_layout = QVBoxLayout(recon)
+        nmap_layout.setContentsMargins(0, 8, 0, 0)
+        nmap_layout.setSpacing(6)
 
         nmap_cmd_row = QHBoxLayout()
         self.nmap_cmd_input = QLineEdit()
@@ -206,36 +259,51 @@ class BugBountyPanel(AgentPanel):
         self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
         nmap_layout.addLayout(nmap_cmd_row)
 
-        nmap_note = QLabel(
-            "Runs this command on your machine (the first word is the program to "
-            "launch), with no scope check and outside the budget/authorisation guard. "
-            "Each run asks you to confirm you are authorised to test the target under "
-            "the named program's rules, and needs the Program field filled in."
-        )
-        nmap_note.setWordWrap(True)
-        nmap_note.setStyleSheet("font-size: 11px; color: #999;")
-        nmap_layout.addWidget(nmap_note)
+        nmap_note_row = QHBoxLayout()
+        self.nmap_badge = QLabel("No scope check")
+        self.nmap_badge.setObjectName("WarningBadge")
+        self.nmap_badge.setToolTip(self.NMAP_NOTE)
+        nmap_note_row.addWidget(self.nmap_badge, 0, Qt.AlignTop)
+        # Shortened; the full text is the tooltip. Kept: runs on this machine,
+        # no scope check, outside the budget and authorisation guard, asks for
+        # confirmation, needs the Program field.
+        self.nmap_note = QLabel(
+            "Runs on this Mac, outside the budget/authorisation guard. Each run "
+            "needs the Program field and asks you to confirm you are authorised "
+            "under that program's rules.")
+        self.nmap_note.setObjectName("BBNmapNote")
+        self.nmap_note.setWordWrap(True)
+        self.nmap_note.setToolTip(self.NMAP_NOTE)
+        nmap_note_row.addWidget(self.nmap_note, 1)
+        nmap_layout.addLayout(nmap_note_row)
 
         self.nmap_output = QTextBrowser()
         self.nmap_output.setOpenExternalLinks(False)
         self.nmap_output.setMinimumHeight(130)
-        self.nmap_output.setMaximumHeight(220)
         self.nmap_output.setPlaceholderText("Nmap output will appear here…")
-        nmap_layout.addWidget(self.nmap_output)
-        layout.addWidget(nmap_group)
+        nmap_layout.addWidget(self.nmap_output, 1)
+        self.steps.addTab(recon, "2 Recon")
 
-        # ── Findings / Burp paste area ───────────────────────────────────
-        findings_group = QGroupBox("Findings / Burp Suite Output / Notes")
-        findings_group.setObjectName("BBFindingsBox")
-        findings_layout = QVBoxLayout(findings_group)
+        # 3 Report
+        report = QWidget()
+        report_layout = QVBoxLayout(report)
+        report_layout.setContentsMargins(0, 8, 0, 0)
+        report_layout.setSpacing(10)
+
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        findings_col = QVBoxLayout()
+        findings_col.setSpacing(8)
+        findings_label = QLabel("Findings / Burp Suite output / notes")
+        findings_label.setObjectName("BBFindingsBox")
+        findings_col.addWidget(findings_label)
         self.findings_input = QTextEdit()
         self.findings_input.setPlaceholderText(
             "Paste HTTP request/response, Burp Suite output, manual observations, "
             "error messages, source code snippets — anything in scope."
         )
         self.findings_input.setMinimumHeight(110)
-        findings_layout.addWidget(self.findings_input)
-        layout.addWidget(findings_group)
+        findings_col.addWidget(self.findings_input, 1)
 
         self.analyse_btn = QPushButton("Analyse")
         self.analyse_btn.setMinimumWidth(130)
@@ -248,85 +316,69 @@ class BugBountyPanel(AgentPanel):
         self.stop_btn.clicked.connect(self.stop)
         self.set_busy(self.analyse_btn, self.stop_btn, False)
 
-        # ── Provider row ─────────────────────────────────────────────────
         provider_row_container = self.build_run_bar(
             self.analyse_btn,
             stop=self.stop_btn,
             context="Analysis",
+            fold_pickers=True,
         )
-        layout.addWidget(provider_row_container)
+        findings_col.addWidget(provider_row_container)
+        top.addLayout(findings_col, 1)
 
-        # ── Results: tabs + sidebar ──────────────────────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
+        self.metric_strip = MetricStrip(orientation=Qt.Vertical)
+        self.metric_strip.setObjectName("BBMetrics")
+        self.metric_strip.setFixedWidth(180)
+        self.severity_label = self.metric_strip.add_cell("Severity", QLabel("—"))
+        self.cvss_label = self.metric_strip.add_cell("CVSS", QLabel("—"))
+        self.bounty_label = self.metric_strip.add_cell("Bounty estimate", QLabel("—"))
+        top.addWidget(self.metric_strip)
+        report_layout.addLayout(top)
 
-        output_widget = QWidget()
-        output_layout = QVBoxLayout(output_widget)
-        output_layout.setContentsMargins(0, 0, 0, 0)
+        report_header = QHBoxLayout()
+        report_heading = QLabel("Draft report")
+        report_heading.setObjectName("ResultsHeading")
+        report_header.addWidget(report_heading)
+        report_header.addStretch(1)
+        self.save_btn = QPushButton("Save Report")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self.save)
+        report_header.addWidget(self.save_btn)
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self.clear)
+        report_header.addWidget(self.clear_btn)
+        report_layout.addLayout(report_header)
 
         # A complete answer is rendered as cards. While tokens are arriving,
         # the raw stream temporarily takes their place.
         self.stream_box = QTextBrowser()
         self.stream_box.setOpenExternalLinks(False)
         self.stream_box.setVisible(False)
-        output_layout.addWidget(self.stream_box, 1)
-
+        report_layout.addWidget(self.stream_box, 1)
         self.sections = SectionView()
-        output_layout.addWidget(self.sections, 1)
-        results_splitter.addWidget(output_widget)
+        report_layout.addWidget(self.sections, 1)
+        self.steps.addTab(report, "3 Report")
 
-        # Sidebar indicators
-        indicators_widget = QWidget()
-        ind_layout = QVBoxLayout(indicators_widget)
-        ind_layout.setContentsMargins(8, 0, 0, 0)
-        ind_layout.setSpacing(10)
-
-        sev_group = QGroupBox("Severity")
-        sev_group.setObjectName("BBSevBox")
-        sev_inner = QVBoxLayout(sev_group)
-        self.severity_label = QLabel("—")
-        self.severity_label.setAlignment(Qt.AlignCenter)
-        self.severity_label.setStyleSheet(
-            "font-size: 20px; font-weight: bold; color: #ff5555;")
-        sev_inner.addWidget(self.severity_label)
-        ind_layout.addWidget(sev_group)
-
-        cvss_group = QGroupBox("CVSS Score")
-        cvss_group.setObjectName("BBCvssBox")
-        cvss_inner = QVBoxLayout(cvss_group)
-        self.cvss_label = QLabel("—")
-        self.cvss_label.setAlignment(Qt.AlignCenter)
-        self.cvss_label.setStyleSheet("font-size: 22px; font-weight: bold;")
-        cvss_inner.addWidget(self.cvss_label)
-        ind_layout.addWidget(cvss_group)
-
-        bounty_group = QGroupBox("Bounty Estimate")
-        bounty_group.setObjectName("BBBountyBox")
-        bounty_inner = QVBoxLayout(bounty_group)
-        self.bounty_label = QLabel("—")
-        self.bounty_label.setAlignment(Qt.AlignCenter)
-        self.bounty_label.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #3cff88;")
-        bounty_inner.addWidget(self.bounty_label)
-        ind_layout.addWidget(bounty_group)
-
-        ind_layout.addStretch()
-
-        self.save_btn = QPushButton("Save Report")
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(self.save)
-        ind_layout.addWidget(self.save_btn)
-
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self.clear)
-        ind_layout.addWidget(self.clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([700, 200])
-        layout.addWidget(results_splitter, 1)
+        layout.addWidget(self.steps, 1)
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("font-size: 12px; color: #888;")
         layout.addWidget(self.status_label)
+
+        self._refresh_target_summary()
+        # Nothing declared yet: open the editor so the first thing to do is visible.
+        self.edit_target_btn.setChecked(True)
+
+    def _set_target_editing(self, editing: bool) -> None:
+        self.target_editor.setVisible(editing)
+        self.edit_target_btn.setText("Done" if editing else "Edit")
+
+    def _refresh_target_summary(self) -> None:
+        """target · program · scope type · severity, as one line."""
+        target = self.target_input.text().strip() or "No target yet"
+        program = self.program_input.text().strip() or "no program"
+        parts = [program, self.scope_box.currentText(), self.severity_box.currentText()]
+        self.target_summary.setText(f"{target}   ·   " + " · ".join(parts))
+        self.target_summary.setToolTip(self.target_summary.text())
 
     # ── Recon (local, unpaid) ───────────────────────────────────────────
     def run_nmap(self) -> None:

@@ -2778,12 +2778,16 @@ class TestBugSprayPanel:
         assert spray.isHidden() is True
         assert spray.save_btn.isEnabled() is False
         # The report is one sectioned view, not the five tabs it replaced in
-        # V2. The program radar above it is a separate feed whose Recent
-        # changes / Programs tabs are not report sections, so it is exempt.
+        # V2. The program radar is a separate feed whose Recent changes /
+        # Programs tabs are not report sections, so it is exempt; so are the
+        # Radar / Recon / Report step tabs (docs/specs/agent-layouts.md), which
+        # hold whole steps, not parts of the report.
         report_tabs = [
             tabs for tabs in spray.findChildren(QTabWidget)
-            if not spray.program_feed.isAncestorOf(tabs)
+            if not spray.program_feed.isAncestorOf(tabs) and tabs is not spray.steps
         ]
+        assert [spray.steps.tabText(i) for i in range(spray.steps.count())] == [
+            "1 Radar", "2 Recon", "3 Report"]
         assert report_tabs == []
         assert spray.sections is not None
 

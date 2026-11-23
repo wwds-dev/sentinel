@@ -208,3 +208,54 @@ def test_clear_resets_the_strip(hound):
     assert [l.text() for l in (hound.threat_label, hound.conf_label,
                                hound.sources_label, hound.depth_label)] == ["—"] * 4
     assert hound.threat_bar.value() == 0
+
+
+def _build_window_and_visit_every_agent():
+    import main
+    window = main.GodAI()
+    for agent in list(window.panels):
+        window.select_agent(agent)
+    window.panels["osint_heavy"].file_folders.addItem("/tmp/teardown-check")
+    QApplication.processEvents()
+    return window
+
+
+@pytest.mark.parametrize("close_first", [True, False], ids=["closed", "destroyed-only"])
+def test_tearing_the_window_down_calls_into_no_deleted_widget(monkeypatch, close_first):
+    """Destroying the window used to raise "Internal C++ object (MenuComboBox)
+    already deleted": the folder list's model emitted rowsRemoved into the
+    status refresh after the source combo was gone (GUI review, 2026-11-23)."""
+    import sys
+    import shiboken6
+    from PySide6.QtWidgets import QMessageBox
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *exc: errors.append(exc[1]))
+    monkeypatch.setattr(sys, "setswitchinterval", lambda _v: None)   # closeEvent sets it
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: QMessageBox.Yes))
+    window = _build_window_and_visit_every_agent()
+    if close_first:
+        window.close()
+    shiboken6.delete(window)
+    QApplication.processEvents()
+    assert [repr(e) for e in errors] == []
+
+
+def test_strip_captions_and_values_share_one_line(win):
+    """Threat carries a bar under its value; that must not lift its caption
+    and value above the other three (GUI review, 2026-11-23)."""
+    win.resize(1600, 1000)
+    win.show()
+    try:
+        win.select_agent("osint_heavy")
+        for _ in range(10):
+            QApplication.processEvents()
+        hound = win.panels["osint_heavy"]
+        strip = hound.metric_strip
+        captions = [w for w in strip.findChildren(QLabel) if w.objectName() == "MetricCaption"]
+        values = [hound.threat_label, hound.conf_label, hound.sources_label, hound.depth_label]
+        top = lambda w: w.mapTo(strip, w.rect().topLeft()).y()
+        assert len({top(c) for c in captions}) == 1
+        assert len({top(v) for v in values}) == 1
+    finally:
+        win.hide()

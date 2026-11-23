@@ -1,5 +1,6 @@
 # Spec: agent screen layouts (GUI review 2026-11-22)
 
+Needs: define, design, build, review, verify, docs
 Status: approved by the owner 2026-11-23 ("Approve, fold pickers"); the open question is answered: "Change model" folds the pickers into a menu. The visuals were
 approved on 2026-11-23 ("visuals are approved"; `TODO.md`, row "GUI review of all eight agents").
 This spec writes those mockups down, since they exist only in chat.

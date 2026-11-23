@@ -814,17 +814,21 @@ class MetricStrip(QFrame):
     the column instead.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, orientation=Qt.Horizontal):
         super().__init__(parent)
         self.setObjectName("MetricStrip")
         self.setAttribute(Qt.WA_StyledBackground, True)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 8, 12, 8)
         outer.setSpacing(6)
-        self._row = QHBoxLayout()
+        # Vertical: a narrow column of the same cells, for a strip that sits
+        # beside an input rather than above a result.
+        self._row = QHBoxLayout() if orientation == Qt.Horizontal else QVBoxLayout()
         self._row.setContentsMargins(0, 0, 0, 0)
         self._row.setSpacing(16)
         outer.addLayout(self._row)
+        if orientation != Qt.Horizontal:
+            outer.addStretch(1)
         self.note = QLabel("")
         self.note.setObjectName("MetricStripNote")
         self.note.setWordWrap(True)
@@ -855,7 +859,13 @@ class MetricStrip(QFrame):
             lay.addWidget(bar)
         if tip:
             cell.setToolTip(tip)
-        self._row.addWidget(cell, 1)
+        # Top-aligned: a cell with a bar is taller, and centring would lift
+        # its caption and value above the others. Captions and values share
+        # one line across the strip; the bar hangs below.
+        if isinstance(self._row, QHBoxLayout):
+            self._row.addWidget(cell, 1, Qt.AlignTop)
+        else:
+            self._row.addWidget(cell)
         self.cells[caption] = cell
         return value
 

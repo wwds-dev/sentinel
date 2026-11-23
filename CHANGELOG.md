@@ -14,6 +14,15 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Bug Spray is a target bar and three steps.** Target, program, scope type and
+  severity read as one line at the top, with the badge "Scope declared, not
+  verified" and **Edit** to change them. The work is split into tabs: **1 Radar**
+  (the program radar), **2 Recon** (Nmap) and **3 Report** (findings, run bar
+  with **Change model** and **Analyse**, Severity / CVSS / Bounty estimate beside
+  the findings, and the draft report with Save and Clear). The scope and Nmap
+  warnings are a badge and one line each; their full text is the tooltip.
+- **The program radar's lists no longer cut a row in half.** Recent changes and
+  Programs now show exactly eight whole rows.
 - **Bloodhound is one Brief card and a dossier.** Target image, File discovery
   and Court records are now collapsed one-line rows inside the Brief, each with
   its state on the right ("None", "Off" or the number of locations,
@@ -23,7 +32,9 @@ and the git log, and is not back-filled here.
   never free), with **Change model** (provider, model, Auto-route) and
   **Investigate**. Threat, Confidence, Sources contacted and Depth sit in one
   strip above the full-width dossier, with the note that Threat and Confidence
-  are the AI's own estimate. "Search Selected Folders" is no longer styled as a
+  are the AI's own estimate; the four captions and figures sit on one line. Closing
+  the window no longer raises an error from the File discovery status. "Search
+  Selected Folders" is no longer styled as a
   second primary button. Placeholder text in every typed field is now muted grey
   instead of green.
 - **Local only works on a Mac that runs only LM Studio.** When a cloud provider was
