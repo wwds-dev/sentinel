@@ -1,5 +1,6 @@
 # Spec: audit tier-1 fixes (2026-10-12)
 
+Needs: define, design, build, review, verify, secure
 Source: security audit P1-1; code-review P2-7 and P2-8 (HQ `audits/sentinel/`).
 
 ## 1. API keys stored world-readable (security P1-1)

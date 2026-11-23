@@ -1,5 +1,6 @@
 # Spec: never force-kill a worker thread (2026-10-14)
 
+Needs: define, design, architect, plan, build, review, verify, docs, release (Secure not required, per the spec's Pipeline section.)
 Phase: Define. No code changed. Priority **P1** (a quit that can hang or abort blocks the testing phase).
 Sources: `docs/qa_audit/chat.md:154` (finding 16), `docs/qa_audit/code_followups.md:18`, `TODO.md:105`, HQ handoff `audits/sentinel/HANDOFF.md:27` ("`terminate()` remains for non-privileged chat/model workers"), spec `audit-tier2-privileged-layer.md` section 13 ("Terminate calls left in place"), radar note `docs/company/radar-notes/2026-10-14-feature-no-thread-terminate.md`.
 Playbook: `product-manager.md` is `status: current`, last-reviewed 2026-10-14. Its two practices (EU AI Act Art. 50, CRA) do not apply: nothing here publishes AI content or makes the app commercially available.

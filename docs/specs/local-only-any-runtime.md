@@ -1,5 +1,6 @@
 # Spec: Local only falls back to any running local runtime
 
+Needs: define, build, review, verify, docs
 Status: approved by the owner 2026-11-22 ("Approve and merge"). Owner go-ahead to fix: "Yes, fix it here" (2026-11-22).
 
 ## Problem

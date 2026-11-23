@@ -1,5 +1,6 @@
 # Spec: case workspace for Trace and Bloodhound (2026-11-18)
 
+Needs: define, design, architect, plan, build, review, verify, secure, docs, comply
 Phase: **Define** approved 2026-11-18; **Design** for S1 done 2026-11-18 (section 14); **Architect** for S1 written 2026-11-18 (section 15, ADRs 0005-0006), Architect gate approved by the owner 2026-11-18 ("Approve Architect"). No code, tests or schema changed. Plan and Build have not started.
 Source: `SUGGESTIONS.md` row #40 ("Case workspace for Trace and Bloodhound: an entity graph, a hashed evidence timeline and a report export", portfolio review 2026-11-18, effort XL, status IDEA). The review read docs only; section 2 checks its premise against the code on `main` at `03050e7`.
 Playbook: `docs/playbooks/product-manager.md`, `status: current`, last-reviewed 2026-10-14 (35 days). Its EU AI Act Art. 50 practice touches this spec (section 9); its CRA practice does not (tier `public`, nothing sold).
