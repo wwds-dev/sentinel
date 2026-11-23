@@ -504,7 +504,8 @@ class OsintHeavyPanel(AgentPanel):
         layout.addWidget(group)
 
     def _stop_file_discovery_status(self, *_args) -> None:
-        links, self._file_status_links = self._file_status_links, []
+        links = getattr(self, "_file_status_links", [])
+        self._file_status_links = []
         for signal, link in links:
             signal.disconnect(link)
 
@@ -724,7 +725,8 @@ class OsintHeavyPanel(AgentPanel):
         """Cancel every worker and join it against `deadline` (the window's
         shared quit budget) before the widgets are destroyed. One that is still
         inside a metadata read or an SFTP listing is parked, never terminated."""
-        self._stop_file_discovery_status()
+        # Called on stand-ins too (the quit-budget tests): no other method needed.
+        OsintHeavyPanel._stop_file_discovery_status(self)
         deadline = shutdown_deadline(timeout_ms, deadline)
         workers = [self.worker, self._file_search_worker]
         for worker in workers:
