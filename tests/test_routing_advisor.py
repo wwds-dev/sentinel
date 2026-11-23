@@ -113,10 +113,16 @@ def test_suggestion_never_exceeds_the_budget():
 
 
 # ── Modes ────────────────────────────────────────────────────────────────────
-def test_default_mode_is_local_advise():
-    assert ra.DEFAULT_MODE == ra.LOCAL_ADVISE
-    assert ra.mode_for({}) == ra.LOCAL_ADVISE
-    assert ra.mode_for({"routing_mode": "nonsense"}) == ra.LOCAL_ADVISE
+def test_default_mode_is_local_only():
+    assert ra.DEFAULT_MODE == ra.LOCAL_ONLY
+    assert ra.mode_for({}) == ra.LOCAL_ONLY
+    assert ra.mode_for({"routing_mode": "nonsense"}) == ra.LOCAL_ONLY
+
+
+def test_a_saved_mode_is_not_overwritten_by_the_default():
+    for mode in ra.MODES:
+        assert ra.mode_for({"routing_mode": mode}) == mode
+    assert ra.mode_for({"routing_mode": ra.LOCAL_ADVISE}) == ra.LOCAL_ADVISE
 
 
 def test_per_agent_override_wins_over_the_app_setting():
@@ -135,7 +141,7 @@ def test_effective_mode_honours_the_execution_box_and_overrides():
     assert ra.effective_mode(settings, "chat", "Local only") == ra.LOCAL_ONLY
     assert ra.effective_mode(settings, "chat", "Cloud only") == ra.CLOUD_ONLY
     assert ra.effective_mode({"routing_mode": ra.LOCAL_ONLY}, "chat",
-                             "Hybrid allowed") == ra.DEFAULT_MODE
+                             "Hybrid allowed") == ra.HYBRID_MODE
     ra.set_mode(settings, ra.LOCAL_FIRST, agent="chat")
     assert ra.effective_mode(settings, "chat", "Cloud only") == ra.LOCAL_FIRST
     assert ra.effective_mode({}, None, None) == ra.DEFAULT_MODE

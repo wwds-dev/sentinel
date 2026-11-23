@@ -78,6 +78,8 @@
 {"ts": "2026-11-23T01:35:06", "phase": "build", "state": "done", "spec": "agent-layouts"}
 {"ts": "2026-11-23T17:03:49", "phase": "verify", "state": "start", "spec": "testing-readiness"}
 {"ts": "2026-11-23T17:17:33", "phase": "verify", "state": "done", "spec": "testing-readiness"}
+{"ts": "2026-11-23T17:29:32", "phase": "build", "state": "start", "spec": "readiness-h4-default-mode"}
+{"ts": "2026-11-23T17:41:18", "phase": "build", "state": "done", "spec": "readiness-h4-default-mode"}
 {"ts": "2026-11-23T17:49:17", "phase": "build", "state": "done", "spec": "testing-readiness-fixes"}
 {"ts": "2026-11-23T17:49:17", "phase": "review", "state": "done", "spec": "testing-readiness-fixes"}
 {"ts": "2026-11-23T17:49:17", "phase": "verify", "state": "done", "spec": "testing-readiness-fixes"}

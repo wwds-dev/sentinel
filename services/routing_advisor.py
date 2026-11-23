@@ -18,7 +18,7 @@ confirmation still applies after the user accepts it.
 
 Five modes, one app setting with an override per agent:
 
-  local_advise   Local, advise per job (default). Jobs run on the selected
+  local_advise   Local, advise per job. Jobs run on the selected
                  local model; when it falls short the job is held and the
                  auto-routed recommendation is suggested.
   suggest_local  The mirror image: from a cloud selection, offer a local model
@@ -27,6 +27,8 @@ Five modes, one app setting with an override per agent:
                  local run fails, the next candidate is offered (never sent).
   cloud_only     As before phase 4.
   local_only     No cloud calls, ever: no cloud suggestion, no cloud fallback.
+                 The default (owner decision 2026-11-23): a fresh install stores
+                 this; a mode the user already saved is never overwritten.
 
 Also here: the remembered rules (agent + kind of work -> model) and the
 savings tally, each a small JSON file the app keeps in its data directory.
@@ -61,7 +63,10 @@ CLOUD_ONLY = "cloud_only"
 LOCAL_ONLY = "local_only"
 
 MODES = (LOCAL_ADVISE, SUGGEST_LOCAL, LOCAL_FIRST, CLOUD_ONLY, LOCAL_ONLY)
-DEFAULT_MODE = LOCAL_ADVISE
+DEFAULT_MODE = LOCAL_ONLY
+# What "Hybrid allowed" on the run bar means when the stored mode is Local only
+# or Cloud only (the old default, now a choice).
+HYBRID_MODE = LOCAL_ADVISE
 
 MODE_LABELS = {
     LOCAL_ADVISE: "Local, advise per job",
@@ -136,7 +141,7 @@ def effective_mode(settings: Mapping | None, agent: str | None = None,
 
     An agent's own override wins. Otherwise the box's *Local only* and *Cloud
     only* are hard limits the app has always honoured, so they win over the
-    stored mode; *Hybrid allowed* means the stored mode, or the default when
+    stored mode; *Hybrid allowed* means the stored mode, or `HYBRID_MODE` when
     the stored one is Local only or Cloud only.
     """
     settings = settings or {}
@@ -149,7 +154,7 @@ def effective_mode(settings: Mapping | None, agent: str | None = None,
         return CLOUD_ONLY
     mode = normalise_mode(settings.get(MODE_KEY))
     if execution and mode in (LOCAL_ONLY, CLOUD_ONLY):
-        return DEFAULT_MODE
+        return HYBRID_MODE
     return mode
 
 
@@ -272,7 +277,7 @@ class Advice:
     seconds: float | None = None      # the suggestion's time estimate
     saving_eur: float | None = None   # what the local suggestion would save
     rule: Rule | None = None          # a remembered rule decided this job
-    mode: str = DEFAULT_MODE
+    mode: str = HYBRID_MODE
     message: str = ""                 # one line for a refusal or a rule
 
     @property
@@ -381,7 +386,7 @@ def _usable_suggestion(candidate: Candidate | None, job: Job) -> bool:
 
 
 # ── The decision ────────────────────────────────────────────────────────────
-def advise(job: Job, selected: Candidate, *, mode: str = DEFAULT_MODE,
+def advise(job: Job, selected: Candidate, *, mode: str = HYBRID_MODE,
            local: Sequence[Candidate] = (), cloud: Sequence[Candidate] = (),
            recommended: Candidate | None = None,
            rules: "RoutingRules | Mapping | None" = None,
