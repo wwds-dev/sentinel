@@ -90,13 +90,16 @@ scope check (Sentinel does not verify scope; the confirmation is your
 statement) and outside the budget or authorisation guard, and it touches
 whatever host you give it. Each press of **Run Nmap** needs a Program and a Yes
 to the authorisation question, which names the target, the program and the
-command; declining starts nothing. Every attempt (refused, declined or started)
-is written to `data/logs/bug_spray_audit.jsonl`. How it behaves:
+command; declining starts nothing. A refused, declined or confirmed attempt is
+written to `data/logs/bug_spray_audit.jsonl`; a command that is not nmap (or nmap not
+installed) is rejected earlier and is not written, and if the file cannot be written
+the scan still starts (an open known gap, L1). How it behaves:
 
 - With the command field empty, **Run Nmap** builds `nmap -sV -sC -T4 --open <host>`
   from your Target (the scheme and path are removed; a `:port` is kept), puts it
-  in the field and starts it in the same click, with no chance to review it.
-  To review or change a command first, type it yourself. For a target with a
+  in the field and then shows the authorisation question (default **No**), which
+  includes the command, so you can read it before anything starts. To change a
+  command first, type it yourself. For a target with a
   port, type the command and give the port with `-p`.
 - `-sV -sC` probes service versions and runs nmap's default scripts, and `-T4` is
   nmap's "aggressive" timing, not a conservative one. Confirm that hosts and

@@ -22,7 +22,7 @@ def seed_tooltips(app):
         "model_guide_btn":         "Open the in-app Model Guide with current models, pricing, and recommendations.",
         "docs_btn":                "Open the full Sentinel documentation.",
         "agent_docs_btn":          "Open the documentation for the currently active agent.",
-        "execution_mode_box":      "Local only: every request runs on Ollama, even if a cloud provider is selected. Hybrid allowed: the selected provider runs if it is ticked under Paid provider access. Cloud only: a ticked cloud provider is required.",
+        "execution_mode_box":      "Local only (the default): every model request runs on a local runtime, even if a cloud provider is selected. Trace/Bloodhound live public-source checks are separate and run in any mode after their own confirmation. Hybrid allowed: the selected provider runs if it is ticked under Paid provider access. Cloud only: a ticked cloud provider is required.",
         "allow_openai_checkbox":   "Allow this request to use the OpenAI API (paid).",
         "allow_deepseek_checkbox": "Allow this request to use the DeepSeek API (paid, cheap).",
         "allow_kimi_checkbox": "Allow this request to use the Kimi API (paid, strong at coding/agentic tasks).",
@@ -107,7 +107,7 @@ def seed_tooltips(app):
         "osint.provider_box":   "Provider for Structure Query. Live Research and Exposure Check call no model.",
         "osint.model_box":      "Model for Structure Query. BEST FIT marks the recommended one; Auto-route picks one for the current input.",
         "osint.analyse_btn":    "Structure Query: ask the selected model for an investigation plan. Contacts no research source; a cloud model receives the prompt only after you confirm the request.",
-        "osint.stop_btn":       "Cancel the running request. A stopped Structure Query ends as an error and its partial text is discarded; a stopped Live Research or Exposure Check keeps the sources that already finished.",
+        "osint.stop_btn":       "Cancel the running request. A stopped Structure Query shows Stopped and keeps its partial text (nothing is saved or costed); a stopped Live Research or Exposure Check keeps the sources that already finished.",
     })
 
     # OSINT Pro (Bloodhound)

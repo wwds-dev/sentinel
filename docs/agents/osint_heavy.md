@@ -30,11 +30,11 @@ Produces a research-grade, five-section intelligence dossier on a target, with a
 4. **Budget re-check on the real prompt.** The assembled request (system prompt, catalogue lines, collected records and, if ticked, the image metadata) is checked against the per-agent, session and daily budget caps. Over a cap, it is blocked ("Request Blocked"), the request is abandoned as blocked and the model is never called. This re-checks the caps only; there is no second confirmation dialog.
 5. **Model call**, streamed where the provider streams.
 
-> Known limitation: the consent list is built from the target type, not from the lookups themselves, so it can differ from what runs. For an IP address it names crt.sh and the Wayback Machine (not queried for IPs) and omits SANS DShield and Shodan InternetDB (queried). For an email it names HIBP and Hunter even when no key is saved (they then skip themselves). For a Crypto Address it names both explorers although only the one matching the address is queried.
+> The consent list is built from the lookups that will actually run for this target, type and scope (`planned_sources`), so it matches what is contacted.
 
 **Stop.** During collection, Stop cancels it, closes the request unbilled and never calls the model; providers check for Stop between sources, so the source already in flight keeps running in the background until it finishes or times out, after the panel has been released.
 
-> Known limitation: Stop during the model call is not clean. A streaming reply ends as an error (`[Error] Request cancelled by user.`; the request is abandoned and logged as an error, not as cancelled). A reply that arrives all at once is not cancelled at all: it is still recorded, billed and shown when it finishes.
+> Stop during the model call shows "Stopped." and keeps the partial text; the request is abandoned and recorded as cancelled, and nothing is billed for it (a cloud provider may still bill tokens already generated).
 
 **What reaches a model.** The selected model receives the system prompt (tool library plus catalogue lines), the target, target type, scope, objective, the collected records as JSON (including per-source errors) and, only if the box is ticked and an image is attached, the EXIF block. It never receives the image file or the image's file name, and nothing from File Discovery.
 
@@ -87,8 +87,8 @@ with progress in the status line (one line, overwritten as each source reports).
 The prompt tells the model to treat every collected value as a confirmed fact, while also asking it to present WhatsMyName hits, Offshore Leaks matches and shared-hosting data as leads. Third-party text in those records (profile bios, page titles, snippets, party names) is passed in the same JSON, so a hostile profile can steer the dossier.
 
 A provider that fails does not stop the others: its error is kept in the collected record and the model is told to flag any `error` value as a collection gap. The panel does not list the collected records, per-provider results or failures (the status line shows a source's state only while it runs); the only product of collection it keeps is the **Sources** count, so records are visible only if the dossier restates them.
-> Known limitation: if the collection step itself fails (an error outside any single provider), the dossier is still requested with no collected data, the model is not told, and the Sources gauge shows the previous run's count.
-> Known limitation: BreachDirectory's answer is passed on as the service returns it (first 10 entries), not filtered to breach names and counts.
+> If the collection step itself fails (an error outside any single provider), the dossier is still requested with no collected data, and the Sources gauge shows 0, never the previous run's count.
+> BreachDirectory's answer is reduced to breach names and counts.
 
 A **Deep Dive** on a username also sweeps the
 [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) site list (CC BY-SA

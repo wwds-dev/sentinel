@@ -136,8 +136,9 @@ copy you connected with, so edits made in the meantime do not change what
 Disconnect runs; the Disconnect confirmation says so. The copy protects the config
 file, not the `wg-quick` program: if Homebrew installed it in a folder your account
 owns, Tunnel warns that another program running as you could replace it. OpenVPN
-does not have this protection yet: `openvpn` still reads your `.ovpn` and its files
-after the review.
+is protected the same way: the root script copies the config and its included files
+and checks them against the reviewed hashes before `openvpn` starts. As with WireGuard, the
+`openvpn` program itself is not protected if its folder is writable by your account.
 
 ### Reading the result
 
@@ -157,9 +158,9 @@ A config that splits the default route into two halves (`0.0.0.0/1` and
 ### OpenVPN
 
 OpenVPN is a basic client. Connect starts it as a background process with a pid
-file in Sentinel's data folder. OpenVPN has to write a start-up log for a few
+file under root's `/private/var/run/sentinel-vpn/ovpn/`. OpenVPN has to write a start-up log for a few
 seconds, because the tunnel device it opens is only reported there. Sentinel
-reads the device name from it, keeps only that name, and deletes the log (if the
+reads the device name from it, keeps only that name (`ovpn/device`), and keeps the log out of reach in a root-only folder (if the
 device never appears, the last lines are shown once, with the failure). Tor's
 start-up log is handled the same way.
 Disconnect stops only the process Sentinel started and can identify as its own.
@@ -190,8 +191,11 @@ relying on the tunnel.
 loopback, the tunnel interface that exists at that moment (WireGuard's, or the
 OpenVPN device Sentinel stored when it connected), the tunnel's own transport to
 the selected server (WireGuard is UDP; OpenVPN follows the config's first
-`remote` line, then its `proto` line), DHCP, and your local network, so a dropped tunnel cannot
-leak. It asks for confirmation (default **No**), which states what stays open
+`remote` line, then its `proto` line), DHCP, and your local network, so a dropped tunnel cannot send traffic out in the clear.
+DNS to your local network (usually your router, port 53) is blocked too, unless you tick
+**Allow local network DNS** (off by default; applies from the next Arm). If the Connect review says
+"System DNS stays in use", lookups to a local DNS server fail while the switch is armed, or, with
+the tick, go out unprotected. DNS over TLS/HTTPS to a local server is not covered. It asks for confirmation (default **No**), which states what stays open
 and prints the Terminal command that undoes it, and then for your administrator
 password. It refuses to arm for a template, when the endpoint cannot be
 resolved (a name is looked up once, when you arm), or when the generated rules
@@ -438,7 +442,7 @@ selected profile's tunnel and your DNS resolvers. It warns in the status line if
 the tunnel drops ("TUNNEL DROPPED") or the resolvers change ("DNS resolvers
 changed"). It never contacts the internet and never changes anything. Until the
 build that fixed it, these checks were scheduled but never ran, so you may now
-see warnings you have not seen before.
+see warnings you have not seen before. For WireGuard the monitor matches the profile to its `utunN` device through wg-quick's name record; a live check is still open.
 
 ## VPN apps tab
 
@@ -716,8 +720,8 @@ did and did not cover.
 - Before a live **Connect** or **Disconnect**, read the Execution review, confirm
   the exact target, and keep a rollback and independent recovery path ready. The
   confirmation defaults to No for a reason.
-- After a live connection completes, verify it with Connection Check and **Your
-  IP & DNS**; the status line explicitly does not confirm traffic protection.
+- After a live connection completes, verify it with Connection Check and the status card's **Public IP →
+  Check public IP**; the status line explicitly does not confirm traffic protection.
 - Treat an active tunnel, public-IP change, DNS configuration, and kill-switch
   behavior as separate checks. One passing result does not prove the others.
 - Know the recovery command before you arm the kill switch, and disarm it before
