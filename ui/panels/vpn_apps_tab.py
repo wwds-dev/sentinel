@@ -154,7 +154,7 @@ class AppsTab(GatedTab):
                 "its own firewall rules. If a Tunnel profile is connected, two VPNs will "
                 "stack.\n\nTunnel only runs Mullvad's command-line tool; it does not see your "
                 "account number. Traffic protection is not verified afterwards: check the exit "
-                "address under Your IP & DNS.")
+                "address with the status card's Public IP → Check public IP.")
         self._gated("mullvad-connect", "mullvad", "Connect Mullvad", text,
                     lambda: control.mullvad_connect(location))
 

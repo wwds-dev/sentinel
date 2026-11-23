@@ -37,12 +37,12 @@ price:
 
 The priority also decides every agent's BEST FIT badge.
 
-Execution mode starts as Local only each time Sentinel launches, with every paid
-provider unticked. In Local only mode a cloud provider chosen in the run bar is
+Local only is the default mode on a fresh install (a mode you saved in Settings →
+Models is kept); every paid provider starts unticked at each launch. In Local only mode a cloud provider chosen in the run bar is
 replaced by Ollama; Hybrid allowed and Cloud only require the provider to be
 ticked under Paid provider access.
 
-**Local only** means a local runtime: Ollama, or LM Studio when you select it. If a cloud provider is still
+**Local only** means a local runtime: Ollama, or LM Studio when you select it, for every model request. It does not stop Trace's and Bloodhound's live public-source checks or the OSINT catalogue download: those run in any mode, each after its own confirmation where one applies. If a cloud provider is still
 selected in the run bar, Chat does not contact it: the request uses your saved
 Ollama default model, the run-bar estimate reads `free · … · local only`, and
 hovering it names the substitution. In **Hybrid allowed** or **Cloud only**, a

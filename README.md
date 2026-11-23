@@ -17,7 +17,7 @@ Sentinel's built-in roster is intentionally limited to eight agents:
 | Beacon | `wifi` | Wi-Fi diagnostics and commands for networks the operator is authorised to test |
 | Sentry | `sentry` | Read-only watch of your own network (new devices, address conflicts and gateway-MAC changes, new listening services, new outbound connections) with an optional background watch you install yourself |
 | Bug Spray | `bug_bounty` | Public program radar (scans five platforms' public directories in the background once a platform is enabled; source checkout only) plus vulnerability analysis and report drafts for an asset you declare in scope (not verified or enforced) |
-| Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, self-hosted VPN design, and detection and start/stop of the Mullvad and ProtonVPN apps; keeps no log |
+| Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, self-hosted VPN design, start/stop of the Mullvad app and state display for ProtonVPN; keeps no log |
 | Forge | `manager` | Drafts agent specifications and, after your approval, writes an inactive scaffold and disabled registry rows |
 
 
@@ -87,7 +87,7 @@ the validator would refuse. A model counts as available only when the provider
 lists that exact id (or a dated snapshot / `-latest` form of it), and when a
 recommended model is missing and another stands in, the route's reason says so.
 
-Chat's **Options → Execution mode** is enforced at send time. In **Local only**
+Chat's **Options → Execution mode** is enforced at send time (it governs model requests only: Trace's and Bloodhound's live public-source checks and the OSINT catalogue download run in any mode, after their own confirmation where one applies). In **Local only**
 a cloud provider still selected in the run bar is never contacted and its model
 name is never sent to a local runtime: the request goes to Ollama with the saved
 Ollama default model (or, when Ollama is not running, a fitting LM Studio model if its server is up), the run-bar estimate reads `free · … · local only`, and hovering
@@ -187,8 +187,9 @@ and transfer totals when the `wg` status tool permits them, the current default
 route, and configured DNS servers. A **VPN apps** card lists the Mullvad and
 ProtonVPN apps if they are installed, with the state each reports (Mullvad
 through `mullvad status`, ProtonVPN through its macOS system VPN service,
-`scutil --nc list`; `services/vpn_apps.py`); Tunnel only reads it and never logs
-in to or connects either app. A selected profile can
+`scutil --nc list`; `services/vpn_apps.py`); this card is read-only and Tunnel
+never logs in to either app. The separate **VPN Apps** tab can connect and
+disconnect the Mullvad app (not ProtonVPN). A selected profile can
 be compared with the snapshot to explain interface, endpoint, port, handshake,
 and routing findings. Endpoint and port are checked for usable profile values,
 but the live peer endpoint is deliberately not queried or verified. Its OpenVPN
@@ -197,7 +198,7 @@ the process Sentinel started. Known limitation: on macOS a tunnel often appears
 as a utun name, so right after a verified Sentinel Connect the profile comparison
 may still say the selected tunnel is not active (not yet confirmed on a Mac).
 
-Tunnel's **Your IP & DNS** group is always visible and independent of the check.
+Tunnel's status card (Kill switch, Local IP, Public IP, DNS leak cells) is always visible and independent of the check.
 **Local** reads your LAN and tunnel-interface addresses with no network contact;
 **Check public IP** shows your exit IP, its location and network owner, and —
 only with an `IPINFO_API_KEY` on a plan that returns the privacy object — any
@@ -230,8 +231,8 @@ install, and says so; nothing runs. A WireGuard config's
 PreUp/PostUp/PreDown/PostDown lines and an OpenVPN config's script and plugin
 directives (`up`, `down`, `route-up`, `plugin`, `script-security`, …) run as
 administrator; the Connect review lists them in their own section, and a second
-confirmation, default **No**, follows. They are not listed on Disconnect or in
-Inspect config…. Afterwards Tunnel re-reads local state — the `/var/run/wireguard`
+confirmation, default **No**, follows. Disconnect lists them too (from the config
+on disk); Inspect config… does not. Afterwards Tunnel re-reads local state — the `/var/run/wireguard`
 records, Sentinel's tracked OpenVPN process and, for a full tunnel, which
 interface the route to the internet uses — and reports **verified** or **not
 verified** in the **Execution** tab.
@@ -262,7 +263,10 @@ device Sentinel stored when it connected), the tunnel's own
 transport to the selected server (WireGuard UDP; OpenVPN per its first `remote`
 line, then its `proto` line;
 port from the profile, the config, or the protocol default), DHCP and the local
-network, so a dropped tunnel cannot leak. Arm asks for confirmation (default
+network (but not DNS to the local network, port 53, unless **Allow local network DNS** is ticked;
+it is off by default), so a dropped tunnel cannot send traffic or lookups out in the clear. It is a
+pf rule set, not a leak-proof guarantee: DNS over TLS/HTTPS to a local server is not covered, and
+the Connect review warns when system DNS stays in use. Arm asks for confirmation (default
 **No**), which states what stays open and prints the recovery command, and then
 for the administrator password; it refuses for a template, when the endpoint
 cannot be resolved, when the generated rules fail pf's parse check, while the
@@ -276,7 +280,7 @@ Sentinel does not disarm on quit or Emergency Reset.
 **Connection Check** stays read-only. It never
 requests private key material. The optional public-IP and latency checkbox in
 Connection Check names `api.ipify.org` and `1.1.1.1` and requires a separate
-confirmation (default **No**); Your IP & DNS → Check public IP and Run test
+confirmation (default **No**); the status card's Public IP → Check public IP and DNS leak → Run test
 contact IPinfo (with a key) or `ipapi.co`, and `bash.ws`, as soon as they are
 pressed. None of these paths, nor Connect/Disconnect, uses an AI model or incurs
 model cost; only Ask Advisor does. Advisor requests create no Saved Chats entry
@@ -294,27 +298,28 @@ While the Tunnel panel is on screen, a health monitor checks every 30 seconds,
 using only this Mac's own state, whether the selected profile's tunnel is still
 up and whether the DNS resolvers changed, and warns in the status line
 ("TUNNEL DROPPED", "DNS resolvers changed"). Until this change the checks
-were scheduled but never actually ran, so these warnings may appear for the
+were scheduled but never actually ran, and a WireGuard drop was never matched (the profile name was compared with `utunN` socket names; fixed in G3/H7, a live check is still open), so these warnings may appear for the
 first time.
 Packaged builds include a non-secret starter profile
 catalog so Tunnel does not depend on source-tree files.
 
-Tunnel's **VPN Apps** tab starts and stops the Mullvad and ProtonVPN apps'
-own tunnels (`services/vpn_app_control.py`, `ui/panels/vpn_apps_tab.py`).
+Tunnel's **VPN Apps** tab starts and stops the Mullvad app's own tunnel and
+shows ProtonVPN's state only (`services/vpn_app_control.py`,
+`ui/panels/vpn_apps_tab.py`).
 Mullvad is driven through its official command-line tool (`mullvad connect`,
 `disconnect`, `relay set location`), with a country or city picker filled from
 `mullvad relay list`. Login stays in the Mullvad app: Tunnel never logs in and
 never passes or keeps an account number (`mullvad account get` is reduced to
 "logged in until <date>"), and Connect refuses unless the account is verifiably
 logged in, because Mullvad blocks all traffic when told to connect while logged
-out. ProtonVPN is started and stopped through its macOS system VPN service
-(`scutil --nc start|stop`); it connects to the server Proton used last, Tunnel
-cannot choose a server and never sees a Proton login. Each Connect and
-Disconnect asks first (default **No**), runs off the interface thread, logs
+out. ProtonVPN cannot be started or stopped by Tunnel: macOS accepts
+`scutil --nc start` for its system VPN service but Proton's extension ignores
+it (tested 2026-10-11), so connect it in the ProtonVPN app; Tunnel never sees a
+Proton login. Each Mullvad Connect and Disconnect asks first (default **No**), runs off the interface thread, logs
 nothing, waits about fifteen seconds for the app to report Connected and says
 so honestly if it does not. Traffic protection is still not verified: check
-**Your IP & DNS** afterwards. Both paths are covered by stubs only so far; live
-checks against real Mullvad and Proton setups are open TODOs.
+the status card's **Public IP → Check public IP** afterwards. Both paths are covered by stubs only so far; live
+checks against a real Mullvad app are an open testing-phase item.
 
 **Inspect config…** reads one explicitly selected WireGuard file locally and
 returns only its interface, routing, DNS, peer and endpoint summary. Private and
@@ -324,7 +329,7 @@ Tunnel compares the file's intended full/split routing and DNS with that snapsho
 
 ### Safety boundaries
 
-Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Bug Spray does not verify a program or scope; the Program and Scope Type fields are declared by the operator. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Before Bloodhound sends a target to public sources it lists them and asks, with No as the default; image metadata (EXIF, GPS) is sent to a model only if you tick the box. Generated commands and findings require human review before execution or submission. One exception to flag: Bug Spray's **Run Nmap** with an empty command field builds `nmap -sV -sC -T4 --open <host>` and starts it in the same click; only nmap can start, and no scope check runs. Beacon's Kali Command Builder refuses injection operations on an adapter whose chipset cannot inject: instead of a command sequence it returns an explanation naming the limitation and a supported-adapter hint, and passive operations are unaffected.
+Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Bug Spray does not verify a program or scope; the Program and Scope Type fields are declared by the operator. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Before Bloodhound sends a target to public sources it lists them and asks, with No as the default; image metadata (EXIF, GPS) is sent to a model only if you tick the box. Generated commands and findings require human review before execution or submission. One exception to flag: Bug Spray's **Run Nmap** with an empty command field builds `nmap -sV -sC -T4 --open <host>`, then shows it in the default-No authorisation question before anything starts; only nmap can start, and no scope check runs. Beacon's Kali Command Builder refuses injection operations on an adapter whose chipset cannot inject: instead of a command sequence it returns an explanation naming the limitation and a supported-adapter hint, and passive operations are unaffected.
 
 Beacon's **AI Analysis** and Sentry's **Explain findings with AI** are off by
 default. Ticking them sends the scan output (network names, signal and security)
@@ -363,8 +368,8 @@ The main runtime is organised around:
   The real connect path lives in `services/vpn_connection.py` and
   `services/openvpn_manager.py`
 - `services/vpn_apps.py` and `services/vpn_app_control.py` — Tunnel's
-  read-only Mullvad/ProtonVPN detection and their start/stop through Mullvad's
-  CLI and ProtonVPN's macOS VPN service; the tab is `ui/panels/vpn_apps_tab.py`.
+  read-only Mullvad/ProtonVPN detection and Mullvad start/stop through Mullvad's
+  CLI (ProtonVPN is state only); the tab is `ui/panels/vpn_apps_tab.py`.
   `services/tunnel_logs.py` removes logs older versions left behind at launch
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Sentry, Bug Spray, Tunnel, and Forge
 - `ui/theme.py` and `ui/vibe.py` — the three colour themes (one green
@@ -392,8 +397,8 @@ The main runtime is organised around:
   `crypto_lookup.py` (Blockstream for Bitcoin, Blockscout for Ethereum, both
   keyless) and the ICIJ Offshore Leaks search in `company_lookup.py`. Sources
   return text metadata only (the WhatsMyName sweep requests each profile page but
-  keeps only whether the account exists), except BreachDirectory, whose reply is
-  passed through unfiltered; a source that needs a key is left out until the key
+  keeps only whether the account exists; BreachDirectory is reduced to breach
+  names and counts); a source that needs a key is left out until the key
   is saved.
 - `services/agent_catalog.py` — canonical built-in roster and metadata
 - `AGENTS.md` and `CLAUDE.md` — instructions for coding agents working in this
@@ -498,9 +503,9 @@ means something is missing.
 The current manual acceptance checklist is in `tests/manual_test_cases.md`. It covers all eight built-in agents and verifies that Writing and Coding remain Chat tools rather than sidebar agents.
 The [testing roadmap](docs/testing_roadmap.md) maps every shipped agent workflow
 and shared control to automated, packaged-app, and owned-lab checks, with
-priority and release gates. Sentinel's main test suite does not include the
-separate Bug Spray companion-repository suite (`agents/bug_spray/tests`) or
-Sentry's engine tests (`agents/sentry/tests`); run each from its own directory.
+priority and release gates. Sentinel's root `pytest` run collects Sentry's engine
+tests (`agents/sentry/tests`); it does not include the separate Bug Spray
+companion-repository suite (`agents/bug_spray/tests`), which you run from its own directory.
 `keyring`, which the Bug Spray companion imports for its Keychain-only secrets, is in
 `requirements.txt`. (The VPN Agent code is now merged in-tree; its connect/disconnect layer is
 covered by `tests/test_vpn_connection.py`.)

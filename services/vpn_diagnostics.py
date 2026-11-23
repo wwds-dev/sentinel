@@ -440,7 +440,7 @@ class VpnDiagnosticsReport:
         if managed:
             names = ", ".join(f"{a.name} ({a.state})" for a in managed)
             return (f"{names} — managed by that app, not by Tunnel. "
-                    "Confirm the exit address under Your IP & DNS.")
+                    "Confirm the exit address with the status card's Public IP → Check public IP.")
         if self.openvpn_running:
             return "An OpenVPN process is running. Confirm the route below."
         return "No active WireGuard interface or OpenVPN process was detected."
@@ -705,7 +705,7 @@ def _recommended_steps(report: VpnDiagnosticsReport) -> list[str]:
         if finding.next_step and finding.next_step not in steps:
             steps.append(finding.next_step)
     if any(app.active for app in report.vpn_apps):
-        steps.append("A VPN app is carrying your traffic. Use Your IP & DNS to confirm the exit "
+        steps.append("A VPN app is carrying your traffic. Use the status card's Public IP → Check public IP to confirm the exit "
                      "address and resolvers, and leave Tunnel's kill switch off: use the app's own "
                      "kill switch setting.")
     if not report.dns_servers:

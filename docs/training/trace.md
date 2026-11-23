@@ -83,8 +83,9 @@ Know the rough edges before you rely on a result:
   found", when a source failed or you pressed Stop first; a "direct victim
   match" is a whole-word name match or the same domain, so still verify each
   listing.
-- An IP lookup sends private and loopback addresses like any other; its DNS
-  step asks for the reverse (PTR) record.
+- Live Research refuses a private, loopback, link-local, multicast, unspecified
+  or reserved IP before contacting anything; for a public IP its DNS step asks for
+  the reverse (PTR) record.
 - BreachDirectory is reduced to breach names and counts; whether its keyless
   endpoint still works has not been confirmed.
 

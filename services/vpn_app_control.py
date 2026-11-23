@@ -124,7 +124,7 @@ def mullvad_connect(location: tuple[str, ...] | None = None, *, run: Runner = vp
             sleep(1.0)
             app = _state(run)
     if app.state == vpn_apps.CONNECTED:
-        return True, "Mullvad VPN: connected" + (f" — {app.detail}" if app.detail else "") + ". Confirm the exit address under Your IP & DNS."
+        return True, "Mullvad VPN: connected" + (f" — {app.detail}" if app.detail else "") + ". Confirm the exit address with the status card's Public IP → Check public IP."
     return False, (f"Mullvad VPN reports {app.state}" + (f" — {app.detail}" if app.detail else "")
                    + ". Traffic protection is not verified.")
 

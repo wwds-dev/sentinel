@@ -63,7 +63,7 @@ a 15-second limit per command:
 | `lsof -nP -iTCP -sTCP:ESTABLISHED` | this Mac's established TCP connections |
 
 The background watch also runs `launchctl list` (is the agent loaded; 10-second
-limit), `launchctl load -w <plist>` (Install, Reinstall) and
+limit), `launchctl print gui/<uid>/<label>` (verifies an Install), `launchctl load -w <plist>` (Install, Reinstall) and
 `launchctl unload -w <plist>` (Remove, Reinstall). Those change your user's launchd
 state, not the network. Nothing else is executed: no `sudo`, `nmap`, `ping` or `tcpdump`, and no
 socket is opened by Sentry itself.
@@ -177,16 +177,16 @@ What that means in practice:
 - The state directory is written into the plist when you install, so press
   **Reinstall** after the data location changes.
 - The status line under the controls reads "running every N min", "installed but not
-  loaded" or "off". Install reports success from `launchctl load`'s exit code
-  alone, and Remove from the plist file having been deleted, so trust the status line.
+  loaded" or "off". Install loads the plist and then checks it with `launchctl print`
+  (success is the verified result, not `launchctl load`'s exit code); Remove unloads and deletes the
+  plist file. The status line is still the quickest check.
 - `agents/sentry/launchd/com.sentinel.sentry.watch.plist.template` is a reference for
   a manual install. It has placeholders and omits the `WorkingDirectory` and
   `SENTRY_STATE_DIR` entries the app writes.
-- *Known limitation — self-contained builds:* Install is offered in every build, but
-  the plist uses the app's own executable when there is no `.venv` and points at
-  `agents/sentry/main.py`, which the build does not ship as a file. The background watch is
-  only meant for a source checkout with a `.venv`; it has not been tried from a built
-  app.
+- *Self-contained builds:* a packaged build refuses Install (the plist runs
+  `main.py --headless`, which the bundle does not contain): the Install button is
+  disabled, the panel says to run Sentinel from the checkout, and Remove still takes out a
+  watch installed earlier. The background watch is for a source checkout with a `.venv`.
 - *Known limitation — portable mode:* the launch agent lives on the host Mac, outside
   the portable volume, while its state directory (and, without a `.venv`, its
   interpreter) point into the volume. Press Remove when you no longer want it to fire.
@@ -257,4 +257,4 @@ saying the baseline was not written; nothing is saved.
 collector failures, cancel, state directory) and
 `tests/test_ui_panels.py::TestSentryPanel` (panel wiring, spend guard, recorded
 findings, dry-run and failed-collector wording, AI off by default; the launchd calls
-are mocked). The parent suite does not collect `agents/sentry/tests/`.
+are mocked). The root `pytest` run collects `agents/sentry/tests/` too (`pytest.ini` `testpaths`); there is no scoped conftest.

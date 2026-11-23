@@ -22,15 +22,17 @@ hardware, accounts or networks.
 
 ## 1. Verdict
 
+**Status update 2026-11-23:** G1-G4 are fixed on `main` at `68e131e` (`f60752b` G1-G3 incl. H3 and H7; `93d0567` H1/H2; `0ef6672` H4) and G5 (§5) is fixed by the docs commit that carries this note. H7's live check (O11) and the other owner-run checks (§7) remain. The text below is the audit as written at `22b965d`.
+
 **No-go today.** Five things stand between the app and a testing phase whose results mean something:
 
 | # | Blocker | Owner | Size |
 |---|---|---|---|
-| G1 | **CI is red on `main`** (new). `tests/test_bug_spray_layout.py::test_shown_tree_viewport_is_whole_rows_and_fills_the_tab` fails on a clean checkout: CI macOS and Ubuntu on `22b965d` and `2c05b24`, and this worktree (3 of 3 runs). It passes in the main checkout at the same commit, so it leans on local untracked state (`sizeHintForRow(0)` is `-1`: the tree has no laid-out row). The Definition of done needs CI green | @ai | S |
-| G2 | **H3: Local only fails open in agent panels** (still open). An advisor exception turns Local only into "cloud after one Yes" | @ai | S |
-| G3 | **H7: Tunnel's "TUNNEL DROPPED" warning never fires for WireGuard** (new). The monitor watches the profile's interface name; the source returns `utunN` socket names | @ai | S |
-| G4 | **Owner decisions H1/H2 (kill switch and DNS) and H4 (default mode)** (still open, P0 in TODO). Each changes what "pass" means for a tester | @me | decision |
-| G5 | **Expected results are wrong in the docs** for several agents (§5): some promise more than the code does, several describe the code as weaker than it now is. Testers would fail correct behaviour or pass wrong behaviour | @ai after G4 | M |
+| G1 | **Fixed `f60752b`.** **CI is red on `main`** (new). `tests/test_bug_spray_layout.py::test_shown_tree_viewport_is_whole_rows_and_fills_the_tab` fails on a clean checkout: CI macOS and Ubuntu on `22b965d` and `2c05b24`, and this worktree (3 of 3 runs). It passes in the main checkout at the same commit, so it leans on local untracked state (`sizeHintForRow(0)` is `-1`: the tree has no laid-out row). The Definition of done needs CI green | @ai | S |
+| G2 | **Fixed `f60752b`.** **H3: Local only fails open in agent panels** (still open). An advisor exception turns Local only into "cloud after one Yes" | @ai | S |
+| G3 | **Fixed `f60752b`** (live check O11 still open). **H7: Tunnel's "TUNNEL DROPPED" warning never fires for WireGuard** (new). The monitor watches the profile's interface name; the source returns `utunN` socket names | @ai | S |
+| G4 | **Fixed: decisions `5f3a56c`, H1/H2 `93d0567`, H4 `0ef6672`.** **Owner decisions H1/H2 (kill switch and DNS) and H4 (default mode)** (still open, P0 in TODO). Each changes what "pass" means for a tester | @me | decision |
+| G5 | **Fixed (G5 commit on this branch, see TODO).** **Expected results are wrong in the docs** for several agents (§5): some promise more than the code does, several describe the code as weaker than it now is. Testers would fail correct behaviour or pass wrong behaviour | @ai after G4 | M |
 
 Fixed since 2026-11-18: **B1** (no cloud model listing at launch, `f1fbac8`), **B2** (venv now matches
 `requirements.txt`: pillow 13.0.0, certifi 2026.10.23, paramiko 5.1.0, keyring 25.7.0), **B3** (reset fence,
@@ -66,10 +68,10 @@ promises as a feature (only the Advisor talks about it).
 | B1 | Cloud model listing at launch / Local only | **Fixed** | `main.py:1270-1309`; `tests/test_no_cloud_listing_on_ui_thread.py` (forces Local only, so the default launch state is not covered; socket test still open, TODO) |
 | B2 | Stale venv | **Fixed** | `importlib.metadata` check, 2026-11-23 |
 | B3 | Reset fence (PR #52) | **Fixed** | `68089cd`, `fee5ec9` |
-| H1 | Kill switch keeps LAN open, so DNS to the home router leaks | Open | `agents/vpn_agent/services/killswitch.py:58,299,363-369,661,696`; `services/vpn_connection.py:302-303`; tooltip `ui/panels/vpn.py:155-159` still says "cannot leak" |
-| H2 | System DNS kept (OpenVPN pushed DNS ignored; WG without `DNS =`) with no warning | Open | `services/vpn_execution.py:1593-1595` info line only; tests lock the text in (`tests/test_vpn_review_gate.py:1222,1459`) |
-| H3 | Local only fails open in agent panels | Open | `ui/panel_routing.py:56-61`; `main.py:3685-3686`, `4558-4639` (no mode check); no test |
-| H4 | Default mode is "Hybrid allowed"; docs say Local only | Open, **with a twist** | `services/routing_advisor.py:64,93`; `main.py:2842,3860-3869`; tests lock the default (`tests/test_routing_advisor.py:116-117`, `tests/test_routing_phase4.py:228`). New, not run: at launch `install_agent_recommendations` (`main.py:462,2056-2064`) moves Chat's box to the recommended route's mode (`main.py:1050-1057`); with every box unticked that is Local only (`services/model_recommendations.py:94-95`). So the run bar probably *shows* Local only while Settings shows "Local, advise per job". README.md:103 calls `local_advise` the default, contradicting README.md:76-80 |
+| H1 | Kill switch keeps LAN open, so DNS to the home router leaks | **Fixed** (`93d0567`) | `agents/vpn_agent/services/killswitch.py:58,299,363-369,661,696`; `services/vpn_connection.py:302-303`; tooltip `ui/panels/vpn.py:155-159` still says "cannot leak" |
+| H2 | System DNS kept (OpenVPN pushed DNS ignored; WG without `DNS =`) with no warning | **Fixed** (`93d0567`) | `services/vpn_execution.py:1593-1595` info line only; tests lock the text in (`tests/test_vpn_review_gate.py:1222,1459`) |
+| H3 | Local only fails open in agent panels | **Fixed** (`f60752b`) | `ui/panel_routing.py:56-61`; `main.py:3685-3686`, `4558-4639` (no mode check); no test |
+| H4 | Default mode is "Hybrid allowed"; docs say Local only | **Fixed** (`0ef6672`; owner decision `5f3a56c`; was: open, with a twist) | `services/routing_advisor.py:64,93`; `main.py:2842,3860-3869`; tests lock the default (`tests/test_routing_advisor.py:116-117`, `tests/test_routing_phase4.py:228`). New, not run: at launch `install_agent_recommendations` (`main.py:462,2056-2064`) moves Chat's box to the recommended route's mode (`main.py:1050-1057`); with every box unticked that is Local only (`services/model_recommendations.py:94-95`). So the run bar probably *shows* Local only while Settings shows "Local, advise per job". README.md:103 calls `local_advise` the default, contradicting README.md:76-80 |
 | H5 | Sentry: connected UDP rows parsed as listeners | Open | `agents/sentry/sentry/collectors.py:27,191-212,294`; reported as "bound to loopback only" (`engine.py:125-139`); no UDP fixture |
 | H6 | Sentry: unreadable baseline silently replaced | Open | `baseline.py:160-166,182-188,199-208`; `engine.py:254-266`; a contract test locks it in (`tests/test_contract_beacon_sentry.py:706`) |
 | M1 | README says ProtonVPN started/stopped via `scutil` | Open | README.md:20, 302-303, 310-311 |
