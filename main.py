@@ -3087,9 +3087,13 @@ class GodAI(QWidget):
             "requests": KeyValue("Requests", "0"),
             # Hybrid routing: saved by running local, spent on suggestions
             # you accepted (services/routing_advisor.SavingsTally).
-            "local": KeyValue("Local", "saved €0.00 · spent €0.00",
-                              "Saved by running local today, and spent on "
-                              "suggestions you accepted"),
+            # Two rows, not one: "saved €0.00 · spent €0.00" was a character
+            # too wide for the rail and lost its first letter ("aved").
+            "local": KeyValue("Local saved", "€0.00",
+                              "Saved by running local today"),
+            "local_spent": KeyValue("Hybrid spent", "€0.00",
+                                    "Spent today on cloud suggestions you "
+                                    "accepted"),
         }
         for row in self.cost_rows.values():
             cost_layout.addWidget(row)
@@ -5160,9 +5164,10 @@ class GodAI(QWidget):
         tally = getattr(self, "savings_tally", None)
         if tally is not None and hasattr(self, "cost_rows") and "local" in self.cost_rows:
             today = tally.today()
-            self.cost_rows["local"].set(
-                f"saved €{today['saved']:.2f} · spent €{today['spent']:.2f}",
-                tally.summary())
+            self.cost_rows["local"].set(f"€{today['saved']:.2f}", tally.summary())
+            if "local_spent" in self.cost_rows:
+                self.cost_rows["local_spent"].set(
+                    f"€{today['spent']:.2f}", tally.summary())
 
         # keep your existing labels
         self.session_cost_label.setText(f"Session Cost: €{self.session_cost_total:.2f}")

@@ -99,6 +99,15 @@ def main() -> int:
                 panel.action_box.setCurrentText("Connect")
                 panel.preview_action()
                 settle(app, window)
+                # The tabs sit below the fold of a 1600x1000 window, so a
+                # grab of the window repeated tunnel.png exactly. Bring the
+                # preview into view first.
+                scroll = window.panel_scrolls.get("vpn")
+                if scroll is not None:
+                    scroll.ensureWidgetVisible(panel.tabs.currentWidget(), 0, 0)
+                    bar = scroll.verticalScrollBar()
+                    bar.setValue(bar.maximum())
+                    settle(app, window)
                 preview_name = "tunnel-action-preview.png"
                 if not window.grab().save(str(output_dir / preview_name)):
                     raise RuntimeError(f"Could not save {preview_name}")
