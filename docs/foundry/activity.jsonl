@@ -67,3 +67,5 @@
 {"ts": "2026-11-22T23:35:51", "phase": "design", "state": "done"}
 {"ts": "2026-11-22T23:47:55", "phase": "build", "state": "start"}
 {"ts": "2026-11-22T23:53:57", "phase": "build", "state": "done"}
+{"ts": "2026-11-23T00:30:38", "phase": "define", "state": "start", "spec": "agent-layouts"}
+{"ts": "2026-11-23T00:30:38", "phase": "define", "state": "done", "spec": "agent-layouts"}
