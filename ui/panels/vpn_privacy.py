@@ -210,9 +210,14 @@ class PrivacyTab(GatedTab):
         self.hop_pass_input.setPlaceholderText("password (optional)")
         self.hop_label_input = QLineEdit()
         self.hop_label_input.setPlaceholderText("label")
-        for w in (self.hop_kind_box, self.hop_host_input, self.hop_port_input,
-                  self.hop_user_input, self.hop_pass_input, self.hop_label_input):
-            row.addWidget(w)
+        # Two rows of three, so the tab fits the centre column (GUI review
+        # 2026-11-23: one row of six pushed the text past the right edge).
+        for w in (self.hop_kind_box, self.hop_host_input, self.hop_port_input):
+            row.addWidget(w, 1 if w is self.hop_host_input else 0)
+        cl.addLayout(row)
+        row = QHBoxLayout()
+        for w in (self.hop_user_input, self.hop_pass_input, self.hop_label_input):
+            row.addWidget(w, 1)
         cl.addLayout(row)
         row = QHBoxLayout()
         self.hop_add_btn = QPushButton("Add hop")
@@ -234,9 +239,14 @@ class PrivacyTab(GatedTab):
         self.chain_test_btn.clicked.connect(self.test_chain)
         self.chain_conf_btn.clicked.connect(self.write_conf)
         for w in (self.hop_add_btn, self.hop_add_tor_btn, self.hop_remove_btn,
-                  self.hop_up_btn, self.hop_down_btn, self.chain_mode_box,
-                  self.chain_test_btn, self.chain_conf_btn):
+                  self.hop_up_btn, self.hop_down_btn):
             row.addWidget(w)
+        row.addStretch(1)
+        cl.addLayout(row)
+        row = QHBoxLayout()
+        for w in (self.chain_mode_box, self.chain_test_btn, self.chain_conf_btn):
+            row.addWidget(w)
+        row.addStretch(1)
         cl.addLayout(row)
         self.chain_summary_label = QLabel("")
         self.chain_summary_label.setWordWrap(True)
@@ -244,6 +254,8 @@ class PrivacyTab(GatedTab):
         layout.addWidget(chain_box)
 
         layout.addWidget(self.status_label)
+        # "Idle" is the panel footer's job; this line shows only a real status.
+        self.status_label.setVisible(False)
         layout.addStretch(1)
 
     @staticmethod

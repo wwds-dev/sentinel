@@ -106,6 +106,8 @@ class AppsTab(GatedTab):
         layout.addWidget(proton_box)
 
         layout.addWidget(self.status_label)
+        # "Idle" is the panel footer's job; this line shows only a real status.
+        self.status_label.setVisible(False)
         layout.addStretch(1)
 
     # ── state ──

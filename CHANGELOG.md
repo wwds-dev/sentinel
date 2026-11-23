@@ -14,6 +14,7 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Tunnel's tabs are cleaner** (GUI review 2026-11-23). Privacy fits the centre column again (the hop and chain rows were pushing its text past the right edge); disabled buttons keep their frame everywhere, so they still read as buttons; the Safe Action Preview picker is labelled "Action:" and the result tabs inside Diagnose and Advisor are a lighter second-level strip; Servers scrolls once, with the "Servers you own" intro above the Deployment form, and empty port boxes show a muted dash instead of a green "1"; the Privacy, Servers and VPN apps tabs no longer repeat the footer's "Idle" and show their own line only for a real status. Checkbox labels no longer sit on a dark patch.
 - **Bug Spray's target bar and Radar are tighter** (GUI review 2026-11-23). With no target the bar shows only the target field and folds to its one-line summary once a target is entered; the Radar lists stretch to fill the tab and still stop on a whole row; the Radar tab has one frame (no inner "Program radar" box); Edit/Done stays neutral instead of green.
 - **Forge has one green button at a time.** While a spec can be approved, "Approve & Create Agent" is the green one and "Analyze Idea" is a normal button; otherwise Analyze Idea is green.
 - **Beacon, Trace, Sentry and Forge are quieter.** Every agent's run bar now

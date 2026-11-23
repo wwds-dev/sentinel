@@ -288,6 +288,9 @@ class VpnPanel(AgentPanel):
         preview_note = QLabel("Shows what would happen; never runs the command.")
         preview_note.setWordWrap(True)
         preview_layout.addWidget(preview_note, 1)
+        # Labelled, so the picker is not read as a second Connect button.
+        self.action_box_label = QLabel("Action:")
+        preview_layout.addWidget(self.action_box_label)
         self.action_box = MenuComboBox()
         self.action_box.addItems(["Connect", "Disconnect", "Restart"])
         self.action_box.setToolTip("Choose the change you want to inspect.")
@@ -348,8 +351,10 @@ class VpnPanel(AgentPanel):
         self.egress_input = QLineEdit()
         self.egress_input.setPlaceholderText("server NIC, e.g. eth0")
         setup_layout.addWidget(self.egress_input, 2, 3)
-        servers_layout.addWidget(setup_group)
         self.servers_tab = ServersTab()
+        # One scroll for the whole tab, and the "Servers you own" intro above
+        # the form it explains (GUI review 2026-11-23).
+        self.servers_tab.insert_after_intro(setup_group)
         servers_layout.addWidget(self.servers_tab, 1)
         self.tabs.addTab(servers, "Servers")
 

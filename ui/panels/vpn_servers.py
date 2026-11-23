@@ -107,9 +107,11 @@ class ServersTab(GatedTab):
         body = QWidget()
         scroll.setWidget(body)
         layout = QVBoxLayout(body)
+        self._body_layout = layout
         layout.addWidget(self._info(SERVERS_INFO))
         self.status_label = QLabel("Idle")
         self.status_label.setWordWrap(True)
+        self.status_label.setObjectName("ServersStatus")
 
         sites_box = QGroupBox("Sites")
         sl = QVBoxLayout(sites_box)
@@ -234,14 +236,23 @@ class ServersTab(GatedTab):
         row.addWidget(self.delete_btn)
         layout.addLayout(row)
         layout.addWidget(self.status_label)
+        # "Idle" is the panel footer's job; this line shows only a real status.
+        self.status_label.setVisible(False)
         layout.addStretch(1)
 
     def _site_widgets(self):
         return (self.editor_box, self.peers_box, self.deploy_box, self.backup_btn, self.delete_btn)
 
+    def insert_after_intro(self, widget: QWidget) -> None:
+        """Put a section right under the intro, inside this tab's scroll."""
+        self._body_layout.insertWidget(1, widget)
+
     def _set_editor_enabled(self, on: bool) -> None:
         for w in self._site_widgets():
             w.setEnabled(on)
+        # No site: the port boxes hold their minimum, not a port; show a dash.
+        for box in (self.wg_port_input, self.ovpn_port_input, self.ssh_port_input):
+            box.setSpecialValueText("" if on else "—")
 
     def _set_enabled(self, enabled: bool) -> None:
         self.create_btn.setEnabled(enabled)

@@ -171,3 +171,73 @@ def test_safety_notice_keeps_its_claim_and_full_text(tunnel):
     assert "traffic protection is not verified" in banner.text()
     assert banner.toolTip() == SAFETY_TEXT
     assert banner.isVisibleTo(tunnel)
+
+
+# ── GUI review 2026-11-23: five visual points on the Tunnel render ──────────
+def _scroll_body(tab):
+    from PySide6.QtWidgets import QScrollArea
+    return tab.findChild(QScrollArea).widget()
+
+
+@pytest.mark.parametrize("name", ["privacy_tab", "servers_tab", "apps_tab"])
+def test_scrolling_tabs_fit_the_centre_column(tunnel, name):
+    """Privacy's hop and chain rows pushed its text past the right edge.
+
+    The centre column is about 1020 px at 1600x1000; 800 leaves the same
+    room as test_bloodhound_fits_the_centre_column.
+    """
+    assert _scroll_body(getattr(tunnel, name)).minimumSizeHint().width() <= 800
+
+
+def test_disabled_buttons_keep_a_visible_frame(win):
+    sheet = QApplication.instance().styleSheet() or win.styleSheet()
+    start = sheet.index("QPushButton:disabled {")
+    block = sheet[start:sheet.index("}", start)]
+    assert "border: 1px solid #262d29" in block
+
+
+def test_action_preview_picker_is_labelled(tunnel):
+    assert tunnel.action_box_label.text() == "Action:"
+    box = tunnel.action_box.parentWidget()
+    assert box.isAncestorOf(tunnel.action_box_label)
+
+
+def test_nested_result_tabs_are_a_lighter_strip(win):
+    sheet = QApplication.instance().styleSheet() or win.styleSheet()
+    assert "QTabWidget#VPNDiagnoseResults > QTabBar::tab:selected" in sheet
+
+
+def test_servers_tab_scrolls_once_with_the_intro_first(tunnel):
+    from PySide6.QtWidgets import QScrollArea
+    servers_page = tunnel.servers_tab.parentWidget()
+    # The deployment form is inside the servers tab's own scroll body ...
+    body = _scroll_body(tunnel.servers_tab)
+    setup = tunnel.mode_box.parentWidget()
+    assert body.isAncestorOf(setup)
+    # ... directly under the "Servers you own" intro, and no second scroll.
+    first, second = (body.layout().itemAt(i).widget() for i in (0, 1))
+    assert first.text().startswith("Servers you own")
+    assert second is setup
+    assert len(servers_page.findChildren(QScrollArea)) == 1
+
+
+def test_port_boxes_show_a_dash_without_a_site(tunnel):
+    tab = tunnel.servers_tab
+    tab._set_editor_enabled(False)
+    for box in (tab.wg_port_input, tab.ovpn_port_input):
+        # Qt shows the special text while the value is at its minimum.
+        assert box.value() == box.minimum() and box.specialValueText() == "—"
+    tab._set_editor_enabled(True)
+    assert tab.wg_port_input.specialValueText() == ""   # a real port shows as is
+    tab._set_editor_enabled(False)
+
+
+@pytest.mark.parametrize("name", ["privacy_tab", "servers_tab", "apps_tab"])
+def test_tab_status_line_only_shows_a_real_status(tunnel, name):
+    """"Idle" showed twice on VPN apps: in the tab and in the panel footer."""
+    tab = getattr(tunnel, name)
+    tab._say("Idle")
+    assert not tab.status_label.isVisibleTo(tab)
+    tab._say("Mullvad connected.")
+    assert tab.status_label.isVisibleTo(tab)
+    tab._say("Idle")

@@ -27,6 +27,7 @@ class GatedTab(QWidget):
 
     def _say(self, text: str) -> None:
         self.status_label.setText(text[:600])
+        self.status_label.setVisible(bool(text) and text != "Idle")
 
     def _ask(self, title: str, text: str) -> bool:
         return QMessageBox.question(

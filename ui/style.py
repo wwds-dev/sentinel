@@ -171,6 +171,18 @@ _GREEN_STYLESHEET = """
            value: a translucent green here would composite over the *card*
            behind the field, not over the input surface, and the field would
            come out lighter than the one beside it. */
+        /* Spin boxes share the field surface of QLineEdit; disabled, they are
+           muted, not phosphor (nothing was typed there). */
+        QSpinBox, QDoubleSpinBox {
+            background-color: #151816;
+            border: 1px solid #262d29;
+            border-radius: 8px;
+            padding: 4px 6px 4px 10px;
+            min-height: 22px;
+        }
+        QSpinBox:disabled, QDoubleSpinBox:disabled {
+            color: #4a5450;
+        }
         QLineEdit:!read-only:focus, QTextEdit:!read-only:focus,
         QSpinBox:focus, QDoubleSpinBox:focus {
             background-color: #132f1a;
@@ -290,7 +302,9 @@ _GREEN_STYLESHEET = """
         QPushButton:disabled {
             color: #4a5450;
             background-color: #151816;
-            border: 1px solid #141715;
+            /* A disabled button keeps a visible frame, so it still reads as a
+               button and not as plain text (GUI review 2026-11-23). */
+            border: 1px solid #262d29;
         }
 
         /* ── Group boxes (card style with label above) ─────────────── */
@@ -340,10 +354,23 @@ _GREEN_STYLESHEET = """
             color: #3cff88;
             border-bottom: 2px solid #3cff88;
         }
+        /* Result tabs nested inside a Tunnel tab: a lighter, second-level
+           strip, so it is not read as a second row of main tabs. */
+        QTabWidget#VPNDiagnoseResults > QTabBar::tab,
+        QTabWidget#VPNAdvisorResults > QTabBar::tab {
+            font-size: 11px;
+            padding: 4px 10px;
+        }
+        QTabWidget#VPNDiagnoseResults > QTabBar::tab:selected,
+        QTabWidget#VPNAdvisorResults > QTabBar::tab:selected {
+            color: #e8ece9;
+            border-bottom: 1px solid #5d6862;
+        }
 
         /* ── Checkboxes ────────────────────────────────────────────── */
         QCheckBox {
             color: #a8b3ad;
+            background: transparent;   /* no dark patch on a card */
             spacing: 8px;        /* indicator → its own label */
             /* Trailing room so a checkbox's label never butts straight into the
                next widget (another checkbox's indicator, or a button). Must be
