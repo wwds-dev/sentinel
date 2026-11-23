@@ -18,7 +18,8 @@ confirmation still applies after the user accepts it.
 
 Five modes, one app setting with an override per agent:
 
-  local_advise   Local, advise per job. Jobs run on the selected
+  local_advise   Local, advise per job (default, owner decision 2026-11-23).
+                 Jobs run on the selected
                  local model; when it falls short the job is held and the
                  auto-routed recommendation is suggested.
   suggest_local  The mirror image: from a cloud selection, offer a local model
@@ -27,8 +28,6 @@ Five modes, one app setting with an override per agent:
                  local run fails, the next candidate is offered (never sent).
   cloud_only     As before phase 4.
   local_only     No cloud calls, ever: no cloud suggestion, no cloud fallback.
-                 The default (owner decision 2026-11-23): a fresh install stores
-                 this; a mode the user already saved is never overwritten.
 
 Also here: the remembered rules (agent + kind of work -> model) and the
 savings tally, each a small JSON file the app keeps in its data directory.
@@ -63,9 +62,9 @@ CLOUD_ONLY = "cloud_only"
 LOCAL_ONLY = "local_only"
 
 MODES = (LOCAL_ADVISE, SUGGEST_LOCAL, LOCAL_FIRST, CLOUD_ONLY, LOCAL_ONLY)
-DEFAULT_MODE = LOCAL_ONLY
+DEFAULT_MODE = LOCAL_ADVISE
 # What "Hybrid allowed" on the run bar means when the stored mode is Local only
-# or Cloud only (the old default, now a choice).
+# or Cloud only. A mode the user already saved is never overwritten.
 HYBRID_MODE = LOCAL_ADVISE
 
 MODE_LABELS = {

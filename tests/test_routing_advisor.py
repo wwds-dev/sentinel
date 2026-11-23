@@ -113,10 +113,10 @@ def test_suggestion_never_exceeds_the_budget():
 
 
 # ── Modes ────────────────────────────────────────────────────────────────────
-def test_default_mode_is_local_only():
-    assert ra.DEFAULT_MODE == ra.LOCAL_ONLY
-    assert ra.mode_for({}) == ra.LOCAL_ONLY
-    assert ra.mode_for({"routing_mode": "nonsense"}) == ra.LOCAL_ONLY
+def test_default_mode_is_local_advise():
+    assert ra.DEFAULT_MODE == ra.LOCAL_ADVISE
+    assert ra.mode_for({}) == ra.LOCAL_ADVISE
+    assert ra.mode_for({"routing_mode": "nonsense"}) == ra.LOCAL_ADVISE
 
 
 def test_a_saved_mode_is_not_overwritten_by_the_default():
