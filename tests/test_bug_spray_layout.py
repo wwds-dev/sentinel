@@ -47,7 +47,7 @@ def spray(win):
     panel.target_input.clear()
     panel.program_input.clear()
     panel.steps.setCurrentIndex(0)
-    panel.edit_target_btn.setChecked(True)
+    panel.edit_target_btn.setChecked(False)
 
 
 def test_steps_hold_radar_recon_and_report(spray):
@@ -87,14 +87,50 @@ def test_summary_line_follows_the_fields(spray):
     assert spray.target_summary.text().startswith("No target yet")
 
 
-def test_edit_opens_and_closes_the_fields(spray):
-    assert spray.edit_target_btn.isChecked()        # opens expanded: nothing declared
-    assert spray.target_editor.isVisibleTo(spray)
-    spray.edit_target_btn.setChecked(False)
-    assert not spray.target_editor.isVisibleTo(spray)
+def test_empty_target_shows_only_the_target_field(spray):
+    """Compact empty state (GUI review 2026-11-23): one field, not the form."""
+    assert spray.target_bar_state() == "quick"
+    assert spray.target_input.isVisibleTo(spray)
+    for widget in (spray.program_input, spray.scope_box, spray.severity_box):
+        assert not widget.isVisibleTo(spray)
     assert spray.edit_target_btn.text() == "Edit"
-    # Collapsed, the badge and the one-line note stay visible.
+
+
+def test_entering_a_target_folds_the_bar_to_one_line(spray):
+    spray.target_input.setText("https://app.example.com")
+    spray.target_input.editingFinished.emit()
+    assert spray.target_bar_state() == "summary"
+    assert not spray.target_editor.isVisibleTo(spray)
+    assert "https://app.example.com" in spray.target_summary.text()
+    # Folded, the badge and the one-line note stay visible.
     assert spray.scope_badge.isVisibleTo(spray) and spray.scope_note.isVisibleTo(spray)
+
+
+def test_edit_opens_the_whole_form_and_done_closes_it(spray):
+    spray.target_input.setText("https://app.example.com")
+    spray.edit_target_btn.setChecked(True)
+    assert spray.target_bar_state() == "editing"
+    for widget in (spray.target_input, spray.program_input, spray.scope_box,
+                   spray.severity_box):
+        assert widget.isVisibleTo(spray)
+    assert spray.edit_target_btn.text() == "Done"
+    spray.edit_target_btn.setChecked(False)
+    assert spray.target_bar_state() == "summary"
+    # Done with the target cleared: back to the one-field empty state.
+    spray.edit_target_btn.setChecked(True)
+    spray.target_input.clear()
+    spray.edit_target_btn.setChecked(False)
+    assert spray.target_bar_state() == "quick"
+
+
+def test_done_is_not_styled_like_a_primary(spray, win):
+    """Checked, Edit/Done keeps the neutral look; green is for the primary."""
+    spray.edit_target_btn.setChecked(True)
+    assert spray.edit_target_btn.objectName() == "BBEditTarget"
+    sheet = win.styleSheet() or QApplication.instance().styleSheet()
+    block = sheet[sheet.index("QPushButton#BBEditTarget:checked {"):]
+    block = block[:block.index("}")]
+    assert "#3cff88" not in block.lower()
 
 
 def test_scope_warning_keeps_every_fact(spray):
@@ -141,42 +177,60 @@ def test_picking_a_program_on_the_radar_fills_the_program_field(spray):
     assert "Bugcrowd — Example" in spray.target_summary.text()
 
 
+def _fill(feed):
+    for tree in (feed.changes, feed.programs):
+        if tree.topLevelItemCount() == 0:
+            for n in range(40):
+                tree.addTopLevelItem(QTreeWidgetItem([f"row {n}", "x", "y"]))
+
+
 def test_recent_changes_shows_whole_rows_only(spray, win):
     """Six full rows and a seventh cut in half (GUI review 2026-11-22)."""
     win.resize(1600, 1000)
     win.select_agent("bug_bounty")
     feed = spray.program_feed
-    for tree in (feed.changes, feed.programs):
-        if tree.topLevelItemCount() == 0:
-            for n in range(12):
-                tree.addTopLevelItem(QTreeWidgetItem([f"row {n}", "x", "y"]))
+    _fill(feed)
     feed._fit_whole_rows()
     for tree in (feed.changes, feed.programs):
         row = tree.sizeHintForRow(0)
-        visible = tree.height() - feed._chrome_height(tree)
-        assert visible == feed.VISIBLE_ROWS * row, (tree, visible, row)
+        visible = tree.maximumHeight() - feed._chrome_height(tree)
+        assert visible % row == 0 and visible >= feed.MIN_ROWS * row, (tree, visible, row)
 
 
-def test_shown_tree_viewport_is_whole_rows(win):
-    """Measured on screen: the viewport itself, not a computed figure."""
+def test_shown_tree_viewport_is_whole_rows_and_fills_the_tab(win):
+    """Measured on screen: whole rows, and the list takes the tab's height
+    (less than one row left below it) instead of leaving a third empty."""
     win.resize(1600, 1000)
     win.show()
     try:
         win.select_agent("bug_bounty")
         feed = win.panels["bug_bounty"].program_feed
         win.panels["bug_bounty"].steps.setCurrentIndex(0)
+        _fill(feed)
         for _ in range(10):
             QApplication.processEvents()
-        tree = feed.changes
-        if tree.topLevelItemCount() == 0:
-            for n in range(12):
-                tree.addTopLevelItem(QTreeWidgetItem([f"row {n}", "x", "y"]))
         feed._fit_whole_rows()
         for _ in range(5):
             QApplication.processEvents()
-        assert tree.viewport().height() == feed.VISIBLE_ROWS * tree.sizeHintForRow(0)
+        tree = feed.changes
+        row = tree.sizeHintForRow(0)
+        assert tree.viewport().height() % row == 0
+        page = tree.parentWidget()
+        assert page.height() - tree.height() < row
+        assert tree.viewport().height() // row > feed.VISIBLE_ROWS
+        # Shrinking the window re-fits to fewer whole rows.
+        win.resize(1600, 800)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert tree.viewport().height() % row == 0
+        assert page.height() - tree.height() < row
     finally:
         win.hide()
+
+
+def test_radar_has_no_second_frame_or_title(spray):
+    feed = spray.program_feed
+    assert feed.title() == "" and feed.isFlat()
 
 
 def test_fit_is_redone_after_refresh(spray, monkeypatch):

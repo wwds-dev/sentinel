@@ -179,7 +179,7 @@ one reflected-input observation into a submittable report.
 
 1. On the **1 Radar** tab, filter for the program if you track it, or just type the
    name into **Program** in the target bar. Radar never contacts the program's assets.
-2. In the target bar (press **Edit** if it is closed), enter the target, program and scope type. Set
+2. In the target bar, enter the target (on a fresh start only that field shows), then press **Edit** for the program and scope type. Set
    **Severity Target** to what you expect (it is only a hint to the model). Remember the badge: scope is
    declared by you and is not verified or enforced.
 3. Skip the **2 Recon** tab: leave **Nmap Recon Scan** empty and do not press **Run Nmap** for this example;

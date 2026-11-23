@@ -611,6 +611,23 @@ _GREEN_STYLESHEET = """
             font-size: 11px;
             background: transparent;
         }
+        QGroupBox#BugSprayFeed {
+            border: none;
+            margin-top: 0px;
+            padding: 8px 4px 4px 4px;
+        }
+        /* Edit / Done toggles the target editor: neutral, never green, so it
+           does not read as a second primary next to Run Nmap or Analyse. */
+        QPushButton#BBEditTarget:checked {
+            background-color: #151816;
+            border: 1px solid #2f3733;
+            color: #a8b3ad;
+        }
+        QPushButton#BBEditTarget:checked:hover {
+            background-color: #1b201d;
+            border: 1px solid #3d4842;
+            color: #ffffff;
+        }
         QFrame#BBTargetBar {
             background-color: #101311;
             border: 1px solid #232a26;

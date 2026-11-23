@@ -171,6 +171,7 @@ class BugBountyPanel(AgentPanel):
         self.scope_badge.setToolTip(self.SCOPE_NOTE)
         summary_row.addWidget(self.scope_badge)
         self.edit_target_btn = QPushButton("Edit")
+        self.edit_target_btn.setObjectName("BBEditTarget")
         self.edit_target_btn.setCheckable(True)
         self.edit_target_btn.toggled.connect(self._set_target_editing)
         summary_row.addWidget(self.edit_target_btn)
@@ -197,12 +198,14 @@ class BugBountyPanel(AgentPanel):
         self.target_input.setPlaceholderText("https://target.example.com  or  10.0.0.1")
         setup_layout.addWidget(self.target_input, 0, 1, 1, 3)
 
-        setup_layout.addWidget(QLabel("Program:"), 1, 0)
+        program_label = QLabel("Program:")
+        setup_layout.addWidget(program_label, 1, 0)
         self.program_input = QLineEdit()
         self.program_input.setPlaceholderText("HackerOne — Acme Corp  /  Bugcrowd — Example")
         setup_layout.addWidget(self.program_input, 1, 1, 1, 3)
 
-        setup_layout.addWidget(QLabel("Scope Type:"), 2, 0)
+        scope_label = QLabel("Scope Type:")
+        setup_layout.addWidget(scope_label, 2, 0)
         self.scope_box = MenuComboBox()
         self.scope_box.addItems([
             "Web Application", "API / REST", "Mobile (Android)", "Mobile (iOS)",
@@ -210,13 +213,17 @@ class BugBountyPanel(AgentPanel):
         ])
         setup_layout.addWidget(self.scope_box, 2, 1)
 
-        setup_layout.addWidget(QLabel("Severity Target:"), 2, 2)
+        severity_label = QLabel("Severity Target:")
+        setup_layout.addWidget(severity_label, 2, 2)
         self.severity_box = MenuComboBox()
         self.severity_box.addItems(
             ["Critical (P1)", "High (P2)", "Medium (P3)", "Low (P4)", "Informational"])
         setup_layout.addWidget(self.severity_box, 2, 3)
         setup_layout.setColumnStretch(1, 1)
         setup_layout.setColumnStretch(3, 1)
+        # Shown by Edit only; the empty state asks for the target alone.
+        self._target_details = (program_label, self.program_input, scope_label,
+                                self.scope_box, severity_label, self.severity_box)
         bar_layout.addWidget(self.target_editor)
         layout.addWidget(self.target_bar)
 
@@ -364,13 +371,30 @@ class BugBountyPanel(AgentPanel):
         self.status_label.setStyleSheet("font-size: 12px; color: #888;")
         layout.addWidget(self.status_label)
 
+        self.target_input.editingFinished.connect(self._leave_quick_target)
         self._refresh_target_summary()
-        # Nothing declared yet: open the editor so the first thing to do is visible.
-        self.edit_target_btn.setChecked(True)
+        # Nothing declared yet: show the target field alone (one line), so the
+        # first thing to do is visible without the whole form; it folds away
+        # once a target is entered. Edit opens the full form.
+        self._set_target_editing(False)
 
     def _set_target_editing(self, editing: bool) -> None:
-        self.target_editor.setVisible(editing)
+        quick = not editing and not self.target_input.text().strip()
+        self.target_editor.setVisible(editing or quick)
+        for widget in self._target_details:
+            widget.setVisible(editing)
         self.edit_target_btn.setText("Done" if editing else "Edit")
+
+    def _leave_quick_target(self) -> None:
+        """Target entered in the one-line empty state: fold to the summary."""
+        if not self.edit_target_btn.isChecked() and self.target_input.text().strip():
+            self.target_editor.setVisible(False)
+
+    def target_bar_state(self) -> str:
+        """'quick' (target field only), 'editing' (full form) or 'summary'."""
+        if self.edit_target_btn.isChecked():
+            return "editing"
+        return "quick" if self.target_editor.isVisibleTo(self) else "summary"
 
     def _refresh_target_summary(self) -> None:
         """target · program · scope type · severity, as one line."""

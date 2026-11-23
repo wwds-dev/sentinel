@@ -17,7 +17,7 @@ The screen is a target bar that stays at the top, then three step tabs: **1 Rada
 
 | Control | Purpose |
 |---|---|
-| Target bar | One summary line (target · program · scope type · severity), the badge **Scope declared, not verified** and **Edit**, which opens the four fields below in place (open on start, while nothing is declared). Under it one line: declared by you, not verified or enforced; only test programs you are authorised to test (full text in its tooltip). |
+| Target bar | One summary line (target · program · scope type · severity), the badge **Scope declared, not verified** and **Edit**, which opens the four fields below in place. With no target yet, only the target field shows (one line); it folds into the summary once a target is entered. Under it one line: declared by you, not verified or enforced; only test programs you are authorised to test (full text in its tooltip). |
 | Program radar (1 Radar) | Search saved programs and recent changes; open the live page or fill the Program field; **Scan now** refreshes the public listings. Details below. |
 | Target URL / IP | The asset the report is about. Free text; not validated. |
 | Program | Bug bounty program name. Free text; not verified. |

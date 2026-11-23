@@ -188,14 +188,29 @@ class WatchlistDialog(QDialog):
         self.accept()
 
 
+class _RowFitPage(QWidget):
+    """A list's tab page: re-fits the list to whole rows when resized."""
+
+    def __init__(self, feed: "BugSprayFeed"):
+        super().__init__()
+        self._feed = feed
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._feed._fit_whole_rows()
+
+
 class BugSprayFeed(QGroupBox):
     """Shows saved programs and changes; only `scan` uses a child process."""
 
     program_selected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
-        super().__init__("Program radar", parent)
+        # No title or frame: the feed is the whole "1 Radar" tab, whose own
+        # frame and label already say what it is (GUI review 2026-11-23).
+        super().__init__("", parent)
         self.setObjectName("BugSprayFeed")
+        self.setFlat(True)
         self._started = False
         self._last_scan: dict | None = None
         self._settings = config.load()
@@ -254,7 +269,7 @@ class BugSprayFeed(QGroupBox):
         self.changes.header().setSectionResizeMode(2, QHeaderView.Stretch)
         self.changes.currentItemChanged.connect(self._selected)
         self.changes.itemDoubleClicked.connect(lambda *_: self.show_details())
-        self.tabs.addTab(self.changes, "Recent changes")
+        self.tabs.addTab(self._row_fit_page(self.changes), "Recent changes")
         self.programs = QTreeWidget()
         self.programs.setHeaderLabels(["Program", "Platform", "Reward", "Scope"])
         self.programs.setRootIsDecorated(False)
@@ -263,8 +278,8 @@ class BugSprayFeed(QGroupBox):
             self.programs.header().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self.programs.currentItemChanged.connect(self._selected)
         self.programs.itemDoubleClicked.connect(lambda *_: self.show_details())
-        self.tabs.addTab(self.programs, "Programs")
-        layout.addWidget(self.tabs)
+        self.tabs.addTab(self._row_fit_page(self.programs), "Programs")
+        layout.addWidget(self.tabs, 1)
 
         self.details = QTextBrowser()
         self.details.setOpenExternalLinks(False)
@@ -287,13 +302,22 @@ class BugSprayFeed(QGroupBox):
         actions.addWidget(self.use_button)
         actions.addStretch()
         layout.addLayout(actions)
-        layout.addStretch(1)
-        # The feed has its own "1 Radar" tab now, so no height cap; the lists
-        # instead show a whole number of rows (no row cut through the middle).
+        # The lists stretch to fill the tab but stop on a whole row (no row
+        # cut through the middle); the remainder, under one row, stays below.
         self.changes.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._fit_whole_rows()
 
-    VISIBLE_ROWS = 8
+    VISIBLE_ROWS = 8   # used until the page has a laid-out height
+    MIN_ROWS = 3
+
+    def _row_fit_page(self, tree: QTreeWidget) -> QWidget:
+        page = _RowFitPage(self)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+        page_layout.addWidget(tree, 1)      # takes the height, up to its cap
+        page_layout.addStretch(0)           # the remainder, under one row
+        return page
 
     def _row_height(self, tree: QTreeWidget) -> int:
         if tree.topLevelItemCount():
@@ -313,19 +337,30 @@ class BugSprayFeed(QGroupBox):
         header = max(tree.header().sizeHint().height(), margins.top())
         return header + margins.bottom() + 2 * tree.frameWidth()
 
+    def _rows_that_fit(self, tree: QTreeWidget, chrome: int, row: int) -> int:
+        page = tree.parentWidget()
+        if page is None or not page.isVisible() or page.height() <= 0:
+            return self.VISIBLE_ROWS
+        return max(self.MIN_ROWS, (page.height() - chrome) // row)
+
     def _fit_whole_rows(self) -> None:
-        """Size each list to its header plus VISIBLE_ROWS full rows.
+        """Size each list to its header plus as many full rows as its tab
+        page has room for (at least MIN_ROWS).
 
         Row height is only final once the style sheet has polished the items,
-        so this runs again after the feed is shown, and measures the chrome
-        (header, frame, margins) from the laid-out widget when it can.
+        so this runs again after the feed is shown and whenever a page is
+        resized, and measures the chrome (header, frame, margins) from the
+        laid-out widget when it can. A maximum, not a fixed height, so the
+        window can still shrink.
         """
         for tree in (self.changes, self.programs):
             if tree.isVisible() and tree.viewport().height() > 0:
                 chrome = tree.height() - tree.viewport().height()
             else:
                 chrome = self._chrome_height(tree)
-            tree.setFixedHeight(chrome + self.VISIBLE_ROWS * self._row_height(tree))
+            row = self._row_height(tree)
+            tree.setMinimumHeight(chrome + self.MIN_ROWS * row)
+            tree.setMaximumHeight(chrome + self._rows_that_fit(tree, chrome, row) * row)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

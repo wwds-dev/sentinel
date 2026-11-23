@@ -14,6 +14,7 @@ and the git log, and is not back-filled here.
 ## Unreleased
 
 ### Changed
+- **Bug Spray's target bar and Radar are tighter** (GUI review 2026-11-23). With no target the bar shows only the target field and folds to its one-line summary once a target is entered; the Radar lists stretch to fill the tab and still stop on a whole row; the Radar tab has one frame (no inner "Program radar" box); Edit/Done stays neutral instead of green.
 - **Beacon, Trace, Sentry and Forge are quieter.** Every agent's run bar now
   shows the model and its price, with provider and model under **Change model**.
   Beacon's Connection preflight is a collapsed row until you run it, and its five
