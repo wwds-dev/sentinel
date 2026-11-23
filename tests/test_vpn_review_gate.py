@@ -2621,3 +2621,94 @@ def test_a_root_owned_interpreter_is_accepted_and_rechecked_by_root(tmp_path, mo
     r = review("connect", profile_for(ovpn(tmp_path, f"script-security 2\nup {prog}\n")))
     assert r.allowed, r.blockers
     assert r.programs == ((str(prog), interpreter) if interpreter else (str(prog),))
+
+
+# ── readiness H1/H2: system DNS and the kill switch's local DNS (2026-11-23) ──
+
+def _review_lan_dns(action, profile, allowed):
+    return vpn_execution.review_execution(action, profile, probe=Probe(),
+                                          killswitch_armed=lambda: False,
+                                          allow_lan_dns=allowed)
+
+
+def test_wireguard_without_dns_warns_that_system_dns_stays_in_use(tmp_path):
+    r = _review_lan_dns("connect", profile_for(wg_conf(tmp_path)), lambda: False)
+    warning = next(w for w in r.warnings if w.startswith("System DNS stays in use"))
+    assert "no DNS = line" in warning and "blocked and fail" in warning
+    assert ("Kill switch, local network DNS (port 53): blocked while armed "
+            "(\"Allow local network DNS\" is off)") in r.config_lines
+
+
+def test_wireguard_with_a_dns_server_draws_no_system_dns_warning(tmp_path):
+    r = _review_lan_dns("connect", profile_for(wg_conf(tmp_path, interface_extra="DNS = 10.64.0.1\n")),
+                        lambda: False)
+    assert not any(w.startswith("System DNS stays in use") for w in r.warnings)
+
+
+def test_openvpn_connect_warns_that_pushed_dns_is_not_applied(tmp_path):
+    r = _review_lan_dns("connect", profile_for(ovpn(tmp_path, "dhcp-option DNS 10.8.0.1\n")),
+                        lambda: False)
+    warning = next(w for w in r.warnings if w.startswith("System DNS stays in use"))
+    assert "does not apply DNS servers the VPN server pushes" in warning
+    assert "up script" not in warning
+
+
+def test_the_ticked_setting_is_shown_and_the_warning_says_lookups_pass(tmp_path):
+    r = _review_lan_dns("connect", profile_for(wg_conf(tmp_path)), lambda: True)
+    assert any("lets them through" in w for w in r.warnings)
+    assert any(line.startswith("Kill switch, local network DNS (port 53): allowed") for line in r.config_lines)
+
+
+def test_an_unreadable_tick_is_shown_as_blocked(tmp_path):
+    def broken():
+        raise OSError("locked")
+    r = _review_lan_dns("connect", profile_for(wg_conf(tmp_path)), broken)
+    assert any("blocked while armed" in line for line in r.config_lines)
+
+
+def test_disconnect_carries_no_dns_lines(tmp_path):
+    r = _review_lan_dns("disconnect", profile_for(wg_conf(tmp_path)), lambda: False)
+    assert not any(w.startswith("System DNS stays in use") for w in r.warnings)
+    assert not any(line.startswith("Kill switch, local network DNS") for line in r.config_lines)
+
+
+def test_a_truthy_non_bool_tick_is_shown_as_blocked(tmp_path):
+    r = _review_lan_dns("connect", profile_for(wg_conf(tmp_path)), lambda: "1")
+    assert any("blocked while armed" in line for line in r.config_lines)
+    assert not any("lets them through" in w for w in r.warnings)
+
+
+@pytest.mark.parametrize("directive", ["up", "--up", "route-up"])
+def test_an_openvpn_up_script_is_named_as_a_possible_dns_setter(tmp_path, directive):
+    r = _review_lan_dns("connect", profile_for(ovpn(tmp_path, f"{directive} /usr/local/bin/dns-up\n")),
+                        lambda: False)
+    warning = next(w for w in r.warnings if w.startswith("System DNS stays in use"))
+    assert "unless this config's own up script sets them" in warning
+
+
+def _armed_review(tmp_path, ticked, armed):
+    return vpn_execution.review_execution(
+        "connect", profile_for(wg_conf(tmp_path)), probe=Probe(),
+        killswitch_armed=lambda: True, allow_lan_dns=lambda: ticked,
+        armed_lan_dns=lambda: armed)
+
+
+def test_the_review_says_when_the_armed_switch_differs_from_the_tick(tmp_path):
+    line = next(l for l in _armed_review(tmp_path, False, True).config_lines
+                if l.startswith("Kill switch, local network DNS"))
+    assert "blocked while armed" in line and "still allows it. Arm again" in line
+    line = next(l for l in _armed_review(tmp_path, True, False).config_lines
+                if l.startswith("Kill switch, local network DNS"))
+    assert "still blocks it. Arm again" in line
+
+
+def test_an_armed_switch_matching_the_tick_adds_nothing(tmp_path):
+    line = next(l for l in _armed_review(tmp_path, False, False).config_lines
+                if l.startswith("Kill switch, local network DNS"))
+    assert "Arm again" not in line
+
+
+def test_an_armed_switch_from_before_the_setting_asks_for_a_re_arm(tmp_path):
+    line = next(l for l in _armed_review(tmp_path, False, None).config_lines
+                if l.startswith("Kill switch, local network DNS"))
+    assert "may predate this setting" in line

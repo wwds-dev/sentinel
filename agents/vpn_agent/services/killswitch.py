@@ -65,6 +65,14 @@ ROOT_TMP_DIR = "/private/var/run"
 # Every range a LAN rule may name (the defaults plus link-local).
 LAN_RANGES = frozenset(DEFAULT_LAN) | {"169.254.0.0/16"}
 
+# DNS. Kept LAN access must not become a DNS path around the tunnel: a router
+# or other local resolver answers (and forwards) lookups in the clear, so port
+# 53 to the local network is blocked unless the user ticks "Allow local network
+# DNS" (owner decision 2026-11-23, spec readiness-h1-h2-killswitch-dns).
+# Multicast DNS (5353) and LLMNR (5355) are other ports and stay open.
+DNS_PORT = 53
+LAN_DNS_V6 = "fe80::/10"
+
 # macOS keeps a handful of utun devices for its own use (iCloud Private Relay,
 # Handoff). Passing every utun would quietly exempt those from the switch, so
 # the active WireGuard device is looked up instead and only that one passes.
@@ -298,6 +306,7 @@ def build_rules(
     interfaces: list[str] | None = None,
     allow_lan: bool = True,
     lan_cidrs: tuple[str, ...] = DEFAULT_LAN,
+    allow_lan_dns: bool = False,
 ) -> str:
     """
     Render the pf anchor.
@@ -306,6 +315,11 @@ def build_rules(
     written first for readability; the `pass quick` rules below short-circuit,
     so a packet matching one is passed immediately and anything unmatched falls
     through to the block.
+
+    With the LAN kept open, DNS to it (port 53, UDP and TCP) is blocked by
+    `block drop out quick` rules placed after the tunnel's pass and before the
+    LAN passes, so a lookup inside the tunnel still passes (first quick match)
+    while one to a local resolver is dropped. ``allow_lan_dns`` leaves them out.
     """
     interfaces = interfaces if interfaces is not None else active_tunnel_interfaces()
 
@@ -359,6 +373,19 @@ def build_rules(
         "pass quick inet proto udp from any port 67 to any port 68",
         "",
     ]
+
+    if allow_lan and not allow_lan_dns:
+        lines.append("# DNS to the local network (a router's resolver forwards in the")
+        lines.append("# clear). Before the LAN passes, after the tunnel's, so only")
+        lines.append("# lookups that would bypass the tunnel are dropped.")
+        for cidr in (*lan_cidrs, "169.254.0.0/16"):
+            for proto in ("udp", "tcp"):
+                lines.append(f"block drop out quick inet proto {proto} "
+                             f"from any to {cidr} port {DNS_PORT}")
+        for proto in ("udp", "tcp"):
+            lines.append(f"block drop out quick inet6 proto {proto} "
+                         f"from any to {LAN_DNS_V6} port {DNS_PORT}")
+        lines.append("")
 
     if allow_lan:
         lines.append("# Local network — printers, NAS, the router's admin page.")
@@ -421,6 +448,8 @@ _RULE_SHAPES = tuple(re.compile(p, re.ASCII) for p in (
     r"pass quick inet proto udp from any port 67 to any port 68",
     r"pass quick inet from (?P<net>[0-9./]{7,18}) to (?P<net2>[0-9./]{7,18})",
     r"pass quick inet6 from fe80::/10 to fe80::/10",
+    r"block drop out quick inet proto (?:tcp|udp) from any to (?P<dnsnet>[0-9./]{7,18}) port 53",
+    r"block drop out quick inet6 proto (?:tcp|udp) from any to fe80::/10 port 53",
 ))
 
 
@@ -445,6 +474,8 @@ def _rule_allowed(line: str) -> bool:
                 # A LAN rule passes a private range to itself, never to anywhere else.
                 if groups["net"] != groups["net2"] or groups["net"] not in LAN_RANGES:
                     return False
+            if groups.get("dnsnet") is not None and groups["dnsnet"] not in LAN_RANGES:
+                return False
         except ValueError:
             return False
         return True
@@ -557,15 +588,18 @@ def _read_marker() -> dict | None:
         return {"state": str(data.get("state") or "armed"),
                 "at": float(at) if isinstance(at, (int, float)) else mtime,
                 "boot": data.get("boot") if isinstance(data.get("boot"), int) else None,
-                "ifaces": [str(x) for x in data.get("ifaces") or []]}
-    return {"state": "armed", "at": mtime, "boot": None, "ifaces": []}
+                "ifaces": [str(x) for x in data.get("ifaces") or []],
+                "lan_dns": data.get("lan_dns") if isinstance(data.get("lan_dns"), bool) else None}
+    return {"state": "armed", "at": mtime, "boot": None, "ifaces": [], "lan_dns": None}
 
 
-def _write_marker(state: str, interfaces: list[str]) -> None:
+def _write_marker(state: str, interfaces: list[str], lan_dns: bool | None = None) -> None:
     path = marker_path()
     paths.ensure_private_dir(path.parent)
     payload = {"state": state, "at": int(time.time()), "boot": _boot_time(),
                "ifaces": list(interfaces)}
+    if lan_dns is not None:
+        payload["lan_dns"] = bool(lan_dns)     # True: the loaded rules let LAN DNS out
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")
     os.replace(tmp, path)
@@ -659,13 +693,15 @@ def arm(
     allow: list[tuple[str, int]],
     *,
     allow_lan: bool = True,
+    allow_lan_dns: bool = False,
     extra_interfaces: list[str] | None = None,
 ) -> tuple[bool, str]:
     """
     Block everything that is not the tunnel.
 
     ``extra_interfaces`` names tunnel devices that are not WireGuard's (an
-    OpenVPN utun); each must look like ``utunN``/``tunN``.
+    OpenVPN utun); each must look like ``utunN``/``tunN``. DNS to the local
+    network stays blocked unless ``allow_lan_dns`` is True (see build_rules).
 
     Resolves endpoints, writes the anchor, registers it in /etc/pf.conf if
     needed, and loads it. Returns (ok, message); the message always carries the
@@ -693,7 +729,9 @@ def arm(
             return False, f"Refusing to arm — {device!r} is not a tunnel device name."
         if device not in interfaces:
             interfaces.append(device)
-    rules = build_rules(addresses, allow, interfaces=interfaces, allow_lan=allow_lan)
+    lan_dns = allow_lan and allow_lan_dns is True
+    rules = build_rules(addresses, allow, interfaces=interfaces, allow_lan=allow_lan,
+                        allow_lan_dns=lan_dns)
     # Root loads the validated TEXT, carried inside the script, never a path in
     # the user's state directory. The file written below is for recovery only.
     try:
@@ -725,7 +763,7 @@ def arm(
     except OSError:
         previous = None
     _VERIFIED.clear()
-    _write_marker("arming", interfaces)
+    _write_marker("arming", interfaces, lan_dns)
     ok, output = _run_privileged(script, "Arm the VPN Agent kill switch")
 
     if not ok:
@@ -733,7 +771,7 @@ def arm(
             # Approved, then timed out: pf may hold the rules now. Recording it
             # as armed keeps Disarm offered; disarming rules that never loaded
             # is harmless, while showing "Disarmed" over a live block is not.
-            _write_marker("armed", interfaces)
+            _write_marker("armed", interfaces, lan_dns)
             return False, (
                 f"{output}\nTreating the kill switch as armed so Disarm stays available. "
                 f"If the network is now broken, press Disarm or run:\n  {recovery_command()}"
@@ -748,7 +786,7 @@ def arm(
             f"Failed to arm: {output}\n\nIf the network is now broken, run:\n  {recovery_command()}"
         )
 
-    _write_marker("armed", interfaces)
+    _write_marker("armed", interfaces, lan_dns)
 
     detail = ", ".join(interfaces) if interfaces else "no tunnel is currently up"
     warning = ""
@@ -764,6 +802,16 @@ def arm(
         f"Kill switch recorded as armed (not verified; passing: {detail}).{warning}\n"
         f"Undo at any time with:\n  {recovery_command()}"
     )
+
+
+def armed_lan_dns() -> bool | None:
+    """Whether the rules recorded as armed let DNS to the local network out:
+    True or False from the marker, None when nothing is recorded as armed or the
+    record predates this setting (rules armed before 2026-11-23 let it out)."""
+    if not is_supported() or not status().armed:
+        return None
+    marker = _read_marker()
+    return marker.get("lan_dns") if marker else None
 
 
 def disarm() -> tuple[bool, str]:

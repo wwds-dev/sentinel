@@ -1493,10 +1493,14 @@ def _killswitch_armed() -> bool:
 
 def review_execution(action: str, profile: dict | None, *,
                      probe: dict | None = None,
-                     killswitch_armed: Callable[[], bool] | None = None) -> ExecutionReview:
+                     killswitch_armed: Callable[[], bool] | None = None,
+                     allow_lan_dns: Callable[[], bool] | None = None,
+                     armed_lan_dns: Callable[[], bool | None] | None = None) -> ExecutionReview:
     """Everything the user must see — and every reason to refuse — before running."""
     probe = probe or _default_probe()
     killswitch_armed = killswitch_armed or _killswitch_armed
+    allow_lan_dns = allow_lan_dns or vpn_connection.killswitch_allow_lan_dns
+    armed_lan_dns = armed_lan_dns or vpn_connection.killswitch_armed_lan_dns
     profile = dict(profile or {})
     action = str(action).strip().lower()
     name = str(profile.get("name") or "Unnamed")
@@ -1520,6 +1524,9 @@ def review_execution(action: str, profile: dict | None, *,
     includes: list[tuple[str, str]] = []
     programs: list[str] = []
     ks_armed = killswitch_armed()
+    # Connect only: the tunnel leaves macOS on its current DNS servers (spec
+    # readiness-h1-h2-killswitch-dns). "" or the reason, for the warning below.
+    system_dns = ""
 
     if action == "connect" and vpn_connection.is_placeholder(profile):
         blockers.append("This profile is an example/template, not a real server. "
@@ -1600,6 +1607,8 @@ def review_execution(action: str, profile: dict | None, *,
                         f"Peers: {summary.peer_count}",
                     ]
                     warnings.extend(summary.warnings)
+                    if not summary.dns_servers and not summary.dns_wildcards:
+                        system_dns = "This config sets no DNS server (no DNS = line)"
                     if summary.dns_wildcards:
                         # wg-quick expands DNS unquoted: what a wildcard becomes, and so
                         # which DNS server applies, cannot be known before it runs.
@@ -1710,6 +1719,14 @@ def review_execution(action: str, profile: dict | None, *,
                     # Root re-checks hook programs, libraries and root-only files
                     # the same way: owned by root all the way up (spec 1.3).
                     programs = _openvpn_programs(text) + root_only
+                    # openvpn on macOS applies no DNS a server pushes (that takes
+                    # an up script); Sentinel adds none.
+                    system_dns = ("Sentinel's OpenVPN does not apply DNS servers the VPN "
+                                  "server pushes"
+                                  + (" (unless this config's own up script sets them)"
+                                     if any(h.split(":", 1)[0].strip().lstrip("-").lower()
+                                            in ("up", "route-up") for h in root_hooks)
+                                     else ""))
                     if len(programs) > vpn_rootscript.MAX_PROGRAMS:
                         blockers.append(f"The config names {len(programs)} hook programs; "
                                         f"Tunnel checks at most {vpn_rootscript.MAX_PROGRAMS}.")
@@ -1741,6 +1758,37 @@ def review_execution(action: str, profile: dict | None, *,
         app_warning = vpn_apps.connect_warning()
         if app_warning:
             warnings.append(app_warning)
+        try:
+            lan_dns_allowed = allow_lan_dns() is True
+        except Exception:  # noqa: BLE001 - shown as the default the switch uses
+            lan_dns_allowed = False
+        if system_dns:
+            warnings.append(
+                f"System DNS stays in use: {system_dns}, so macOS keeps its current DNS "
+                "servers. If one is on your local network (usually your router), lookups "
+                "to it go outside the tunnel and are not protected; "
+                + ("the kill switch lets them through, because \"Allow local network DNS\" "
+                   "is ticked." if lan_dns_allowed else
+                   "while the kill switch is armed they are blocked and fail, unless "
+                   "\"Allow local network DNS\" is ticked (which lets them out unprotected).")
+                + " A public DNS server goes through the tunnel only if the tunnel routes "
+                  "its address (a full tunnel does).")
+        line = ("Kill switch, local network DNS (port 53): "
+                + ("allowed (\"Allow local network DNS\" is ticked; those lookups bypass "
+                   "the tunnel)" if lan_dns_allowed else
+                   "blocked while armed (\"Allow local network DNS\" is off)"))
+        if ks_armed:
+            try:
+                armed = armed_lan_dns()
+            except Exception:  # noqa: BLE001 - unknown is shown as unknown
+                armed = None
+            if armed is None:
+                line += ("; the switch armed now may predate this setting and let local DNS "
+                         "out. Arm again to apply it")
+            elif armed is not lan_dns_allowed:
+                line += ("; the switch armed now still " + ("allows" if armed else "blocks")
+                         + " it. Arm again to apply the setting")
+        config_lines.append(line)
 
     if action == "disconnect":
         if ks_armed:

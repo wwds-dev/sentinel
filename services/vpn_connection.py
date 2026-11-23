@@ -299,8 +299,41 @@ def arm_killswitch(profile: dict):
             return False, ("OpenVPN is running but Sentinel did not learn its tunnel "
                            "device when it connected, so arming now would block traffic "
                            "inside the tunnel. Reconnect, then arm again.")
-        return ks.arm([endpoint], allow=allow, extra_interfaces=[device])
-    return ks.arm([endpoint], allow=allow)
+        return ks.arm([endpoint], allow=allow, extra_interfaces=[device],
+                      allow_lan_dns=killswitch_allow_lan_dns())
+    return ks.arm([endpoint], allow=allow, allow_lan_dns=killswitch_allow_lan_dns())
+
+
+# "Allow local network DNS": off unless the user ticked it (owner decision
+# 2026-11-23). Stored in the app database's settings table.
+ALLOW_LAN_DNS_SETTING = "killswitch_allow_lan_dns"
+
+
+def killswitch_allow_lan_dns() -> bool:
+    """True only when the user ticked "Allow local network DNS". Anything else,
+    including a settings read that fails, is False: the switch blocks LAN DNS."""
+    try:
+        from services.database import get_setting
+        return get_setting(ALLOW_LAN_DNS_SETTING, "0") == "1"
+    except Exception:  # noqa: BLE001 - an unreadable setting fails closed
+        return False
+
+
+def killswitch_armed_lan_dns() -> bool | None:
+    """What the switch recorded as armed does with local network DNS: True (let
+    out), False (blocked), None (not armed, or armed before the setting existed)."""
+    ks = _killswitch()
+    try:
+        return ks.armed_lan_dns() if ks is not None else None
+    except Exception:  # noqa: BLE001 - unknown is shown as unknown
+        return None
+
+
+def set_killswitch_allow_lan_dns(allowed: bool) -> None:
+    """Store the tick. It applies from the next Arm; a switch already armed keeps
+    the rules it was armed with."""
+    from services.database import save_setting
+    save_setting(ALLOW_LAN_DNS_SETTING, "1" if allowed is True else "0")
 
 
 def killswitch_recovery_command() -> str:

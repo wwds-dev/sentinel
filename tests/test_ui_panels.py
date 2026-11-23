@@ -3885,6 +3885,56 @@ class TestTunnelPanel:
         assert len(FakeVpnConnectionWorker.instances) == 1
         assert FakeVpnConnectionWorker.instances[0].action == "arm"
 
+    def test_allow_local_network_dns_is_off_by_default_and_stored(self, tunnel):
+        from services import vpn_connection
+        box = tunnel.allow_lan_dns_check
+        assert box.text() == "Allow local network DNS" and box.isChecked() is False
+        try:
+            box.setChecked(True)
+            assert vpn_connection.killswitch_allow_lan_dns() is True
+            box.setChecked(False)
+            assert vpn_connection.killswitch_allow_lan_dns() is False
+        finally:
+            vpn_connection.set_killswitch_allow_lan_dns(False)
+
+    def test_changing_the_tick_while_armed_says_arm_again(self, tunnel, monkeypatch):
+        from services import vpn_connection
+        monkeypatch.setattr(vpn_connection, "set_killswitch_allow_lan_dns", lambda _a: None)
+        monkeypatch.setattr(vpn_connection, "killswitch_armed_lan_dns", lambda: False)
+        tunnel.allow_lan_dns_check.setChecked(True)
+        assert "still blocks local network DNS" in tunnel.kill_switch_status_label.text()
+        assert "Arm again" in tunnel.kill_switch_status_label.text()
+
+    def test_a_tick_that_cannot_be_saved_springs_back_and_says_so(self, tunnel, monkeypatch):
+        from services import vpn_connection
+
+        def broken(_allowed):
+            raise OSError("database is locked")
+        monkeypatch.setattr(vpn_connection, "set_killswitch_allow_lan_dns", broken)
+        tunnel.allow_lan_dns_check.setChecked(True)
+        assert tunnel.allow_lan_dns_check.isChecked() is False
+        assert "Could not save" in tunnel.kill_switch_status_label.text()
+
+    def test_the_arm_dialog_says_lan_dns_is_blocked(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        texts = []
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda _p, _t, text, *a, **k:
+                                         texts.append(text) or QMessageBox.No))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wg0"})
+        tunnel.arm_kill_switch()
+        assert "DNS to your LAN is blocked" in texts[0]
+        monkeypatch.setattr(vpn_connection, "killswitch_allow_lan_dns", lambda: True)
+        tunnel.arm_kill_switch()
+        assert "DNS to your LAN is allowed" in texts[1]
+        assert "cannot leak" not in tunnel.arm_ks_btn.toolTip()
+        assert "not DNS to your LAN" in tunnel.arm_ks_btn.toolTip()
+
     def test_arming_refuses_a_template_profile(self, tunnel, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
         from services import vpn_connection
