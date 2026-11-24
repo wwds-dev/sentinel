@@ -202,9 +202,11 @@ def tiny_prompts(n=2):
 class Asker:
     """A stub for every model: the local model, the reference, the judge."""
 
-    def __init__(self, verdicts=("B", "A"), local_fails=False, cloud_fails=False):
+    def __init__(self, verdicts=("B", "A"), local_fails=False, cloud_fails=False,
+                 reference="reference answer"):
         self.calls, self.verdicts = [], list(verdicts)
         self.local_fails, self.cloud_fails = local_fails, cloud_fails
+        self.reference = reference
         self.threads = set()
 
     def __call__(self, provider, model, prompt):
@@ -217,7 +219,7 @@ class Asker:
         if self.cloud_fails:
             raise RuntimeError("HTTP 500")
         if provider == "anthropic":
-            return "reference answer"
+            return self.reference
         assert "<think>" not in prompt         # reasoning is stripped before judging
         verdict = self.verdicts[0]
         self.verdicts = self.verdicts[1:] + self.verdicts[:1]
@@ -242,11 +244,52 @@ def test_measure_scores_every_kind_and_records_its_evidence(tmp_path):
     assert all(p != "lmstudio" for p, _ in usage) and len(usage) == 24
 
 
-def test_split_verdicts_are_ties_so_position_bias_cancels():
-    ask = Asker(verdicts=("A",))              # the judge always says "A"
-    result = lr.measure(LOCAL, PLAN, tiny_prompts(), ask)
+@pytest.mark.parametrize("judge", [
+    ("A",),                                    # always the first slot: one-sided
+    ("",),                                     # an empty reply
+    ("I can't help with that.",),              # a refusal
+    ("This is a tie",),                        # a sentence, not the word asked for
+])
+def test_a_judge_that_gives_no_usable_verdict_rates_nothing(judge):
+    """Review L-2: each of these used to read as twenty ties and rate the
+    local model level with the best cloud model."""
+    result = lr.measure(LOCAL, PLAN, tiny_prompts(), Asker(verdicts=judge))
+    assert result.status == lr.STATUS_FAILED
+    assert result.kinds == {}
+    assert "usable verdict" in result.reason
+
+
+def test_genuine_ties_still_count():
+    result = lr.measure(LOCAL, PLAN, tiny_prompts(), Asker(verdicts=("TIE",)))
+    assert result.status == lr.STATUS_MEASURED
     assert result.kinds["code"]["ties"] == 2
     assert result.kinds["code"]["score"] == pytest.approx(1400.0)
+
+
+def test_a_kind_with_too_few_usable_verdicts_stays_unrated_and_says_why():
+    # Five pairs per kind (ten judge calls) need four usable pairs. The cycle
+    # covers two kinds: all five usable, then three usable and two empty.
+    cycle = ("B", "A") * 5 + ("B", "A") * 3 + ("", "") * 2
+    result = lr.measure(LOCAL, PLAN, tiny_prompts(n=5), Asker(verdicts=cycle))
+    assert result.status == lr.STATUS_MEASURED
+    assert set(result.kinds) == {lr.KINDS[0], lr.KINDS[2]}
+    assert all(result.kinds[k]["n"] == 5 for k in result.kinds)
+    for kind in (lr.KINDS[1], lr.KINDS[3]):
+        assert f"{kind}: only 3 of 5 pairs" in result.reason
+
+
+def test_an_empty_reference_answer_is_neither_judged_nor_cached(tmp_path):
+    store = lr.RatingStore(tmp_path / "r.json")
+    ask = Asker(reference="")
+    result = lr.measure(LOCAL, PLAN, tiny_prompts(), ask, store=store)
+    assert result.status == lr.STATUS_FAILED and result.kinds == {}
+    assert all(p != "gemini" for p, _ in ask.calls)            # no judge call
+    assert store.reference_answer("anthropic/claude-opus-5-5", "code0", 1) is None
+    # An empty answer cached by an older version is asked for again.
+    store.save_reference_answer("anthropic/claude-opus-5-5", "code0", 1, "")
+    again = Asker()
+    lr.measure(LOCAL, PLAN, tiny_prompts(), again, store=store)
+    assert ("anthropic", "claude-opus-5-5") in again.calls
 
 
 def test_reference_answers_are_cached_between_models(tmp_path):
@@ -278,8 +321,10 @@ def test_failures_are_results_not_exceptions():
 
 
 @pytest.mark.parametrize("reply, verdict", [
-    ("A", "A"), ("b", "B"), ("TIE", "TIE"), ("Answer B.", "B"), ("", "TIE"),
-    ("I cannot decide", "TIE"),
+    ("A", "A"), ("b", "B"), ("TIE", "TIE"), ("Answer B.", "B"), ("**B**", "B"),
+    ("Answer: A", "A"), ("<think>A looks right</think>B", "B"),
+    ("", None), ("I cannot decide", None), ("This is a tie", None),
+    ("Both are a good fit, B is better", None), ("A or B", None),
 ])
 def test_parse_verdict(reply, verdict):
     assert lr.parse_verdict(reply) == verdict
