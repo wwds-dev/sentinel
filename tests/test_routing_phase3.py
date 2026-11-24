@@ -288,10 +288,11 @@ def test_starting_a_measurement_does_no_model_work_on_the_ui_thread(app, monkeyp
 def test_the_measure_worker_runs_the_engine_off_the_ui_thread(qapp, tmp_path):
     from ui.workers import LocalMeasureWorker
     seen = []
+    verdicts = iter(("B", "A") * 8)          # the reference wins in both orders
 
     def ask(provider, model, prompt):
         seen.append(threading.current_thread())
-        return "A" if provider == "gemini" else "answer"
+        return next(verdicts) if provider == "gemini" else "answer"
 
     prompts = lr.PromptSet(1, {k: (("x", "p"),) for k in lr.KINDS})
     plan = lr.Plan(references={k: ("anthropic", "claude-opus-5-5", 1400.0)

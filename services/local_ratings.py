@@ -589,13 +589,27 @@ def strip_reasoning(text: str) -> str:
     return _THINK.sub("", str(text or "")).strip()
 
 
-def parse_verdict(text: str) -> str:
-    """'A', 'B' or 'TIE' from a judge's reply; anything unclear is a tie."""
-    words = re.findall(r"[A-Za-z]+", str(text or "").upper())
-    for word in words:
-        if word in {"A", "B", "TIE"}:
-            return word
-    return "TIE"
+_VERDICTS = {"A", "B", "TIE"}
+_VERDICT_LEADS = {"ANSWER", "VERDICT", "WINNER"}
+
+# A kind is rated only when at least this share of its pairs got a usable
+# verdict in both orders; otherwise it stays unrated (local-model-routing
+# review L-2: an empty, refusing or one-sided judge read as twenty ties and
+# rated the local model level with the best cloud model).
+MIN_USABLE_SHARE = 0.75
+
+
+def parse_verdict(text: str) -> str | None:
+    """'A', 'B' or 'TIE' from a judge's reply, or None when the reply is not
+    a verdict. The whole reply must be the one word the judge was asked for
+    (markup and a closing full stop are fine, "Answer: B" too): an empty
+    reply, a refusal or a sentence is no verdict, never a tie."""
+    words = re.findall(r"[A-Za-z]+", strip_reasoning(text).upper())
+    if len(words) == 2 and words[0] in _VERDICT_LEADS:
+        words = words[1:]
+    if len(words) == 1 and words[0] in _VERDICTS:
+        return words[0]
+    return None
 
 
 def estimate_cost(plan: Plan, prompts: PromptSet,
@@ -653,6 +667,7 @@ def measure(model, plan: Plan, prompts: PromptSet,
     done = 0
     spent = 0.0
     kinds: dict = {}
+    unrated: dict = {}
     judge_name = f"{plan.judge[0]}/{plan.judge[1]}"
 
     def cloud(provider, name, text):
@@ -678,6 +693,7 @@ def measure(model, plan: Plan, prompts: PromptSet,
             ref_provider, ref_model, ref_score = ref
             ref_name = f"{ref_provider}/{ref_model}"
             wins = ties = losses = 0
+            unusable = 0          # no reference, an unreadable or a one-sided verdict
             for prompt_id, prompt in rows:
                 if cancelled is not None and cancelled():
                     return MeasureResult(STATUS_STOPPED, "cancelled", when, kinds, spent)
@@ -689,27 +705,42 @@ def measure(model, plan: Plan, prompts: PromptSet,
                         when, kinds, spent)
                 reference = (store.reference_answer(ref_name, prompt_id, prompts.version)
                              if store is not None else None)
-                if reference is None:
+                if not reference:      # never asked, or an empty answer kept by an older run
                     reference = strip_reasoning(cloud(ref_provider, ref_model, prompt))
-                    if store is not None:
+                    if reference and store is not None:
                         store.save_reference_answer(ref_name, prompt_id,
                                                     prompts.version, reference)
-                first = parse_verdict(cloud(*plan.judge, JUDGE_PROMPT.format(
-                    prompt=prompt, a=local_answer, b=reference)))
-                second = parse_verdict(cloud(*plan.judge, JUDGE_PROMPT.format(
-                    prompt=prompt, a=reference, b=local_answer)))
-                local_votes = (first == "A") + (second == "B")
-                ref_votes = (first == "B") + (second == "A")
-                if local_votes > ref_votes:
-                    wins += 1
-                elif ref_votes > local_votes:
-                    losses += 1
+                if not reference:
+                    # Nothing to compare with: judging it would rate the
+                    # local model against an empty answer.
+                    unusable += 1
                 else:
-                    ties += 1
+                    first = parse_verdict(cloud(*plan.judge, JUDGE_PROMPT.format(
+                        prompt=prompt, a=local_answer, b=reference)))
+                    second = parse_verdict(cloud(*plan.judge, JUDGE_PROMPT.format(
+                        prompt=prompt, a=reference, b=local_answer)))
+                    if first is None or second is None or (
+                            first == second and first != "TIE"):
+                        # Unreadable, or the same position won both orders:
+                        # the judge preferred a slot, not an answer.
+                        unusable += 1
+                    else:
+                        local_votes = (first == "A") + (second == "B")
+                        ref_votes = (first == "B") + (second == "A")
+                        if local_votes > ref_votes:
+                            wins += 1
+                        elif ref_votes > local_votes:
+                            losses += 1
+                        else:
+                            ties += 1
                 done += 1
                 if on_progress is not None:
                     on_progress(done, total)
             n = wins + ties + losses
+            if n < math.ceil(MIN_USABLE_SHARE * len(rows)):
+                unrated[kind] = (f"{kind}: only {n} of {len(rows)} pairs got a "
+                                 "usable verdict")
+                continue
             kinds[kind] = {
                 "score": place_on_scale(ref_score, wins, ties, losses),
                 "reference": ref_name, "reference_score": ref_score,
@@ -722,4 +753,9 @@ def measure(model, plan: Plan, prompts: PromptSet,
     except Exception as exc:                  # a cloud call failed
         return MeasureResult(STATUS_FAILED, f"a cloud call failed: {exc}",
                              when, kinds, spent)
-    return MeasureResult(STATUS_MEASURED, "", when, kinds, spent)
+    if unrated and not kinds:
+        return MeasureResult(
+            STATUS_FAILED, "the judge gave too few usable verdicts ("
+            + "; ".join(unrated.values()) + ")", when, kinds, spent)
+    return MeasureResult(STATUS_MEASURED, "; ".join(unrated.values()),
+                         when, kinds, spent)
